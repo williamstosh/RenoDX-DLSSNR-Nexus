@@ -1,0 +1,28 @@
+# Local dependencies, build outputs, and diagnostics
+/tmp/
+/build/
+/artifacts/
+/dist/
+/bin/
+/.vs/
+/.cache/
+/.env
+/.env.*
+!.env.example
+*.addon64
+*.addon32
+*.dll
+*.lib
+*.exe
+*.obj
+*.pdb
+*.cso
+*.spv
+*.dmp
+*.log
+__pycache__/
+
+# Proprietary NVIDIA runtime/model files are never distributed here
+*.bin
+*.onnx
+*.safetensors

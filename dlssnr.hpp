@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include "version.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -164,7 +166,7 @@ constexpr char kOverlayTitle[] = "DLSS 5 Neural Rendering";
 // default into every file, so a stored 1 at schema 6 is inherited, not
 // chosen.
 constexpr uint32_t kConfigVersion = 7;
-constexpr char kAddonVersion[] = "v8.5.0-rc10";
+constexpr char kAddonVersion[] = "v" NR_NEXUS_VERSION;
 // SHA-256 of the reference signed NR runtime build.  Identification only: a
 // mismatch is reported in the log/overlay but never blocks loading, because
 // swapping in a custom runtime build is a supported diagnostics workflow.
