@@ -1,68 +1,44 @@
-# Source migration
+# 源码迁移记录
 
-Verified scope: 2026-10-23, independent repository initialization.
+核验日期：2026-10-23。独立仓库初始化已完成，本页记录迁移范围及后续集成条件，不要求重复迁移。
 
-The imported branch tip is
-`9bb6c0fec57ecb28c77938f3feb8155433396d93`, with parent
-`2663ecd393b0d402318c4cfd1fdc847f85e90beb`. These are the complete reachable
-source-only history of the imported `v8.5dev` branch. The import commit records
-Lecram V8.5 RC10 source origin `3a6cfc6`. The original MIT license and notices
-remain unchanged. No other branches or upstream tags are migrated.
+## 已迁移范围
 
-The repository contains only the add-on's 95 baseline source/license/document
-files plus independent project documentation and version/build tooling. It
-does not copy the full RenoDX project, external dependencies, private workspace
-documentation, diagnostic evidence, binaries, or models.
+导入分支顶端为 `9bb6c0fec57ecb28c77938f3feb8155433396d93`，父提交为
+`2663ecd393b0d402318c4cfd1fdc847f85e90beb`，两者构成导入 `v8.5dev` 分支的完整可达源码历史。
+导入提交保留 Lecram V8.5 RC10 来源标识 `3a6cfc6`；MIT 许可和原始声明未改动。
+其他分支与上游标签未迁入。[第三方声明](../THIRD_PARTY_NOTICES.md)维护公开来源及许可信息。
 
-## Deferred integration
+仓库保留基线的 95 个源码／许可／文档文件，并新增独立项目文档及版本／构建工具；
+未复制完整 RenoDX、外部依赖、私有研究文档、诊断证据、二进制或模型。
+原 fork 保留，旧项目后续成果的集成状态统一见 [NOW](context/NOW.md)。
 
-The original research and development repositories keep their branches,
-remotes, uncommitted files, build directories, and running environment.
-Uncommitted Present SDR/HDR fixes, compatibility utility implementations,
-NR+FG integration, tests, and runtime qualification stay there. These changes
-must not be mistaken for features present in the migrated RC10 baseline.
+## 初始化验证
 
-After acceptance, commit those changes in their authorized original repository,
-then review the intended public diff and its license/safety status. Integrate
-only the accepted scope into `dev`; retain source-commit provenance when nested
-repositories or a source-only layout require a scoped patch instead of a direct
-cherry-pick. Review any dependencies on the two shared utility headers before
-selecting a build host. Only then decide whether the original environment should
-switch its default remote. No switch is required during the migration.
+以下结果仅对应初始化提交 `db747cc0843691479be28494812e417a88e87c6f`，不能代替后续候选验收：
 
-## Known validation boundary
+- 版本检查、PowerShell 语法和文档直接链接通过；请求标签不匹配、缺少标签参数时正确拒绝，未创建标签。
+- 隔离的 MSVC x64 Release 构建经 RenoDX 既有 CMake 目标完成配置，生成 20 个 DirectX 和 12 个 Vulkan 着色器二进制。
+  C++ 构建因共享接口缺失而失败，未获得合格完整插件；未为通过构建导入未提交的兼容代码。当前阻塞详情见 NOW。
+- 独立最小 PE 探针复用实际生成的 RenoDX 资源文件及项目 CMake 版本钩子，得到
+  `FileVersion=0.1.0-dev.1`、数字版本 `0.1.0.0`、`OriginalFilename=renodx-dlss5.addon64`。
+  这仅验证版本机制，不代表完整插件或游戏运行通过。
+- 公开基线及两条导入历史经审查，未发现内嵌凭据、真实私有路径、专有二进制／模型或本地诊断证据。
+  `report_bundle.hpp` 中的用户目录是通用脱敏示例。初始化未创建标签或 Release。
 
-The unmodified RenoDX host commit `374d07bf0e2fcef112ed1dfee98541bcf16487dd`
-lacks five shared API symbols required by the imported RC10 source. This was a
-known build prerequisite before migration; the local compatibility changes are
-uncommitted and deliberately excluded. Version checks and shader compilation
-cannot substitute for a complete compatible-host build or game acceptance.
+继承的可选报告上传功能沿用 WinHTTP 重定向策略，没有目标白名单；迁移未改变其行为，
+也未进行上传或运行时验收。分享前应检查报告内容，隐私说明见 [README](../README.md)。
+初始化原始日志与核验记录保留在被忽略的本地产物目录，不进入公开仓库。
 
-### Migration validation results
+<a id="switching-the-development-directory"></a>
+## 后续集成与开发目录切换
 
-- Version checker, PowerShell syntax checks, and direct local documentation
-  links passed. A mismatched requested tag and a missing tag argument were
-  rejected without creating a tag.
-- An isolated MSVC x64 Release build configured through RenoDX's existing
-  CMake target. All 20 DirectX and 12 Vulkan shader binaries were generated.
-  The C++ build failed on the five missing shared interfaces listed above;
-  no complete add-on binary was qualified. No uncommitted compatibility code
-  was imported to make that build pass.
-- A separate minimal PE probe reused the real generated RenoDX resource file
-  and this project's CMake version hook. Its compiled resource reported
-  `FileVersion=0.1.0-dev.1`, numeric `0.1.0.0`, and
-  `OriginalFilename=renodx-dlss5.addon64`. This validates the version mechanism,
-  not a complete plugin or game run.
-- The public baseline and its two reachable commits were reviewed. No embedded
-  credentials, real private paths, proprietary binaries/models, or local
-  diagnostic receipts were found. Profile paths in `report_bundle.hpp` are
-  generic redaction examples. New public documents contain no private paths.
+旧工作区继续保留其 Git 状态、安装环境及进行中开发。切换前保留可用原环境，以便回退。
 
-The inherited optional report uploader relies on WinHTTP's redirect policy
-without a destination allowlist. Its upload/privacy behavior is unchanged and
-was not runtime-qualified during migration; review report contents before
-sharing. No uploads were performed for this task.
+1. 旧 NR+FG 开发达到用户认可的验收／交接边界；保留已暂停、待手动验证及明确排除事项，不能将未完成项记为通过。
+2. 确认插件、宿主共享兼容接口及必要测试的来源提交，区分父仓库与嵌套源码仓库，审查拟公开范围。未提交成果留在原处。
+3. 仅将已审查范围集成到 `dev`，附必要许可和可公开的构建／测试说明。目录结构不适合 cherry-pick 时使用定向补丁并记录来源提交；私有配置、专有输入、游戏数据和原始证据不迁入。
+4. 准备兼容的隔离宿主及所需测试／自动化，将写入输出限定在新环境。执行受影响构建和定向检查，复用证据须匹配实际集成输入；新的运行时／视觉行为须完成适用验收。
+5. 在 NOW 记录集成提交、宿主、证据范围与剩余缺口，按需更新本地来源索引。依赖就绪后才切换后续开发；不隐式更改原远端或接管其他任务。
 
-Use `git log` in this repository for the migration commit identity. Local build
-logs and the final migration receipt are kept in ignored `tmp/`; they are not
-public acceptance claims. No Release is created during initialization.
+目录切换本身不递增版本、不创建标签、不发布 Release 或安装二进制，各操作分别遵守既有授权与流程。

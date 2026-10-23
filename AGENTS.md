@@ -1,35 +1,36 @@
-# NR Nexus project rules
+# NR Nexus 项目规则
 
-- This is the standalone, source-only `RenoDX-DLSSNR-Nexus` repository. Keep
-  changes within the requested scope; preserve `renodx-dlss5.addon64`, exported
-  runtime names, configuration identity, and core NR/FG/hook behavior unless a
-  separate change explicitly authorizes and validates them.
-- `version.h` is the sole independent SemVer source. Daily commits do not bump
-  versions. Update it only for an explicit, verifiable milestone; Lecram and
-  NVIDIA runtime versions are provenance, not this project's version.
-- Reuse RenoDX's build target through `tools/build.ps1`; keep the displayed
-  version, PE FileVersion, archive stem, and any `v<version>` tag consistent.
-  Use short commit metadata for traceability, not long descriptive suffixes.
-- Create an immutable version tag only after the corresponding committed
-  milestone passes affected builds, focused tests, public safety/license checks,
-  and applicable runtime/visual acceptance. Never move or reuse a tag. A version
-  in source alone is not a validated release.
-- A validated development milestone may be published automatically as a
-  Pre-release. RCs require internal qualification; stable Releases require the
-  owner's explicit confirmation. Do not infer release approval from a push.
-- `main` holds reviewed integrations; `dev` holds development. Preserve the
-  original fork and the concurrent NR+FG workspace. Integrate its changes only
-  after they are committed, reviewed for public safety, and accepted for the
-  intended scope. See [migration scope](docs/MIGRATION.md).
-- Before reusing third-party code, shaders, assets, or dependencies, verify
-  source, license compatibility, and redistribution rights. Preserve all
-  copyright/license/NOTICE text and update `THIRD_PARTY_NOTICES.md` for actual
-  reuse. Technical ideas alone do not require attribution entries.
-- Never commit secrets, private machine paths, proprietary NVIDIA DLLs/SDKs or
-  models, game data, local receipts, logs, caches, or build outputs. Review every
-  newly reachable historical commit before a public push.
-- Before delivery run `tools/check-version.ps1`, the affected build and focused
-  checks, and `git diff --check`. Record build success, installation, runtime
-  validation, visual acceptance, and release authorization separately. A failed
-  host compatibility build does not qualify a binary or justify changing core
-  rendering logic during migration.
+## 范围与权威来源
+
+- 本仓库是独立、仅含源码的 `RenoDX-DLSSNR-Nexus`。修改前确认本文件及适用的宿主／子目录规则；通过 [PROJECT_INDEX](PROJECT_INDEX.md) 按需定位文档，先用 `rg` 搜索，不默认遍历历史、日志或依赖。
+- 只处理已授权范围，修复须有根因证据。修改 C++ 前读取兼容 RenoDX 宿主的 C++ 风格及目录规则；未经授权不改宿主全局预设、CI 或外部依赖。
+- [NOW](docs/context/NOW.md) 维护当前源码、验证状态与缺口；[DECISIONS](docs/context/DECISIONS.md) 维护技术约束；[RUNBOOK](docs/context/RUNBOOK.md) 维护验证方法。每项事实只设一个权威来源，其他位置保留摘要和链接。
+- 旧项目的私有设计、路径、证据和进行中任务状态不进入公开文档。若存在 `.local/context/README.md`，按其定位原始资料；它仅是被忽略的本地索引，不覆盖本规则。资料缺失应明确记录，不得推定完成。
+
+## 文档与语言维护
+
+- `README.md` 在同一文件内提供 English／简体中文导航及内容一致的两种语言；GitHub Description 使用中英双语。其他项目自有 Markdown（含本文件、版本与迁移文档）使用简体中文，保留必要的技术名称、命令和标识符。
+- `LICENSE`、原版权、SPDX／NOTICE 和第三方许可声明保留原文；[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md) 不做语言翻译，不改写法律含义。
+- 功能、构建要求、版本／发布流程或已知限制发生变化时，同步维护受影响的权威文档及 README 两种语言；项目定位变化时同步 GitHub Description。每次交付检查中英文事实一致性和链接，无相关变化不重复更新或另建翻译文件。
+- 公开文档保留用途、技术来源、必要开发状态、限制和可复现步骤；个人工作流、临时研究、机器路径及原始日志留在本地。优先更新现有文档，仅在职责独立时新增文件，不复制动态待办或验收结论。
+
+## 开发与验证
+
+- 集成旧成果时遵守既有决定；未集成的修复和 NR+FG 验收不属于当前源码。未经单独授权和验证，保留 `renodx-dlss5.addon64`、命名空间、导出名称、配置及运行时标识。
+- 优先复用现有构建、测试和自动化。修复前检查实际行为，能自动化时增加定向复现，否则保留可重复步骤。代码最低验收为受影响构建、定向测试、关键行为及 diff 审查；复用未受影响的有效结果。
+- 游戏测试仅在既有授权内使用已验证流程，遵守暂停／手动场景边界及存档、配置保护。[RUNBOOK](docs/context/RUNBOOK.md) 区分会话自动化和插件正确性；不可用或不可靠的检查须保留为缺口。
+- 纯文档修改检查内容、直接链接、公开适宜性及 `git diff --check`，不启动游戏或重编插件。源码、构建、安装、实际加载、视觉验收和发布授权分别记录对象、日期与范围；操作说明不自动授予执行权限。
+- Windows 使用 PowerShell 7；文件操作保持同一 shell，先核对目标路径。通过 UTF-8 文件向 Node.js 传递中文，不用 PowerShell 管道或 here-string。私有长期索引放 `.local/`，临时文件放 `tmp/`，证据不入 Git；仅清理本次创建且不再需要的内容。
+
+## 仓库、版本与许可
+
+- `main` 保存已审查集成，`dev` 用于开发。保留原 fork 和旧工作区，按[迁移与切换条件](docs/MIGRATION.md#switching-the-development-directory)集成已提交、审查和验收的成果；文档更新不切换目录、远端或其他任务归属。
+- `version.h` 是独立 SemVer 的唯一来源。日常提交不递增版本，已验证里程碑才更新；通过现有目标及[版本流程](docs/VERSIONING.md)保持显示、PE、包名和标签一致。Lecram 与 NVIDIA 运行时版本单独记录为来源信息。
+- 标签为不可覆盖的 `v<version>`。通过门槛的开发里程碑可自动生成 Pre-release，RC 需内部验收，稳定 Release 需所有者明确确认。推送不等于发布授权；版本变更和发布准备须运行 `tools/check-version.ps1`。
+- 实际复用第三方代码、着色器或资源前核对来源、许可兼容性与再分发权，保留版权／许可／NOTICE，并按需更新第三方声明。仅作技术参考不算代码复用。
+- 公开推送前检查 diff 及新增可达历史，排除密钥、私有路径、专有 DLL／SDK／模型、游戏数据、日志、缓存、二进制和内部证据；保留 MIT 许可及原始声明。
+
+## 协作边界
+
+- 有明确收益时委派范围清晰、写入范围不重叠的子任务，通常最多两个代理，必要时最多三个；协调者整合并验证关键结果，不重复有效检查。反复失败时先诊断并调整方法。
+- 未经明确授权不创建接续主任务；不接管或干扰旧项目正在进行的 NR+FG 开发。

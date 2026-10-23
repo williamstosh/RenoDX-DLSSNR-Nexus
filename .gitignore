@@ -1,5 +1,6 @@
 # Local dependencies, build outputs, and diagnostics
 /tmp/
+/.local/
 /build/
 /artifacts/
 /dist/

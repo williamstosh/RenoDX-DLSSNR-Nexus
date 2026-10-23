@@ -1,44 +1,24 @@
-# Independent versions
+# 独立版本管理
 
-`version.h` owns the SemVer string without a leading `v`. The initial source
-version is `0.1.0-dev.1`. The overlay/log version uses `v` plus that string;
-the CMake integration supplies the same string as the Windows PE FileVersion.
-The numeric PE tuple uses `major,minor,patch,0`; prerelease order belongs to
-the full string, not Windows' four-integer tuple.
+[version.h](../version.h) 是 SemVer 字符串的唯一来源，不带前导 `v`，初始版本为 `0.1.0-dev.1`。
+界面／日志显示 `v` 加该字符串；CMake 集成将同一字符串写入 Windows PE FileVersion。
+PE 数字元组使用 `major,minor,patch,0`，预发布顺序由完整字符串表达，不由四段整数表达。
 
-The loader filename stays `renodx-dlss5.addon64`. A qualified package can use
-the `ArchiveStem` printed by `tools/check-version.ps1`, for example
-`NR-Nexus-v0.1.0-dev.1-<short-sha>.zip`. Keep the loader filename inside it.
-No binary packaging or publication is implied by that suggested name.
+加载器文件名保留为 `renodx-dlss5.addon64`。通过验收的包可采用 `tools/check-version.ps1` 输出的
+`ArchiveStem`，例如 `NR-Nexus-v0.1.0-dev.1-<short-sha>.zip`，包内仍使用原加载器文件名。
+命名示例不表示已经打包或发布。
 
-Daily commits use Git history and do not increment the version. Update the
-header after a concrete development milestone, such as `0.1.0-dev.2`.
-Use `0.1.0-rc.1` only after internal qualification; `0.1.0` requires stable
-acceptance and the owner's explicit release confirmation. Patch/minor/major
-increments follow SemVer; the example sequence is not mandatory. During `0.x`,
-the public compatibility surface is experimental and changes must be documented.
-Lecram V8.5 RC10 and NVIDIA runtime/DLL versions remain separate provenance.
+日常提交由 Git 历史记录，不递增版本；完成具体验证里程碑后再更新版本头，例如 `0.1.0-dev.2`。
+`0.1.0-rc.1` 须完成内部验收，`0.1.0` 须通过稳定验收并获得所有者明确发布确认。
+补丁／次／主版本按 SemVer 递增，上述序列只是示例。`0.x` 阶段公开兼容接口仍属实验性，变更须记录。
+Lecram V8.5 RC10 和 NVIDIA 运行时／DLL 版本单独作为来源信息维护。
 
-## Milestone and release procedure
+## 里程碑与发布流程
 
-1. Review and commit the milestone with an updated version header and acceptance
-   evidence. Build with `tools/build.ps1`; run affected tests and applicable
-   game/visual acceptance. Record inputs, commit, tool/dependency identities,
-   artifact hash, and any untested scope. Reuse valid evidence for unchanged work.
-2. Run `tools/check-version.ps1` and `git diff --check`; inspect both the public
-   tree and newly reachable history for secrets, private paths, proprietary
-   assets, build debris, and licensing obligations. Keep machine-specific
-   receipts outside the public tree.
-3. Once those gates pass on the committed milestone, create a new annotated
-   `v<version>` tag. Verify it with
-   `tools/check-version.ps1 -ExpectedTag <tag> -VerifyTag`. Never overwrite tags.
-4. Development tags may produce GitHub **Pre-releases** automatically after the
-   gates pass. RC publication requires internal acceptance. Publishing a stable
-   GitHub Release additionally requires explicit owner confirmation. Upload only
-   qualified add-on binaries and required notices, never vendor runtime DLLs or
-   models. A source push does not trigger publication or a version bump.
+1. 审查并提交里程碑、更新后的版本头及验收结论。使用 `tools/build.ps1` 构建，执行受影响测试及适用的游戏／视觉验收；记录输入、提交、工具／依赖标识、产物哈希及未验证范围。未变化部分复用有效证据。
+2. 运行 `tools/check-version.ps1` 和 `git diff --check`；检查公开文件树及新增可达历史，排除密钥、私有路径、专有资源和构建残留，核对许可义务。机器相关日志与原始证据不进入公开仓库。
+3. 已提交里程碑通过上述门槛后，新建带注释的 `v<version>` 标签，并执行 `tools/check-version.ps1 -ExpectedTag <tag> -VerifyTag`。标签不可覆盖。
+4. 开发标签通过门槛后可自动生成 GitHub **Pre-release**；RC 发布需内部验收，稳定 GitHub Release 还需所有者明确确认。仅上传合格插件二进制及必要声明，不上传厂商运行时 DLL 或模型。源码推送不自动触发发布或版本递增。
 
-This migration does not install an unconditional tag-to-release workflow. Its
-inherited host API dependency has not been integrated as committed code, and
-the NR+FG work is outside the imported snapshot. No tag or Release is created
-until the corresponding milestone meets its gates.
+当前未安装无条件的标签到 Release 自动化。代码与验收缺口统一见 [NOW](context/NOW.md)。
+文档整理不递增版本，也不构成标签或 Release 的验收。

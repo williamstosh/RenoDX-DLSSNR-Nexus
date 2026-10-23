@@ -1,78 +1,119 @@
 # NR Nexus
 
-**Unofficial DLSS Neural Rendering Add-on for RenoDX**
+[English](#english) | [简体中文](#简体中文)
+
+## English
+
+**Unofficial DLSS Neural Rendering add-on for RenoDX/ReShade**
 
 [NR Nexus](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus) is an independent,
-source-only RenoDX/ReShade add-on project for NVIDIA DLSS Neural Rendering
-(DLSSNR, NGX feature 18), often referred to as DLSS5. It applies a visual
-enhancement around a game's existing DLSS evaluation; it performs no denoising.
+source-only project for NVIDIA DLSS Neural Rendering (DLSSNR, NGX feature 18),
+often referred to as DLSS5. It applies a visual enhancement around a game's
+existing DLSS evaluation; it performs no denoising.
 
-## Development status
+### Development status
 
-The independent version starts at **v0.1.0-dev.1**. This is a source development
-snapshot, with no qualified binary, release tag, or GitHub Release at migration.
+The independent version is **v0.1.0-dev.1**, defined in [version.h](version.h).
+This is a source development snapshot with no qualified binary, release tag,
+or GitHub Release. The imported baseline is Lecram **V8.5 RC10**,
+commit [`9bb6c0f`](https://github.com/williamstosh/RenoDX-DLSS5-Generic/commit/9bb6c0fec57ecb28c77938f3feb8155433396d93).
+Later Present SDR/HDR fixes and NR + Frame Generation work are not included.
+The known host API compatibility gap blocks a complete add-on build; see
+[current status and limitations](docs/context/NOW.md) for details.
 
-The imported baseline is Lecram **V8.5 RC10**, commit
-[`9bb6c0f`](https://github.com/williamstosh/RenoDX-DLSS5-Generic/commit/9bb6c0fec57ecb28c77938f3feb8155433396d93).
-The two existing source-history commits are retained. Subsequent local Present
-SDR/HDR fixes and the ongoing NR + Frame Generation integration remain in the
-original development workspace and **are not included** in this snapshot.
-Compatibility and visual qualification of that integration are still pending;
-results from those separate candidates do not qualify this repository's build.
+`main` holds reviewed integrations; `dev` is the development branch.
+The [original fork](https://github.com/williamstosh/RenoDX-DLSS5-Generic)
+remains available for historical reference.
 
-| Branch | Purpose |
-| --- | --- |
-| `main` | Reviewed independent project baseline and milestone integration |
-| `dev` | Subsequent development, integrated after review and applicable checks |
+### Building
 
-The [original fork](https://github.com/williamstosh/RenoDX-DLSS5-Generic) remains
-available as historical reference. This repository is a standalone repository.
+This repository contains add-on sources, shaders, and project tooling. Obtain
+RenoDX, vendor SDKs, NVIDIA runtime DLLs/models, the ReShade loader, and other
+dependencies separately under their respective licenses; none are bundled here.
 
-## Building
-
-This repository contains only the add-on sources, shaders, and project tooling.
-It does not redistribute RenoDX, vendor SDKs, NVIDIA DLLs/models, a ReShade loader,
-or game assets. Obtain dependencies from their respective upstream projects
-under their own licenses.
-
-The source belongs at `src/addons/dlss5` in a **compatible RenoDX checkout**.
-The known research host is RenoDX
-[`374d07b`](https://github.com/clshortfuse/renodx/commit/374d07bf0e2fcef112ed1dfee98541bcf16487dd),
-but its unmodified shared utilities lack interfaces required by RC10:
-`directx::NativeIdentity`, `directx::SameNativeObject`,
-`vtable::TransactionMutex`, `vtable::BeginTransaction`, and
-`vtable::transaction_contended`. The local compatibility implementations have
-not been committed or imported. A compatible committed host is a prerequisite
-for a complete build; arbitrary upstream HEAD is not a supported substitute.
-
-With that prerequisite satisfied, use PowerShell 7, Visual Studio 2022 C++ tools,
-Windows SDK, FXC, DXC, and Slang, then run:
+Place this checkout at `src/addons/dlss5` in a **compatible RenoDX checkout**.
+A committed host with the required shared interfaces is a prerequisite;
+arbitrary upstream HEAD is not a supported substitute. With this prerequisite
+satisfied, use PowerShell 7, Visual Studio 2022 C++ tools, Windows SDK, FXC,
+DXC, and Slang:
 
 ```powershell
 pwsh ./tools/check-version.ps1
 pwsh ./tools/build.ps1 -RenodxRoot <compatible-renodx-checkout> -ToolRoot <shader-tool-directory>
 ```
 
-The build wrapper reuses RenoDX's `dlss5` target and adds only this project's
-version definitions. The loader filename remains `renodx-dlss5.addon64`.
-Exported names, namespaces, configuration keys, hooks, and runtime identifiers
-retain the upstream names until a separately validated internal rename.
-See [versioning](docs/VERSIONING.md) and [migration scope](docs/MIGRATION.md).
+The wrapper reuses RenoDX's `dlss5` target and adds the project's version
+definitions. The loader filename remains `renodx-dlss5.addon64`; exported names,
+namespaces, configuration keys, hooks, and runtime identifiers retain their
+existing names until a separately authorized and validated rename.
 
-## Reports and privacy
+Contributor documentation is maintained in Simplified Chinese:
+[project index](PROJECT_INDEX.md), [verification](docs/context/RUNBOOK.md),
+[versioning](docs/VERSIONING.md), and [migration](docs/MIGRATION.md).
+
+### Reports and privacy
 
 The inherited optional **Upload & copy link** action sends a report archive to
 a third-party temporary file host only when selected by the player. Reports can
-contain game/process paths and diagnostic information; review the archive before
-sharing. No report archives or local diagnostic receipts are included here.
+contain game/process paths and diagnostics; review the archive before sharing.
+Report archives and local diagnostic evidence are not included in this repository.
 
-## Origins and licensing
+### Origins and licensing
 
 NR Nexus is based on [RenoDX](https://github.com/clshortfuse/renodx) and Lecram's
-V8.5 RC10 public add-on sources. It is an independent unofficial project and is
-not endorsed by NVIDIA, RenoDX's authors, or Lecram.
+V8.5 RC10 public add-on sources. It is not endorsed by NVIDIA, RenoDX's authors,
+or Lecram. The original [MIT license](LICENSE), copyright notices, and
+[third-party notices](THIRD_PARTY_NOTICES.md) are preserved in their original
+language. Lecram and NVIDIA runtime versions are separate from NR Nexus SemVer.
 
-The original [MIT LICENSE](LICENSE) and source copyright notices are preserved.
-[Third-party notices](THIRD_PARTY_NOTICES.md) distinguish inherited source from
-external build/runtime dependencies. NVIDIA DLSS runtime versions and the
-upstream Lecram version are recorded separately from the NR Nexus SemVer.
+---
+
+## 简体中文
+
+**面向 RenoDX/ReShade 的非官方 DLSS 神经渲染插件**
+
+[NR Nexus](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus) 是独立、仅提供源码的
+NVIDIA DLSS 神经渲染项目（DLSSNR，NGX feature 18，通常称为 DLSS5）。它围绕游戏已有的
+DLSS 求值过程应用视觉增强，不执行降噪。
+
+### 开发状态
+
+独立版本为 **v0.1.0-dev.1**，定义于 [version.h](version.h)。当前是源码开发快照，
+尚无通过验收的二进制、发布标签或 GitHub Release。导入基线为 Lecram **V8.5 RC10**，
+提交 [`9bb6c0f`](https://github.com/williamstosh/RenoDX-DLSS5-Generic/commit/9bb6c0fec57ecb28c77938f3feb8155433396d93)。
+后续 Present SDR/HDR 修复及 NR + 帧生成开发尚未包含在内。已知宿主 API 兼容性缺口仍阻塞完整插件构建，
+详情见[当前状态与限制](docs/context/NOW.md)。
+
+`main` 保存已审查集成，`dev` 用于开发。
+[原 fork](https://github.com/williamstosh/RenoDX-DLSS5-Generic) 保留为历史参考。
+
+### 构建
+
+本仓库包含插件源码、着色器和项目工具。RenoDX、厂商 SDK、NVIDIA 运行时 DLL／模型、
+ReShade 加载器及其他依赖须按各自许可另行获取，均未随仓库分发。
+
+将本仓库置于**兼容 RenoDX 工作副本**的 `src/addons/dlss5`。完整构建要求宿主已提交且具备所需共享接口，
+不能用任意上游 HEAD 替代。满足此前提后，使用 PowerShell 7、Visual Studio 2022 C++ 工具、
+Windows SDK、FXC、DXC 和 Slang：
+
+```powershell
+pwsh ./tools/check-version.ps1
+pwsh ./tools/build.ps1 -RenodxRoot <compatible-renodx-checkout> -ToolRoot <shader-tool-directory>
+```
+
+包装器复用 RenoDX 的 `dlss5` 目标并加入项目版本定义。加载器文件名保留为 `renodx-dlss5.addon64`；
+导出名称、命名空间、配置键、钩子和运行时标识沿用现有名称，重命名须单独授权并验证。
+
+开发文档使用简体中文，入口为[项目索引](PROJECT_INDEX.md)、[验证方法](docs/context/RUNBOOK.md)、
+[版本管理](docs/VERSIONING.md)及[迁移记录](docs/MIGRATION.md)。
+
+### 报告与隐私
+
+继承的可选 **Upload & copy link** 操作仅在玩家主动选择时，将报告压缩包发送至第三方临时文件托管服务。
+报告可能包含游戏／进程路径及诊断信息，分享前请检查内容。本仓库不包含报告压缩包或本地诊断证据。
+
+### 来源与许可
+
+NR Nexus 基于 [RenoDX](https://github.com/clshortfuse/renodx) 和 Lecram V8.5 RC10 公开插件源码，
+未获 NVIDIA、RenoDX 作者或 Lecram 背书。原始 [MIT 许可](LICENSE)、版权和
+[第三方声明](THIRD_PARTY_NOTICES.md)保留原文。Lecram 及 NVIDIA 运行时版本与 NR Nexus SemVer 分开记录。
