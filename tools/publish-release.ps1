@@ -12,6 +12,7 @@ if (-not $env:GH_TOKEN) { throw 'GH_TOKEN with contents:write is required.' }
 $taskVersion = & (Join-Path $PSScriptRoot 'check-version.ps1') -ExpectedTag $Tag -VerifyTag
 $taskSource = (& git -C (Split-Path $PSScriptRoot -Parent) rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the release source.' }
+$taskSourceLine = "Source: https://github.com/$Repository/commit/$taskSource"
 $taskArchive = (Resolve-Path -LiteralPath $ArchivePath).Path
 $taskName = [IO.Path]::GetFileName($taskArchive)
 if ($taskName -cne ($taskVersion.ArchiveStem + '-windows-x64.zip')) { throw 'Archive name does not match the source version and commit.' }
@@ -80,16 +81,19 @@ $taskPrerelease = $taskVersion.Version.Split('+')[0].Contains('-')
 if ($null -eq $taskRelease) {
     $taskBody = @{
         tag_name = $Tag
-        target_commitish = $taskSource
+        # The tag exists and was checked above. Omitting target_commitish
+        # avoids asking GITHUB_TOKEN for workflow-write permission on a dev
+        # commit whose workflows differ from the default branch.
         name = "NR Nexus $Tag"
         draft = $true
         prerelease = $taskPrerelease
         generate_release_notes = $true
-        body = "Windows x64 add-on / Windows x64 插件。Installation and prerequisites / 安装与前置条件：see the README inside the ZIP. NVIDIA runtimes/models and the ReShade loader are obtained separately under their own licenses.`n`nSource: https://github.com/$Repository/commit/$taskSource"
+        body = "Windows x64 add-on / Windows x64 插件。Installation and prerequisites / 安装与前置条件：see the README inside the ZIP. NVIDIA runtimes/models and the ReShade loader are obtained separately under their own licenses.`n`n$taskSourceLine"
     }
     $taskRelease = Invoke-ReleaseApi 'releases' 'POST' $taskBody
 }
-if ($taskRelease.target_commitish -cne $taskSource -or $taskRelease.tag_name -cne $Tag) {
+if ($taskRelease.tag_name -cne $Tag -or
+    -not [regex]::IsMatch($taskRelease.body, '(?m)^' + [regex]::Escape($taskSourceLine) + '\r?$')) {
     throw 'An existing release targets different source; no changes were made to it.'
 }
 foreach ($taskFile in $taskFiles) {
