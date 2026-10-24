@@ -13,6 +13,11 @@ $releaseTestArchive = Join-Path $releaseTestDirectory ($releaseTestVersion.Archi
 [IO.File]::WriteAllBytes($releaseTestArchive, [byte[]]@(1,2,3))
 $releaseTestHash = (Get-FileHash -LiteralPath $releaseTestArchive).Hash.ToLowerInvariant()
 $releaseTestChecksum = $releaseTestArchive + '.sha256'
+$releaseTestSourceRoot = Join-Path $releaseTestDirectory 'tag-source'
+New-Item -ItemType Directory -Path (Join-Path $releaseTestSourceRoot 'tools') | Out-Null
+Copy-Item -LiteralPath (Join-Path $releaseTestRoot 'tools/check-version.ps1') -Destination (Join-Path $releaseTestSourceRoot 'tools/check-version.ps1')
+Copy-Item -LiteralPath (Join-Path $releaseTestRoot 'version.h') -Destination (Join-Path $releaseTestSourceRoot 'version.h')
+[IO.File]::WriteAllText((Join-Path $releaseTestSourceRoot 'dlssnr.hpp'), '#include "version.h"' + "`n" + 'constexpr char kAddonVersion[] = "v" NR_NEXUS_VERSION;')
 function Reset-TestChecksum {
     [IO.File]::WriteAllText($releaseTestChecksum, "$releaseTestHash  $([IO.Path]::GetFileName($releaseTestArchive))`n")
 }
@@ -27,21 +32,22 @@ $releaseTestOldToken = $env:GH_TOKEN
 $env:GH_TOKEN = 'synthetic-test-token'
 $releaseTestResults = @()
 try {
-    foreach ($releaseTestScenario in @('new','annotated-tag','existing-exact','existing-different','existing-wrong-source','draft-resume','draft-page-two','duplicate-draft','draft-starter','upload-failure','wrong-remote-tag','forbidden','incomplete-assets','unexpected-draft-asset','checksum-mismatch','tag-version-mismatch')) {
+    foreach ($releaseTestScenario in @('new','empty-array-response','unrelated-array-response','separate-source-root','annotated-tag','existing-exact','existing-different','existing-wrong-source','draft-resume','draft-empty','draft-array-response','multiple-release-array','draft-page-two','duplicate-draft','draft-starter','upload-failure','wrong-remote-tag','forbidden','incomplete-assets','unexpected-draft-asset','checksum-mismatch','tag-version-mismatch')) {
         Reset-TestChecksum
         & {
             $releaseTestState = @{calls=[Collections.Generic.List[object]]::new();release=$null}
-            if ($releaseTestScenario -in @('existing-exact','existing-different','existing-wrong-source','draft-resume','draft-page-two','duplicate-draft','draft-starter','unexpected-draft-asset')) {
+            if ($releaseTestScenario -in @('existing-exact','existing-different','existing-wrong-source','draft-resume','draft-empty','draft-array-response','multiple-release-array','draft-page-two','duplicate-draft','draft-starter','unexpected-draft-asset')) {
                 $releaseTestState.release = [pscustomobject]@{
                     id=1;tag_name=$releaseTestVersion.Tag;target_commitish=$releaseTestSource
-                    draft=($releaseTestScenario -in @('draft-resume','draft-page-two','duplicate-draft','draft-starter','unexpected-draft-asset'))
+                    draft=($releaseTestScenario -in @('draft-resume','draft-empty','draft-array-response','multiple-release-array','draft-page-two','duplicate-draft','draft-starter','unexpected-draft-asset'))
                     assets=@((New-TestAsset $releaseTestArchive),(New-TestAsset $releaseTestChecksum))
                     html_url='https://github.com/fixture/repository/releases/example'
                     body="Source: https://github.com/fixture/repository/commit/$releaseTestSource"
                 }
                 if ($releaseTestScenario -eq 'existing-different') { $releaseTestState.release.assets[0].digest='sha256:wrong' }
                 if ($releaseTestScenario -eq 'existing-wrong-source') { $releaseTestState.release.body='Source: different' }
-                if ($releaseTestScenario -in @('draft-resume','draft-page-two')) { $releaseTestState.release.assets=@($releaseTestState.release.assets[0]) }
+                if ($releaseTestScenario -in @('draft-resume','draft-array-response','draft-page-two')) { $releaseTestState.release.assets=@($releaseTestState.release.assets[0]) }
+                if ($releaseTestScenario -eq 'draft-empty') { $releaseTestState.release.assets=@() }
                 if ($releaseTestScenario -eq 'draft-starter') {
                     $releaseTestState.release.assets[0]=[pscustomobject]@{id=123;name=([IO.Path]::GetFileName($releaseTestArchive));state='starter';size=0;digest=$null}
                 }
@@ -52,6 +58,9 @@ try {
             if ($releaseTestScenario -eq 'checksum-mismatch') { [IO.File]::WriteAllText($releaseTestChecksum,'invalid') }
             function git {
                 $global:LASTEXITCODE = 0
+                $sourceIndex = [array]::IndexOf($args, '-C')
+                $expectedRoot = if ($releaseTestScenario -eq 'separate-source-root') { $releaseTestSourceRoot } else { $releaseTestRoot }
+                Assert-Test ($sourceIndex -ge 0 -and $args[$sourceIndex+1] -ceq $expectedRoot) 'Git identity must use the selected source checkout'
                 if ($args -contains '--porcelain') { return }
                 if ($args -contains '--short=8') { return $releaseTestSource.Substring(0,8) }
                 if ($args -contains 'rev-parse') { return $releaseTestSource }
@@ -75,6 +84,12 @@ try {
                     throw [Microsoft.PowerShell.Commands.HttpResponseException]::new('Synthetic not found', $response)
                 }
                 if ($Uri -like 'https://api.github.com/repos/fixture/repository/releases?per_page=100&page=*') {
+                    if ($releaseTestScenario -eq 'empty-array-response') { return ,@() }
+                    if ($releaseTestScenario -eq 'unrelated-array-response') { return ,@([pscustomobject]@{tag_name='other-tag'}) }
+                    if ($releaseTestScenario -in @('draft-array-response','draft-empty')) { return ,@($releaseTestState.release) }
+                    if ($releaseTestScenario -eq 'multiple-release-array') {
+                        return ,@([pscustomobject]@{tag_name='earlier'},$releaseTestState.release,[pscustomobject]@{tag_name='later'})
+                    }
                     if ($releaseTestScenario -eq 'draft-page-two' -and $Uri.EndsWith('page=1')) {
                         return @(1..100 | ForEach-Object { [pscustomobject]@{tag_name="other-$_"} })
                     }
@@ -117,12 +132,17 @@ try {
             $failed=$false
             try {
                 $tag = if ($releaseTestScenario -eq 'tag-version-mismatch') { 'v999.0.0' } else { $releaseTestVersion.Tag }
-                & (Join-Path $releaseTestRoot 'tools/publish-release.ps1') -Tag $tag -ArchivePath $releaseTestArchive -Repository fixture/repository
+                $publishArguments = @{Tag=$tag;ArchivePath=$releaseTestArchive;Repository='fixture/repository'}
+                if ($releaseTestScenario -eq 'separate-source-root') { $publishArguments.SourceRoot=$releaseTestSourceRoot }
+                & (Join-Path $releaseTestRoot 'tools/publish-release.ps1') @publishArguments
             } catch { $failed=$true }
-            $success = $releaseTestScenario -in @('new','annotated-tag','existing-exact','draft-resume','draft-page-two','draft-starter')
+            $success = $releaseTestScenario -in @('new','empty-array-response','unrelated-array-response','separate-source-root','annotated-tag','existing-exact','draft-resume','draft-empty','draft-array-response','multiple-release-array','draft-page-two','draft-starter')
             Assert-Test ($failed -ne $success) "Unexpected outcome: $releaseTestScenario"
             $published=@($releaseTestState.calls | Where-Object method -EQ 'PATCH')
             Assert-Test ($published.Count -eq $(if ($success -and $releaseTestScenario -ne 'existing-exact') { 1 } else { 0 })) "Publication boundary failed: $releaseTestScenario"
+            if ($releaseTestScenario -in @('draft-empty','draft-array-response','multiple-release-array')) {
+                Assert-Test (@($releaseTestState.calls | Where-Object { $_.method -eq 'POST' -and $_.uri -eq 'https://api.github.com/repos/fixture/repository/releases' }).Count -eq 0) 'Existing drafts must be resumed, not recreated'
+            }
             if ($releaseTestScenario -in @('existing-exact','existing-different','existing-wrong-source','duplicate-draft','wrong-remote-tag','forbidden','checksum-mismatch','tag-version-mismatch')) {
                 Assert-Test (@($releaseTestState.calls | Where-Object method -NE 'GET').Count -eq 0) "Unexpected mutation: $releaseTestScenario"
             }

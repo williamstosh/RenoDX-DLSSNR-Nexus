@@ -2,15 +2,19 @@
 param(
     [Parameter(Mandatory)][string]$Tag,
     [Parameter(Mandatory)][string]$ArchivePath,
-    [string]$Repository = $env:GITHUB_REPOSITORY
+    [string]$Repository = $env:GITHUB_REPOSITORY,
+    [string]$SourceRoot = (Split-Path $PSScriptRoot -Parent)
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw 'A GitHub owner/repository is required.' }
 if (-not $env:GH_TOKEN) { throw 'GH_TOKEN with contents:write is required.' }
-$taskVersion = & (Join-Path $PSScriptRoot 'check-version.ps1') -ExpectedTag $Tag -VerifyTag
-$taskSource = (& git -C (Split-Path $PSScriptRoot -Parent) rev-parse HEAD).Trim()
+# Recovery may use a newer publisher, but source identity always comes from
+# the clean checkout at the existing tag, never from the publisher's commit.
+$taskSourceRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
+$taskVersion = & (Join-Path $taskSourceRoot 'tools/check-version.ps1') -ExpectedTag $Tag -VerifyTag
+$taskSource = (& git -C $taskSourceRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the release source.' }
 $taskSourceLine = "Source: https://github.com/$Repository/commit/$taskSource"
 $taskArchive = (Resolve-Path -LiteralPath $ArchivePath).Path
@@ -39,7 +43,12 @@ function Invoke-ReleaseApi {
         $taskRequest.ContentType = 'application/json; charset=utf-8'
         $taskRequest.Body = $Body | ConvertTo-Json -Depth 8 -Compress
     }
-    try { Invoke-RestMethod @taskRequest }
+    try {
+        # Invoke-RestMethod preserves a JSON array as one pipeline object.
+        # Re-emit the value so callers see zero/one/many releases consistently.
+        $taskResponse = Invoke-RestMethod @taskRequest
+        return $taskResponse
+    }
     catch {
         if ($AllowMissing -and $_.Exception -is [Microsoft.PowerShell.Commands.HttpResponseException] -and
             [int]$_.Exception.Response.StatusCode -eq 404) { return $null }
