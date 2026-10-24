@@ -95,6 +95,6 @@ Assert-NotesTest $notesTestCaught 'Missing notes must not fall back to PR-only p
 $notesTestCount++
 [IO.File]::WriteAllText($notesTestPath, $notesTestValid.Replace('Previous: v1.2.2', 'Previous: none'))
 $notesTestResult = & $notesTestTool -Tag v1.2.3 -Repository fixture/repository -SourceRoot $notesTestDirectory -NotesPath $notesTestPath
-Assert-NotesTest (-not $notesTestResult.Body.Contains('Full Changelog')) 'First release must not invent a previous tag'
+Assert-NotesTest ($notesTestResult.Body.Contains('/commits/v1.2.3') -and -not $notesTestResult.Body.Contains('/compare/')) 'First release must link its history without inventing a previous tag'
 $notesTestCount++
 Write-Host "Release notes tests passed: $notesTestCount; real synthetic commit ranges, no network or project-tag mutation"

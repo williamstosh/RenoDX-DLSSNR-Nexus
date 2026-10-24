@@ -64,6 +64,8 @@ $notesBody = [regex]::Replace($notesText.Substring($notesTitle.Length), '(?m)^<!
 $notesBody += "`n`n## Source`n`nTag: [$Tag](https://github.com/$Repository/tree/$Tag)`n`nSource: https://github.com/$Repository/commit/$notesSource"
 if ($notesPreviousTag -ne 'none') {
     $notesBody += "`n`n[Full Changelog](https://github.com/$Repository/compare/$notesPreviousTag...$Tag)"
+} else {
+    $notesBody += "`n`n[Full Changelog](https://github.com/$Repository/commits/$Tag)"
 }
 if ($notesPulls.Count -or $notesCommits.Count) {
     $notesBody += "`n`n## References"
