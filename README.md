@@ -57,9 +57,6 @@ definitions. The loader filename remains `renodx-dlss5.addon64`; exported names,
 namespaces, configuration keys, hooks, and runtime identifiers retain their
 existing names until a separately authorized and validated rename.
 
-Public project procedures are maintained in Simplified Chinese:
-[versioning](docs/VERSIONING.md) and [migration](docs/MIGRATION.md).
-
 ### Reports and privacy
 
 The inherited optional **Upload & copy link** action sends a report archive to
@@ -119,8 +116,6 @@ pwsh ./tools/build.ps1 -RenodxRoot <compatible-renodx-checkout> -ToolRoot <shade
 
 包装器复用 RenoDX 的 `dlss5` 目标并加入项目版本定义。加载器文件名保留为 `renodx-dlss5.addon64`；
 导出名称、命名空间、配置键、钩子和运行时标识沿用现有名称，重命名须单独授权并验证。
-
-公开项目流程使用简体中文，参见[版本管理](docs/VERSIONING.md)及[迁移记录](docs/MIGRATION.md)。
 
 ### 报告与隐私
 
