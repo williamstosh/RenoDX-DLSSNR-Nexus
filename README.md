@@ -96,10 +96,36 @@ but it is not a generic game driver and does not replace visual acceptance.
 
 ### Reports and privacy
 
-The optional **Upload & copy link** action sends a report archive to a
-third-party temporary file host only when selected by the player. Reports can
-contain game/process paths and diagnostics; review the archive before sharing.
-Local configuration, reports and validation evidence are not included here.
+**I'm having issues...** lets you describe a problem, choose an optional
+screenshot comparison, collect diagnostics, preview/select attachments and save
+a local ZIP. You can also continue without diagnostics. All exported text,
+including report.json, is redacted; common user paths, Windows identity fields
+and recognizable credentials are removed. Screenshots are excluded by default.
+Review the full staged files before sharing: unknown secrets, other private paths
+and personal information in image pixels can remain.
+
+**Upload & copy link** requires separate consent and tries the displayed
+Litterbox/temp.sh hosts in the configured order (NRReportHost, including none).
+The UI shows each host and its configured retention; anyone with the link can
+download the archive. Local save sends no upload request, and upload failure keeps
+the ZIP. Saved ZIPs are never automatically pruned.
+
+**Prepare GitHub Issue** opens the official repository form in your browser with
+a reviewed text draft. Including a diagnostic summary or temporary report link
+requires separate consent. The plugin holds no GitHub token and submits no Issue;
+you review and submit on GitHub. The complete Markdown can be copied if prefill,
+login, connectivity or browser launch fails. ZIP saving, uploading and Issue
+preparation are independent. Reports retain the legacy schema/path identifiers
+with additive diagnostics and explicit availability/measurement descriptions.
+
+GitHub activates form templates from the repository's default branch. If a form
+is unavailable or ignores the prefill, use **Copy Markdown and open a blank
+Issue** to paste the complete draft yourself.
+
+Run `tools/run-tests.ps1 -Suite report -PythonExecutable PYTHON` for synthetic
+report/ZIP/privacy checks and loopback-only upload tests. The existing
+RENODX_NR_TEST_REPORT* test hooks remain loopback-only and suppress browser
+launches. Local configuration, reports and validation evidence are not included here.
 
 ### Origins and licensing
 
@@ -184,8 +210,27 @@ ReShade 页签／窗口名称为 **NR Nexus**（Debug 构建为 **NR Nexus (Debu
 
 ### 报告与隐私
 
-可选 **Upload & copy link** 操作仅在玩家主动选择时，将报告压缩包发送至第三方临时文件托管服务。
-报告可能包含游戏／进程路径及诊断信息，分享前请检查内容。本仓库不包含本地配置、报告或验收原始证据。
+**我遇到了问题…** 支持描述问题、选择可选截图、生成诊断、预览／选择附件及保存本地 ZIP，
+也可不生成诊断继续反馈。所有导出文本（含 report.json）统一脱敏，移除常见用户路径、
+Windows 身份字段及可识别凭据；截图默认排除。分享前请检查完整暂存文件：未知格式密钥、
+其他私人路径及图片像素中的个人信息仍可能保留。
+
+**Upload & copy link** 需要单独授权，按 NRReportHost 配置（含 none）依次尝试显示的
+Litterbox／temp.sh 服务。界面说明各服务及配置的保留期限，持有链接者均可下载。
+仅本地保存不发送上传请求，上传失败保留 ZIP；用户保存的 ZIP 不会被自动清理。
+
+**准备 GitHub Issue** 在系统浏览器打开官方仓库表单并预填已检查的文本；附带诊断摘要或临时报告
+链接分别需要授权。插件不保存 GitHub Token、不提交 Issue，用户在 GitHub 检查后自行提交。
+预填、登录、网络或浏览器启动失败时，可复制完整 Markdown 手动反馈。
+ZIP 保存、临时上传及 Issue 准备相互独立；原报告 schema／路径标识保留，诊断字段增量扩展，
+注明可用状态及计量口径。
+
+GitHub 从仓库默认分支启用表单模板。模板不可用或未接受预填时，可使用**复制 Markdown 并打开空白
+Issue**，自行粘贴完整草稿。
+
+使用 `tools/run-tests.ps1 -Suite report -PythonExecutable PYTHON` 执行合成报告、ZIP、
+隐私及仅回环上传测试；原 RENODX_NR_TEST_REPORT* 入口保留回环限制并抑制浏览器启动。
+本仓库不包含本地配置、报告或验收原始证据。
 
 ### 来源与许可
 

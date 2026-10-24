@@ -146,21 +146,80 @@ inline std::string MultipartBoundary() {
   return boundary;
 }
 
-// A host's answer is a link only when it is one https URL and nothing else.
+struct ParsedReportUrl {
+  std::wstring host;
+  std::wstring path;
+  INTERNET_PORT port = 0;
+  bool secure = false;
+  bool loopback = false;
+};
+
+// Validate the components WinHTTP will actually use, not an authority prefix.
+// In particular localhost.evil, userinfo, alternate numeric IP spellings and
+// escaped hostnames must not acquire the HTTP loopback exception.
+inline bool ParseReportUrl(std::wstring_view url, ParsedReportUrl* parsed) {
+  if (parsed == nullptr || url.empty() || url.size() > 8192) return false;
+  for (wchar_t c : url) {
+    if (c <= L' ' || c == L'\\' || c == L'"' || c == L'<' || c == L'>' || c == L'#') return false;
+  }
+  URL_COMPONENTS parts{};
+  parts.dwStructSize = sizeof(parts);
+  parts.dwHostNameLength = parts.dwUrlPathLength = parts.dwExtraInfoLength = 1;
+  parts.dwUserNameLength = parts.dwPasswordLength = 1;
+  if (!WinHttpCrackUrl(url.data(), static_cast<DWORD>(url.size()), 0, &parts)
+      || parts.dwHostNameLength == 0 || parts.nPort == 0
+      || parts.dwUserNameLength != 0 || parts.dwPasswordLength != 0) return false;
+  if (parts.nScheme != INTERNET_SCHEME_HTTP && parts.nScheme != INTERNET_SCHEME_HTTPS) return false;
+  const size_t authority_at = url.find(L"://");
+  if (authority_at == std::wstring_view::npos) return false;
+  const auto authority = url.substr(authority_at + 3, url.find_first_of(L"/?", authority_at + 3) - (authority_at + 3));
+  if (authority.find(L'@') != std::wstring_view::npos) return false;
+  std::wstring host(parts.lpszHostName, parts.dwHostNameLength);
+  for (wchar_t& c : host) {
+    if (c >= L'A' && c <= L'Z') c += L'a' - L'A';
+  }
+  if (host.size() > 253) return false;
+  const bool ipv6 = host.front() == L'[' && host.back() == L']';
+  for (size_t i = 0; i < host.size(); ++i) {
+    const wchar_t c = host[i];
+    if ((c >= L'a' && c <= L'z') || (c >= L'0' && c <= L'9') || c == L'.' || c == L'-') continue;
+    if (ipv6 && (c == L':' || (i == 0 && c == L'[') || (i + 1 == host.size() && c == L']'))) continue;
+    return false;
+  }
+  const bool loopback = host == L"localhost" || host == L"127.0.0.1" || host == L"[::1]";
+  const bool secure = parts.nScheme == INTERNET_SCHEME_HTTPS;
+  if (!secure && !loopback) return false;
+  std::wstring path(parts.lpszUrlPath, parts.dwUrlPathLength);
+  if (path.empty()) path = L"/";
+  if (parts.dwExtraInfoLength != 0) path.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
+  *parsed = {.host = std::move(host), .path = std::move(path), .port = parts.nPort,
+             .secure = secure, .loopback = loopback};
+  return true;
+}
+
+// A host's answer is a link only when it is one credential-free HTTPS URL.
 inline bool IsLink(std::string_view text) {
-  if (text.size() < 12 || text.size() > 512 || text.substr(0, 8) != "https://") return false;
+  if (text.size() < 9 || text.size() > 512) return false;
   for (const char c : text) {
     if (c <= ' ' || c > '~' || c == '"' || c == '<' || c == '>' || c == '\\') return false;
   }
-  return true;
+  ParsedReportUrl parsed;
+  return ParseReportUrl(std::wstring(text.begin(), text.end()), &parsed) && parsed.secure;
 }
 
 // What a log may say about a link: the scheme and host, never the path.
 inline std::string LinkForLog(std::string_view link) {
-  const size_t host_end = link.find('/', link.find("://") == std::string_view::npos
-                                             ? 0
-                                             : link.find("://") + 3);
-  return std::string(link.substr(0, host_end)) + "/<redacted>";
+  const size_t scheme_end = link.find("://");
+  if (scheme_end == std::string_view::npos) return "<redacted>";
+  auto authority = link.substr(scheme_end + 3);
+  authority = authority.substr(0, authority.find_first_of("/?#"));
+  if (const auto at = authority.rfind('@'); at != std::string_view::npos) authority.remove_prefix(at + 1);
+  const std::string origin = std::string(link.substr(0, scheme_end + 3)) + std::string(authority);
+  ParsedReportUrl parsed;
+  if (!ParseReportUrl(std::wstring(origin.begin(), origin.end()), &parsed)) return "<redacted>";
+  std::string logged(parsed.secure ? "https://" : "http://");
+  for (wchar_t c : parsed.host) logged.push_back(static_cast<char>(c));
+  return logged + "/<redacted>";
 }
 
 struct UploadProgress {
@@ -200,13 +259,27 @@ inline std::string DescribeWinHttpError(DWORD code) {
 }
 
 // One upload, synchronous: call it from a thread of its own.  `progress`
-// counts bytes sent; its cancel flag is read between 64 KB chunks.  Uses
-// WinHTTP's automatic proxy (WPAD/PAC, Windows 8.1+) and falls back to the
-// system's static proxy setting on older systems.  TLS 1.2 or newer.
+// counts bytes sent; cancellation is checked before opening a session and
+// between I/O calls. Non-loopback HTTPS uses the system proxy; exact loopback
+// bypasses proxies. TLS 1.2 or newer; redirects, cookies and auto-auth disabled.
 inline UploadResult Upload(const Host& host, const std::wstring& url,
                            const std::filesystem::path& zip, const std::wstring& user_agent,
                            UploadProgress* progress) {
   UploadResult result;
+  if (progress == nullptr) {
+    result.error = "upload progress is unavailable";
+    return result;
+  }
+  if (progress->cancel.load(std::memory_order_relaxed)) {
+    result.cancelled = true;
+    result.error = DescribeWinHttpError(ERROR_WINHTTP_OPERATION_CANCELLED);
+    return result;
+  }
+  ParsedReportUrl parts;
+  if (!ParseReportUrl(url, &parts)) {
+    result.error = "the host URL is malformed or insecure";
+    return result;
+  }
   std::ifstream file(zip, std::ios::binary);
   std::error_code size_error;
   const uint64_t file_bytes = std::filesystem::file_size(zip, size_error);
@@ -218,29 +291,22 @@ inline UploadResult Upload(const Host& host, const std::wstring& url,
     result.error = "the zip is larger than the host accepts";
     return result;
   }
-  wchar_t host_name[256] = {};
-  wchar_t path[2048] = {};
-  URL_COMPONENTS parts = {};
-  parts.dwStructSize = sizeof(parts);
-  parts.lpszHostName = host_name;
-  parts.dwHostNameLength = static_cast<DWORD>(std::size(host_name));
-  parts.lpszUrlPath = path;
-  parts.dwUrlPathLength = static_cast<DWORD>(std::size(path));
-  if (!WinHttpCrackUrl(url.c_str(), 0, 0, &parts)) {
-    result.error = "the host URL is malformed";
+  if (progress->cancel.load(std::memory_order_relaxed)) {
+    result.cancelled = true;
+    result.error = DescribeWinHttpError(ERROR_WINHTTP_OPERATION_CANCELLED);
     return result;
   }
-  const bool secure = parts.nScheme == INTERNET_SCHEME_HTTPS;
-
-  HINTERNET session = WinHttpOpen(user_agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+  HINTERNET session = WinHttpOpen(user_agent.c_str(),
+                                  parts.loopback ? WINHTTP_ACCESS_TYPE_NO_PROXY : WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                                   WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-  if (session == nullptr) {
+  if (session == nullptr && !parts.loopback) {
     session = WinHttpOpen(user_agent.c_str(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                           WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
   }
   HINTERNET connection = nullptr;
   HINTERNET request = nullptr;
   const auto fail = [&](DWORD code) {
+    if (progress->cancel.load(std::memory_order_relaxed)) result.cancelled = true;
     result.error = DescribeWinHttpError(code);
     if (request != nullptr) WinHttpCloseHandle(request);
     if (connection != nullptr) WinHttpCloseHandle(connection);
@@ -252,28 +318,46 @@ inline UploadResult Upload(const Host& host, const std::wstring& url,
   if (!WinHttpSetOption(session, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols,
                         sizeof(protocols))) {
     protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;  // before Windows 11: no TLS 1.3 flag
-    WinHttpSetOption(session, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols));
+    if (!WinHttpSetOption(session, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols))) {
+      return fail(GetLastError());
+    }
   }
   WinHttpSetTimeouts(session, 15'000, 15'000, 60'000, 60'000);
-  connection = WinHttpConnect(session, host_name, parts.nPort, 0);
+  connection = WinHttpConnect(session, parts.host.c_str(), parts.port, 0);
   if (connection == nullptr) return fail(GetLastError());
-  request = WinHttpOpenRequest(connection, L"POST", path, nullptr, WINHTTP_NO_REFERER,
-                               WINHTTP_DEFAULT_ACCEPT_TYPES, secure ? WINHTTP_FLAG_SECURE : 0);
+  request = WinHttpOpenRequest(connection, L"POST", parts.path.c_str(), nullptr, WINHTTP_NO_REFERER,
+                               WINHTTP_DEFAULT_ACCEPT_TYPES, parts.secure ? WINHTTP_FLAG_SECURE : 0);
   if (request == nullptr) return fail(GetLastError());
+  DWORD disabled = WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_AUTHENTICATION;
+  if (!WinHttpSetOption(request, WINHTTP_OPTION_DISABLE_FEATURE, &disabled, sizeof(disabled))) {
+    return fail(GetLastError());
+  }
 
   const std::string boundary = MultipartBoundary();
   const std::string head = MultipartHead(boundary, host, "renodx-dlss5-report.zip");
   const std::string tail = MultipartTail(boundary);
   const uint64_t total = head.size() + file_bytes + tail.size();
+  if (total > MAXDWORD) {
+    result.error = "the upload is too large";
+    if (request != nullptr) WinHttpCloseHandle(request);
+    if (connection != nullptr) WinHttpCloseHandle(connection);
+    WinHttpCloseHandle(session);
+    return result;
+  }
   progress->total = total;
   progress->sent = 0;
   const std::wstring headers = L"Content-Type: multipart/form-data; boundary="
                                + std::wstring(boundary.begin(), boundary.end());
+  if (progress->cancel.load(std::memory_order_relaxed)) return fail(ERROR_WINHTTP_OPERATION_CANCELLED);
   if (!WinHttpSendRequest(request, headers.c_str(), static_cast<DWORD>(-1L),
                           WINHTTP_NO_REQUEST_DATA, 0, static_cast<DWORD>(total), 0)) {
     return fail(GetLastError());
   }
   const auto write = [&](const char* data, size_t size) {
+    if (progress->cancel.load(std::memory_order_relaxed)) {
+      SetLastError(ERROR_WINHTTP_OPERATION_CANCELLED);
+      return false;
+    }
     DWORD written = 0;
     if (!WinHttpWriteData(request, data, static_cast<DWORD>(size), &written) || written != size) {
       return false;
@@ -293,23 +377,36 @@ inline UploadResult Upload(const Host& host, const std::wstring& url,
     if (read <= 0) break;
     if (!write(chunk.data(), static_cast<size_t>(read))) return fail(GetLastError());
   }
+  if (file.bad() || (file.fail() && !file.eof())) return fail(ERROR_READ_FAULT);
   if (!write(tail.data(), tail.size())) return fail(GetLastError());
+  if (progress->cancel.load(std::memory_order_relaxed)) return fail(ERROR_WINHTTP_OPERATION_CANCELLED);
   if (!WinHttpReceiveResponse(request, nullptr)) return fail(GetLastError());
 
   DWORD status = 0;
   DWORD status_bytes = sizeof(status);
-  WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+  if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                       WINHTTP_HEADER_NAME_BY_INDEX, &status, &status_bytes,
-                      WINHTTP_NO_HEADER_INDEX);
+                      WINHTTP_NO_HEADER_INDEX)) return fail(GetLastError());
   result.status = status;
   std::string body;
-  for (DWORD available = 0; WinHttpQueryDataAvailable(request, &available) && available != 0
-                            && body.size() < 16 * 1024;) {
-    std::string part(available, '\0');
+  bool oversized = false;
+  // Never allocate from an untrusted advertised byte count. Read at most the
+  // limit plus one byte, so a valid-looking truncated prefix cannot succeed.
+  constexpr size_t kMaxResponseBytes = 16 * 1024;
+  std::array<char, 4096> response_chunk{};
+  while (status >= 200 && status < 300) {
+    if (progress->cancel.load(std::memory_order_relaxed)) return fail(ERROR_WINHTTP_OPERATION_CANCELLED);
     DWORD read = 0;
-    if (!WinHttpReadData(request, part.data(), available, &read) || read == 0) break;
-    body.append(part.data(), read);
+    const DWORD capacity = static_cast<DWORD>((std::min)(response_chunk.size(), kMaxResponseBytes + 1 - body.size()));
+    if (!WinHttpReadData(request, response_chunk.data(), capacity, &read)) return fail(GetLastError());
+    if (read == 0) break;
+    body.append(response_chunk.data(), read);
+    if (body.size() > kMaxResponseBytes) {
+      oversized = true;
+      break;
+    }
   }
+  if (progress->cancel.load(std::memory_order_relaxed)) return fail(ERROR_WINHTTP_OPERATION_CANCELLED);
   WinHttpCloseHandle(request);
   WinHttpCloseHandle(connection);
   WinHttpCloseHandle(session);
@@ -320,23 +417,15 @@ inline UploadResult Upload(const Host& host, const std::wstring& url,
   while (!body.empty() && (body.front() == '\n' || body.front() == '\r' || body.front() == ' ')) {
     body.erase(body.begin());
   }
-  const std::string first_line = body.substr(0, body.find_first_of("\r\n"));
-  if (status >= 200 && status < 300 && IsLink(first_line)) {
+  if (!oversized && status >= 200 && status < 300 && IsLink(body)) {
     result.ok = true;
-    result.link = first_line;
+    result.link = body;
     return result;
   }
-  // The host's own error text, first line, printable ASCII only - and never
-  // anything link-shaped, which may be a working link after all.
-  std::string said;
-  for (const char c : first_line) {
-    if (said.size() >= 120) break;
-    if (c >= ' ' && c <= '~') said.push_back(c);
-  }
-  if (said.find("://") != std::string::npos) said = "an answer that is not a single link";
-  char text[256];
-  std::snprintf(text, sizeof(text), "the host answered HTTP %lu%s%s",
-                static_cast<unsigned long>(status), said.empty() ? "" : ": ", said.c_str());
+  // Error bodies may echo the submitted diagnostics or a download credential.
+  char text[128];
+  std::snprintf(text, sizeof(text), "the host answered HTTP %lu without a valid report link",
+                static_cast<unsigned long>(status));
   result.error = text;
   return result;
 }

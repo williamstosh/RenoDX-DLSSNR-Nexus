@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('all','branding','native','sdr-policy','hdr-policy','scope','config','constants','fg-xefg','fg-native','lifecycle','bridge-motion')]
+    [ValidateSet('all','report','branding','native','sdr-policy','hdr-policy','scope','config','constants','fg-xefg','fg-native','lifecycle','bridge-motion')]
     [string[]]$Suite = @('all'),
     [string]$SourceRoot = (Split-Path $PSScriptRoot -Parent),
     [string]$HostRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) '.local/renodx'),
@@ -9,6 +9,7 @@ param(
     [string]$OutputDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) ('tmp/tests/' + [guid]::NewGuid().ToString('N'))),
     [string]$VcVars64,
     [string]$DetoursLibrary,
+    [string]$PythonExecutable,
     [ValidateSet('native-required-menu','native-owner-idle','native-options-resume','native-options-delayed','native-guide-contract','present-guide-models','native-present-decision','trace-metadata')]
     [string[]]$NativeCase = @(),
     [switch]$BuildOnly
@@ -23,6 +24,7 @@ $HostRoot = [IO.Path]::GetFullPath($HostRoot)
 $ShaderIncludeDirectory = [IO.Path]::GetFullPath($ShaderIncludeDirectory)
 $OutputDirectory = Initialize-TestOutput $OutputDirectory
 $sources = [ordered]@{
+    report='report_flow_tests'
     branding='branding_tests'
     native='native_contract_tests'; 'sdr-policy'='present_sdr_restore_policy_tests'
     'hdr-policy'='present_hdr_pedestal_policy_tests'; scope='present_restore_scope_tests'
@@ -45,14 +47,19 @@ $includes = @($SourceRoot, "$HostRoot/src", "$HostRoot/src/addons/dlss5",
 $libraries = @($DetoursLibrary,'uuid.lib','advapi32.lib','d3d11.lib','d3d12.lib','dxgi.lib','dxguid.lib')
 foreach ($item in $Suite) {
     $directory = Join-Path $OutputDirectory $item
-    if ($item -in @('config','constants','lifecycle')) {
+    if ($item -in @('report','config','constants','lifecycle')) {
         if ($BuildOnly) { throw '-BuildOnly is supported for native/policy/scope/fg-xefg/fg-native/bridge-motion; select these explicitly.' }
         $entry = switch ($item) {
+            report { 'run-report-tests.ps1' }
             config { 'run-present-restore-configuration-tests.ps1' }
             constants { 'run-present-hdr-runtime-constants-tests.ps1' }
             lifecycle { 'run-fg-lifecycle-tests.ps1' }
         }
-        & (Join-Path $testRoot $entry) @parameters -OutputDirectory $directory
+        if ($item -eq 'report') {
+            & (Join-Path $testRoot $entry) @parameters -OutputDirectory $directory -PythonExecutable $PythonExecutable
+        } else {
+            & (Join-Path $testRoot $entry) @parameters -OutputDirectory $directory
+        }
         continue
     }
     $directory = Initialize-TestOutput $directory

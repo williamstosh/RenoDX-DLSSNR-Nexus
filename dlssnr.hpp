@@ -107,7 +107,10 @@
 #include "norm_trace.hpp"
 #include "telemetry.hpp"
 #include "report_bundle.hpp"
+#include "report_issue.hpp"
 #include "report_upload.hpp"
+
+#include <nlohmann/json.hpp>
 
 #pragma comment(lib, "bcrypt.lib")
 #pragma comment(lib, "shell32.lib")
@@ -22457,6 +22460,7 @@ inline const char* NrRuntimeVersionText() {
 // Atomics and the telemetry line's own lock only: no runtime_mutex, no loader
 // call, so the button is safe from any frame.
 inline std::string BuildSupportReport() {
+  const auto& loader = NgxLoaderView();
   const NrVerdict verdict = ComputeNrVerdict(CollectFunnelInputs());
   char verdict_line[512];
   FormatNrVerdictLine(
@@ -22499,16 +22503,16 @@ inline std::string BuildSupportReport() {
          << warn_line << "\n"
          << "hint: " << dlss_user_hint.load() << "\n"
          << "runtime: "
-         << (!direct_runtime_sha256.empty()
-                 ? "sha256 " + direct_runtime_sha256
-                       + (direct_runtime_reference_match ? " (reference match)"
+         << (!loader.nr_sha256.empty()
+                 ? "sha256 " + loader.nr_sha256
+                       + ((loader.nr_sha256 == kExpectedNrSha256) ? " (reference match)"
                                                          : " (custom build)")
-             : direct_load_state == DirectLoadState::Ready
+             : loader.nr_ready
                  ? std::string("sha256 unreadable (build unknown)")
                  : std::string("not loaded"))
-         << (direct_runtime_requirements.file_version.empty()
+         << (loader.nr_requirements.file_version.empty()
                  ? std::string()
-                 : ", file version " + direct_runtime_requirements.file_version)
+                 : ", file version " + loader.nr_requirements.file_version)
          << (nr_gpu_older.load(std::memory_order_relaxed)
                  ? ", GPU older than the runtime's declared architecture"
                  : "")
@@ -22543,7 +22547,7 @@ inline std::string BuildSupportReport() {
          << "x" << last_input_height.load() << " output="
          << last_output_width.load() << "x" << last_output_height.load() << "\n";
   if (!telemetry.empty()) report << "telemetry: " << telemetry << "\n";
-  return report.str();
+  return report::RedactText(report.str(), report::SystemRedaction());
 }
 
 // Open log folder: ShellExecute loads shell extensions into the game, so it

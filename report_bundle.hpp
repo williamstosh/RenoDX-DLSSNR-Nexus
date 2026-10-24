@@ -6,9 +6,9 @@
 // The issue report's bundle (rc11): redaction and the zip the report ships
 // as.  No addon state here - test/dlss5 runs all of it without a device.
 //
-// Redaction is by construction, not by review: every text file the bundle
-// carries passes RedactText, and the file names are the bundle's own.  What
-// is removed:
+// Callers must pass every text through RedactText, or RedactJson for JSON,
+// before adding it to the ZIP. Entry names are the bundle's own. Redaction
+// removes recognizable credentials and sensitive structured fields, plus:
 //   - the Windows profile folder (C:\Users\Example and its 8.3 short form
 //     C:\Users\EXAMPL~1 that GetTempPath and old APIs hand out) becomes
 //     %USERPROFILE%, whatever the separators (a log may escape '\' as "\\"
@@ -32,9 +32,12 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include <windows.h>
 #include <bcrypt.h>
@@ -125,10 +128,167 @@ inline size_t MatchPath(std::string_view text, size_t at, std::string_view path)
   return t < text.size() && IsNameChar(text[t]) ? 0 : t - at;
 }
 
+// Shared by structured fields and log/config assignments. Normalize spelling,
+// not substrings: diagnostic fields such as token_count must remain useful.
+inline bool IsSensitiveReportKey(std::string_view key) {
+  std::string normalized;
+  for (char c : key) {
+    if (c != '_' && c != '-' && c != ' ') normalized += AsciiLower(c);
+  }
+  constexpr std::string_view keys[] = {
+      "authorization", "proxyauthorization", "cookie", "setcookie", "password", "passwd", "pwd",
+      "secret", "clientsecret", "token", "accesstoken", "refreshtoken", "idtoken", "apikey", "xapikey",
+      "credential", "credentials", "awsaccesskeyid", "awssecretaccesskey", "awssessiontoken",
+      "githubtoken", "apitoken", "authtoken", "sessiontoken", "personalaccesstoken",
+      "accesskeyid", "secretaccesskey", "secretkey", "privatekey",
+      "username", "userdomain", "computername"};
+  return std::find(std::begin(keys), std::end(keys), normalized) != std::end(keys);
+}
+
 inline std::string RedactText(std::string_view text, const Redaction& redaction) {
   std::string out;
   out.reserve(text.size());
   for (size_t at = 0; at < text.size();) {
+    // Export runs before preview and again after optional fields are added.
+    // Do not reinterpret our markers as real usernames (e.g. Windows "User").
+    bool marker = false;
+    for (const std::string_view replacement : {"%USERPROFILE%", "<user>", "<redacted>", "<report-link>"}) {
+      if (text.substr(at).starts_with(replacement)) {
+        out.append(replacement);
+        at += replacement.size();
+        marker = true;
+        break;
+      }
+    }
+    if (marker) continue;
+    const auto equal_at = [&](std::string_view value) {
+      return at + value.size() <= text.size()
+             && std::equal(value.begin(), value.end(), text.begin() + at,
+                           [](char a, char b) { return AsciiLower(a) == AsciiLower(b); });
+    };
+    const bool boundary = at == 0 || !IsNameChar(text[at - 1]);
+    if (boundary) {
+      // Legacy logs may contain a download capability in the path alone.
+      // Match exact upload hosts; unrelated documentation URLs stay useful.
+      if (equal_at("https://") || equal_at("http://")) {
+        const size_t authority_at = at + (equal_at("https://") ? 8 : 7);
+        size_t url_end = authority_at;
+        while (url_end < text.size()) {
+          const char c = text[url_end];
+          if (static_cast<unsigned char>(c) <= ' ' || c == '"' || c == '\'' || c == '<' || c == '>' || c == '\\') break;
+          ++url_end;
+        }
+        const size_t authority_end = (std::min)(text.find_first_of("/?#", authority_at), url_end);
+        const auto authority = text.substr(authority_at, authority_end - authority_at);
+        const size_t userinfo = authority.rfind('@');
+        const size_t host_at = authority_at + (userinfo == std::string_view::npos ? 0 : userinfo + 1);
+        auto host = text.substr(host_at, authority_end - host_at);
+        host = host.substr(0, host.find(':'));
+        bool report_host = false;
+        for (const std::string_view known : {"litterbox.catbox.moe", "litter.catbox.moe", "files.catbox.moe", "temp.sh"}) {
+          if (host.size() == known.size()
+              && std::equal(host.begin(), host.end(), known.begin(),
+                            [](char a, char b) { return AsciiLower(a) == b; })) {
+            report_host = true;
+            break;
+          }
+        }
+        if (report_host && authority_end < url_end) {
+          out += "<report-link>";
+          at = url_end;
+          continue;
+        }
+        if (userinfo != std::string_view::npos) {
+          out.append(text.substr(at, authority_at - at));
+          out += "<redacted>@";
+          at = host_at;
+          continue;
+        }
+      }
+      size_t key_end = at;
+      while (key_end < text.size() && (IsNameChar(text[key_end]) || text[key_end] == '-')) ++key_end;
+      size_t value_at = key_end;
+      if (value_at < text.size() && (text[value_at] == '\'' || text[value_at] == '"')) ++value_at;
+      while (value_at < text.size() && (text[value_at] == ' ' || text[value_at] == '\t')) ++value_at;
+      const bool assignment = value_at < text.size() && (text[value_at] == '=' || text[value_at] == ':');
+      const bool bearer = equal_at("Bearer ") || equal_at("Basic ")
+                          || equal_at("Bearer\t") || equal_at("Basic\t");
+      if ((assignment && IsSensitiveReportKey(text.substr(at, key_end - at))) || bearer) {
+        value_at = (bearer ? key_end : value_at + 1);
+        while (value_at < text.size() && (text[value_at] == ' ' || text[value_at] == '\t')) ++value_at;
+        char quote = '\0';
+        if (value_at < text.size() && (text[value_at] == '\'' || text[value_at] == '"')) {
+          quote = text[value_at++];
+        }
+        size_t end = value_at;
+        const bool header = equal_at("authorization") || equal_at("proxy-authorization")
+                            || equal_at("cookie") || equal_at("set-cookie");
+        if (quote == '\0' && end < text.size() && (text[end] == '{' || text[end] == '[')) {
+          // A credential may itself be an object/array embedded in a log or
+          // report description. Delimit its complete JSON value before hiding
+          // it; punctuation inside escaped strings must not end the match.
+          std::string closing;
+          bool in_string = false;
+          bool complete = false;
+          for (; end < text.size(); ++end) {
+            const char c = text[end];
+            if (in_string) {
+              if (c == '\\' && end + 1 < text.size()) {
+                ++end;
+              } else if (c == '"') {
+                in_string = false;
+              }
+              continue;
+            }
+            if (c == '"') {
+              in_string = true;
+            } else if (c == '{' || c == '[') {
+              closing.push_back(c == '{' ? '}' : ']');
+            } else if (c == '}' || c == ']') {
+              if (closing.empty() || c != closing.back()) break;
+              closing.pop_back();
+              if (closing.empty()) {
+                ++end;
+                complete = nlohmann::json::accept(text.begin() + value_at, text.begin() + end);
+                break;
+              }
+            }
+          }
+          if (!complete) end = (std::min)(text.find_first_of("\r\n", value_at), text.size());
+        } else {
+          while (end < text.size()) {
+            const char c = text[end];
+            if (c == '\r' || c == '\n' || (quote != '\0' && c == quote)) break;
+            if (quote == '\0' && !header
+                && (c == '&' || c == '#' || c == ',' || c == ';' || c == '"' || c == '\''
+                    || c == '}' || c == ']' || c == ' ' || c == '\t')) break;
+            if (quote != '\0' && c == '\\' && end + 1 < text.size()) ++end;
+            ++end;
+          }
+        }
+        out.append(text.substr(at, value_at - at));
+        out += "<redacted>";
+        at = end;
+        continue;
+      }
+
+      const bool known_token = equal_at("github_pat_") || equal_at("ghp_") || equal_at("gho_")
+                               || equal_at("ghu_") || equal_at("ghs_") || equal_at("ghr_")
+                               || equal_at("AKIA") || equal_at("ASIA") || equal_at("sk-")
+                               || equal_at("xoxb-") || equal_at("xoxp-") || equal_at("xoxs-");
+      size_t token_end = at;
+      if (known_token || equal_at("eyJ")) {
+        while (token_end < text.size()
+               && (IsNameChar(text[token_end]) || text[token_end] == '-' || text[token_end] == '.')) ++token_end;
+        const auto token = text.substr(at, token_end - at);
+        const bool jwt = token.starts_with("eyJ") && std::count(token.begin(), token.end(), '.') >= 2;
+        if (known_token || jwt) {
+          out += "<redacted>";
+          at = token_end;
+          continue;
+        }
+      }
+    }
     size_t matched = MatchPath(text, at, redaction.profile);
     if (matched == 0) matched = MatchPath(text, at, redaction.profile_short);
     if (matched != 0) {
@@ -214,6 +374,47 @@ inline std::string JsonString(std::string_view text) {
   return out + "\"";
 }
 
+// Parse before redacting so escaped separators, Unicode escapes and quotes are
+// treated as data. On invalid JSON clear the output; callers must abort export
+// on false rather than fall back to the unredacted source. Keys and duplicate
+// fields are processed by the parser callback before the DOM can discard them.
+// Uses the host's existing nlohmann JSON dependency; no new library is vendored.
+inline bool RedactJson(std::string_view text, const Redaction& redaction, std::string* output) {
+  if (output == nullptr) return false;
+  using Json = nlohmann::ordered_json;
+  const auto callback = [&](int, Json::parse_event_t event, Json& value) {
+    if (event == Json::parse_event_t::key) {
+      const auto key = value.get<std::string>();
+      if (!IsSensitiveReportKey(key)) value = RedactText(key, redaction);
+    } else if (event == Json::parse_event_t::value && value.is_string()) {
+      value = RedactText(value.get_ref<const std::string&>(), redaction);
+    }
+    return true;
+  };
+  try {
+    auto document = Json::parse(text.begin(), text.end(), callback);
+    const auto redact_fields = [&](auto&& self, Json* node) -> void {
+      if (node->is_object()) {
+        for (auto it = node->begin(); it != node->end(); ++it) {
+          if (IsSensitiveReportKey(it.key())) {
+            it.value() = "<redacted>";
+          } else {
+            self(self, &it.value());
+          }
+        }
+      } else if (node->is_array()) {
+        for (auto& value : *node) self(self, &value);
+      }
+    };
+    redact_fields(redact_fields, &document);
+    *output = document.dump(2);
+    return true;
+  } catch (const Json::exception&) {
+    output->clear();
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Zip (PKWARE APPNOTE 6.3: store method, UTF-8 names, no zip64)
 // ---------------------------------------------------------------------------
@@ -254,6 +455,8 @@ class ZipWriter {
   uint64_t Bytes() const { return offset_; }
 
   bool AddBytes(std::string_view name, const void* data, size_t size) {
+    if (size > kMaxBytes || offset_ + size + 30 + name.size() > kMaxBytes
+        || (size != 0 && data == nullptr)) return ok_ = false;
     if (!Begin(name)) return false;
     Entry& entry = entries_.back();
     entry.crc = Crc32(0, data, size);
@@ -263,10 +466,11 @@ class ZipWriter {
   }
 
   bool AddFile(std::string_view name, const std::filesystem::path& source) {
-    // A source that cannot be opened is skipped; a failed write poisons
-    // the zip (Begin/End clear ok_).
+    // A selected attachment must be present and completely read. Otherwise
+    // Finish must fail even when a caller overlooks this return value.
     std::ifstream in(source, std::ios::binary);
-    if (!in || !Begin(name)) return false;
+    if (!in) return ok_ = false;
+    if (!Begin(name)) return false;
     std::vector<char> chunk(1 << 20);
     uint64_t size = 0;
     uint32_t crc = 0;
@@ -274,10 +478,13 @@ class ZipWriter {
       in.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
       const std::streamsize read = in.gcount();
       if (read <= 0) break;
+      if (size + static_cast<uint64_t>(read) > kMaxBytes
+          || offset_ + size + static_cast<uint64_t>(read) > kMaxBytes) return ok_ = false;
       crc = Crc32(crc, chunk.data(), static_cast<size_t>(read));
       out_.write(chunk.data(), read);
       size += static_cast<uint64_t>(read);
     }
+    if (in.bad() || (in.fail() && !in.eof())) return ok_ = false;
     Entry& entry = entries_.back();
     entry.crc = crc;
     entry.size = static_cast<uint32_t>(size);
@@ -351,6 +558,9 @@ class ZipWriter {
   // Writes the local header with the CRC and sizes zeroed; End patches them.
   bool Begin(std::string_view name) {
     if (!ok_ || name.empty() || name.size() > 0xFFFF || offset_ > kMaxBytes) return ok_ = false;
+    if (std::any_of(entries_.begin(), entries_.end(), [&](const Entry& entry) { return entry.name == name; })) {
+      return ok_ = false;
+    }
     std::time_t now = std::time(nullptr);
     std::tm local{};
     localtime_s(&local, &now);

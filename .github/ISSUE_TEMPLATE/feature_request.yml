@@ -1,0 +1,40 @@
+name: Feature request / 功能建议
+description: Propose an improvement. / 提出改进建议。
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Review all text before submitting. Issues and links here are public. Never include passwords, tokens, personal paths or private data.
+        提交前请检查全部文本。这里的问题及链接公开可见，请勿包含密码、令牌、私人路径或隐私数据。
+        You can submit without a report file or an upload. / 无报告文件或上传也可以提交。
+  - type: input
+    id: category
+    attributes:
+      label: Category / 类别
+      description: NR not working; HDR/SDR or wrong colours; Native FG/MFG issue; XeFG issue; Flicker, ghosting or distortion; Low fps; Crash or freeze; Game compatibility; Something else
+  - type: input
+    id: game
+    attributes:
+      label: Game / 游戏
+  - type: input
+    id: version
+    attributes:
+      label: Add-on version / 插件版本
+      description: Copy the installed add-on version. / 填写已安装的插件版本。
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction or proposal / 复现步骤或建议
+      description: Describe expected and actual behavior, steps or proposed changes. / 描述预期与实际行为、复现步骤或建议。
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Non-sensitive diagnostics / 非敏感诊断
+      description: Optional reviewed summary (GPU, driver, runtime, settings). Remove personal paths and identifiers. / 可选的已检查摘要（GPU、驱动、运行时、设置）。移除私人路径及标识。
+  - type: input
+    id: reportlink
+    attributes:
+      label: Report link (optional, public) / 报告链接（可选，公开）
+      description: Only paste a report link you separately consent to publish. No attachment or upload is required. / 仅粘贴你另行同意公开的报告链接。无需附件或上传。

@@ -83,6 +83,35 @@ inline constexpr PanelText kModernText = {
 
 namespace text {
 
+inline constexpr const char* kReportSteps = "Reproduction steps (optional)";
+inline constexpr const char* kReportCapture = "Include an optional screenshot comparison";
+inline constexpr const char* kReportCollect = "Generate local diagnostics";
+inline constexpr const char* kReportWithoutDiagnostics = "Continue without diagnostics";
+inline constexpr const char* kReportFeature = "Feature request";
+inline constexpr const char* kReportPrivacy = "Review every attachment. Screenshots may contain personal information; they are excluded by default. Redaction may not detect every secret.";
+inline constexpr const char* kReportPreviewLimit = "Text preview shows the first 64 KiB. Open the staged file to review the full text or image.";
+inline constexpr const char* kReportOpenPreview = "Open staged file";
+inline constexpr const char* kReportPreview = "Preview text";
+inline constexpr const char* kReportUploadConsent = "I authorize uploading the selected files to the temporary hosts shown above.";
+inline constexpr const char* kReportPublicSummaryConsent = "Include the reviewed diagnostic summary in the GitHub draft";
+inline constexpr const char* kReportPublicLinkConsent = "Include the temporary report link in the public GitHub draft";
+inline constexpr const char* kReportGitHub = "Prepare GitHub Issue";
+inline constexpr const char* kReportPlainIssue = "Copy Markdown and open a blank Issue";
+inline constexpr const char* kReportPublicNotice = "GitHub Issues are public. Review the draft and submit it yourself in the browser. This does not upload files.";
+inline constexpr const char* kReportBrowserFailed = "The browser could not be opened. Copy the Markdown below and open the repository Issues page manually.";
+inline constexpr const char* kReportClipboardFailed = "The clipboard was unavailable. Copy the Markdown below manually.";
+inline constexpr const char* kReportManualFallback = "The full Markdown is available below. Paste it into a blank Issue if prefill fails or GitHub is offline.";
+inline constexpr const char* kReportDraftReady = "The browser request was sent. No Issue has been submitted.";
+inline constexpr const char* kReportLinkReady = "Temporary report link ready";
+inline constexpr const char* kReportLocalSaved = "The ZIP stays on this PC until you explicitly upload or share it.";
+inline constexpr const char* kReportCleaning = "Cleaning temporary report files...";
+inline constexpr const char* kReportFailed = "Report operation failed: %s";
+inline constexpr const char* kReportNativeFg = "Native FG/MFG issue";
+inline constexpr const char* kReportColour = "HDR/SDR or wrong colours";
+inline constexpr const char* kReportVisual = "Flicker, ghosting or distortion";
+inline constexpr const char* kReportXefg = "XeFG issue";
+inline constexpr const char* kReportCompatibility = "Game compatibility";
+
 inline constexpr const char* kNrEnableTip =
     "Turns Neural Rendering on and off.  The key shown next to the switch"
     " does the same in game.";
