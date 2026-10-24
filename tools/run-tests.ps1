@@ -11,7 +11,8 @@ param(
     [string]$DetoursLibrary,
     [ValidateSet('native-required-menu','native-owner-idle','native-options-resume','native-options-delayed','native-guide-contract','present-guide-models','native-present-decision','trace-metadata')]
     [string[]]$NativeCase = @(),
-    [switch]$BuildOnly
+    [switch]$BuildOnly,
+    [switch]$SoftwareOnly
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -85,7 +86,7 @@ foreach ($item in $Suite) {
     $hashes | ConvertTo-Json | Set-Content -LiteralPath "$directory/inputs.json" -Encoding utf8
     if (-not $BuildOnly) {
         if ($item -eq 'bridge-motion') {
-            Invoke-TestProcess $exe $directory 'hardware'
+            if (-not $SoftwareOnly) { Invoke-TestProcess $exe $directory 'hardware' }
             Invoke-TestProcess $exe $directory 'warp' @('--warp')
         } elseif ($item -eq 'fg-native' -and $NativeCase.Count) {
             foreach ($case in $NativeCase) { Invoke-TestProcess $exe $directory $case @("--$case") }
