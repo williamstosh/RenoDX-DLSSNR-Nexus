@@ -31,8 +31,9 @@ The new Nexus binary passed a focused Witcher 3 HDR/Present test with XeFG 4×:
 loading, NR toggles, short movement, HUD and protected exit/restoration were
 checked, with user confirmation of the visible NR effect and HUD. Unchanged
 paths reuse earlier acceptance under its original candidate and tested scope;
-this is not a fresh four-game visual matrix. This is a development milestone
-with no qualified release binary, tag, or GitHub Release. `main` holds accepted
+this is not a fresh four-game visual matrix. This is a development milestone;
+published packages are listed under [Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases).
+Actions artifacts are build-validation outputs. `main` holds accepted
 integrations; `dev` is the development branch. The
 [original fork](https://github.com/williamstosh/RenoDX-DLSS5-Generic)
 remains available for historical reference.
@@ -191,7 +192,9 @@ SDR/HDR 策略、配置迁移、原生／转接 FG、资源生命周期、模式
 
 新 Nexus 二进制已通过巫师3 HDR／Present、XeFG 4× 定向验证：核对实际加载、NR 开关、短移动、HUD、
 受保护的退出和恢复，NR 可见效果与 HUD 获用户确认。未变化路径按原候选及已测范围复用此前验收，
-不代表新做了一套四游戏视觉矩阵。当前为开发里程碑，尚无通过发布验收的二进制、标签或 GitHub Release。
+不代表新做了一套四游戏视觉矩阵。当前为开发里程碑；已发布安装包以
+[Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases) 页面为准，
+Actions artifacts 是构建验证产物。
 `main` 保存已验收集成，
 `dev` 用于开发；[原 fork](https://github.com/williamstosh/RenoDX-DLSS5-Generic)保留为历史参考。
 
