@@ -1,0 +1,74 @@
+name: Build Windows x64
+
+on:
+  workflow_call:
+    inputs:
+      expected_tag:
+        description: Exact release tag; empty for build-only validation
+        required: false
+        default: ''
+        type: string
+    outputs:
+      artifact_name:
+        value: ${{ jobs.build.outputs.artifact_name }}
+      archive_name:
+        value: ${{ jobs.build.outputs.archive_name }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    outputs:
+      artifact_name: ${{ steps.package.outputs.artifact_name }}
+      archive_name: ${{ steps.package.outputs.archive_name }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check version and release tag
+        env:
+          EXPECTED_TAG: ${{ inputs.expected_tag }}
+        run: |
+          if ($env:EXPECTED_TAG) {
+            ./tools/check-version.ps1 -ExpectedTag $env:EXPECTED_TAG -VerifyTag
+          } else {
+            ./tools/check-version.ps1
+          }
+      - name: Prepare pinned shader compilers
+        run: ./tools/setup-build-tools.ps1
+      - name: Prepare pinned RenoDX host and dependencies
+        run: ./tools/setup-host.ps1
+      - name: Build Release x64
+        run: ./tools/build.ps1 -ToolRoot .local/shader-tools -Configuration Release
+      - name: Check repeated compiler environment initialization
+        run: ./tests/run-build-environment-tests.ps1
+      - name: Run focused tests with WARP
+        run: ./tools/run-tests.ps1 -Suite all -SoftwareOnly -OutputDirectory tmp/ci-tests
+      - name: Validate packaging gates
+        run: ./tests/run-package-tests.ps1
+      - name: Validate publication failure and retry boundaries without publishing
+        run: ./tests/run-release-tests.ps1
+      - name: Package and verify versioned plugin archive
+        id: package
+        env:
+          EXPECTED_TAG: ${{ inputs.expected_tag }}
+        run: |
+          $package = ./tools/package.ps1 -ExpectedTag $env:EXPECTED_TAG
+          "artifact_name=windows-x64-$env:GITHUB_RUN_ATTEMPT" >> $env:GITHUB_OUTPUT
+          "archive_name=$([IO.Path]::GetFileName($package.ArchivePath))" >> $env:GITHUB_OUTPUT
+      - name: Upload installable archive and checksum
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
