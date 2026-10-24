@@ -1,6 +1,16 @@
 # 仅供本地回归入口使用；不安装插件、不启动游戏。
 function Initialize-TestBuild {
     param([string]$VcVars64)
+    # Child suites share this process. Re-running vcvars without its private
+    # markers appends the same paths and can exceed cmd.exe's 8191-char limit.
+    if (-not $VcVars64 -and $env:VCToolsInstallDir -match '[\\/]14\.44\.' -and
+        ([string]$env:WindowsSDKVersion).TrimEnd('\') -eq '10.0.26100.0' -and $env:INCLUDE -and $env:LIB) {
+        $taskCompiler = Get-Command cl.exe -CommandType Application -ErrorAction SilentlyContinue
+        $taskExpectedCompiler = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x64/cl.exe'
+        if ($taskCompiler -and $taskCompiler.Path.Equals($taskExpectedCompiler, [StringComparison]::OrdinalIgnoreCase)) {
+            return
+        }
+    }
     if (-not $VcVars64) {
         $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
         $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath

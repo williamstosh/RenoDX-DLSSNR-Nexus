@@ -47,6 +47,8 @@ jobs:
         run: ./tools/setup-host.ps1
       - name: Build Release x64
         run: ./tools/build.ps1 -ToolRoot .local/shader-tools -Configuration Release
+      - name: Check repeated compiler environment initialization
+        run: ./tests/run-build-environment-tests.ps1
       - name: Run focused tests with WARP
         run: ./tools/run-tests.ps1 -Suite all -SoftwareOnly -OutputDirectory tmp/ci-tests
       - name: Validate packaging gates
