@@ -141,6 +141,8 @@ Codex can prepare and verify the next version with this request: “Prepare
 `v<version>` and check the Release workflow result.” Normal code pushes do not
 authorize or trigger a Release.
 
+A repaired publisher can recover an existing tag without rebuilding or moving it. Run the separately reviewed `tools/publish-release.ps1` with `-Tag`, `-ArchivePath`, `-Repository` and `-SourceRoot <clean-checkout-at-tag>`, after verifying the original successful Actions artifact and its SHA-256 sidecar. `SourceRoot` supplies the tag, version and commit identity; it defaults to the publisher checkout for normal Tag workflows. The tool resumes a matching draft, verifies both assets before publishing and never replaces different assets.
+
 ### Compatibility and verification limits
 
 Support is limited to the tested backend, inputs and scenario. The inherited
@@ -304,6 +306,8 @@ GitHub 自动生成的更新说明。`-dev.*`、`-rc.*` 等 SemVer 预发布版�
 
 通过 Codex 的最简请求：“准备 `<version>` 并完成验证；我批准发布后，创建并推送
 `v<version>`，核验 Release 工作流结果。”普通代码推送不授权或触发 Release。
+
+发布工具修复可单独审查提交，并补发已有 Tag，无须重构建或移动 Tag。先核对原成功 Actions 的安装包与 SHA-256 校验文件，再运行修复后的 `tools/publish-release.ps1`，传入 `-Tag`、`-ArchivePath`、`-Repository` 和 `-SourceRoot <位于原Tag的干净检出>`。`SourceRoot` 提供 Tag、版本及源码提交身份，正常 Tag 工作流默认使用工具自身检出。工具恢复匹配草稿，核对两份附件后公开，不覆盖不同资产。
 
 ### 兼容性与验证边界
 
