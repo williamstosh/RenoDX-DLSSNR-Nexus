@@ -1,0 +1,30 @@
+{
+  "game": "witcher3",
+  "platform": "steam",
+  "app_id": "292030",
+  "install_dir": "The Witcher 3",
+  "exe": "bin/x64_dx12/witcher3.exe",
+  "documents_dir": "The Witcher 3",
+  "save_dir": "gamesaves",
+  "default_save": "",
+  "launch_args": [
+    "-applaunch",
+    "292030"
+  ],
+  "logs": [
+    "ReShade.log",
+    "OptiScaler.log",
+    "RenoDX-DLSS5-crash.log"
+  ],
+  "required_module": "renodx-dlss5.addon64",
+  "startup_timeout": 120,
+  "load_timeout": 120,
+  "scene_patterns": [],
+  "scene_seconds": 8,
+  "max_save_steps": 40,
+  "run_timeout": 420,
+  "expected_hdr_monitor": "",
+  "expected_hdr_adapter_luid": null,
+  "expected_hdr_target_id": null,
+  "performance_target_fps": null
+}

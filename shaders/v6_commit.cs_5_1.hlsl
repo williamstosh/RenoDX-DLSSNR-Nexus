@@ -2,6 +2,10 @@
 
 VK_BINDING(5) RWTexture2D<float4> BlockMean : register(u1);
 
+#ifdef DLSS5_HDR_CAPTURE
+#include "hdr_commit_capture.hlsli"
+#endif
+
 [numthreads(16, 16, 1)]
 void main(uint3 dispatch_id : SV_DispatchThreadID) {
   const uint2 pixel = dispatch_id.xy;
@@ -29,6 +33,15 @@ void main(uint3 dispatch_id : SV_DispatchThreadID) {
       + m01.z * (1.0 - f.x) * f.y + m11.z * f.x * f.y;
   const float4 value = Original.Load(int3(pixel, 0));
   float3 result = value.rgb;
+#ifdef DLSS5_HDR_CAPTURE
+  const bool capture_inside_roi = all(pixel >= CaptureRoi.xy)
+      && all(pixel - CaptureRoi.xy < CaptureRoi.zw);
+  const uint2 capture_roi_pixel = pixel - CaptureRoi.xy;
+  const uint2 capture_linear_pixel = (CaptureFullPlanes != 0u ? pixel : capture_roi_pixel);
+  float capture_legacy_estimate = 0.0;
+  float capture_applied = 0.0;
+  float capture_clip_flags = 0.0;
+#endif
 #ifdef GATE_IN_INPUT_UNITS
   // Feed v2: the NR input scale (t2, the norm_scale texel) is the game's
   // exposure and can sit many stops from 1, so "near-black" and the cap are
@@ -41,23 +54,59 @@ void main(uint3 dispatch_id : SV_DispatchThreadID) {
   // mixed dark/bright blocks whose mean-lift estimate is contaminated by the
   // bright feature (the blobbing class; see v6_pedestal_reduce).
   const float weight = BlackRestoreWeight(untouched_max, DarkGate * unit, DarkGateMode == 2u);
+#ifdef DLSS5_HDR_CAPTURE
+  capture_legacy_estimate = clamp(final_mean - untouched_mean, 0.0, PedestalCap * unit)
+      * TransferStrength * CaptureLegacyPedestalGate
+      * BlackRestoreWeight(untouched_max, DarkGate * unit, CaptureLegacyDarkGateMode == 2u);
+#endif
   if (weight > 0.0) {
     const float pedestal =
         clamp(final_mean - untouched_mean, 0.0, PedestalCap * unit)
         * TransferStrength * PedestalGate * weight;
+#ifdef DLSS5_HDR_CAPTURE
+    capture_applied = pedestal;
+#endif
     if (pedestal > 0.0) {
       result -= pedestal;
       // A BT.2020 source's BT.709 negatives are real colours (Encoding 4):
       // its clamp waits for the conversion back below.
+#ifdef DLSS5_HDR_CAPTURE
+      if (Encoding != 4u && any(result < 0.0)) capture_clip_flags = 1.0;
+#endif
       if (Encoding != 4u) result = max(result, 0.0);
     }
   }
+#ifdef DLSS5_HDR_CAPTURE
+  if (CaptureFullPlanes != 0u || capture_inside_roi) {
+    CapturePostPedestal[capture_linear_pixel] = float4(result, value.a);
+  }
+#endif
   if (Encoding == 4u) result = Bt709ToBt2020(result);
+#ifdef DLSS5_HDR_CAPTURE
+  if (capture_inside_roi) {
+    if (Encoding == 4u) CapturePostGamut[capture_roi_pixel] = float4(result, value.a);
+    if ((Encoding == 2u || Encoding == 4u) && any(result < 0.0)) capture_clip_flags += 2.0;
+    CapturePedestalField[capture_roi_pixel] =
+        float4(capture_legacy_estimate, capture_applied, weight, capture_clip_flags);
+  }
+#endif
   if (Encoding == 2u || Encoding == 4u) {
+#ifdef DLSS5_HDR_CAPTURE
+    HDR_CAPTURE_ENCODED(float4(LinearToPQ(max(result, 0.0)), value.a));
+#else
     Output[VK_OUTPUT_PIXEL(pixel)] = float4(LinearToPQ(max(result, 0.0)), value.a);
+#endif
   } else if (Encoding == 3u) {
+#ifdef DLSS5_HDR_CAPTURE
+    HDR_CAPTURE_ENCODED(float4(SrgbEncodeExtended(result), value.a));
+#else
     Output[VK_OUTPUT_PIXEL(pixel)] = float4(SrgbEncodeExtended(result), value.a);
+#endif
   } else {
+#ifdef DLSS5_HDR_CAPTURE
+    HDR_CAPTURE_ENCODED(float4(result, value.a));
+#else
     Output[VK_OUTPUT_PIXEL(pixel)] = float4(result, value.a);
+#endif
   }
 }

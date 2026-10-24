@@ -1,0 +1,87 @@
+{
+  "host": {
+    "repository": "https://github.com/clshortfuse/renodx.git",
+    "commit": "374d07bf0e2fcef112ed1dfee98541bcf16487dd",
+    "paths": [
+      "cmake",
+      "docs",
+      "src/apps",
+      "src/decompiler",
+      "src/shaders",
+      "src/utils"
+    ]
+  },
+  "dependencies": [
+    {
+      "path": "external/DLSS",
+      "repository": "https://github.com/NVIDIA/DLSS.git",
+      "commit": "a291cc7d2cc642a51566f3dfd5376f635cd1b284",
+      "paths": [
+        "include"
+      ]
+    },
+    {
+      "path": "external/Streamline",
+      "repository": "https://github.com/clshortfuse/Streamline.git",
+      "commit": "e8aaa6eaac968711fb62473d4ae8256dde20919b",
+      "paths": [
+        "include"
+      ]
+    },
+    {
+      "path": "external/Detours",
+      "repository": "https://github.com/microsoft/Detours.git",
+      "commit": "9764cebcb1a75940e68fa83d6730ffaf0f669401",
+      "paths": [
+        "src"
+      ]
+    },
+    {
+      "path": "external/frozen",
+      "repository": "https://github.com/serge-sans-paille/frozen.git",
+      "commit": "61dce5ae18ca59931e27675c468e64118aba8744",
+      "paths": [
+        "include"
+      ]
+    },
+    {
+      "path": "external/gtl",
+      "repository": "https://github.com/greg7mdp/gtl.git",
+      "commit": "51eb683658378d67086d8fc04d5fd162a0ae30c5",
+      "paths": [
+        "include"
+      ]
+    },
+    {
+      "path": "external/json",
+      "repository": "https://github.com/nlohmann/json.git",
+      "commit": "55f93686c01528224f448c19128836e7df245f72",
+      "paths": [
+        "include"
+      ]
+    },
+    {
+      "path": "external/reshade",
+      "repository": "https://github.com/crosire/reshade.git",
+      "commit": "4a50d1eddace85734871d91792ff214f13f66c01",
+      "paths": [
+        "include"
+      ]
+    },
+    {
+      "path": "external/reshade/deps/imgui",
+      "repository": "https://github.com/ocornut/imgui.git",
+      "commit": "3912b3d9a9c1b3f17431aebafd86d2f40ee6e59c",
+      "paths": [
+        "misc"
+      ]
+    }
+  ],
+  "compatibility": {
+    "patch": "renodx-compat.patch",
+    "headers": {
+      "src/utils/directx.hpp": "86D91935B0638F8D2866A8BB6AE049F7DCC8EAB1C762D12A658BB6524C7E2687",
+      "src/utils/vtable.hpp": "42482D5E25FD896FD414AFE1AEF3389FF5158D466843315034C213D25BE5E844"
+    }
+  }
+}

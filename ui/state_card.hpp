@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 
 #include "../funnel.hpp"
 #include "i18n.hpp"
@@ -116,6 +117,7 @@ enum class CardId : std::uint8_t {
   kForeignNr,
   // rc11: engaged at the green ratio, with health ledger warnings active.
   kActiveWithIssues,
+  kFgPreparing,
   kCount,
 };
 
@@ -128,6 +130,7 @@ inline const char* const kCardSlugs[kCardIdCount] = {
     "runtime_failed",  "no_dlss",             "dx11_game",
     "disabled_by_setting", "off_by_user", "foreign_nr",
     "active_with_issues",
+    "fg_preparing",
 };
 
 inline const char* CardSlug(CardId id) {
@@ -201,6 +204,12 @@ struct CardInputs {
   // The last card tick (MaybeEmitStatusCard) said partly active: the ratio
   // must climb back to kPartialLeaveRatio to leave it.
   bool partial_latched = false;
+  // FG counts service submissions, independently of this frame's phase
+  // and the number of color roles or model passes recorded for it.
+  std::optional<std::uint64_t> fg_submitted_frames;
+  // Recording the next frame immediately after a proven submission keeps
+  // the service active; a completed but unsubmitted recording does not.
+  bool fg_continuing_submission = false;
 };
 
 inline constexpr std::size_t kMaxFixSteps = 3;
@@ -234,6 +243,7 @@ struct StatusCard {
   // Carried for FormatCardDetail.
   std::uint64_t frames_enhanced = 0;
   std::uint64_t frames_eligible = 0;
+  std::optional<std::uint64_t> fg_submitted_frames;
   std::uint32_t input_width = 0;
   std::uint32_t input_height = 0;
   std::uint32_t output_width = 0;
@@ -438,6 +448,7 @@ inline StatusCard ComputeStatusCard(const CardInputs& in) {
   StatusCard card;
   card.frames_enhanced = in.verdict.injected;
   card.frames_eligible = in.verdict.eligible;
+  card.fg_submitted_frames = in.fg_submitted_frames;
   card.nr_gpu_ms = in.nr_gpu_ms;
   card.nr_present_ms = in.nr_present_ms;
   card.frame_ms = in.frame_ms;
@@ -459,7 +470,8 @@ inline StatusCard ComputeStatusCard(const CardInputs& in) {
     card.path_note = "Running through the Direct3D 11 bridge.";
   }
 
-  switch (in.verdict.state) {
+  const bool continuing = in.verdict.IsFgPreparing() && in.fg_continuing_submission;
+  switch (continuing ? NrState::kEngaged : in.verdict.state) {
     case NrState::kOff:
       if (Equal(in.verdict.reason, "hooks_disabled")) {
         Set(card, CardId::kDisabledBySetting, CardTone::kIdle, CardGlyph::kIdle,
@@ -531,8 +543,8 @@ inline StatusCard ComputeStatusCard(const CardInputs& in) {
         return card;
       }
       card.issues = in.issues;
-      const bool whole =
-          in.verdict.eligible < kPartialMinEligible
+      const bool whole = continuing
+          || in.verdict.eligible < kPartialMinEligible
           || in.verdict.ratio
                  >= (in.partial_latched ? kPartialLeaveRatio : kPartialEnterRatio);
       if (whole && in.issues != 0) {
@@ -568,6 +580,22 @@ inline StatusCard ComputeStatusCard(const CardInputs& in) {
     }
 
     case NrState::kNotEngaged:
+      if (in.verdict.IsFgPreparing()) {
+        Set(card, CardId::kFgPreparing, CardTone::kIdle, CardGlyph::kWaiting,
+            "Preparing Neural Rendering",
+            "Waiting for frame submission");
+        return card;
+      }
+      if (Equal(in.verdict.path, "present")
+          && (Equal(in.verdict.reason, "fg_handoff_failed") || Equal(in.verdict.reason, "fg_unserved"))) {
+        Set(card, CardId::kNotRunning, CardTone::kWarn, CardGlyph::kWarning,
+            Equal(in.verdict.reason, "fg_handoff_failed") ? "Neural Rendering submission failed"
+                                                       : "Neural Rendering did not serve this frame",
+            "The frame was not submitted with Neural Rendering.");
+        SetFix(card, "Open Diagnostics and check the latest result and skipped reasons.");
+        card.action = CardAction::kOpenDiagnostics;
+        return card;
+      }
     default:
       break;
   }
@@ -698,6 +726,10 @@ inline int FormatCardDetail(char* buffer, std::size_t size,
                             const StatusCard& card) {
   if (size == 0) return 0;
   buffer[0] = '\0';
+  if (card.fg_submitted_frames.has_value()) {
+    return std::snprintf(buffer, size, Tr("%llu NR frames submitted before FG"),
+                         static_cast<unsigned long long>(*card.fg_submitted_frames));
+  }
   const bool sized = card.input_width != 0 && card.input_height != 0
                      && card.output_width != 0 && card.output_height != 0;
   char sizes[64] = {};

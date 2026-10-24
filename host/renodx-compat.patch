@@ -1,0 +1,102 @@
+diff --git a/src/utils/directx.hpp b/src/utils/directx.hpp
+index 5f0de53..929cebf 100644
+--- a/src/utils/directx.hpp
++++ b/src/utils/directx.hpp
+@@ -36,7 +36,7 @@ inline bool NativeFromReShadeProxy(T** reshade_proxy) {
+   auto* unknown = static_cast<IUnknown*>(*reshade_proxy);
+   if (unknown == nullptr) return false;
+   ReShadeRetrieveBaseInterface* native_base = nullptr;
+-  if (SUCCEEDED(unknown->QueryInterface(&native_base))) {
++  if (SUCCEEDED(unknown->QueryInterface(&native_base)) && native_base != nullptr) {
+     native_base->Release();
+     *reshade_proxy = reinterpret_cast<T*>(native_base);
+     return true;
+@@ -44,6 +44,25 @@ inline bool NativeFromReShadeProxy(T** reshade_proxy) {
+   return false;
+ }
+ 
++// Compatibility candidate: borrowed canonical identity; keep the object (and its native
++// base) alive. Only ReShade is unwrapped: Streamline faces remain distinct.
++[[nodiscard]] inline IUnknown* NativeIdentity(IUnknown* object) {
++  if (object == nullptr) return nullptr;
++  NativeFromReShadeProxy(&object);
++  IUnknown* identity = nullptr;
++  if (FAILED(object->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&identity)))
++      || identity == nullptr) {
++    return nullptr;
++  }
++  identity->Release();
++  return identity;
++}
++
++[[nodiscard]] inline bool SameNativeObject(IUnknown* first, IUnknown* second) {
++  IUnknown* first_identity = NativeIdentity(first);
++  return first_identity != nullptr && first_identity == NativeIdentity(second);
++}
++
+ static bool Initialize() {
+   if (internal::initialized) return true;
+ 
+@@ -161,4 +180,4 @@ static bool Initialize() {
+   return true;
+ }
+ 
+-}  // namespace renodx::utils::directx
+\ No newline at end of file
++}  // namespace renodx::utils::directx
+diff --git a/src/utils/vtable.hpp b/src/utils/vtable.hpp
+index 245e70b..8a8c26f 100644
+--- a/src/utils/vtable.hpp
++++ b/src/utils/vtable.hpp
+@@ -9,8 +9,11 @@
+ #include <rpcndr.h>
+ #include <Windows.h>
+ 
++#include <atomic>
+ #include <concepts>
+ #include <cstddef>
++#include <cstdint>
++#include <mutex>
+ #include <ranges>
+ #include <stdexcept>
+ #include <system_error>
+@@ -18,11 +21,32 @@
+ #include <type_traits>
+ #include <vector>
+ 
++#include <detours.h>
++
+ #include "./detour.hpp"
+ #include "./log.hpp"
+ 
+ namespace renodx::utils::vtable {
+ 
++// Compatibility candidate: this binary owns its statically linked Detours
++// state. Inline linkage unifies translation units, not independent add-ons.
++inline std::atomic<std::uint64_t> transaction_contended{0};
++
++[[nodiscard]] inline std::mutex& TransactionMutex() {
++  static std::mutex transaction_mutex;
++  return transaction_mutex;
++}
++
++// Caller holds TransactionMutex through UpdateThread and Commit/Abort.
++// A foreign owner is counted and left intact; callers choose retry policy.
++[[nodiscard]] inline bool BeginTransaction() {
++  const LONG result = DetourTransactionBegin();
++  if (result == ERROR_INVALID_OPERATION) {
++    transaction_contended.fetch_add(1, std::memory_order_relaxed);
++  }
++  return result == NO_ERROR;
++}
++
+ template <typename FunctionPointer>
+   requires std::is_pointer_v<FunctionPointer>
+            && std::is_function_v<std::remove_pointer_t<FunctionPointer>>
+@@ -169,4 +193,4 @@ static void Unhook(HMODULE module, const Hooks& hooks) {
+   }
+ }
+ 
+-}  // namespace renodx::utils::vtable
+\ No newline at end of file
++}  // namespace renodx::utils::vtable

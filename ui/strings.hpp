@@ -292,11 +292,15 @@ inline constexpr const char* kHudHint =
 inline constexpr const char* kIssueNoticeMore = "and %u more";
 inline constexpr const char* kIssueNoticeHint =
     "Details and fixes: the %s tab in ReShade's overlay.";
-inline constexpr const char* kIssueNotices = "Issue notices";
+inline constexpr const char* kIssueNotices = "On-screen notices";
+inline constexpr const char* kHudPositionX = "Notice horizontal position";
+inline constexpr const char* kHudPositionY = "Notice vertical position";
+inline constexpr const char* kHudPositionTip =
+    "Position of status notices on the game screen. Horizontal: 0% left, 100% right. "
+    "Vertical: 0% top, 100% bottom. Default: top center (50%, 0%).";
 inline constexpr const char* kIssueNoticesTip =
-    "Shows a note in the game's corner for a few seconds when an issue"
-    " starts, and again every five minutes while it lasts.  The issues under"
-    " the status card are listed either way.";
+    "Shows NR activation, warning and issue notices on the game screen. "
+    "Turning this off hides all on-screen notices; Home status and diagnostics remain available.";
 
 // The first-run welcome (U5), shown under the status card until dismissed.
 inline constexpr const char* kWelcomeTitle = "Welcome to DLSS 5 Neural Rendering";

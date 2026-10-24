@@ -110,7 +110,7 @@ constexpr int64_t kSummaryNs = 1'000'000'000;
 
 struct Meta {
   uint64_t generation = 0;
-  int64_t time_ns = 0;
+  int64_t time_ns = 0;  // Absolute steady_clock nanoseconds at recording, before GPU completion.
   uint32_t workset = 0;
   uint32_t pass = 0;       // 1-based stack pass
   uint32_t nr_width = 0;   // the NR grid the trace reduced
@@ -341,7 +341,7 @@ inline bool Publish(const Slot& slot) {
     if (csv.is_open()) {
       csv_origin_ns = slot.meta.time_ns;
       csv << "t_s,generation,workset,pass,nr_w,nr_h,pixels,p05,p50,p95,"
-             "over1_pct,halo_pct,halo2_pct,c_r,c_t,flicker\n";
+             "over1_pct,halo_pct,halo2_pct,c_r,c_t,flicker,time_ns\n";
     } else {
       // Said once, never retried per frame (ENV-12, as the norm trace).
       const auto path = csv_path.u8string();
@@ -357,10 +357,10 @@ inline bool Publish(const Slot& slot) {
     if (static_blocks != 0) {
       std::snprintf(flicker_text, sizeof(flicker_text), "%.6f", flicker);
     }
-    char row[320];
+    char row[352];
     std::snprintf(
         row, sizeof(row),
-        "%.3f,%llu,%u,%u,%u,%u,%llu,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%.6f,%.6f,%s\n",
+        "%.3f,%llu,%u,%u,%u,%u,%llu,%.5f,%.5f,%.5f,%.4f,%.4f,%.4f,%.6f,%.6f,%s,%lld\n",
         (slot.meta.time_ns - csv_origin_ns) / 1e9,
         static_cast<unsigned long long>(slot.meta.generation),
         slot.meta.workset, slot.meta.pass, slot.meta.nr_width,
@@ -368,7 +368,8 @@ inline bool Publish(const Slot& slot) {
         stats.percentiles[0], stats.percentiles[1], stats.percentiles[2],
         stats.over1_pct, stats.halo_pct, stats.halo2_pct,
         c_weight > 0.0 ? c_r_sum / c_weight : 0.0,
-        c_weight > 0.0 ? c_t_sum / c_weight : 0.0, flicker_text);
+        c_weight > 0.0 ? c_t_sum / c_weight : 0.0, flicker_text,
+        static_cast<long long>(slot.meta.time_ns));
     csv << row;
     if (slot.meta.time_ns - last_flush_ns > 1'000'000'000) {
       csv.flush();
@@ -446,13 +447,9 @@ inline void Record(
   }
   Slot& slot = slots[internal::head];
   if (slot.recorded) {
-    // Lapping an undrained slot: drop the oldest rather than overwrite a
-    // region the GPU may still be copying into.
-    slot.recorded = false;
+    // Keep the pending copy and its completion proof; never reuse GPU-owned storage.
     ++internal::dropped;
-    if (internal::tail == internal::head) {
-      internal::tail = (internal::tail + 1) % kSlots;
-    }
+    return;
   }
   const uint64_t base = static_cast<uint64_t>(internal::head) * kSlotStride;
   const uint32_t row_pitch = static_cast<uint32_t>(
@@ -511,7 +508,8 @@ inline void Poll(bool exact_proofs) {
   using internal::slots;
   ++internal::ticks;
   uint32_t scanned = 0;
-  while (internal::tail != internal::head && scanned++ < kSlots) {
+  // Equal cursors can mean full; the oldest slot distinguishes full from empty.
+  while ((internal::tail != internal::head || slots[internal::tail].recorded) && scanned++ < kSlots) {
     Slot& slot = slots[internal::tail];
     if (!slot.recorded) {
       internal::tail = (internal::tail + 1) % kSlots;

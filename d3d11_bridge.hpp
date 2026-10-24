@@ -181,6 +181,7 @@ struct Bridge {
   ID3D11Fence* fence_in11 = nullptr;
   ID3D11Fence* fence_out11 = nullptr;
   ID3D11ComputeShader* depth_cs = nullptr;
+  ID3D11ComputeShader* motion_cs = nullptr;
   HANDLE watchdog = nullptr;
 };
 inline Bridge bridge;
@@ -244,6 +245,7 @@ struct BridgeSurfaceSet {
   uint64_t retry_present = 0;
   uint32_t attempts = 0;
   bool depth_convert = false;
+  bool motion_convert = false;
   // The surface NR runs on is a shared twin; the other one is a desc-only
   // D3D12 stand-in (a null D3D11 side), because both pipelines read the
   // descs of Color and Output but only their own surface's contents
@@ -259,6 +261,9 @@ struct BridgeSurfaceSet {
   ID3D12Resource* output12 = nullptr;
   ID3D11Texture2D* motion11 = nullptr;
   ID3D12Resource* motion12 = nullptr;
+  ID3D11Texture2D* motion_stage = nullptr;
+  ID3D11ShaderResourceView* motion_srv = nullptr;
+  ID3D11UnorderedAccessView* motion_uav = nullptr;
   ID3D11Texture2D* depth11 = nullptr;
   ID3D12Resource* depth12 = nullptr;
   ID3D11Texture2D* depth_stage = nullptr;
@@ -376,6 +381,9 @@ inline void RetireBridgeSet(BridgeSurfaceSet&& set) {
   ReleaseCom(set.color11);
   ReleaseCom(set.output11);
   ReleaseCom(set.motion11);
+  ReleaseCom(set.motion_stage);
+  ReleaseCom(set.motion_srv);
+  ReleaseCom(set.motion_uav);
   ReleaseCom(set.depth11);
   ReleaseCom(set.depth_stage);
   ReleaseCom(set.depth_srv);
@@ -666,7 +674,36 @@ inline BridgeSurfaceSet* EnsureBridgeSet(const NVSDK_NGX_Handle* handle,
         break;
       }
     }
-    if (!made) failure = "the motion-vector format cannot be shared";
+    if (!made && motion.Format == DXGI_FORMAT_R32G32_FLOAT && SUCCEEDED(transient)) {
+      // Some D3D11 drivers cannot share RG32_FLOAT with D3D12. Expand only
+      // its channel count: both motion components remain full float32.
+      set.motion_convert = true;
+      if (bridge.motion_cs == nullptr) {
+        made = created(bridge.device11->CreateComputeShader(
+            __bridge_motion.data(), __bridge_motion.size(), nullptr, &bridge.motion_cs));
+      } else {
+        made = true;
+      }
+      D3D11_TEXTURE2D_DESC stage = motion;
+      stage.MipLevels = 1;
+      stage.ArraySize = 1;
+      stage.Usage = D3D11_USAGE_DEFAULT;
+      stage.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+      stage.CPUAccessFlags = 0;
+      stage.MiscFlags = 0;
+      if (made) {
+        made = created(bridge.device11->CreateTexture2D(&stage, nullptr, &set.motion_stage))
+               && created(bridge.device11->CreateShaderResourceView(set.motion_stage, nullptr, &set.motion_srv))
+               && created(CreateSharedTwin(motion, DXGI_FORMAT_R32G32B32A32_FLOAT,
+                                            D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE,
+                                            &set.motion11, &set.motion12))
+               && created(bridge.device11->CreateUnorderedAccessView(set.motion11, nullptr, &set.motion_uav));
+      }
+    }
+    if (!made) {
+      failure = set.motion_convert ? "the float32 motion conversion surfaces could not be created"
+                                   : "the motion-vector format cannot be shared";
+    }
   }
   if (failure == nullptr && (depth.BindFlags & D3D11_BIND_DEPTH_STENCIL) != 0) {
     // A depth-stencil surface: copy into a private stage of the same
@@ -807,7 +844,8 @@ inline BridgeSurfaceSet* EnsureBridgeSet(const NVSDK_NGX_Handle* handle,
       "D3D11 bridge: surface set built: "
           + (pre ? "color " + DescribeSurface(color)
                  : "output " + DescribeSurface(output))
-          + ", motion " + DescribeSurface(motion) + ", depth "
+          + ", motion " + DescribeSurface(motion)
+          + (set.motion_convert ? " (expanded to RGBA32_FLOAT)" : " (copied)") + ", depth "
           + DescribeSurface(depth)
           + (set.depth_convert ? " (converted to R32_FLOAT)" : " (copied)")
           + exposure_note
@@ -977,6 +1015,7 @@ inline void ReleaseBridgeObjects() {
   ReleaseCom(bridge.fence_out12);
   ReleaseCom(bridge.fence_done12);
   ReleaseCom(bridge.depth_cs);
+  ReleaseCom(bridge.motion_cs);
   ID3D11Multithread* multithread = nullptr;
   {
     RuntimeLock lock(runtime_mutex);
@@ -1555,17 +1594,16 @@ inline bool RunBridge(ID3D11DeviceContext* context,
     }
 
     ID3D11DeviceContext4* const ctx = bridge.context11;
-    ctx->CopySubresourceRegion(set->motion11, 0, 0, 0, 0,
-                               textures[at(ResourceKey::kMotionVectors)], 0,
-                               nullptr);
+    ctx->CopySubresourceRegion(set->motion_convert ? set->motion_stage : set->motion11, 0, 0, 0, 0,
+                               textures[at(ResourceKey::kMotionVectors)], 0, nullptr);
     if (set->exposure11 != nullptr) {
       ctx->CopySubresourceRegion(set->exposure11, 0, 0, 0, 0,
                                  textures[at(ResourceKey::kExposureTexture)], 0,
                                  nullptr);
     }
-    if (set->depth_convert) {
-      ctx->CopySubresourceRegion(set->depth_stage, 0, 0, 0, 0,
-                                 textures[at(ResourceKey::kDepth)], 0, nullptr);
+    ctx->CopySubresourceRegion(set->depth_convert ? set->depth_stage : set->depth11, 0, 0, 0, 0,
+                               textures[at(ResourceKey::kDepth)], 0, nullptr);
+    if (set->depth_convert || set->motion_convert) {
       // The only compute state the pass touches is the shader, SRV 0 and
       // UAV 0; all three go back exactly (the shader with its class
       // instances, the UAV with its counter untouched).
@@ -1577,11 +1615,19 @@ inline bool RunBridge(ID3D11DeviceContext* context,
       ctx->CSGetShader(&saved_shader, saved_instances, &saved_instance_count);
       ctx->CSGetShaderResources(0, 1, &saved_srv);
       ctx->CSGetUnorderedAccessViews(0, 1, &saved_uav);
-      ctx->CSSetShader(bridge.depth_cs, nullptr, 0);
-      ctx->CSSetShaderResources(0, 1, &set->depth_srv);
-      ctx->CSSetUnorderedAccessViews(0, 1, &set->depth_uav, nullptr);
-      const D3D11_TEXTURE2D_DESC& depth = set->descs[at(ResourceKey::kDepth)];
-      ctx->Dispatch((depth.Width + 7) / 8, (depth.Height + 7) / 8, 1);
+      const auto convert = [&](ID3D11ComputeShader* shader, ID3D11ShaderResourceView* srv,
+                               ID3D11UnorderedAccessView* uav, const D3D11_TEXTURE2D_DESC& desc) {
+        ctx->CSSetShader(shader, nullptr, 0);
+        ctx->CSSetShaderResources(0, 1, &srv);
+        ctx->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+        ctx->Dispatch((desc.Width + 7) / 8, (desc.Height + 7) / 8, 1);
+      };
+      if (set->motion_convert) {
+        convert(bridge.motion_cs, set->motion_srv, set->motion_uav, set->descs[at(ResourceKey::kMotionVectors)]);
+      }
+      if (set->depth_convert) {
+        convert(bridge.depth_cs, set->depth_srv, set->depth_uav, set->descs[at(ResourceKey::kDepth)]);
+      }
       const UINT keep_counter = static_cast<UINT>(-1);
       ctx->CSSetUnorderedAccessViews(0, 1, &saved_uav, &keep_counter);
       ctx->CSSetShaderResources(0, 1, &saved_srv);
@@ -1592,9 +1638,6 @@ inline bool RunBridge(ID3D11DeviceContext* context,
       for (UINT i = 0; i < saved_instance_count && i < 256; ++i) {
         ReleaseCom(saved_instances[i]);
       }
-    } else {
-      ctx->CopySubresourceRegion(set->depth11, 0, 0, 0, 0,
-                                 textures[at(ResourceKey::kDepth)], 0, nullptr);
     }
     if (pre) {
       ctx->CopySubresourceRegion(set->color11, 0, 0, 0, 0,
@@ -1645,6 +1688,7 @@ inline bool RunBridge(ID3D11DeviceContext* context,
     bridge_waits11.fetch_add(1, std::memory_order_relaxed);
     if (!pre) {
       ctx->CopySubresourceRegion(output, 0, 0, 0, 0, set->output11, 0, nullptr);
+      screenshot::RecordNativeHdrReceiverCopy(ctx, output);
       delivered = true;
     } else if (swapped) {
       // The wait above orders the game's DLSS read of the twin after NR's

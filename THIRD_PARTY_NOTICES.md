@@ -10,7 +10,7 @@
   `Copyright (c) 2025 Carlos Lopez Jr.` remain in [LICENSE](LICENSE).
 - Files: the imported root C++ sources/headers, `shaders/`, and `ui/`.
   Original `Copyright (C) 2026` and SPDX notices are preserved as supplied.
-- Migration changes: independent NR Nexus documentation, version header,
+- Initial migration changes: independent NR Nexus documentation, version header,
   version/build tooling, and the add-on version constant. Core rendering,
   shaders, hook behavior, runtime identity, and original copyright text are
   unchanged.
@@ -20,6 +20,22 @@ including its MIT LICENSE. The import message's shorter origin `3a6cfc6` is
 preserved historical metadata; this repository does not claim to contain the
 author's complete development history. The public mirror and exact imported
 commit above are the verifiable source provenance.
+
+## Integrated development and host compatibility
+
+The integration retains the source changes developed from the imported RC10
+baseline: Present SDR/HDR restoration policies, configuration migration,
+native/translated frame-generation coordination, resource lifetime handling,
+and associated shaders and focused tests. Original copyright and SPDX notices
+remain intact. The independent version definition is the only adaptation to
+the imported production snapshot's project version.
+
+`host/renodx-compat.patch` applies to RenoDX commit
+`374d07bf0e2fcef112ed1dfee98541bcf16487dd` (MIT, original copyright above).
+It modifies `src/utils/directx.hpp` and `src/utils/vtable.hpp` to supply the
+required canonical-object-identity and Detours transaction interfaces.
+The full host is not vendored. `host/lock.json` identifies its exact source and
+the external dependency commits used by the independent setup/build scripts.
 
 ## External build and runtime dependencies
 

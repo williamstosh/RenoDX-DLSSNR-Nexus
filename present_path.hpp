@@ -453,8 +453,9 @@ struct PresentRing {
 // dereferenced).
 struct PresentStream {
   uint8_t handle_key = 0;
-  const NVSDK_NGX_Handle* Handle() const {
-    return reinterpret_cast<const NVSDK_NGX_Handle*>(&handle_key);
+  uint8_t neutral_handle_key = 0;
+  const NVSDK_NGX_Handle* Handle(bool neutral_model = false) const {
+    return reinterpret_cast<const NVSDK_NGX_Handle*>(neutral_model ? &neutral_handle_key : &handle_key);
   }
   bridge::OwnedParameters parameters;
   ID3D12Resource* neutral_motion = nullptr;
@@ -483,6 +484,8 @@ struct PresentStream {
   // Presents this stream ran NR on (present[gaps=] counts the ones after
   // the first that did not).
   uint64_t nr_presents = 0;
+  uint64_t native_route_id = 0;
+  const void* native_output_identity = nullptr;
 };
 
 struct PresentRetired {
@@ -634,8 +637,12 @@ inline bool EnsurePresentRing(ID3D12Device* face) {
 // neutral), so the model's previous frame is not the one they describe.
 inline void ResetPresentStreamHistory(PresentStream* stream) {
   present_history_resets.fetch_add(1, std::memory_order_relaxed);
-  if (const auto feature = features.find(stream->Handle()); feature != features.end()) {
-    for (NrFeatureSlot& slot : feature->second.slots) slot.pending_reset = true;
+  for (const bool neutral : {false, true}) {
+    if (const auto feature = features.find(stream->Handle(neutral)); feature != features.end()) {
+      for (NrFeatureSlot& slot : feature->second.slots) {
+        slot.pending_reset = true;
+      }
+    }
   }
 }
 
@@ -644,12 +651,15 @@ inline void RetirePresentStream(const void* swapchain) {
   const auto it = present_streams.find(swapchain);
   if (it == present_streams.end()) return;
   PresentStream& stream = it->second;
-  if (const auto feature = features.find(stream.Handle()); feature != features.end()) {
-    ReleaseAllNrSlots(feature->second, true);
-    features.erase(feature);
+  OnNativePresentStreamRetired(&stream);
+  for (const bool neutral : {false, true}) {
+    owner_resident_nr_handles.erase(stream.Handle(neutral));
+    if (const auto feature = features.find(stream.Handle(neutral)); feature != features.end()) {
+      ReleaseAllNrSlots(feature->second, true);
+      features.erase(feature);
+    }
+    RetireWorkset({stream.Handle(neutral), reinterpret_cast<const ID3D12Resource*>(&stream)});
   }
-  RetireWorkset(
-      {stream.Handle(), reinterpret_cast<const ID3D12Resource*>(&stream)});
   RetirePresentResource(&stream.neutral_motion);
   RetirePresentResource(&stream.neutral_depth);
   // Direct3D 11: the stream's bridge twins, and its neutral guides (the
@@ -741,6 +751,9 @@ inline bool RetireIdlePresentPath() {
 inline bool ReleasePresentPath() {
   if (!ReleasePresentRing()) return false;
   for (auto& [_, stream] : present_streams) {
+    OnNativePresentStreamRetired(&stream);
+    owner_resident_nr_handles.erase(stream.Handle());
+    owner_resident_nr_handles.erase(stream.Handle(true));
     ReleaseCom(stream.neutral_motion);
     ReleaseCom(stream.neutral_depth);
     ReleaseCom(stream.neutral_motion11);
@@ -796,6 +809,9 @@ inline bool PresentTakesEvaluate() {
   // Auto-FG serves a stream with no DLSS evaluates. A real DLSS evaluate
   // (including an independent view) keeps its selected inline insertion.
   if (!PresentHookServes(false)) return false;
+  // Native FG consumes NR before interpolation, independently of ReShade's
+  // final-Present cadence. A focus loss must not also enhance its SR input.
+  if (native_fg_owns.load(std::memory_order_acquire)) return true;
   if (screenshot::WantsFinalPresent()) {
     // F5 temporarily reserves this unenhanced game frame for a final-display
     // comparison. Inline fallback must not enhance it first.
@@ -943,6 +959,12 @@ inline void StampPresentCapture(PresentGuideSet* set, const FeatureState& contra
 // recording has no tokens and must never become a same-queue proof.
 inline void PreservePresentCaptureProof(
     const void* marker, const std::vector<submission::GenerationSubmission>& submissions) {
+  if (marker == native_fg_marker.load(std::memory_order_acquire)) {
+    bool submitted = false;
+    for (const auto& proof : submissions) submitted |= !proof.pending && !proof.fence.empty();
+    native_fg_result.store(submitted ? fg::Result::SUBMITTED : fg::Result::FAILED, std::memory_order_release);
+    if (submitted) CountNativeFgSubmission(native_fg_recording_serial.load(std::memory_order_acquire));
+  }
   if (submissions.empty()) return;
   for (PresentGuideSet& set : present_guide_sets) {
     if (set.serial == 0 || set.marker != marker || set.comparison_request == 0) continue;
@@ -978,7 +1000,8 @@ inline void CapturePresentGuides(
     RecordOutputPass(output, handle);
   }
   CountNrDecline(NrDeclineReason::kPresentHook);
-  if (present_guides.load(std::memory_order_relaxed) == kPresentGuidesNever
+  if (diagnostics::GuideMode(debug_guide_mode.load(std::memory_order_relaxed),
+                            present_guides.load(std::memory_order_relaxed)) == kPresentGuidesNever
       && !screenshot::WantsFinalPresent()) return;
   ID3D12Resource* const motion =
       GetD3D12Resource(parameters, NVSDK_NGX_Parameter_MotionVectors);
@@ -1099,7 +1122,8 @@ inline void CapturePresentGuides11(
     ID3D11DeviceContext* context,
     const NVSDK_NGX_Handle* handle,
     const NVSDK_NGX_Parameter* parameters) {
-  if (present_guides.load(std::memory_order_relaxed) == kPresentGuidesNever
+  if (diagnostics::GuideMode(debug_guide_mode.load(std::memory_order_relaxed),
+                            present_guides.load(std::memory_order_relaxed)) == kPresentGuidesNever
       && !screenshot::WantsFinalPresent()) return;
   if (context->GetType() == D3D11_DEVICE_CONTEXT_DEFERRED) {
     static bool said = false;  // runtime_mutex
@@ -1258,7 +1282,7 @@ inline float QueryPresentSdrWhite(reshade::api::swapchain* swapchain) {
 inline bridge::OwnedParameters& FillPresentBlock(
     PresentStream* stream, void* frame, void* motion, void* depth,
     const FeatureState& contract, uint32_t width, uint32_t height,
-    float motion_share, int reset) {
+    float motion_share, int reset, bool neutral_model = false) {
   bridge::OwnedParameters& block = stream->parameters;
   block.Reset();
   block.Set(NVSDK_NGX_Parameter_Color, frame);
@@ -1304,11 +1328,11 @@ inline bridge::OwnedParameters& FillPresentBlock(
   // game feature created before the hooks (FindOrRegisterFeature's warning).
   // Read through a view with no resources: on Direct3D 11 the block holds
   // D3D11 pointers, which DeriveFeatureState would call as D3D12 ones.
-  if (features.find(stream->Handle()) == features.end()) {
+  if (features.find(stream->Handle(neutral_model)) == features.end()) {
     const bridge::ParameterView view(&block, nullptr);
     FeatureState state = DeriveFeatureState(&view);
     state.source_feature = kFeatureDlss;
-    features.emplace(stream->Handle(), state);
+    features.emplace(stream->Handle(neutral_model), state);
   }
   return block;
 }
@@ -1384,10 +1408,23 @@ inline bridge::OwnedParameters& FillPresentBlock(
 
 // After the real evaluate, outside runtime_mutex: the game's DLSSG.HUDLess
 // back in its block (RunPresentPreFg's stand-in was there for real()).
+inline thread_local uint64_t prefg_restoration_serial = 0;
+inline thread_local const NVSDK_NGX_Parameter* prefg_restoration_parameters = nullptr;
+
 inline void RestorePresentPreFg(const NVSDK_NGX_Parameter* parameters, ID3D12Resource* hudless) {
   if (hudless == nullptr) return;
   NVSDK_NGX_Parameter_SetVoidPointer(const_cast<NVSDK_NGX_Parameter*>(parameters),
                                      NVSDK_NGX_DLSSG_Parameter_HUDLess, hudless);
+  if (prefg_restoration_parameters == parameters && prefg_restoration_serial != 0) {
+    screenshot::AppendPreFgMeta(prefg_restoration_serial,
+        "fg_parameter_restoration_call_paired=1\nfg_restored_hudless_identity="
+        + std::to_string(reinterpret_cast<uintptr_t>(hudless)) + "\n");
+    screenshot::SealPreFgCapture(prefg_restoration_serial,
+        PreFgResource(parameters, NVSDK_NGX_DLSSG_Parameter_HUDLess) == hudless,
+        reinterpret_cast<uintptr_t>(hudless), reinterpret_cast<uintptr_t>(parameters));
+    prefg_restoration_serial = 0;
+    prefg_restoration_parameters = nullptr;
+  }
 }
 
 // Why a HUD-less frame runs two NR passes instead of the composite: the bits
@@ -1412,7 +1449,10 @@ inline uint32_t ComposePresentPreFg(ID3D12GraphicsCommandList* command_list,
                                     const NVSDK_NGX_Parameter* parameters,
                                     ID3D12Resource* backbuffer, ID3D12Resource* hudless,
                                     const D3D12_RESOURCE_DESC& back_desc,
-                                    D3D12_RESOURCE_STATES input_state) {
+                                    D3D12_RESOURCE_STATES input_state,
+                                    ID3D12Resource* enhanced_hudless = nullptr) {
+  const bool exact_only = enhanced_hudless != nullptr;
+  if (enhanced_hudless == nullptr) enhanced_hudless = present_prefg_hudless;
   const uint32_t pre_fg_mode = present_pre_fg.load(std::memory_order_relaxed);
   if (pre_fg_mode == kPresentPreFgTwoPass) return kPreFgTwoPassForced;
   const bool residual = pre_fg_mode != kPresentPreFgHudTwoPass;
@@ -1544,6 +1584,7 @@ inline uint32_t ComposePresentPreFg(ID3D12GraphicsCommandList* command_list,
     mode = alpha && red ? 0u : 1u;
     break;
   }
+  if (exact_only && mode == 2) return kPreFgTwoPassUnavailable;
   static uint32_t said_modes = 0;
   if ((std::exchange(said_modes, said_modes | (1u << mode)) & (1u << mode)) == 0) {
     LogPresent(reshade::log::level::info,
@@ -1618,6 +1659,21 @@ inline uint32_t ComposePresentPreFg(ID3D12GraphicsCommandList* command_list,
   // every later frame on the fallback while other sets are free.
   if (set == kPresentPreFgComposeSets) return kPreFgComposeBusy;
   const uint32_t serial = ++compose.serial;
+  if (screenshot::PreFgCaptureMatches(present_prefg_target.service_serial)) {
+    screenshot::AppendPreFgMeta(present_prefg_target.service_serial,
+        "compose.original_bb_alias=original_bb\ncompose.original_hl_alias=original_hl\n"
+        "compose.enhanced_hl_alias=hudless_hdr_receiver_roi\n"
+        "compose.alias_proof=same_resource_no_intervening_write_before_dispatch\n");
+    screenshot::RecordPreFgPlane(device, command_list, "compose_ui", ui, input_state,
+                                present_prefg_target.service_serial);
+    screenshot::AppendPreFgMeta(present_prefg_target.service_serial,
+        "compose.actual_mode=" + std::to_string(mode) + "\ncompose.recorded_serial=" + std::to_string(serial)
+        + "\ncompose.ui_native_format=" + std::to_string(ui != nullptr ? ui->GetDesc().Format : DXGI_FORMAT_UNKNOWN)
+        + "\ncompose.ui_srv_format=" + std::to_string(ui_format)
+        + "\ncompose.ui_channel=" + std::string(mode == 0 ? "r_native_alpha" : (mode == 1 ? "a_ui_alpha" : "difference_mask"))
+        + "\ncompose.observed_statistics_serial=" + std::to_string(compose.read_serial)
+        + "\ncompose.statistics_source=current_dispatch_private_readback\n");
+  }
   compose.slot_mode[set] = static_cast<uint8_t>(mode);
   submission::TrackUse(command_list, &compose.slot_mode[set]);
   for (const void* object :
@@ -1639,7 +1695,7 @@ inline uint32_t ComposePresentPreFg(ID3D12GraphicsCommandList* command_list,
   const std::pair<ID3D12Resource*, DXGI_FORMAT> views[4] = {
       {backbuffer, srv.Format},
       {hudless, hudless_format},
-      {present_prefg_hudless, hudless_format},
+      {enhanced_hudless, hudless_format},
       {ui != nullptr ? ui : backbuffer, ui != nullptr ? ui_format : srv.Format}};
   for (uint32_t i = 0; i < 4; ++i) {
     srv.Format = views[i].second;
@@ -1699,6 +1755,15 @@ inline uint32_t ComposePresentPreFg(ID3D12GraphicsCommandList* command_list,
              D3D12_RESOURCE_STATE_COPY_SOURCE);
   command_list->CopyBufferRegion(compose.readback, stats_offset, compose.stats, stats_offset,
                                  sizeof(uint32_t) * kPresentPreFgStatsWords);
+  if (screenshot::PreFgCaptureMatches(present_prefg_target.service_serial)) {
+    screenshot::RecordPreFgComposeStatistics(device, command_list, compose.stats, stats_offset,
+        present_prefg_target.service_serial, serial, mode, back_desc.Width * back_desc.Height,
+        constants.hud_limit, constants.residual != 0);
+    screenshot::AppendPreFgMeta(present_prefg_target.service_serial,
+        "compose.hud_limit=" + std::to_string(constants.hud_limit)
+        + "\ncompose.residual=" + std::to_string(constants.residual)
+        + "\ncompose.epsilon=" + std::to_string(constants.epsilon) + "\n");
+  }
   Transition(command_list, compose.stats, D3D12_RESOURCE_STATE_COPY_SOURCE,
              D3D12_RESOURCE_STATE_COMMON);
 
@@ -1736,6 +1801,48 @@ inline const void* StreamlineBaseIdentity(IUnknown* device) {
   base->Release();
   return identity;
 }
+
+struct NativeDeferredPresent {
+  reshade::api::command_queue* queue = nullptr;
+  reshade::api::swapchain* swapchain = nullptr;
+  const void* identity = nullptr;
+  uint64_t route_id = 0;
+  bool auto_fallback = false;
+};
+struct NativePresentInput {
+  const void* identity = nullptr;
+  uint64_t decision_id = 0;
+  const PresentStream* owner = nullptr;
+  uint64_t route_id = 0;
+  ID3D12Resource* backbuffer = nullptr;  // identities only
+  const void* marker = nullptr;
+  uint64_t serial = 0;
+  bool guides_unavailable = false;
+};
+inline uint64_t native_route_serial = 0;  // runtime_mutex
+inline thread_local NativeDeferredPresent native_deferred_present;
+inline thread_local const void* native_passthrough_identity = nullptr;
+inline thread_local NativePresentInput native_sdk_present_input;
+inline thread_local NativePresentInput native_passthrough_input;
+inline std::atomic_uint64_t native_sdk_present_serial{0};
+
+inline bool TakeNativePassthrough(const void* identity, const void* base_identity,
+                                  bool sdk_decision = false, NativePresentInput* input = nullptr) noexcept {
+  // An outer proxy callback precedes the SDK decision. A ticket left by
+  // the previous disabled frame must never authorize that new image.
+  if (base_identity != nullptr && !sdk_decision) return false;
+  if (native_passthrough_identity == nullptr
+      || (native_passthrough_identity != identity && native_passthrough_identity != base_identity)) return false;
+  if (input != nullptr) {
+    *input = native_passthrough_input;
+  }
+  native_passthrough_identity = nullptr;
+  native_passthrough_input = {};
+  return true;
+}
+
+// fg_native.hpp follows this path and owns the handle-to-output bindings.
+inline void OnNativePresentPassthrough(const PresentStream* owner);
 
 // Record every D3D12 presenting stream, including ones not yet served, so
 // auto-FG never selects a different device or guesses between equal views.
@@ -1977,6 +2084,11 @@ inline ID3D12Resource* RunPresentPreFg(ID3D12GraphicsCommandList* command_list,
     matching = 1;
   }
   const auto fall_back = [&](uint32_t bit, const std::string& why) -> ID3D12Resource* {
+    if (matching == 1) {
+      PublishPresentRestoreOwner(present_restore_scope::Domain::OTHER,
+          present_restore_scope::Reason::INACTIVE_DOMAIN, true, 0, 0, "pre_fg_rejected: " + why);
+    }
+    if (screenshot::WantsPreFgService()) screenshot::FailRequest("incomplete", why.c_str());
     present_prefg_fallbacks.fetch_add(1, std::memory_order_relaxed);
     if (matching == 1 && owner == present_prefg_served_swapchain) {
       present_prefg_served_ns = 0;
@@ -2039,6 +2151,10 @@ inline ID3D12Resource* RunPresentPreFg(ID3D12GraphicsCommandList* command_list,
   }
   if (!PresentHookServes(false) && auto_fg_observation.swapchain != owner) return nullptr;
   present_prefg_target = owner_stream->prefg_target;
+  SnapshotPresentRestoreConfiguration(&present_prefg_target);
+  static uint64_t next_service_serial = 0;
+  present_prefg_target.service_serial = ++next_service_serial;
+  present_prefg_target.multi_frame_index = index;
   present_prefg_width = owner_stream->backbuffer_width;
   present_prefg_height = owner_stream->backbuffer_height;
   present_prefg_target_multiplier = owner_stream->fg_multiplier;
@@ -2072,6 +2188,24 @@ inline ID3D12Resource* RunPresentPreFg(ID3D12GraphicsCommandList* command_list,
   if (!IsSupportedInjectionCommandList(command_list)) {
     return fall_back(32, "NR cannot record in its list (type "
                              + std::to_string(static_cast<int>(command_list->GetType())) + ")");
+  }
+  if (!present_prefg_target.restore_scope.inherited
+      && present_prefg_target.restore_scope.scope == present_restore_scope::Scope::FINAL_PRESENT_AND_PRE_FG) {
+    ID3D12Device* contract_device = nullptr;
+    bool compatible = SUCCEEDED(command_list->GetDevice(IID_PPV_ARGS(&contract_device)));
+    if (compatible) {
+      compatible = SupportsCodecFormat(contract_device, CodecViewFormat(ConcreteResourceFormat(back_desc.Format)))
+          && SupportsCodecFormat(contract_device, CodecViewFormat(ConcreteResourceFormat(hudless_desc.Format)));
+      if (present_prefg_target.hdr_mode != 0) {
+        compatible = compatible && present_prefg_target.units.absolute
+            && std::isfinite(present_prefg_target.units.unit_nits) && present_prefg_target.units.unit_nits > 0.f
+            && ((present_prefg_target.hdr_mode == 2 && present_prefg_target.units.encoding == codec::Encoding::Pq)
+                || (present_prefg_target.hdr_mode == 1 && present_prefg_target.units.encoding == codec::Encoding::Linear))
+            && present_prefg_target.hdr_codec_mode != 0u && EnsureV6CodecPipeline(contract_device);
+      }
+    }
+    ReleaseCom(contract_device);
+    present_prefg_target.restore_contract_compatible = compatible;
   }
   const bool compute_list = command_list->GetType() == D3D12_COMMAND_LIST_TYPE_COMPUTE;
   if (legacy_contract && compute_list) {
@@ -2138,6 +2272,36 @@ inline ID3D12Resource* RunPresentPreFg(ID3D12GraphicsCommandList* command_list,
       present_prefg_hudless_state = input_state;
     }
   }
+  ID3D12Device* capture_device = nullptr;
+  const bool capture_requested = screenshot::WantsPreFgService();
+  bool capture_service = false;
+  if (capture_requested && SUCCEEDED(command_list->GetDevice(IID_PPV_ARGS(&capture_device)))) {
+    capture_service = screenshot::BeginPreFgCapture(capture_device, command_list, backbuffer, input_state,
+        present_prefg_target.hdr_mode, present_prefg_target.units.unit_nits, present_generation,
+        present_prefg_target.service_serial, present_prefg_target.restore_config_epoch);
+    if (capture_service) {
+      screenshot::RecordPreFgPlane(capture_device, command_list, "original_bb", backbuffer, input_state,
+                                  present_prefg_target.service_serial);
+      screenshot::RecordPreFgPlane(capture_device, command_list, "original_hl", standing, input_state,
+                                  present_prefg_target.service_serial);
+      screenshot::AppendPreFgMeta(present_prefg_target.service_serial,
+          "multi_frame_index=" + std::to_string(index) + "\nowner_identity="
+          + std::to_string(reinterpret_cast<uintptr_t>(owner))
+          + "\nviewport_x=0\nviewport_y=0\nviewport_width=" + std::to_string(back_desc.Width)
+          + "\nviewport_height=" + std::to_string(back_desc.Height)
+          + "\nviewport_source=validated_full_pre_fg_surface"
+            "\nviewport_id=unavailable\nviewport_id_reason=NGX_service_entry_has_no_stable_viewport_handle"
+            "\nframe_token=unavailable\nframe_token_reason=NGX_service_entry_has_no_frame_token_argument"
+            "\nresource_contract_epoch=unavailable"
+            "\nresource_contract_epoch_reason=game_surface_epoch_unavailable_role_owned_workset_epochs_recorded"
+            "\nservice_serial_source=addon_service_transaction_not_FG_frame_token\n");
+    } else {
+      screenshot::FailRequest("incomplete", "pre-FG native ROI could not be allocated or bound");
+    }
+  }
+  // Capture failures never participate in service admission or route selection.
+  auto capture_device_release = std::unique_ptr<ID3D12Device, void (*)(ID3D12Device*)>(
+      capture_device, [](ID3D12Device* device) { if (device != nullptr) device->Release(); });
   gate_ever_opened.store(true, std::memory_order_relaxed);
   // DLSS-G integrations use both normalized and pixel motion-scale units.
   // MSFS 2024 supplied (3838,1675) for a 3838x1675 window; multiplying
@@ -2228,6 +2392,9 @@ inline ID3D12Resource* RunPresentPreFg(ID3D12GraphicsCommandList* command_list,
                      static_cast<uint32_t>(back_desc.Width), back_desc.Height, 1.f, reset);
     PresentTarget target = present_prefg_target;
     target.capture_display = false;
+    target.domain = (i == 0 ? present_restore_scope::Domain::PRE_FG_BACKBUFFER
+                            : present_restore_scope::Domain::PRE_FG_HUDLESS);
+    target.original_identity = reinterpret_cast<uintptr_t>(i == 0 ? backbuffer : standing);
     target.output_state = input_state;
     target.workset_key = reinterpret_cast<const ID3D12Resource*>(&stream);
     // HUDLess has no HUD to correct.
@@ -2238,8 +2405,11 @@ inline ID3D12Resource* RunPresentPreFg(ID3D12GraphicsCommandList* command_list,
     // read it as unaccounted.
     const EvaluateInFlightScope attempt_in_flight(true);
     present_prefg_attempts.fetch_add(1, std::memory_order_relaxed);
-    const bool ran = ProcessInline(command_list, stream.Handle(), &stream.parameters,
-                                   &pass_touched, &target);
+    bool ran = false;
+    {
+      const screenshot::PreFgRoleScope capture_role(capture_service ? (i == 0 ? "backbuffer" : "hudless") : nullptr);
+      ran = ProcessInline(command_list, stream.Handle(), &stream.parameters, &pass_touched, &target);
+    }
     RecordInjectionCpu(started_ns);
     touched |= pass_touched;
     if (!ran) break;
@@ -2248,6 +2418,34 @@ inline ID3D12Resource* RunPresentPreFg(ID3D12GraphicsCommandList* command_list,
   if (touched) envelope.MarkInjectionCommandsRecorded();
   if (passes != (standing != nullptr && two_pass != 0 ? 2u : 1u)) {
     return fall_back(256, "NR declined the frame (see the declines)");
+  }
+  if (capture_service) {
+    screenshot::SetPreFgComposition(present_prefg_target.service_serial, standing != nullptr,
+                                   standing != nullptr && two_pass == 0);
+    if (standing != nullptr && two_pass == 0) {
+      screenshot::RecordPreFgPlane(capture_device, command_list, "fg_input_backbuffer", backbuffer, input_state,
+                                  present_prefg_target.service_serial);
+    }
+    screenshot::AppendPreFgMeta(present_prefg_target.service_serial,
+        "fg_input_backbuffer_alias=" + std::string(standing != nullptr && two_pass == 0
+            ? "fg_input_backbuffer" : "backbuffer_hdr_receiver_roi")
+        + "\nfg_input_hudless_alias=" + std::string(standing != nullptr
+            ? "hudless_hdr_receiver_roi" : (hudless != nullptr ? "backbuffer_hdr_receiver_roi" : "absent"))
+        + "\nfg_input_alias_proof=role_receiver_same_resource_no_intervening_write\n");
+    screenshot::AppendPreFgMeta(present_prefg_target.service_serial,
+        "compose.fallback_reason_bits=" + std::to_string(two_pass)
+        + "\nfg_actual_backbuffer_identity=" + std::to_string(reinterpret_cast<uintptr_t>(backbuffer))
+        + "\nfg_actual_hudless_identity="
+        + std::to_string(reinterpret_cast<uintptr_t>(standing != nullptr ? present_prefg_hudless : hudless))
+        + "\nfg_parameter_restoration_required=" + std::to_string(standing != nullptr) + "\n");
+    if (standing == nullptr) {
+      screenshot::VerifyPreFgInputBinding(present_prefg_target.service_serial,
+          PreFgResource(parameters, NVSDK_NGX_DLSSG_Parameter_Backbuffer) == backbuffer
+              && PreFgResource(parameters, NVSDK_NGX_DLSSG_Parameter_HUDLess) == hudless);
+    }
+    screenshot::EndPreFgCapture(command_list, backbuffer, input_state,
+                                present_prefg_target.service_serial, standing != nullptr,
+                                reinterpret_cast<uintptr_t>(standing), reinterpret_cast<uintptr_t>(parameters));
   }
   present_prefg_passes.fetch_add(passes, std::memory_order_relaxed);
   if (two_pass != 0) {
@@ -2295,6 +2493,36 @@ inline ID3D12Resource* RunPresentPreFg(ID3D12GraphicsCommandList* command_list,
     LogPresent(reshade::log::level::info, message.str());
   }
   present_prefg_served_ns = SteadyNowNs();
+  const auto served_domain = standing != nullptr && two_pass == 0
+      ? present_restore_scope::Domain::PRE_FG_COMPOSE : present_restore_scope::Domain::PRE_FG_BACKBUFFER;
+  const auto served_decision = present_restore_scope::Decide(present_prefg_target.restore_scope, served_domain);
+  PublishPresentRestoreOwner(served_domain, served_decision.reason,
+      present_prefg_target.restore_contract_compatible, present_prefg_target.service_serial,
+      present_prefg_target.restore_config_epoch, "pre_fg_served");
+  // Report the final owner stage separately from its preceding NR-role log.
+  // A composite never applies another restore, even when HUD-less NR did.
+  struct OwnerLogKey {
+    uintptr_t owner = 0;
+    present_restore_scope::Domain domain = present_restore_scope::Domain::OTHER;
+    uint64_t config_epoch = 0;
+    bool contract_compatible = false;
+    bool operator==(const OwnerLogKey&) const = default;
+  };
+  static std::optional<OwnerLogKey> last_owner_log;
+  const OwnerLogKey owner_log{reinterpret_cast<uintptr_t>(owner), served_domain,
+      present_prefg_target.restore_config_epoch, present_prefg_target.restore_contract_compatible};
+  if (!last_owner_log || *last_owner_log != owner_log) {
+    last_owner_log = owner_log;
+    std::ostringstream message;
+    message << "pre-FG owner actual_domain=" << present_restore_scope::DomainText(served_domain)
+            << " scope_reason=" << present_restore_scope::ReasonText(served_decision.reason)
+            << " scope_source=" << present_restore_scope::SourceText(present_prefg_target.restore_scope.source)
+            << " config_epoch=" << present_prefg_target.restore_config_epoch
+            << " service_serial=" << present_prefg_target.service_serial
+            << " contract_compatible=" << present_prefg_target.restore_contract_compatible
+            << " additional_compose_restore=0 preceding_NR_correction=see_role_contract";
+    LogPresent(reshade::log::level::info, message.str());
+  }
   present_prefg_served_swapchain = owner;
   present_prefg_served_presents = present_frames_seen.load(std::memory_order_relaxed);
   // The completed frame's declared count is independent of the user's
@@ -2310,14 +2538,28 @@ inline ID3D12Resource* RunPresentPreFg(ID3D12GraphicsCommandList* command_list,
   workset_idle_exempt_ns = present_prefg_served_ns;
   if (standing == nullptr) return nullptr;
   present_prefg_hudless_source = hudless;
+  prefg_restoration_serial = present_prefg_target.service_serial;
+  prefg_restoration_parameters = parameters;
   NVSDK_NGX_Parameter_SetVoidPointer(const_cast<NVSDK_NGX_Parameter*>(parameters),
                                      NVSDK_NGX_DLSSG_Parameter_HUDLess, present_prefg_hudless);
+  screenshot::VerifyPreFgInputBinding(prefg_restoration_serial,
+      PreFgResource(parameters, NVSDK_NGX_DLSSG_Parameter_Backbuffer) == backbuffer
+          && PreFgResource(parameters, NVSDK_NGX_DLSSG_Parameter_HUDLess) == present_prefg_hudless);
   return hudless;
+}
+
+// The final-Present observation is not another NR opportunity when native
+// FG already owns the application image. It still needs a funnel terminal.
+inline bool YieldPresentToNativeFg() {
+  if (!native_fg_owns.load(std::memory_order_acquire)
+      || hook_point.load(std::memory_order_relaxed) != kHookPresent) return false;
+  CountNrDecline(NrDeclineReason::kPresentPreFg);
+  return true;
 }
 
 inline void RunPresentPath(
     reshade::api::command_queue* queue, reshade::api::swapchain* swapchain,
-    bool auto_fallback = false) {
+    bool auto_fallback = false, bool deferred = false) {
   // Resolve unsupported requests before the route's early return: Vulkan
   // and the D3D11 foreign/off routes never satisfy PresentHookServes().
   // A helper's small control-window swapchain is not its evaluated game
@@ -2363,7 +2605,11 @@ inline void RunPresentPath(
       }
     }
   }
+  if (fg::xefg::OwnsStream()) return;
   if (!PresentHookServes(false) && !auto_fallback) {
+    PublishPresentRestoreOwner(present_prefg_upscaled_active.load(std::memory_order_relaxed)
+            ? present_restore_scope::Domain::UPSCALED_FALLBACK : present_restore_scope::Domain::OTHER,
+        present_restore_scope::Reason::INACTIVE_DOMAIN, true, 0, 0, "present_hook_not_serving");
     if (screenshot::HasPending()
         || screenshot::internal::retained_sets.load(std::memory_order_relaxed) != 0) {
       // The one-shot comparison restored the inline hook after recording
@@ -2439,7 +2685,7 @@ inline void RunPresentPath(
   const CallbackScope callback_scope;
   if (!callback_scope) return;
   // From here every present names one terminal.
-  present_frames_seen.fetch_add(1, std::memory_order_relaxed);
+  if (!deferred) present_frames_seen.fetch_add(1, std::memory_order_relaxed);
   if (!enabled.load()) {
     screenshot::FailRequest("nr_disabled", "enable NR before requesting a comparison");
     CountNrDecline(NrDeclineReason::kNrDisabledEvaluation);
@@ -2519,6 +2765,12 @@ inline void RunPresentPath(
   if (encoding == 0) encoding = automatic;
   PresentTarget target;
   target.capture_display = true;
+  target.domain = present_restore_scope::Domain::FINAL_PRESENT;
+  SnapshotPresentRestoreConfiguration(&target);
+  target.swapchain_identity = reinterpret_cast<uintptr_t>(swapchain);
+  target.swapchain_format = back_format;
+  target.hdr_color_space = color_space;
+  target.d3d11_bridge = d3d11;
   if (encoding == 2) {
     target.hdr_mode = 2;
     target.units = {codec::Encoding::Pq, true, 10000.f, true};
@@ -2544,6 +2796,7 @@ inline void RunPresentPath(
     }
     return;
   }
+  present_sdr_restore_active.store(target.hdr_mode == 0, std::memory_order_relaxed);
   const float mod_white =
       present_white_source.load() == 0u ? present_mod_white.load(std::memory_order_relaxed) : 0.f;
   const char* const white_source = present_white_nits.load() > 0.f ? "NRPresentWhiteNits"
@@ -2571,6 +2824,26 @@ inline void RunPresentPath(
     }
   }
   const uint32_t mode = codec_mode.load();
+  target.hdr_codec_mode = mode;
+  target.hdr_curve = (FrameDisplayCodec(target, mode)
+      ? 1u : (neural_floor_guard.load(std::memory_order_relaxed) ? 2u : 0u));
+  target.hdr_white_nits = white;
+  target.hdr_white_source = white_source;
+  target.hdr_encoding = V6EncodingConstant(target.units);
+  target.hdr_dark_gate = V6DarkGate(target.units);
+  target.hdr_pedestal_cap = codec::BlackPedestalCap(target.units);
+  {
+    target.hdr_pedestal = present_hdr_pedestal::Decide(
+        target.hdr_pedestal.configuration,
+        {.actual_present = true, .hdr_mode = target.hdr_mode, .v6_available = mode != 0u,
+         .encoding_valid = (target.hdr_mode == 2 && target.units.encoding == codec::Encoding::Pq)
+             || (target.hdr_mode == 1 && target.units.encoding == codec::Encoding::Linear),
+         .absolute_units = target.units.absolute, .unit_nits = target.units.unit_nits,
+         .display_codec = target.hdr_curve == 1u,
+         .legacy_mode = target.hdr_pedestal.legacy_mode,
+         .debug_bypass = target.diagnostic.bypass_hdr_pedestal});
+  }
+  // ProcessInline publishes support after the actual v6 workset is available.
   // Anchored (1) and Display (3) keep their own anchors (FrameCodecDivisor).
   target.divisor = target.hdr_mode != 0 && mode != 1u && mode != 3u
       ? codec::PresentDivisor(target.units, white, paper_white_scale.load(),
@@ -2673,20 +2946,6 @@ inline void RunPresentPath(
     LogPresent(reshade::log::level::info, "the swapchain can be served again");
   }
   PresentStream& stream = present_streams[swapchain];
-  // Every return below that runs no NR on a stream that already ran it sends
-  // a raw frame to the screen between NR frames: the flicker a player sees,
-  // counted in present[gaps=].  NRPresentFrames=1's repeats are raw by
-  // choice and set `ran` too.  Destroyed before `lock`.
-  struct GapCount {
-    bool had_nr = false;
-    bool ran = false;
-    ~GapCount() {
-      if (!ran && had_nr) {
-        present_gaps.fetch_add(1, std::memory_order_relaxed);
-      }
-    }
-  } gap{stream.nr_presents != 0};
-
   // A matching DLSS-G declaration is authoritative. When absent, timing
   // needs two complete, consistent windows; hitches do not change NR's
   // motion contract. Count before ring readiness so busy NR does not lower
@@ -2714,6 +2973,78 @@ inline void RunPresentPath(
     stream.prefg_target = target;
     stream.prefg_target_valid = true;
   }
+  bool native_passthrough = false;
+  if (!d3d11 && fg::native_options::ObservesPresentDecisions()) {
+    auto* const object = reinterpret_cast<IUnknown*>(swapchain->get_native());
+    const void* const identity = renodx::utils::directx::NativeIdentity(object);
+    const void* const base_identity = StreamlineBaseIdentity(object);
+    stream.native_output_identity = (base_identity != nullptr ? base_identity : identity);
+    if (stream.native_route_id == 0) {
+      stream.native_route_id = ++native_route_serial;
+    }
+    NativePresentInput input;
+    if (TakeNativePassthrough(identity, base_identity, deferred, &input)) {
+      native_passthrough = true;
+      // The current FG invocation can withdraw guides while a recent SR
+      // capture still exists. That capture cannot override this decision.
+      if (input.identity == stream.native_output_identity && input.owner == &stream
+          && input.route_id == stream.native_route_id && input.guides_unavailable
+          && diagnostics::GuideMode(target.diagnostic.guides,
+                 present_guides.load(std::memory_order_relaxed)) == kPresentGuidesRequired) {
+        CountNrDecline(NrDeclineReason::kPresentNoGuides);
+        return;
+      }
+      // A successful FG call may leave its enhanced input for a later real-
+      // frame copy. Only this SDK decision's exact, submitted image can avoid
+      // a second NR pass; a persistent owner or last frame's buffer cannot.
+      if (input.identity == stream.native_output_identity
+          && input.owner == &stream && input.route_id == stream.native_route_id
+          && input.backbuffer == back && input.marker != nullptr && input.serial != 0) {
+        std::vector<std::pair<FenceRef, uint64_t>> tokens;
+        const auto proof = submission::UseSubmissionTokens(input.marker, &tokens);
+        const ID3D12Fence* own_fence = nullptr;
+        {
+          std::shared_lock map(queue_completion_mutex);
+          const auto found = queue_completions.find(reinterpret_cast<ID3D12CommandQueue*>(queue->get_native()));
+          if (found != queue_completions.end()) {
+            own_fence = found->second.fence;
+          }
+        }
+        const bool submitted = proof == submission::UseSubmission::kTokens
+            || (proof == submission::UseSubmission::kComplete
+                && native_fg_marker.load(std::memory_order_acquire) == input.marker
+                && native_fg_result.load(std::memory_order_acquire) == fg::Result::SUBMITTED
+                && native_fg_counted_serial.load(std::memory_order_relaxed) == input.serial);
+        const bool ordered = submitted
+            && std::ranges::all_of(tokens, [own_fence](const auto& token) {
+                 return token.first.fence == own_fence || token.first->GetCompletedValue() >= token.second;
+               });
+        if (ordered) {
+          CountNrDecline(NrDeclineReason::kPresentPreFg);
+          return;
+        }
+        CountNrDecline(NrDeclineReason::kPresentBusy);
+        return;
+      }
+      OnNativePresentPassthrough(&stream);
+    } else if (base_identity != nullptr) {
+      // ReShade wraps the SL proxy. The SDK has not decided whether this
+      // application image will generate frames or go straight to Present.
+      native_deferred_present = {.queue = queue, .swapchain = swapchain,
+          .identity = base_identity, .route_id = stream.native_route_id, .auto_fallback = auto_fallback};
+      return;
+    }
+  }
+  if (!native_passthrough && YieldPresentToNativeFg()) return;
+  // Only this final-Present route can interpret its own skipped work as a
+  // display gap. Native FG's normal bypass above is already served pre-FG.
+  struct GapCount {
+    bool had_nr = false;
+    bool ran = false;
+    ~GapCount() {
+      if (!ran && had_nr) present_gaps.fetch_add(1, std::memory_order_relaxed);
+    }
+  } gap{stream.nr_presents != 0};
   uint32_t matching_streams = 0;
   uint32_t matching_cadence_streams = 0;
   for (const auto& entry : present_streams) {
@@ -2724,7 +3055,10 @@ inline void RunPresentPath(
         other.backbuffer_width, other.backbuffer_height, back_width, back_height);
   }
   uint32_t declared_multiplier = 0;
-  if (!d3d11 && present_fg_declaration.multiplier != 0
+  const bool public_fg_off = native_passthrough || native_fg_public_off.load(std::memory_order_acquire);
+  const auto options_changed_ns = native_fg_options_changed_ns.load(std::memory_order_acquire);
+  if (!d3d11 && !public_fg_off && present_fg_declaration.multiplier != 0
+      && present_fg_declaration.observed_ns > options_changed_ns
       && present_fg_declaration.device == stream.device_identity
       && present_fg_declaration.width == back_width
       && present_fg_declaration.height == back_height
@@ -2734,11 +3068,19 @@ inline void RunPresentPath(
              <= 8 * present_fg_declaration.multiplier)) {
     if (matching_streams == 1) declared_multiplier = present_fg_declaration.multiplier;
   }
-  const bool changed = stream.fg_cadence.Observe(
-      now_ns, stream.cadence_captures,
-      matching_cadence_streams == 1 && now_ns >= stream.cadence_ambiguous_until_ns
-          && std::ranges::any_of(present_guide_sets, fresh), declared_multiplier,
-      static_cast<::renodx::dlss5::PresentFgSource>(present_fg_source.load(std::memory_order_relaxed)));
+  bool changed = false;
+  if (!d3d11 && (public_fg_off || (options_changed_ns != 0 && declared_multiplier == 0))) {
+    // Public Off overrides old pacing observations. After On, a matching
+    // declaration from this options interval must establish FG again.
+    changed = stream.fg_multiplier != 1;
+    stream.fg_cadence = {};
+  } else {
+    changed = stream.fg_cadence.Observe(
+        now_ns, stream.cadence_captures,
+        matching_cadence_streams == 1 && now_ns >= stream.cadence_ambiguous_until_ns
+            && std::ranges::any_of(present_guide_sets, fresh), declared_multiplier,
+        static_cast<::renodx::dlss5::PresentFgSource>(present_fg_source.load(std::memory_order_relaxed)));
+  }
   present_cadence.store(stream.fg_cadence.cadence, std::memory_order_relaxed);
   if (changed) {
     const uint32_t multiplier = stream.fg_cadence.multiplier;
@@ -2773,13 +3115,17 @@ inline void RunPresentPath(
   // generated or real, was built from NR's output already, so no NR here and
   // no gap.  After the cadence, so the multiplier stays current for the
   // presents that take over when pre-FG falls back.
-  const bool prefg = !d3d11 && present_prefg_served_swapchain == swapchain
+  const bool prefg = !native_passthrough && !d3d11 && present_prefg_served_swapchain == swapchain
       && present_prefg_served_ns != 0
       && (now_ns - present_prefg_served_ns <= kPresentPreFgHoldNs
           || present_frames_seen.load(std::memory_order_relaxed) - present_prefg_served_presents
                  <= kPresentPreFgHoldFrames * present_prefg_served_multiplier);
   present_prefg_active.store(prefg, std::memory_order_relaxed);
   if (prefg) {
+    {
+      std::unique_lock lock(present_restore_effective.mutex);
+      present_restore_effective.status = "pre_fg_served_hold";
+    }
     gap.ran = true;
     CountNrDecline(NrDeclineReason::kPresentPreFg);
     return;
@@ -2788,6 +3134,8 @@ inline void RunPresentPath(
   // evaluates run the Upscaled hook point, which DLSS-G interpolates from, so
   // NR here would enhance the real frames twice and the generated ones never.
   if (!d3d11 && present_prefg_upscaled_active.load(std::memory_order_relaxed)) {
+    PublishPresentRestoreOwner(present_restore_scope::Domain::UPSCALED_FALLBACK,
+        present_restore_scope::Reason::INACTIVE_DOMAIN, true, 0, 0, "upscaled_fallback_serves_present_idle");
     gap.ran = true;
     CountNrDecline(NrDeclineReason::kPresentFormat);
     return;
@@ -2864,8 +3212,10 @@ inline void RunPresentPath(
   auto* const native_queue = reinterpret_cast<ID3D12CommandQueue*>(queue->get_native());
   const bool comparing_clean_frame = screenshot::WantsFinalPresent()
       && screenshot::internal::requires_passthrough_frame.load(std::memory_order_acquire);
-  const uint32_t guides_mode = comparing_clean_frame
-      ? kPresentGuidesRequired : present_guides.load();
+  const uint32_t guides_mode = diagnostics::GuideMode(
+      target.diagnostic.guides,
+      comparing_clean_frame ? kPresentGuidesRequired : present_guides.load());
+  target.guide_mode = guides_mode;
   uint64_t comparison_serial = 0;
   if (comparing_clean_frame) {
     for (const PresentGuideSet& set : present_guide_sets) {
@@ -3049,6 +3399,10 @@ inline void RunPresentPath(
     return contract;
   }();
   const FeatureState& contract = guides != nullptr ? guides->contract : neutral_contract;
+  // Optional guides can alternate while a capture is in flight. Keep the two
+  // incompatible model contracts resident instead of cold-creating on each
+  // transition; their temporal histories still reset on source changes.
+  const bool neutral_model = !d3d11 && guides == nullptr;
   // Every present of a generated run moves 1/multiplier of a game frame.
   const float motion_share = guides != nullptr && present_frames.load() == 0
       ? 1.f / static_cast<float>(stream.fg_multiplier)
@@ -3058,8 +3412,9 @@ inline void RunPresentPath(
       &stream, d3d11 ? static_cast<void*>(back11) : back,
       d3d11 ? static_cast<void*>(motion11) : motion,
       d3d11 ? static_cast<void*>(depth11) : depth, contract, back_width, back_height,
-      motion_share, new_frame ? contract.frame_reset : 0);
+      motion_share, new_frame ? contract.frame_reset : 0, neutral_model);
   target.workset_key = reinterpret_cast<const ID3D12Resource*>(&stream);
+  target.guide_serial = (guides != nullptr ? guides->serial : 0u);
 
   // The serial turn was acquired before runtime_mutex, and is held through
   // recording and submission. A GPU slot wait releases both locks so the
@@ -3107,8 +3462,29 @@ inline void RunPresentPath(
   {
     const EvaluateChainScope chain_scope;
     const int64_t started_ns = SteadyNowNs();
+    const auto previous_capture_serial = screenshot::PendingModelCaptureSerial(slot->list);
     // From here ProcessInline names the terminal.
-    ProcessInline(slot->list, stream.Handle(), &block, &touched, &target);
+    ProcessInline(slot->list, stream.Handle(neutral_model), &block, &touched, &target);
+    const auto capture_serial = screenshot::PendingModelCaptureSerial(slot->list);
+    if (capture_serial != 0 && capture_serial != previous_capture_serial) {
+      const auto capture_guide = [&](const char* name, ID3D12Resource* resource) {
+        const auto desc = resource->GetDesc();
+        if (!screenshot::PrepareDiagnosticPlane(present_ring.device, name, resource,
+                static_cast<uint32_t>(desc.Width), desc.Height, std::nullopt, true, capture_serial)) return;
+        Transition(slot->list, resource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                   D3D12_RESOURCE_STATE_COPY_SOURCE, 0u);
+        screenshot::RecordDiagnosticPlaneCopy(slot->list, name, resource, capture_serial);
+        Transition(slot->list, resource, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, 0u);
+      };
+      capture_guide("guide_depth", depth);
+      capture_guide("guide_motion", motion);
+      std::scoped_lock capture_lock(screenshot::internal::state_mutex);
+      if (screenshot::internal::pending && screenshot::internal::pending->serial == capture_serial) {
+        screenshot::internal::pending->meta += "guide_source=final_capture\nguide_real="
+            + std::to_string(guides != nullptr) + "\nguide_serial=" + std::to_string(target.guide_serial) + "\n";
+      }
+    }
     RecordInjectionCpu(started_ns);
   }
   submission::TrackUse(slot->list, motion);
@@ -3143,5 +3519,66 @@ inline void RunPresentPath(
     present_guides_real.fetch_add(1, std::memory_order_relaxed);
   } else {
     present_guides_neutral.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+#include "fg_native.hpp"
+
+inline void OnNativePresentObserved(IDXGISwapChain* swapchain, UINT flags,
+                                    fg::native_options::PresentPhase phase) noexcept {
+  if ((flags & DXGI_PRESENT_TEST) != 0) return;
+  if (phase == fg::native_options::PresentPhase::SDK_BEGIN) {
+    native_passthrough_identity = nullptr;
+    native_passthrough_input = {};
+    native_sdk_present_input = {.identity = renodx::utils::directx::NativeIdentity(swapchain),
+        .decision_id = native_sdk_present_serial.fetch_add(1, std::memory_order_relaxed) + 1};
+    return;
+  }
+  try {
+    const void* const identity = renodx::utils::directx::NativeIdentity(swapchain);
+    const auto input = native_sdk_present_input;
+    native_sdk_present_input = {};
+    const auto pending = native_deferred_present;
+    if (pending.identity != identity) {
+      // If ReShade is inside SL, its callback has not run yet. Only the
+      // upcoming Present of this exact output on this thread may use it.
+      if (phase == fg::native_options::PresentPhase::SDK_FORWARD) {
+        native_passthrough_identity = identity;
+        native_passthrough_input = input;
+      }
+      return;
+    }
+    native_deferred_present = {};
+    if (phase != fg::native_options::PresentPhase::SDK_FORWARD) {
+      CountNrDecline(phase == fg::native_options::PresentPhase::SDK_HANDLED
+          ? NrDeclineReason::kPresentPreFg : NrDeclineReason::kGameEvaluateFailed);
+      return;
+    }
+    {
+      RuntimeLock lock(runtime_mutex);
+      const auto found = present_streams.find(pending.swapchain);
+      if (found == present_streams.end() || found->second.native_route_id != pending.route_id) {
+        CountNrDecline(NrDeclineReason::kTeardownPending);
+        return;
+      }
+    }
+    // The SDK chose direct presentation. Final NR must distinguish its raw
+    // output from an FG input already enhanced during this same decision.
+    // This is neither a Present-completion nor a GPU-completion signal.
+    native_passthrough_identity = identity;
+    native_passthrough_input = input;
+    if (!PresentHookServes(false) && !pending.auto_fallback) {
+      CountNrDecline(NrDeclineReason::kPresentHook);
+    } else {
+      RunPresentPath(pending.queue, pending.swapchain, pending.auto_fallback, true);
+    }
+    native_passthrough_identity = nullptr;
+    native_passthrough_input = {};
+  } catch (...) {
+    native_passthrough_identity = nullptr;
+    native_passthrough_input = {};
+    native_sdk_present_input = {};
+    native_deferred_present = {};
+    native_fg_result.store(fg::Result::FAILED, std::memory_order_release);
   }
 }

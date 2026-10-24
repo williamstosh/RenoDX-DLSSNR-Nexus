@@ -34,6 +34,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 namespace renodx::addons::dlss5 {
 
@@ -288,6 +289,16 @@ struct NrVerdict {
   }
   const char* ReasonName() const { return reason != nullptr ? reason : "-"; }
   const char* MissingName() const { return missing != nullptr ? missing : "-"; }
+
+  bool IsFgPreparing() const {
+    return state == NrState::kNotEngaged && std::strcmp(path, "present") == 0
+        && reason != nullptr && std::strcmp(reason, "fg_preparing") == 0;
+  }
+
+  bool IsFgHandoffProgress() const {
+    return IsFgPreparing()
+        || (state == NrState::kEngaged && std::strcmp(path, "present") == 0 && reason == nullptr);
+  }
 };
 
 // The whole decision, in the order the stages happen.  Each rung answers

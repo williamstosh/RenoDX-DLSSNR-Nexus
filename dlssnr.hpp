@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -38,6 +39,7 @@
 #include <vector>
 
 #include "debug.hpp"
+#include "fg_frame.hpp"
 
 #include <d3d12.h>
 #include <detours.h>
@@ -74,10 +76,14 @@
 #include "cmd_slots.hpp"
 #include "codec_gain.hpp"
 #include "declines.hpp"
+#include "diagnostic_policy.hpp"
 #include "detour_guard.hpp"
 #include "direct_call.hpp"
 #include "gpu_lease.hpp"
 #include "present_cadence.hpp"
+#include "present_sdr_restore_policy.hpp"
+#include "present_hdr_pedestal_policy.hpp"
+#include "present_restore_scope.hpp"
 #include "reset_epoch.hpp"
 #include "root_arguments.hpp"
 #include "runtime_lock.hpp"
@@ -90,6 +96,8 @@
 #include "ui/strings.hpp"
 #include "ui/widgets.hpp"
 #include "submission_tracker.hpp"
+#include "fg_xefg.hpp"
+#include "fg_native_options.hpp"
 #include "screenshot.hpp"
 #include "edit_trace.hpp"
 #include "gpu_timers.hpp"
@@ -165,8 +173,42 @@ constexpr char kOverlayTitle[] = "DLSS 5 Neural Rendering";
 // stored 1 migrates.  The key is ini-only and PersistConfig echoed the v8.1
 // default into every file, so a stored 1 at schema 6 is inherited, not
 // chosen.
-constexpr uint32_t kConfigVersion = 7;
+constexpr uint32_t kConfigVersion = 8;
 constexpr char kAddonVersion[] = "v" NR_NEXUS_VERSION;
+inline std::atomic_bool native_fg_owns{false};
+inline std::atomic_bool native_fg_public_off{false};
+// Options callbacks cannot take runtime_mutex. Consumers invalidate cached
+// application images at the next turn, retaining only compatible models.
+inline std::atomic_uint64_t native_fg_options_generation{0};
+inline std::atomic_int64_t native_fg_options_changed_ns{0};
+inline std::atomic<fg::Result> native_fg_result{fg::Result::NOT_SERVED};
+inline std::atomic<const void*> native_fg_marker{nullptr};
+inline std::atomic_uint64_t native_fg_recording_serial{0};
+inline std::atomic_uint64_t native_fg_counted_serial{0};
+inline std::atomic_uint64_t native_fg_submitted_frames{0};
+// Service continuity is separate from the current list's submission proof.
+// It expires if that next recording stalls instead of reaching the queue.
+inline std::atomic_bool native_fg_continuing_submission{false};
+inline std::atomic_int64_t native_fg_last_submission_ns{0};
+inline std::atomic_uint64_t native_fg_display_epoch{0};
+inline constexpr int64_t kNativeFgDisplayContinuityNs = 1'000'000'000LL;
+// A model result may be consumed by several MFG lists or observed again at
+// retirement. Count its application frame once, only after a queue proof.
+inline void CountNativeFgSubmission(uint64_t serial) noexcept {
+  auto previous = native_fg_counted_serial.load(std::memory_order_relaxed);
+  while (serial > previous) {
+    if (native_fg_counted_serial.compare_exchange_weak(previous, serial, std::memory_order_relaxed)) {
+      native_fg_submitted_frames.fetch_add(1, std::memory_order_relaxed);
+      break;
+    }
+  }
+}
+inline uint64_t TotalFgSubmittedFrames() noexcept {
+  return native_fg_submitted_frames.load(std::memory_order_relaxed) + fg::xefg::SubmittedFrames();
+}
+inline const NVSDK_NGX_Handle* native_fg_owner = nullptr;  // runtime_mutex
+constexpr char kCandidateSourceTag[] = "fg-integration-s2-20261018";
+constexpr char kHdrCaptureBuildId[] = "FG-INTEGRATION-S2-20261018";
 // SHA-256 of the reference signed NR runtime build.  Identification only: a
 // mismatch is reported in the log/overlay but never blocks loading, because
 // swapping in a custom runtime build is a supported diagnostics workflow.
@@ -257,6 +299,7 @@ struct NrFeatureSlot {
   NVSDK_NGX_Parameter* parameters = nullptr;  // Owned through the initialized NGX core.
   bool via_core = false;
   uint8_t nr_hdr_mode = 0;  // hdr_mode the NR feature was created with
+  uint32_t nr_create_flags = 0;  // effective flags sent when this handle was created
   bool failed = false;
   // Steady-clock time at which `failed` was latched; the slot retries
   // automatically once the backoff interval expires (see ProcessInline).
@@ -284,6 +327,9 @@ struct NrFeatureSlot {
   // DLSSNR.Reset as this slot's latest evaluate sent it: the look history
   // restarts exactly when the model's own history does.
   bool model_reset = false;
+  bool model_ui_sent = false;
+  std::array<float, 9> model_sent{};
+  float model_intensity_sent = 0.f;
   // The model steering this slot last LOGGED, in panel order (style, local
   // tone, structure, skin, auto mask, UI correction), then Skin independent
   // and the structure and skin actually sent, and when.  NaN until the first
@@ -558,6 +604,9 @@ struct CodecPipeline {
   // in NR-input units.  Optional: without both, every frame runs v1.
   ID3D12PipelineState* exposure_scale = nullptr;
   ID3D12PipelineState* commit_exposure = nullptr;
+  ID3D12RootSignature* hdr_capture_root = nullptr;
+  ID3D12PipelineState* hdr_commit_capture = nullptr;
+  ID3D12PipelineState* hdr_commit_exposure_capture = nullptr;
   // The NR look stage: its own root signature (look::SerializeRootSignature)
   // and programs, created on first use (EnsureLookPipeline).
   look::Pipeline look;
@@ -845,6 +894,7 @@ struct EvaluationContract {
   // presented frame carries the game's UI, so it asks the model for UI
   // correction whatever the pass's own steering says.
   bool ui_correction = false;
+  uint32_t diagnostic_model_ui = 0;
 };
 
 // What the Present hook point changes in the after path (ProcessInline's
@@ -863,6 +913,43 @@ struct PresentTarget {
   bool ui_correction = false;
   // True only for the final swapchain pass, never the pre-FG/HUD-less pass.
   bool capture_display = false;
+  present_restore_scope::Domain domain = present_restore_scope::Domain::OTHER;
+  present_restore_scope::Configuration restore_scope;
+  uint64_t service_serial = 0;
+  uint64_t restore_config_epoch = 0;
+  uint32_t multi_frame_index = 0;
+  uintptr_t original_identity = 0;
+  bool restore_contract_compatible = true;
+  present_restore_scope::Decision restore_decision;
+  diagnostics::Options diagnostic;
+  present_sdr_restore::Policy sdr_restore_policy = present_sdr_restore::DEFAULT_POLICY;
+  uint32_t sdr_restore_config_version = present_sdr_restore::CONFIG_VERSION;
+  uint32_t sdr_restore_legacy_mode = 0;
+  uint32_t sdr_restore_effective_mode = 0;
+  std::array<float, kMaxNrPasses> pass_color_strength{};
+  uint64_t guide_serial = 0;
+  uint32_t guide_mode = 0;
+  uintptr_t swapchain_identity = 0;
+  DXGI_FORMAT swapchain_format = DXGI_FORMAT_UNKNOWN;
+  bool d3d11_bridge = false;
+  present_hdr_pedestal::Snapshot hdr_pedestal;
+  uint32_t hdr_codec_mode = 0;
+  uint32_t hdr_curve = 0;
+  uint32_t hdr_encoding = 0;
+  float hdr_dark_gate = 0.f;
+  float hdr_pedestal_cap = 0.f;
+  float hdr_white_nits = 0.f;
+  const char* hdr_white_source = "unknown";
+  std::array<float, kMaxNrPasses> pass_transfer_strength{};
+  reshade::api::color_space hdr_color_space = reshade::api::color_space::unknown;
+  FeedSource hdr_feed = FeedSource::kV1;
+  float hdr_effective_divisor = 0.f;
+  // Optional borrowed, read-only full-surface input; Output remains the
+  // private writeback target. The caller keeps the source alive for submission.
+  ID3D12Resource* source_color = nullptr;
+  D3D12_RESOURCE_STATES source_color_state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+  uint64_t hdr_temporary_bytes = 0;
+  bool hdr_statistics_unshaped = false;
 };
 
 inline HMODULE addon_module = nullptr;
@@ -946,6 +1033,36 @@ constexpr uint32_t kDefaultDisableRelease = 0;
 inline std::atomic_uint32_t disable_release_mode = kDefaultDisableRelease;
 inline std::atomic_bool disabled_resources_released{false};
 inline std::vector<RetiredFinalResources> retired_final_resources;
+
+struct HdrCaptureConstants {
+  uint32_t roi[4]{};
+  uint32_t full_planes = 0;
+  float legacy_pedestal_gate = 0.f;
+  uint32_t legacy_dark_gate_mode = 0;
+  uint32_t reserved = 0;
+};
+static_assert(sizeof(HdrCaptureConstants) == 8 * sizeof(uint32_t));
+
+struct HdrCommitCapture {
+  std::array<ID3D12Resource*, 4> planes{};
+  ID3D12DescriptorHeap* descriptors = nullptr;
+  ID3D12RootSignature* root = nullptr;
+  ID3D12PipelineState* pipeline = nullptr;
+  std::shared_ptr<void> budget_reservation;
+  HdrCaptureConstants constants;
+  uint64_t temporary_bytes = 0;
+
+  std::array<IUnknown*, 7> Objects() const {
+    return {planes[0], planes[1], planes[2], planes[3], descriptors, root, pipeline};
+  }
+  ~HdrCommitCapture() {
+    for (auto* object : Objects()) {
+      if (object != nullptr) object->Release();
+    }
+  }
+};
+// Each entry owns a write-once descriptor table and its GPU budget until exact retirement.
+inline std::vector<std::shared_ptr<HdrCommitCapture>> retired_hdr_captures;
 inline std::vector<RetiredNrFeature> retired_nr_features;
 // Lets lifecycle acquire an NGX turn before runtime_mutex only when feature
 // retirement has actual work. The vector itself stays under runtime_mutex.
@@ -1024,6 +1141,9 @@ inline std::unordered_map<const NVSDK_NGX_Handle*, FeatureState> features;
 // slipped past the hooks (early-boot titles) fall back to the lazy path.
 inline std::unordered_map<const NVSDK_NGX_Handle*, NVSDK_NGX_Feature>
     created_feature_ids;
+// FG create contract, guarded by runtime_mutex. Missing create flags default
+// to false; an unseen handle has no contract authorizing UI composition.
+inline std::unordered_map<const NVSDK_NGX_Handle*, bool> native_fg_ui_recomposition;
 // Handles missing from both records above that evaluated without a DLSSG.*
 // block: DLSS/RR, even once a shared block carries DLSS-G's resources
 // (FrameGenerationEvaluate).  Same lifetime as created_feature_ids.
@@ -1752,6 +1872,20 @@ inline std::atomic_uint32_t present_encoding = defaults::kPresentEncoding;
 inline std::atomic<float> present_white_nits = defaults::kPresentWhiteNits;
 inline std::atomic_uint32_t present_white_source = defaults::kPresentWhiteSource;
 inline std::atomic_bool present_ui_correction = defaults::kPresentUiCorrection;
+// Independent diagnostic controls; each PresentTarget freezes its effective values.
+inline std::atomic_bool debug_bypass_sdr_restore = false;
+inline std::atomic_bool debug_bypass_hdr_pedestal = false;
+inline std::atomic_uint32_t debug_hdr_capture_mode = 0;
+struct HdrPedestalPolicyState {
+  std::shared_mutex mutex;
+  present_hdr_pedestal::Configuration configuration;
+};
+inline HdrPedestalPolicyState hdr_pedestal_policy_state;
+inline std::atomic_bool present_hdr_pedestal_active = false;
+inline std::atomic<present_hdr_pedestal::Reason> present_hdr_pedestal_reason = present_hdr_pedestal::Reason::NOT_PRESENT;
+inline std::atomic_bool debug_bypass_host_look = false;
+inline std::atomic_uint32_t present_model_ui = 0;
+inline std::atomic_uint32_t debug_guide_mode = 0;
 // The Present hook point as the evaluate hooks and the reporting sites ask
 // for it: selected AND in a session it serves.  A Direct3D 11 session is
 // served on the native route only (present_path.hpp RunPresentPath, through
@@ -1774,6 +1908,8 @@ inline std::atomic_uint32_t present_frames = defaults::kPresentFrames;
 inline std::atomic_uint32_t present_fg_source = defaults::kPresentFgSource;
 inline std::atomic_uint32_t present_pre_fg = defaults::kPresentPreFg;
 inline std::atomic_uint32_t present_pre_fg_contract = defaults::kPresentPreFgContract;
+// Opt-in reference-style FG input policy; independent of the NR hotkey.
+inline std::atomic_bool present_block_hudless = false;
 inline std::atomic_uint32_t present_mvec_units = defaults::kPresentMvecUnits;
 // Global hotkeys (Windows virtual-key codes, persisted in [RenoDX.DLSS5] as
 // NRToggleKey / NRScreenshotKey).  F6 is the default NR toggle because F5
@@ -1827,6 +1963,27 @@ inline void RequestHistoryReset(
   history_reset_epoch.fetch_add(1, std::memory_order_relaxed);
   history_reset_counts[static_cast<size_t>(source)].fetch_add(
       1, std::memory_order_relaxed);
+}
+inline void OnNativeFgOptions(bool mode_enabled) noexcept {
+  const bool was_off = native_fg_public_off.exchange(!mode_enabled, std::memory_order_acq_rel);
+  if (was_off == !mode_enabled) return;
+  native_fg_options_changed_ns.store(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count(),
+      std::memory_order_release);
+  native_fg_options_generation.fetch_add(1, std::memory_order_release);
+  if (mode_enabled) {
+    if (was_off) RequestHistoryReset(HistoryResetSource::kRecreate);
+    return;
+  }
+  // Options may be called while an NGX wrapper holds runtime_mutex. The
+  // ownership transition and global reset epoch need only atomic updates.
+  if (native_fg_owns.exchange(false, std::memory_order_acq_rel)) {
+    native_fg_marker.store(nullptr, std::memory_order_release);
+    native_fg_continuing_submission.store(false, std::memory_order_release);
+    native_fg_result.store(fg::Result::NOT_SERVED, std::memory_order_release);
+    RequestHistoryReset(HistoryResetSource::kRecreate);
+  }
 }
 inline std::atomic_uint64_t configuration_generation = 1;
 inline std::atomic_uint32_t preset = defaults::kPreset;
@@ -2006,6 +2163,41 @@ inline std::atomic<uint32_t> transfer_mode = defaults::kTransferMode;
 inline std::atomic<float> style_highlight_guard = defaults::kStyleHighlightGuard;
 inline std::atomic<uint32_t> display_pedestal = defaults::kDisplayPedestal;
 inline std::atomic<uint32_t> sdr_black_restore = defaults::kSdrBlackRestore;
+inline std::atomic_uint32_t present_sdr_restore_policy =
+    static_cast<uint32_t>(present_sdr_restore::DEFAULT_POLICY);
+inline std::atomic_uint32_t present_sdr_restore_config_version = present_sdr_restore::CONFIG_VERSION;
+inline std::atomic_bool present_sdr_restore_config_writable = true;
+inline std::atomic_bool present_sdr_restore_active = true;
+struct PresentRestoreConfigurationState {
+  std::shared_mutex mutex;
+  present_restore_scope::Configuration scope;
+  uint64_t epoch = 0;
+  bool global_writable = true;
+};
+inline PresentRestoreConfigurationState present_restore_configuration;
+struct PresentRestoreEffectiveState {
+  std::shared_mutex mutex;
+  present_restore_scope::Domain domain = present_restore_scope::Domain::OTHER;
+  present_restore_scope::Reason reason = present_restore_scope::Reason::INACTIVE_DOMAIN;
+  bool contract_compatible = true;
+  uint64_t service_serial = 0;
+  uint64_t config_epoch = 0;
+  std::string status = "inactive";
+};
+inline PresentRestoreEffectiveState present_restore_effective;
+
+inline void PublishPresentRestoreOwner(present_restore_scope::Domain domain,
+    present_restore_scope::Reason reason, bool contract_compatible, uint64_t serial, uint64_t epoch,
+    const std::string& status) {
+  std::unique_lock lock(present_restore_effective.mutex);
+  present_restore_effective.domain = domain;
+  present_restore_effective.reason = reason;
+  present_restore_effective.contract_compatible = contract_compatible;
+  present_restore_effective.service_serial = serial;
+  present_restore_effective.config_epoch = epoch;
+  present_restore_effective.status = status;
+}
+
 // Why the last evaluated frame had nothing for HDR Transfer Strength to
 // scale, for the panel to grey it out with the reason: 0 it scales, 1 a
 // Display frame without the pedestal removal, 2 an SDR frame.
@@ -2145,7 +2337,7 @@ inline SkinSteering SentSkinSteering(float structure, float skin, bool auto_mask
 // edit at a per-frame weight.  `auto_engages`: this stream is one Auto
 // filters (the after path with the game's motion vectors).  The player's
 // Stabilize, when on, is left exactly as set.
-inline look::Settings LookSettingsSnapshot(bool auto_engages) {
+inline look::Settings LookSettingsSnapshot(bool auto_engages, bool bypass = false) {
   look::Settings settings{.upsample = look_upsample.load()};
   // Upsampling modes 0-2 differ only after the model; the area input (3)
   // changes what the model is fed, so only crossing that boundary restarts
@@ -2157,6 +2349,7 @@ inline look::Settings LookSettingsSnapshot(bool auto_engages) {
       before != 2u && before != area) {
     RequestHistoryReset();
   }
+  if (bypass) return settings;
   if (look_mode.load()) {
     settings = {
         .strength = look_strength.load(),
@@ -4121,6 +4314,9 @@ inline uint64_t worksets_idle_retired = 0;
 // flicker.  Under runtime_mutex.
 inline const NVSDK_NGX_Handle* workset_idle_exempt_handle = nullptr;
 inline int64_t workset_idle_exempt_ns = 0;
+// Output owners can retain compatible models independently of idle scratch.
+// Registration and removal follow the owner's lifetime under runtime_mutex.
+inline std::unordered_set<const NVSDK_NGX_Handle*> owner_resident_nr_handles;
 inline void ReleaseAllNrSlots(FeatureState& state, bool retire);
 inline void RetireSupersededWorksets(int64_t now_ns) {
   for (auto it = worksets.begin(); it != worksets.end();) {
@@ -4142,14 +4338,14 @@ inline void RetireSupersededWorksets(int64_t now_ns) {
       ++it;
       continue;
     }
-    // A stream left without a workset has been idle as a whole for 5 s: its
-    // NR features go too, re-created by EnsureNrFeature if it evaluates again
-    // (their history resets through pending_reset, as after a contract change).
+    // The last idle workset normally takes its model slots with it. A live
+    // output owner can retain models while allowing scratch to retire.
     const auto state = same_stream ? features.end() : features.find(it->first.handle);
     const bool stream_idle = state != features.end()
         && std::count_if(worksets.begin(), worksets.end(), [&](const auto& other) {
              return other.first.handle == it->first.handle;
            }) == 1;
+    const bool retain_models = stream_idle && owner_resident_nr_handles.contains(it->first.handle);
     ++worksets_idle_retired;
     if (worksets_idle_retired_logged < 16) {
       ++worksets_idle_retired_logged;
@@ -4159,12 +4355,22 @@ inline void RetireSupersededWorksets(int64_t now_ns) {
               << (same_stream ? " s while its stream serves another output"
                               : " s while its stream is idle and another renders")
               << " (frees " << (it->second.allocated_bytes >> 20) << " MiB"
-              << (stream_idle ? "; the stream's NR features retire too)" : ")");
+              << (stream_idle ? (retain_models ? "; owner NR models retained)" : "; the stream's NR features retire too)") : ")");
       Log(reshade::log::level::info, message.str());
     }
     RetireWorksetResources(std::move(it->second));
     it = worksets.erase(it);
-    if (stream_idle) ReleaseAllNrSlots(state->second, true);
+    if (stream_idle) {
+      if (retain_models) {
+        // Scratch carries temporal image state. A later evaluation must not
+        // combine newly allocated scratch with the model's old history.
+        for (auto& slot : state->second.slots) {
+          slot.pending_reset = true;
+        }
+      } else {
+        ReleaseAllNrSlots(state->second, true);
+      }
+    }
   }
 }
 
@@ -4327,6 +4533,15 @@ inline uint64_t retired_late_leases = 0;
 // existed takes a late lease once one does; while none does it stays until
 // FlushRetiredResources at teardown, counted in retired[... unproven_*=N].
 inline void DrainRetiredResources(bool nr_release_allowed) {
+  std::erase_if(retired_hdr_captures, [](const auto& capture) {
+    for (const auto* object : capture->Objects()) {
+      if (object != nullptr && !submission::ResourceReleasable(object)) return false;
+    }
+    return true;
+  });
+  // Observe copy receipts before pruning; callbacks under tracker_mutex must
+  // not take screenshot's state lock in the reverse order.
+  screenshot::PreserveStageSubmissionProofs();
   // Advance the exact proofs first: drop closed generations whose
   // submissions all completed.
   submission::PruneCompletedGenerations(
@@ -4466,6 +4681,9 @@ inline void FlushRetiredResources() {
 }
 
 inline void ReleaseCodecPipeline() {
+  ReleaseCom(codec_pipeline.hdr_commit_capture);
+  ReleaseCom(codec_pipeline.hdr_commit_exposure_capture);
+  ReleaseCom(codec_pipeline.hdr_capture_root);
   ReleaseCom(codec_pipeline.black_restore_apply);
   ReleaseCom(codec_pipeline.block_mean_reduce);
   ReleaseCom(codec_pipeline.block_mean_reduce_unshaped);
@@ -6377,6 +6595,12 @@ inline FinalResources* EnsureWorkset(
   return &worksets.find(workset_key)->second;
 }
 
+inline uint32_t NrCreateFlags(uint32_t create_flags, bool hdr) {
+  return create_flags | (hdr ? NVSDK_NGX_DLSS_Feature_Flags_IsHDR
+                                 | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure
+                           : 0u);
+}
+
 // Feature 18's create block: the contract the probe validated, shared by
 // the D3D12 after path (EnsureNrFeature) and the Vulkan one
 // (vulkan_path.hpp).  `create_flags` are the game DLSS feature's.
@@ -6429,15 +6653,10 @@ inline void SetNrCreateParameters(NVSDK_NGX_Parameter* parameters, uint32_t inpu
   // runtime names (DLSSNR.Width, ScalingRatio, MVecScale - the last one
   // measured live, F8) can be read.  A future runtime that names "Exposure" makes this a live contract
   // again, and feed v2 would then have to stop sending AutoExposure (F7).
-  uint32_t nr_create_flags = create_flags;
-  if (hdr) {
-    nr_create_flags |= NVSDK_NGX_DLSS_Feature_Flags_IsHDR
-                    | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
-  }
   NVSDK_NGX_Parameter_SetI(
       parameters,
       NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,
-      static_cast<int32_t>(nr_create_flags));
+      static_cast<int32_t>(NrCreateFlags(create_flags, hdr)));
   if (hdr) {
     NVSDK_NGX_Parameter_SetF(
         parameters, NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.0f);
@@ -6550,6 +6769,7 @@ inline bool EnsureNrFeature(
       queue_tracking_active.load(std::memory_order_relaxed);
   slot.configuration_generation = configuration_generation.load();
   slot.nr_hdr_mode = resources.hdr_mode;
+  slot.nr_create_flags = NrCreateFlags(state.create_flags, resources.hdr_mode != 0);
   slot.pending_reset = true;
   // fail_count is NOT cleared here: only a successful evaluate proves the
   // slot works.  A contract that creates but fails its evaluate would
@@ -6577,7 +6797,8 @@ inline bool EnsureNrFeature(
 
 inline void SetModelParameters(NrFeatureSlot& slot, uint32_t slot_index,
                                uint64_t chain_reset_epoch, uint32_t create_flags,
-                               int32_t frame_reset, bool frame_ui_correction);
+                               int32_t frame_reset, bool frame_ui_correction,
+                               uint32_t diagnostic_model_ui = 0);
 inline void SetEvaluationParameters(
     FeatureState& state,
     NrFeatureSlot& slot,
@@ -6659,7 +6880,7 @@ inline void SetEvaluationParameters(
     NVSDK_NGX_Parameter_SetF(parameters, "DLSSNR.JitterOffsetY", frame.jitter_y);
   }
   SetModelParameters(slot, slot_index, chain_reset_epoch, frame.create_flags,
-                     frame.frame_reset, frame.ui_correction);
+                     frame.frame_reset, frame.ui_correction, frame.diagnostic_model_ui);
 }
 
 // The depth convention, the reset and the model steering of one evaluate:
@@ -6668,7 +6889,8 @@ inline void SetEvaluationParameters(
 // (vulkan_path.hpp), so both send the Look section the same way.
 inline void SetModelParameters(NrFeatureSlot& slot, uint32_t slot_index,
                                uint64_t chain_reset_epoch, uint32_t create_flags,
-                               int32_t frame_reset, bool frame_ui_correction) {
+                               int32_t frame_reset, bool frame_ui_correction,
+                               uint32_t diagnostic_model_ui) {
   NVSDK_NGX_Parameter* parameters = slot.parameters;
   bool depth_inverted =
       (create_flags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
@@ -6700,8 +6922,9 @@ inline void SetModelParameters(NrFeatureSlot& slot, uint32_t slot_index,
   slot.acknowledged_reset_epoch = chain_reset_epoch;
   NVSDK_NGX_Parameter_SetI(parameters, "DLSSNR.Reset", do_reset ? 1 : 0);
   slot.model_reset = do_reset;
+  slot.model_intensity_sent = PassIntensity(slot_index);
   NVSDK_NGX_Parameter_SetF(
-      parameters, "DLSSNR.Intensity", PassIntensity(slot_index));
+      parameters, "DLSSNR.Intensity", slot.model_intensity_sent);
   // The model steering: the Look section's values, or a stack pass's own
   // once its "Same as pass 1" is off (group G).  Each is read once, so the
   // log line below names exactly what this evaluate sent.
@@ -6714,7 +6937,9 @@ inline void SetModelParameters(NrFeatureSlot& slot, uint32_t slot_index,
       PassModel(slot_index, skin_structure_strength, pass_skin_structure);
   const bool model_auto_mask = PassModel(slot_index, use_auto_mask, pass_auto_mask);
   const bool model_ui_correction =
-      frame_ui_correction || PassModel(slot_index, ui_correction, pass_ui_correction);
+      diagnostics::ModelUi(diagnostic_model_ui, frame_ui_correction,
+                           PassModel(slot_index, ui_correction, pass_ui_correction));
+  slot.model_ui_sent = model_ui_correction;
   const SkinSteering sent = SentSkinSteering(model_structure, model_skin, model_auto_mask);
   // There is no global tone key: runtime 310.8 names none (string probe), its
   // output was bit-identical at the old slider's 0, 1 and 2, and the owner
@@ -6738,6 +6963,7 @@ inline void SetModelParameters(NrFeatureSlot& slot, uint32_t slot_index,
       static_cast<float>(model_style), model_local_tone, model_structure,
       model_skin, model_auto_mask ? 1.f : 0.f, model_ui_correction ? 1.f : 0.f,
       skin_independent.load() ? 1.f : 0.f, sent.structure, sent.skin};
+  std::copy(std::begin(model), std::end(model), slot.model_sent.begin());
   const int64_t model_now_ns = SteadyNowNs();
   if (std::memcmp(model, slot.logged_model, sizeof(model)) != 0
       && model_now_ns - slot.model_logged_ns >= 1'000'000'000) {
@@ -6831,9 +7057,8 @@ inline void CopyMip0(
 // Resources: any workset with hdr_mode and units (D3D12 FinalResources,
 // the Vulkan workset).
 template <typename Resources>
-inline bool FrameDisplayCodec(const Resources& resources) {
+inline bool FrameDisplayCodec(const Resources& resources, uint32_t mode = codec_mode.load()) {
   if (resources.hdr_mode == 0) return false;
-  const uint32_t mode = codec_mode.load();
   if (mode == 3u) return true;
   if (mode == 2u) {
     return !(resources.units.absolute && resources.units.unit_nits > 0.f);
@@ -6870,13 +7095,47 @@ inline bool FramePedestalRemoval(const Resources& resources) {
 // between its luminance and its colour, so at transfer 0 the pass returns
 // the original whatever color strength is - it used to count as active and
 // the verdict said ENGAGED over an unchanged image.
+// Called under the runtime lock. Both pre-FG roles consume this same snapshot;
+// owner-stream color contracts remain independent of current policy settings.
+inline void SnapshotPresentRestoreConfiguration(PresentTarget* target) {
+  std::shared_lock config_lock(present_restore_configuration.mutex);
+  target->restore_scope = present_restore_configuration.scope;
+  target->restore_config_epoch = present_restore_configuration.epoch;
+  target->sdr_restore_policy = present_sdr_restore::SanitizePolicy(present_sdr_restore_policy.load());
+  target->sdr_restore_config_version = present_sdr_restore_config_version.load();
+  target->sdr_restore_legacy_mode = sdr_black_restore.load();
+  target->sdr_restore_effective_mode = present_sdr_restore::EffectiveLegacyMode(
+      target->sdr_restore_policy, target->sdr_restore_legacy_mode);
+  target->diagnostic = {
+      .bypass_sdr_restore = debug_bypass_sdr_restore.load(),
+      .bypass_host_look = debug_bypass_host_look.load(),
+      .model_ui = present_model_ui.load(),
+      .guides = debug_guide_mode.load(),
+      .capture_stages = screenshot::stage_planes_enabled.load(),
+      .bypass_hdr_pedestal = debug_bypass_hdr_pedestal.load(),
+      .hdr_capture_mode = (debug_hdr_capture_mode.load() == 1u
+          ? diagnostics::HdrCaptureMode::MODEL_TRACE : diagnostics::HdrCaptureMode::COMMIT_CORE)};
+  for (uint32_t pass = 0; pass < kMaxNrPasses; ++pass) {
+    target->pass_color_strength[pass] = PassColorStrength(pass);
+    target->pass_transfer_strength[pass] = PassTransferStrength(pass);
+  }
+  std::shared_lock policy_lock(hdr_pedestal_policy_state.mutex);
+  target->hdr_pedestal.configuration = hdr_pedestal_policy_state.configuration;
+  target->hdr_pedestal.legacy_mode = display_pedestal.load();
+  target->hdr_codec_mode = codec_mode.load();
+  target->hdr_curve = (FrameDisplayCodec(*target, target->hdr_codec_mode)
+      ? 1u : (neural_floor_guard.load() ? 2u : 0u));
+}
+
 template <typename Resources>
-inline bool ChainActive(const Resources& resources, uint32_t stack) {
-  const bool display = FrameDisplayCodec(resources);
-  const bool pedestal = FramePedestalRemoval(resources);
+inline bool ChainActive(const Resources& resources, uint32_t stack, const PresentTarget* present = nullptr) {
+  const bool frozen_hdr = present != nullptr && resources.hdr_mode != 0;
+  const bool display = (frozen_hdr ? present->hdr_curve == 1u : FrameDisplayCodec(resources));
+  const bool pedestal = (frozen_hdr ? present->hdr_pedestal.formal_gate != 0.f : FramePedestalRemoval(resources));
   for (uint32_t pass = 0; pass < stack; ++pass) {
-    const bool transfer = PassTransferStrength(pass) > 0.f;
-    if (display ? (pedestal && transfer) || PassColorStrength(pass) > 0.f : transfer) {
+    const bool transfer = (frozen_hdr ? present->pass_transfer_strength[pass] : PassTransferStrength(pass)) > 0.f;
+    const float color = (frozen_hdr ? present->pass_color_strength[pass] : PassColorStrength(pass));
+    if (display ? (pedestal && transfer) || color > 0.f : transfer) {
       return true;
     }
   }
@@ -7023,27 +7282,35 @@ inline void LogFrameContract(
     const FinalResources& res,
     float frame_divisor,
     FeedSource feed,
-    const char* path) {
+    const char* path, const PresentTarget* present = nullptr) {
   static std::mutex contract_mutex;
-  static std::string last_key;
-  static std::chrono::steady_clock::time_point last_dump;
+  struct ContractCache {
+    uint64_t last_restore_epoch = 0;
+    std::string last_key;
+    std::chrono::steady_clock::time_point last_dump;
+    uintptr_t last_color = 0;
+    uintptr_t last_output = 0;
+    uint32_t last_out_w = 0;
+    uint32_t last_out_h = 0;
+    uint32_t last_flags = 0;
+    uint32_t last_encoding = 0;
+    uint32_t last_absolute = 0;
+    float last_unit_nits = 0.f;
+    uint32_t last_codec_mode = 0;
+    uint32_t last_fixed = 0;
+    uint32_t last_governor = 0;
+    FeedSource last_feed = FeedSource::kV1;
+    bool last_pedestal = true;
+    bool last_has_present = false;
+    float last_effective_gate = 0.f;
+  };
+  static std::array<ContractCache, static_cast<size_t>(present_restore_scope::Domain::OTHER) + 1> caches;
+  const auto domain = (present != nullptr ? present->domain : present_restore_scope::Domain::OTHER);
+  auto& cache = caches.at(static_cast<size_t>(domain));
   // Steady-state fast gate on the exact key components: resource identity
   // covers both formats (D3D12 resource descs are immutable), the scalars
   // cover the rest. The common evaluate then pays two parameter lookups
   // instead of two GetDesc calls and an ostringstream.
-  static ID3D12Resource* last_color = nullptr;
-  static ID3D12Resource* last_output = nullptr;
-  static uint32_t last_out_w = 0;
-  static uint32_t last_out_h = 0;
-  static uint32_t last_flags = 0;
-  static uint32_t last_encoding = 0;
-  static uint32_t last_absolute = 0;
-  static float last_unit_nits = 0.f;
-  static uint32_t last_codec_mode = 0;
-  static uint32_t last_fixed = 0;
-  static uint32_t last_governor = 0;
-  static FeedSource last_feed = FeedSource::kV1;
-  static bool last_pedestal = true;
   const auto now = std::chrono::steady_clock::now();
   const bool pedestal = FramePedestalRemoval(res);
   ID3D12Resource* color_resource =
@@ -7052,19 +7319,23 @@ inline void LogFrameContract(
       GetD3D12Resource(game_parameters, NVSDK_NGX_Parameter_Output);
   {
     std::lock_guard<std::mutex> lock(contract_mutex);
-    if (color_resource == last_color && output_resource == last_output
-        && current.output_width == last_out_w
-        && current.output_height == last_out_h
-        && current.create_flags == last_flags
-        && static_cast<uint32_t>(res.units.encoding) == last_encoding
-        && static_cast<uint32_t>(res.units.absolute) == last_absolute
-        && res.units.unit_nits == last_unit_nits
-        && codec_mode.load(std::memory_order_relaxed) == last_codec_mode
-        && static_cast<uint32_t>(frame_divisor > 0.f) == last_fixed
-        && norm_governor.load(std::memory_order_relaxed) == last_governor
-        && feed == last_feed
-        && pedestal == last_pedestal
-        && now - last_dump < std::chrono::seconds(15)) {
+    if (reinterpret_cast<uintptr_t>(color_resource) == cache.last_color
+        && reinterpret_cast<uintptr_t>(output_resource) == cache.last_output
+        && current.output_width == cache.last_out_w
+        && current.output_height == cache.last_out_h
+        && current.create_flags == cache.last_flags
+        && static_cast<uint32_t>(res.units.encoding) == cache.last_encoding
+        && static_cast<uint32_t>(res.units.absolute) == cache.last_absolute
+        && res.units.unit_nits == cache.last_unit_nits
+        && codec_mode.load(std::memory_order_relaxed) == cache.last_codec_mode
+        && static_cast<uint32_t>(frame_divisor > 0.f) == cache.last_fixed
+        && norm_governor.load(std::memory_order_relaxed) == cache.last_governor
+        && feed == cache.last_feed
+        && pedestal == cache.last_pedestal
+        && (present != nullptr) == cache.last_has_present
+        && (present == nullptr || (present->restore_config_epoch == cache.last_restore_epoch
+            && present->hdr_pedestal.effective_gate == cache.last_effective_gate))
+        && now - cache.last_dump < std::chrono::seconds(15)) {
       return;
     }
   }
@@ -7080,25 +7351,34 @@ inline void LogFrameContract(
       << (frame_divisor > 0.f ? 1 : 0) << '|'
       << norm_governor.load(std::memory_order_relaxed) << '|'
       << static_cast<uint32_t>(feed) << '|' << pedestal;
+  if (present != nullptr) {
+    key << '|' << present->restore_config_epoch << '|' << static_cast<uint32_t>(present->domain)
+        << '|' << present->hdr_pedestal.effective_gate;
+  }
   const std::string key_text = key.str();
   {
     std::lock_guard<std::mutex> lock(contract_mutex);
-    if (key_text == last_key && now - last_dump < std::chrono::seconds(15)) return;
-    last_key = key_text;
-    last_dump = now;
-    last_color = color_resource;
-    last_output = output_resource;
-    last_out_w = current.output_width;
-    last_out_h = current.output_height;
-    last_flags = current.create_flags;
-    last_encoding = static_cast<uint32_t>(res.units.encoding);
-    last_absolute = static_cast<uint32_t>(res.units.absolute);
-    last_unit_nits = res.units.unit_nits;
-    last_codec_mode = codec_mode.load(std::memory_order_relaxed);
-    last_fixed = static_cast<uint32_t>(frame_divisor > 0.f);
-    last_governor = norm_governor.load(std::memory_order_relaxed);
-    last_feed = feed;
-    last_pedestal = pedestal;
+    if (key_text == cache.last_key && now - cache.last_dump < std::chrono::seconds(15)) return;
+    cache.last_key = key_text;
+    if (present != nullptr) {
+      cache.last_restore_epoch = present->restore_config_epoch;
+      cache.last_effective_gate = present->hdr_pedestal.effective_gate;
+    }
+    cache.last_has_present = present != nullptr;
+    cache.last_dump = now;
+    cache.last_color = reinterpret_cast<uintptr_t>(color_resource);
+    cache.last_output = reinterpret_cast<uintptr_t>(output_resource);
+    cache.last_out_w = current.output_width;
+    cache.last_out_h = current.output_height;
+    cache.last_flags = current.create_flags;
+    cache.last_encoding = static_cast<uint32_t>(res.units.encoding);
+    cache.last_absolute = static_cast<uint32_t>(res.units.absolute);
+    cache.last_unit_nits = res.units.unit_nits;
+    cache.last_codec_mode = codec_mode.load(std::memory_order_relaxed);
+    cache.last_fixed = static_cast<uint32_t>(frame_divisor > 0.f);
+    cache.last_governor = norm_governor.load(std::memory_order_relaxed);
+    cache.last_feed = feed;
+    cache.last_pedestal = pedestal;
   }
 
   // The governor only exists for a metered (v1) GPU-frame scale.
@@ -7151,7 +7431,18 @@ inline void LogFrameContract(
           << " exposure=" << ExposureContractText(current.exposure)
           << " feed=" << FeedText(feed)
           << " stack=" << res.stack_passes
-          << " pedestal=" << (pedestal ? "on" : "off");
+          << " pedestal_legacy_predicate=" << (pedestal ? "on" : "off");
+  if (present != nullptr) {
+    message << " actual_domain=" << present_restore_scope::DomainText(present->domain)
+            << " scope_reason=" << (present->restore_contract_compatible
+                ? present_restore_scope::ReasonText(present->restore_decision.reason) : "contract_rejected")
+            << " pedestal_effective_gate=" << present->hdr_pedestal.effective_gate
+            << " service_serial=" << present->service_serial
+            << " restore_config_epoch=" << present->restore_config_epoch
+            << " restore_contract_compatible=" << present->restore_contract_compatible;
+  } else {
+    message << " actual_domain=upscaled_fallback scope_reason=inactive_domain";
+  }
   Log(reshade::log::level::info, message.str());
 }
 
@@ -7352,25 +7643,34 @@ inline void BindCodecV6(
     float color_strength,
     uint32_t encoding,
     float dark_gate,
-    float chroma_clamp_stops) {
-  ID3D12DescriptorHeap* heaps[] = {resources.descriptors};
+    float chroma_clamp_stops, const PresentTarget* present = nullptr,
+    const HdrCommitCapture* capture = nullptr) {
+  ID3D12DescriptorHeap* heaps[] = {(capture != nullptr ? capture->descriptors : resources.descriptors)};
   command_list->SetDescriptorHeaps(1, heaps);
-  command_list->SetComputeRootSignature(codec_pipeline.root_signature);
+  command_list->SetComputeRootSignature(capture != nullptr ? capture->root : codec_pipeline.root_signature);
   command_list->SetPipelineState(pipeline);
   const D3D12_GPU_DESCRIPTOR_HANDLE heap_start =
-      resources.descriptors->GetGPUDescriptorHandleForHeapStart();
+      heaps[0]->GetGPUDescriptorHandleForHeapStart();
   command_list->SetComputeRootDescriptorTable(
       0,
       DescriptorHeapSlot(
-          heap_start, srv_table_start, resources.descriptor_size));
+          heap_start, (capture != nullptr ? 0u : srv_table_start), resources.descriptor_size));
   command_list->SetComputeRootDescriptorTable(
       1,
-      DescriptorHeapSlot(heap_start, uav_index, resources.descriptor_size));
-  const V6CodecConstants constants = MakeV6Constants(
+      DescriptorHeapSlot(heap_start, (capture != nullptr ? 4u : uav_index), resources.descriptor_size));
+  V6CodecConstants constants = MakeV6Constants(
       resources, width, height, source_width, source_height, source_base_x, source_base_y,
       proxy_width, proxy_height, neural_width, neural_height, divisor, pedestal_cap,
       transfer_strength, color_strength, encoding, dark_gate, chroma_clamp_stops);
+  if (present != nullptr && resources.hdr_mode != 0) {
+    constants.pedestal_gate = present->hdr_pedestal.effective_gate;
+    constants.dark_gate_mode = present->hdr_pedestal.effective_mode;
+    constants.curve = present->hdr_curve;
+  }
   command_list->SetComputeRoot32BitConstants(2, 28, &constants, 0);
+  if (capture != nullptr) {
+    command_list->SetComputeRoot32BitConstants(3, 8, &capture->constants, 0);
+  }
 }
 
 // A write-once view ring (feed v2's exposure sets, the look's motion views):
@@ -7702,7 +8002,8 @@ inline void RunBlackLevelRestore(
     float pass_color,
     // The look shaped this pass (LookRoute::shaped): measure NR's own lift
     // from the unshaped model output instead of the shaped write surface.
-    bool measure_unshaped) {
+    bool measure_unshaped,
+    std::optional<uint32_t> restore_mode = std::nullopt) {
   if (codec_mode.load() == 0 || resources.hdr_mode != 0) return;
   if (codec_pipeline.block_mean_reduce == nullptr
       || codec_pipeline.black_restore_apply == nullptr
@@ -7776,9 +8077,10 @@ inline void RunBlackLevelRestore(
   // commit's relative dark gate.  Every block (rc10): 2, above any UNORM
   // luminance, so no block is gated. Padding.y selects Smooth (2), which
   // tapers the Auto restore between half the threshold and the threshold.
-  const uint32_t sdr_restore_mode = sdr_black_restore.load(std::memory_order_relaxed);
+  const uint32_t sdr_restore_mode = (restore_mode.has_value()
+                                       ? *restore_mode : sdr_black_restore.load(std::memory_order_relaxed));
   const float sdr_restore_constants[] = {
-      sdr_restore_mode == 1u ? 2.f : 0.061f, static_cast<float>(sdr_restore_mode)};
+      present_sdr_restore::EncodedGate(sdr_restore_mode), static_cast<float>(sdr_restore_mode)};
   command_list->SetComputeRoot32BitConstants(2, 2, sdr_restore_constants, 16);
   command_list->Dispatch((width + 15) / 16, (height + 15) / 16, 1);
   UavBarrier(command_list, write_surface);
@@ -8788,19 +9090,98 @@ __declspec(noinline) inline void LogNrEvaluationSuccess(
 __declspec(noinline) inline void SetPresentCaptureMeta(
     const char* path_name, const FinalResources& res, const PresentTarget& present,
     uint32_t look_wanted, uint32_t requested_stack, float frame_divisor,
-    float v6_pedestal_cap, float v6_dark_gate) {
+    float v6_pedestal_cap, float v6_dark_gate, const FeatureState& feature,
+    const look::Settings& look_settings, const EvaluationContract& frame,
+    int32_t executed = -1, bool writeback_recorded = false) {
   std::ostringstream meta;
   meta << "path=" << path_name
        << "\ncomparison=final-present-same-frame"
        << "\nselected_hook=" << hook_point.load(std::memory_order_relaxed)
        << "\npresent_generation=" << present_generation
+       << "\ncapture_recorded_steady_ns=" << SteadyNowNs()
+       << "\ncapture_timing_scope=CPU_stage_recording_timestamp:not_GPU_duration"
        << "\nwidth=" << res.width << "\nheight=" << res.height
        << "\nsource_format=" << static_cast<uint32_t>(res.resource_format)
+       << "\nbuild=" << kAddonVersion
+       << "\nsource_manifest_id=" << kHdrCaptureBuildId
+       << "\nsource_manifest_scope=frozen_candidate_manifest:verify_installed_addon_sha256"
+       << "\nswapchain_identity=" << present.swapchain_identity
+       << "\nswapchain_format=" << static_cast<uint32_t>(present.swapchain_format)
+       << "\npresent_api=" << (present.d3d11_bridge ? "d3d11-bridge" : "d3d12")
+       << "\nguide_serial=" << present.guide_serial
+       << "\nguide_source=" << (present.guide_serial != 0 ? "real" : "neutral")
+       << "\nguide_mode=" << present.guide_mode
+       << "\ndebug_guide_mode=" << present.diagnostic.guides
+       << "\ndebug_model_ui=" << present.diagnostic.model_ui
+       << "\nbypass_sdr_restore=" << present.diagnostic.bypass_sdr_restore
+       << "\nhdr_pedestal_policy=" << static_cast<uint32_t>(present.hdr_pedestal.configuration.policy)
+       << "\nhdr_pedestal_config_version=" << present.hdr_pedestal.configuration.version
+       << "\nhdr_pedestal_config_writable=" << present.hdr_pedestal.configuration.writable
+       << "\nhdr_pedestal_active=" << present.hdr_pedestal.active
+       << "\nhdr_pedestal_reason=" << present_hdr_pedestal::ReasonText(present.hdr_pedestal.reason)
+       << "\nhdr_pedestal_legacy_mode=" << present.hdr_pedestal.legacy_mode
+       << "\nhdr_pedestal_effective_mode=" << present.hdr_pedestal.effective_mode
+       << "\nhdr_pedestal_measure_legacy=" << present.hdr_pedestal.measure_legacy
+       << "\nhdr_pedestal_legacy_gate=" << present.hdr_pedestal.legacy_gate
+       << "\nhdr_pedestal_formal_gate=" << present.hdr_pedestal.formal_gate
+       << "\nhdr_pedestal_effective_gate=" << present.hdr_pedestal.effective_gate
+       << "\nbypass_hdr_pedestal=" << present.hdr_pedestal.debug_bypass
+       << "\nhdr_codec_mode=" << present.hdr_codec_mode
+       << "\nhdr_curve=" << present.hdr_curve
+       << "\nhdr_dark_gate_source_units=" << present.hdr_dark_gate
+       << "\nhdr_cap_source_units=" << present.hdr_pedestal_cap
+       << "\nhdr_dark_gate_base_nits=" << (present.hdr_dark_gate * res.units.unit_nits)
+       << "\nhdr_cap_base_nits=" << (present.hdr_pedestal_cap * res.units.unit_nits)
+       << "\nhdr_effective_threshold_factor=" << (present.hdr_feed == FeedSource::kV1 ? "1" : "hdr_norm_scale.r_GPU:clamped_min_1e-8")
+       << "\nhdr_white_nits=" << present.hdr_white_nits
+       << "\nhdr_white_source=" << present.hdr_white_source
+       << "\nhdr_capture_mode=" << static_cast<uint32_t>(present.diagnostic.hdr_capture_mode)
+       << "\nhdr_color_space=" << static_cast<uint32_t>(present.hdr_color_space)
+       << "\nhdr_color_space_domain=reshade_api_color_space:not_DXGI_COLOR_SPACE_TYPE"
+       << "\nhdr_linear_primaries=BT709"
+       << "\nhdr_output_primaries=" << (res.units.bt2020 ? "BT2020" : "BT709")
+       << "\nhdr_gate_nits_valid=" << (res.units.absolute && std::isfinite(res.units.unit_nits) && res.units.unit_nits > 0.f)
+       << "\nhdr_feed=" << FeedText(present.hdr_feed)
+       << "\nhdr_input_scale_source=" << (present.hdr_feed == FeedSource::kV1 ? "frame_divisor" : "norm_scale_GPU_texel")
+       << "\nhdr_effective_divisor=" << present.hdr_effective_divisor
+       << "\nhdr_temporary_allocation_bytes=" << present.hdr_temporary_bytes
+       << "\nactual_domain=" << present_restore_scope::DomainText(present.domain)
+       << "\nrestore_scope_requested=" << static_cast<uint32_t>(present.restore_scope.scope)
+       << "\nrestore_scope_inherited=" << present.restore_scope.inherited
+       << "\nrestore_scope_source=" << present_restore_scope::SourceText(present.restore_scope.source)
+       << "\nrestore_scope_reason=" << present_restore_scope::ReasonText(present.restore_decision.reason)
+       << "\nservice_serial=" << present.service_serial
+       << "\nrestore_config_epoch=" << present.restore_config_epoch
+       << "\nmulti_frame_index=" << present.multi_frame_index
+       << "\noriginal_identity=" << present.original_identity
+       << "\nsdr_restore_policy=" << static_cast<uint32_t>(present.sdr_restore_policy)
+       << "\nsdr_restore_config_version=" << present.sdr_restore_config_version
+       << "\nsdr_restore_legacy_mode=" << present.sdr_restore_legacy_mode
+       << "\nsdr_restore_effective_mode=" << present.sdr_restore_effective_mode
+       << "\nsdr_restore_active=" << (res.hdr_mode == 0)
+       << "\nsdr_restore_enabled="
+       << (codec_mode.load() != 0
+           && present_sdr_restore::ShouldRestore(present.sdr_restore_policy, res.hdr_mode,
+                                                present.diagnostic.bypass_sdr_restore))
+       << "\nsdr_restore_effective_gate_encoded=" << present_sdr_restore::EncodedGate(present.sdr_restore_effective_mode)
+       << "\nsdr_restore_cap_encoded=" << present_sdr_restore::ENCODED_CAP
+       << "\nsdr_restore_constants_domain=SDR_display_encoded:not_linear_light"
+       << "\nbypass_host_look=" << present.diagnostic.bypass_host_look
+       << "\nstage_capture=" << present.diagnostic.capture_stages
+       << "\nexecuted_passes=" << (executed + 1)
+       << "\nwriteback_recorded=" << writeback_recorded
+       << "\nwriteback_scope=ProcessInline_D3D12_copy"
+       << "\nwriteback_gpu_completed=see_capture_proof"
+       << "\nbridge_display_writeback_completed=see_native_receiver_event_proof"
+       << "\nui_mask=skipped:not_implemented"
+       << "\npost_ui=skipped:not_implemented"
+       << "\npacked_final_stage=" << (res.hdr_mode == 0 ? "copy_of_post_restore:no_separate_pack_pass" : "hdr_commit")
        << "\npng=" << (res.hdr_mode != 0 ? "rgb16-pq-bt2020" : "rgb8-srgb")
        << "\ncicp=" << (res.hdr_mode != 0 ? "9,16,0,1" : "1,13,0,1")
        << "\nreshade_effects_and_overlay=excluded"
        << "\nencoding="
-       << (res.units.encoding == codec::Encoding::Pq ? "pq"
+       << (res.hdr_mode == 0 ? "sdr_display_encoded"
+           : res.units.encoding == codec::Encoding::Pq ? "pq"
            : res.units.encoding == codec::Encoding::Linear ? "linear" : "sdr")
        << "\nunits=" << (res.units.absolute ? "absolute" : "relative")
        << "\nunit_nits=" << res.units.unit_nits
@@ -8814,13 +9195,110 @@ __declspec(noinline) inline void SetPresentCaptureMeta(
        << "\npedestal_cap=" << v6_pedestal_cap
        << "\ndark_gate=" << v6_dark_gate
        << "\nstack=" << requested_stack
+       << "\nsource_create_flags=" << feature.create_flags
+       << "\nsource_frame_flags=" << frame.create_flags
+       << "\nframe_reset=" << frame.frame_reset
+       << "\nframe_has_jitter=" << frame.has_jitter
+       << "\nframe_jitter_x=" << frame.jitter_x
+       << "\nframe_jitter_y=" << frame.jitter_y
+       << "\nframe_pre_exposure=" << frame.pre_exposure
+       << "\nframe_exposure_scale=" << frame.exposure_scale
+       << "\nactual_NR_create_flags=" << (feature.create_flags | (res.hdr_mode != 0
+           ? NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure : 0))
+       << "\nhdr_statistics_source=" << (present.hdr_statistics_unshaped ? "unshaped_NR_reference" : "resolved_linear")
        << "\nchroma_clamp=" << chroma_clamp_stops.load(std::memory_order_relaxed)
        << "\nstyle_guard=" << style_highlight_guard.load(std::memory_order_relaxed)
        << "\nplanes=work0:f32-rgba,proxy[:p<pass>]:f32-rgba,"
           "neural[:p<pass>]:f32-rgba,work_final[:p<pass>]:f32-rgba"
           "(post-transfer,pre-pedestal)\n";
-  screenshot::SetPendingDiagnosticMeta(meta.str());
+  if (present.diagnostic.capture_stages) {
+    meta << "stage_planes=original,proxy,neural,post_look,post_resolve,post_restore,packed_final\n"
+         << "raw_NR_plane=neural\npass_suffix=zero_based_when_stack_above_one\n"
+         << "work0=" << (res.hdr_mode == 0 ? "skipped:SDR_has_no_linear_work0" : "see_plane_status")
+         << "\npost_restore_operation="
+         << (res.hdr_mode != 0 ? "skipped:HDR_pedestal_is_in_commit"
+             : present.diagnostic.bypass_sdr_restore ? "skipped:diagnostic_bypass"
+             : present.sdr_restore_policy == present_sdr_restore::Policy::OFF ? "skipped:policy_off"
+             : codec_mode.load() == 0 ? "skipped:classic_codec" : "SDR_restore")
+         << "\nresolve_precision=" << (res.hdr_mode == 0 ? "existing_encoded_work_surface" : "FP16_linear")
+         << '\n';
+    if (res.hdr_mode == 0) {
+      meta << "plane_encoding_domain.original=SDR_display_encoded\n"
+           << "plane_encoding_domain.proxy=SDR_display_encoded:model_input\n"
+           << "plane_encoding_domain.neural=SDR_display_encoded:model_output\n"
+           << "plane_encoding_domain.post_look=SDR_display_encoded:model_output\n"
+           << "plane_encoding_domain.post_resolve=SDR_display_encoded:legacy_no_linear_decode\n"
+           << "plane_encoding_domain.post_restore=SDR_display_encoded:legacy_no_linear_decode\n"
+           << "plane_encoding_domain.packed_final=SDR_display_encoded:copy_of_post_restore\n";
+    }
+  }
+  for (int32_t pass = 0; pass <= executed; ++pass) {
+    meta << "pass[" << pass << "].model_ui=" << feature.slots[pass].model_ui_sent
+         << "\npass[" << pass << "].color_strength=" << present.pass_color_strength[pass]
+         << "\npass[" << pass << "].transfer_strength=" << present.pass_transfer_strength[pass]
+         << "\npass[" << pass << "].executed=1"
+         << "\npass[" << pass << "].reset=" << feature.slots[pass].model_reset << '\n';
+    meta << "pass[" << pass << "].intensity=" << feature.slots[pass].model_intensity_sent << '\n';
+    for (size_t value = 0; value < feature.slots[pass].model_sent.size(); ++value) {
+      meta << "pass[" << pass << "].model_sent[" << value << "]="
+           << feature.slots[pass].model_sent[value] << '\n';
+    }
+  }
+  if (present.hdr_mode != 0) {
+    meta << "plane_encoding_domain.hdr_original_linear=BT709_linear_source_units\n"
+         << "plane_encoding_domain.hdr_pre_commit=BT709_linear_source_units\n"
+         << "plane_encoding_domain.hdr_post_pedestal_linear=BT709_linear_source_units:after_legacy_clamp\n"
+         << "plane_encoding_domain.hdr_post_gamut_linear=BT2020_linear_source_units:PQ_only\n"
+         << "plane_encoding_domain.hdr_encoded_float=" << (res.hdr_mode == 2 ? "PQ_BT2020_code" : "scRGB_BT709_linear")
+         << "\nplane_encoding_domain.hdr_pedestal_field=legacy_estimate,effective_correction,weight,clip_bits\n"
+         << "plane_encoding_domain.hdr_block_statistics=final_mean,original_mean,original_max,unused:source_units\n"
+         << "norm_scale_plane=hdr_norm_scale:actual_GPU_texel_if_feed_v2\n";
+  }
+  screenshot::SetPendingDiagnosticMeta(meta.str(), present.d3d11_bridge);
+  if (executed >= 0 && present.hdr_mode != 0) {
+    std::ostringstream contract;
+    contract.precision(std::numeric_limits<float>::max_digits10);
+    contract << present.swapchain_identity << '|' << present.swapchain_format << '|'
+             << static_cast<uint32_t>(present.hdr_color_space) << '|' << res.hdr_mode << '|' << present.hdr_codec_mode << '|'
+             << present.hdr_curve << '|' << present.hdr_encoding << '|' << res.units.absolute << '|'
+             << res.units.unit_nits << '|' << present.hdr_white_nits << '|' << present.hdr_white_source << '|'
+             << frame_divisor << '|' << static_cast<uint32_t>(present.hdr_feed) << '|'
+             << present.hdr_pedestal.configuration.version << '|' << static_cast<uint32_t>(present.hdr_pedestal.configuration.policy) << '|'
+             << present.hdr_pedestal.effective_mode << '|' << present.hdr_pedestal.effective_gate << '|'
+             << present.guide_mode << '|' << (present.guide_serial != 0) << '|'
+             << present.diagnostic.model_ui << '|' << present.diagnostic.guides << '|'
+             << present.diagnostic.bypass_host_look << '|' << requested_stack << '|' << executed << '|'
+             << feature.create_flags << '|' << frame.create_flags << '|' << v6_pedestal_cap << '|' << v6_dark_gate
+             << '|' << frame.motion_width << '|' << frame.motion_height << '|' << frame.motion_scale_x << '|' << frame.motion_scale_y
+             << '|' << chroma_clamp_stops.load() << '|' << style_highlight_guard.load() << '|' << transfer_mode.load()
+             << '|' << motion_scale_x_multiplier.load() << '|' << motion_scale_y_multiplier.load()
+             << '|' << configuration_generation.load();
+    const float look_values[] = {look_settings.strength, look_settings.brighten, look_settings.darken,
+        look_settings.max_brighten, look_settings.max_darken, look_settings.colour, look_settings.hue,
+        look_settings.max_colour, look_settings.shadows, look_settings.midtones, look_settings.highlights,
+        look_settings.tone, look_settings.detail, look_settings.halo, look_settings.halo_bright,
+        look_settings.detail_radius, look_settings.stabilize_ms, look_settings.stabilize_alpha};
+    for (float value : look_values) {
+      contract << '|' << value;
+    }
+    contract << '|' << look_settings.stabilize << '|' << look_settings.stabilize_detail << '|' << look_settings.upsample;
+    for (int32_t pass = 0; pass <= executed; ++pass) {
+      contract << '|' << present.pass_color_strength[pass] << '|' << present.pass_transfer_strength[pass]
+               << '|' << feature.slots[pass].model_intensity_sent << '|' << feature.slots[pass].model_ui_sent;
+      for (float value : feature.slots[pass].model_sent) {
+        contract << '|' << value;
+      }
+    }
+    screenshot::SetHdrSequenceContract(contract.str());
+  }
 }
+
+struct NrRecording {
+  bool prepared = false;
+  bool model_invoked = false;
+  bool model_recorded = false;
+  bool output_ready = false;
+};
 
 inline bool ProcessInline(
     ID3D12GraphicsCommandList* command_list,
@@ -8828,7 +9306,15 @@ inline bool ProcessInline(
     const NVSDK_NGX_Parameter* game_parameters,
     bool* command_list_touched = nullptr,
     // The Present hook point's frame (present_path.hpp); null everywhere else.
-    const PresentTarget* present = nullptr) {
+    const PresentTarget* present = nullptr,
+    NrRecording* recording = nullptr,
+    bool prepare_models_only = false) {
+  if (recording != nullptr) *recording = {};
+  std::optional<PresentTarget> present_snapshot;
+  if (present != nullptr) {
+    present_snapshot = *present;
+    present = &*present_snapshot;
+  }
   // Every caller counted its own terminal for these before calling, so a
   // false here is one it already named - except NR switched off in between
   // (the overlay's toggle, another thread), which this evaluate's terminal
@@ -8886,7 +9372,7 @@ inline bool ProcessInline(
   // the same output in one present; mirrored duplicates and NGX/SL mirror
   // pairs are declined (see OutputPassAllowed).  The pass is recorded on
   // success, at the bottom of this function.
-  if (!AdmitOutputPass(output, handle)) return false;
+  if (!prepare_models_only && !AdmitOutputPass(output, handle)) return false;
 
   const D3D12_RESOURCE_DESC output_desc = output->GetDesc();
   const D3D12_RESOURCE_DESC motion_desc = motion->GetDesc();
@@ -8903,6 +9389,20 @@ inline bool ProcessInline(
   }
   if (output_desc.MipLevels != 1 && !logged_multimip_output.exchange(true)) {
     LogNrOutputGeometry(output_desc, false);
+  }
+  if (present != nullptr && present->source_color != nullptr) {
+    const D3D12_RESOURCE_DESC source_desc = present->source_color->GetDesc();
+    if (source_desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D
+        || source_desc.DepthOrArraySize != 1
+        || source_desc.SampleDesc.Count != 1
+        || source_desc.Width != output_desc.Width
+        || source_desc.Height != output_desc.Height
+        || ConcreteResourceFormat(source_desc.Format) == DXGI_FORMAT_UNKNOWN
+        || ConcreteResourceFormat(source_desc.Format) != ConcreteResourceFormat(output_desc.Format)) {
+      CountNrDecline(NrDeclineReason::kNgxOutputGeometry);
+      last_result = NVSDK_NGX_Result_FAIL_InvalidParameter;
+      return false;
+    }
   }
 
   // Initialize the direct runtime before the feature lookup: a device change
@@ -8932,6 +9432,8 @@ inline bool ProcessInline(
 
   auto entry = FindOrRegisterFeature(handle, game_parameters, "");
   FeatureState& feature = entry->second;
+  FeatureState current = DeriveFeatureState(game_parameters);
+  ResolveCreateFlags(handle, game_parameters, &feature, &current);
   // HDR transfer mode must be current before the NR codec/resources are
   // dimensioned: from the actual DLSS output format and the IsHDR flag.
   const DXGI_FORMAT output_format = ConcreteResourceFormat(output_desc.Format);
@@ -8940,7 +9442,6 @@ inline bool ProcessInline(
   const uint8_t hdr_mode = present != nullptr
                                ? present->hdr_mode
                                : FrameHdrMode(output_format, feature.create_flags);
-  FeatureState current = DeriveFeatureState(game_parameters);
   ObserveGameFrame(current);
   // KCD2 (and most titles) send the full DLSS subrect/size contract only at
   // CreateFeature, not on every EvaluateFeature.  Trust the create-captured
@@ -9028,6 +9529,17 @@ inline bool ProcessInline(
         LogOutputSizeDisagreement(handle, evaluate_width, evaluate_height, output_rect);
       }
     }
+  }
+  // Reject before clamping or recording GPU work: a borrowed input must not
+  // fall back to reading an Output whose private pixels may be uninitialized.
+  if (present != nullptr && present->source_color != nullptr
+      && (output_rect.subrects_enabled || output_rect.base_ignored
+          || output_rect.x != 0 || output_rect.y != 0
+          || output_rect.width != resource_width || output_rect.height != resource_height)) {
+    CountNrDecline(NrDeclineReason::kNgxOutputGeometry);
+    last_result = NVSDK_NGX_Result_FAIL_InvalidParameter;
+    device->Release();
+    return false;
   }
   if (output_rect.x >= resource_width || output_rect.y >= resource_height) {
     output_rect.x = 0;
@@ -9132,7 +9644,11 @@ inline bool ProcessInline(
   // content (stack passes share one HDR mode).
   const bool hdr_changed = feature.slots[0].handle != nullptr
       && feature.slots[0].nr_hdr_mode != hdr_mode;
-  if (dimensions_changed || configuration_changed || hdr_changed) {
+  const bool create_flags_changed = std::ranges::any_of(feature.slots,
+      [flags = NrCreateFlags(feature.create_flags, hdr_mode != 0)](const NrFeatureSlot& slot) {
+        return slot.handle != nullptr && slot.nr_create_flags != flags;
+      });
+  if (dimensions_changed || configuration_changed || hdr_changed || create_flags_changed) {
     // Contract-level change: every stack pass's feature must be recreated.
     // Deliberately NOT triggered by a null slot-0 handle: after a failure the
     // handle is released but the failure latch must survive so the bounded
@@ -9156,7 +9672,6 @@ inline bool ProcessInline(
   feature.motion_y = current.motion_y;
   feature.depth_x = current.depth_x;
   feature.depth_y = current.depth_y;
-  ResolveCreateFlags(handle, game_parameters, &feature, &current);
   feature.motion_scale_x = current.motion_scale_x;
   feature.motion_scale_y = current.motion_scale_y;
   feature.perf_quality = current.perf_quality;
@@ -9189,6 +9704,26 @@ inline bool ProcessInline(
     }
   }
 
+  // Native FG can stop consuming explicit UI and expose a known HUDLess
+  // input later. Prepare that role's model on an earlier application list,
+  // preserving frame-ahead maturation without evaluating or reading color.
+  if (prepare_models_only) {
+    bool prepared = true;
+    for (uint32_t pass = 0; pass < requested_stack; ++pass) {
+      prepared &= EnsureNrFeature(command_list, feature, pass,
+                                  FinalResources{.hdr_mode = hdr_mode},
+                                  nr_input_width, nr_input_height, nr_input_width, nr_input_height);
+    }
+    if (command_list_touched != nullptr) {
+      *command_list_touched = true;
+    }
+    if (recording != nullptr) {
+      recording->prepared = prepared;
+    }
+    device->Release();
+    return prepared;
+  }
+
   const bool codec_ok = hdr_mode != 0 ? EnsureV6CodecPipeline(device)
                                       : EnsureLegacyCodecPipeline(device);
   // The NR look stage (look_stage.hpp): this chain's look values and the
@@ -9196,7 +9731,8 @@ inline bool ProcessInline(
   // stability's Auto engages on every after-path frame: this path already
   // requires the game's motion vectors (above), which reproject the edit.
   LookChain look_chain{
-      .settings = LookSettingsSnapshot(true),
+      .settings = LookSettingsSnapshot(
+          true, present != nullptr && present->diagnostic.bypass_host_look),
       .motion_scale = {current.motion_scale_x, current.motion_scale_y},
   };
   if (codec_ok) {
@@ -9222,6 +9758,72 @@ inline bool ProcessInline(
   // The NR features themselves are ensured per stack pass inside the chain
   // below; this gate covers the codec pipeline and the scratch surfaces only.
   const bool setup_ok = workset != nullptr;
+  if (setup_ok && present_snapshot.has_value()) {
+    auto& snapshot = *present_snapshot;
+    snapshot.restore_decision = present_restore_scope::Decide(snapshot.restore_scope, snapshot.domain);
+    if (!snapshot.restore_contract_compatible) {
+      snapshot.restore_decision = {};
+    }
+    if (!snapshot.restore_decision.sdr_policy) {
+      snapshot.sdr_restore_policy = present_sdr_restore::Policy::LEGACY;
+      snapshot.sdr_restore_effective_mode = snapshot.sdr_restore_legacy_mode;
+      snapshot.diagnostic.bypass_sdr_restore = false;
+    }
+    snapshot.hdr_pedestal = present_hdr_pedestal::Decide(snapshot.hdr_pedestal.configuration,
+        {.actual_present = snapshot.domain == present_restore_scope::Domain::FINAL_PRESENT,
+         .hdr_mode = workset->hdr_mode,
+         .v6_available = snapshot.hdr_codec_mode != 0u && codec_pipeline.commit != nullptr
+             && codec_pipeline.pedestal_reduce != nullptr,
+         .encoding_valid = (workset->hdr_mode == 2 && workset->units.encoding == codec::Encoding::Pq)
+             || (workset->hdr_mode == 1 && workset->units.encoding == codec::Encoding::Linear),
+         .absolute_units = workset->units.absolute, .unit_nits = workset->units.unit_nits,
+         .display_codec = snapshot.hdr_curve == 1u, .legacy_mode = snapshot.hdr_pedestal.legacy_mode,
+         .debug_bypass = snapshot.restore_decision.hdr_policy && snapshot.diagnostic.bypass_hdr_pedestal,
+         .scope_eligible = snapshot.restore_decision.hdr_policy});
+    if (!snapshot.restore_decision.hdr_policy
+        && (snapshot.domain == present_restore_scope::Domain::PRE_FG_HUDLESS
+            || snapshot.domain == present_restore_scope::Domain::PRE_FG_BACKBUFFER)) {
+      snapshot.hdr_pedestal.reason = (!snapshot.restore_contract_compatible
+          ? present_hdr_pedestal::Reason::CONTRACT_REJECTED : (snapshot.restore_scope.inherited
+          ? present_hdr_pedestal::Reason::SCOPE_INHERITED_HDR_LEGACY
+          : present_hdr_pedestal::Reason::SCOPE_FINAL_ONLY_HDR_LEGACY));
+    }
+    present_sdr_restore_active.store(workset->hdr_mode == 0 && snapshot.restore_decision.sdr_policy,
+                                   std::memory_order_relaxed);
+    PublishPresentRestoreOwner(snapshot.domain, snapshot.restore_decision.reason,
+        snapshot.restore_contract_compatible, snapshot.service_serial, snapshot.restore_config_epoch, "recording");
+    if (screenshot::PreFgCaptureMatches(snapshot.service_serial)) {
+      std::ostringstream meta;
+      const char* role = (snapshot.domain == present_restore_scope::Domain::PRE_FG_HUDLESS ? "hudless" : "backbuffer");
+      meta << "role." << role << ".actual_domain=" << present_restore_scope::DomainText(snapshot.domain)
+           << "\nrole." << role << ".restore_config_epoch=" << snapshot.restore_config_epoch
+           << "\nrole." << role << ".resource_contract_epoch=" << workset->id
+           << "\nrole." << role << ".resource_contract_epoch_source=owned_workset_reconstruction_id"
+           << "\nrole." << role << ".scope_requested=" << static_cast<uint32_t>(snapshot.restore_scope.scope)
+           << "\nrole." << role << ".scope_inherited=" << snapshot.restore_scope.inherited
+           << "\nrole." << role << ".scope_source=" << present_restore_scope::SourceText(snapshot.restore_scope.source)
+           << "\nrole." << role << ".scope_reason=" << (snapshot.restore_contract_compatible
+               ? present_restore_scope::ReasonText(snapshot.restore_decision.reason) : "contract_rejected")
+           << "\nrole." << role << ".sdr_policy=" << static_cast<uint32_t>(snapshot.sdr_restore_policy)
+           << "\nrole." << role << ".sdr_debug_bypass=" << snapshot.diagnostic.bypass_sdr_restore
+           << "\nrole." << role << ".sdr_mode=" << snapshot.sdr_restore_effective_mode
+           << "\nrole." << role << ".hdr_policy=" << static_cast<uint32_t>(snapshot.hdr_pedestal.configuration.policy)
+           << "\nrole." << role << ".hdr_debug_bypass=" << snapshot.hdr_pedestal.debug_bypass
+           << "\nrole." << role << ".hdr_legacy_predicate=" << snapshot.hdr_pedestal.measure_legacy
+           << "\nrole." << role << ".hdr_actual_gate=" << snapshot.hdr_pedestal.effective_gate
+           << "\nrole." << role << ".hdr_units_absolute=" << workset->units.absolute
+           << "\nrole." << role << ".unit_nits=" << workset->units.unit_nits
+           << "\nrole." << role << ".encoding=" << static_cast<uint32_t>(workset->units.encoding)
+           << "\nrole." << role << ".native_format=" << static_cast<uint32_t>(output_desc.Format)
+           << "\nrole." << role << ".original_identity=" << snapshot.original_identity << '\n';
+      screenshot::AppendPreFgMeta(snapshot.service_serial, meta.str());
+    }
+    present_hdr_pedestal_active.store(snapshot.hdr_pedestal.active, std::memory_order_relaxed);
+    present_hdr_pedestal_reason.store(snapshot.hdr_pedestal.reason, std::memory_order_relaxed);
+  } else if (present_snapshot) {
+    present_hdr_pedestal_active.store(false, std::memory_order_relaxed);
+    present_hdr_pedestal_reason.store(present_hdr_pedestal::Reason::NON_V6, std::memory_order_relaxed);
+  }
   // Exact submission-use proof (issue 01): this evaluate's recordings on the
   // game's list can reference the workset's GPU objects.
   if (setup_ok) TrackWorksetRecording(command_list, *workset);
@@ -9275,6 +9877,8 @@ inline bool ProcessInline(
     }
   }
   if (!setup_ok) {
+    PublishPresentRestoreOwner(present_restore_scope::Domain::OTHER,
+        present_restore_scope::Reason::INACTIVE_DOMAIN, true, 0, 0, "workset_setup_failed");
     if (!codec_ok) {
       LogCodecPipelineFailure(path_name);
     }
@@ -9286,11 +9890,41 @@ inline bool ProcessInline(
     return false;
   }
   FinalResources& res = *workset;
+  const bool capture_service_role = present != nullptr && screenshot::prefg_capture_role != nullptr
+      && screenshot::PreFgCaptureMatches(present->service_serial);
+  const auto hdr_capture_plan = ((capture_this_eval || capture_service_role)
+      ? screenshot::PendingHdrCapturePlan() : std::nullopt);
+  if (hdr_capture_plan && present_snapshot) {
+    present_snapshot->diagnostic.capture_stages = true;
+    present_snapshot->diagnostic.hdr_capture_mode = (hdr_capture_plan->mode == screenshot::HdrCaptureMode::COMMIT_CORE
+        ? diagnostics::HdrCaptureMode::COMMIT_CORE : diagnostics::HdrCaptureMode::MODEL_TRACE);
+  }
+  const auto capture_stage = [&](const char* name, ID3D12Resource* texture,
+                                 D3D12_RESOURCE_STATES state, uint32_t plane_width,
+                                 uint32_t plane_height, uint32_t pass = 0u, uint32_t stack = 1u) {
+    if ((!capture_this_eval && !capture_service_role) || present == nullptr || !present->diagnostic.capture_stages) return;
+    std::string service_name;
+    if (capture_service_role) {
+      const std::string_view stage(name);
+      if (stage == "post_resolve" || stage == "post_restore") {
+        service_name = (stage == "post_resolve" ? "pre_restore_p" : "post_restore_p") + std::to_string(pass);
+        name = service_name.c_str();
+        stack = 1;
+      } else if (stage != "hdr_original_linear" && stage != "hdr_pre_commit"
+                 && stage != "hdr_block_statistics" && stage != "packed_final") {
+        return;
+      }
+    }
+    Transition(command_list, texture, state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    screenshot::RecordStackPlaneCopy(device, command_list, texture, plane_width, plane_height,
+                                     name, pass, stack);
+    Transition(command_list, texture, D3D12_RESOURCE_STATE_COPY_SOURCE, state);
+  };
   // Stage A: hand the raw exposure evidence to the workset so the present-
   // side normalization lock reads the same contract this evaluate saw.
 
-  // NGX requires the game's DLSS output as an UAV. Copy it out and restore that
-  // exact state before doing any private work. From this point onward an early
+  // Copy the borrowed source or the game's DLSS output and restore its exact
+  // state before doing any private work. From this point onward an early
   // return must restore the host compute state captured around the real evaluate.
   if (command_list_touched != nullptr) *command_list_touched = true;
   // Per-stage GPU timestamps (NRGpuTimers, NRCostMeter): begin the frame
@@ -9301,13 +9935,20 @@ inline bool ProcessInline(
   // for a back buffer at the present.
   const D3D12_RESOURCE_STATES output_rest =
       present != nullptr ? present->output_state : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-  // The game output may carry a mip chain; the addon reads/writes mip 0 only
+  ID3D12Resource* const color_input = (present != nullptr && present->source_color != nullptr
+      ? present->source_color : output);
+  const D3D12_RESOURCE_STATES color_input_rest = (present != nullptr && present->source_color != nullptr
+      ? present->source_color_state : output_rest);
+  if (present != nullptr && present->source_color != nullptr) {
+    submission::TrackUse(command_list, present->source_color);
+  }
+  // The color input may carry a mip chain; the addon reads/writes mip 0 only
   // (CopyMip0), so its transitions stay scoped to subresource 0 - an
   // ALL_SUBRESOURCES barrier would assert a before-state for mips the addon
   // never observed and corrupt engines that track them independently.
   Transition(
-      command_list, output,
-      output_rest,
+      command_list, color_input,
+      color_input_rest,
       D3D12_RESOURCE_STATE_COPY_SOURCE,
       0u);
   Transition(
@@ -9316,11 +9957,11 @@ inline bool ProcessInline(
       D3D12_RESOURCE_STATE_COPY_DEST);
   const D3D12_BOX output_box = {output_rect.x, output_rect.y, 0,
                                 output_rect.x + width, output_rect.y + height, 1};
-  CopyMip0(command_list, res.original, output, output_partial ? &output_box : nullptr);
+  CopyMip0(command_list, res.original, color_input, output_partial ? &output_box : nullptr);
   Transition(
-      command_list, output,
+      command_list, color_input,
       D3D12_RESOURCE_STATE_COPY_SOURCE,
-      output_rest,
+      color_input_rest,
       0u);
   if (capture_this_eval) {
     // original now holds the pre-NR DLSS output; snapshot it for the pair.
@@ -9329,6 +9970,7 @@ inline bool ProcessInline(
         D3D12_RESOURCE_STATE_COPY_DEST,
         D3D12_RESOURCE_STATE_COPY_SOURCE);
     screenshot::RecordPreCopy(command_list, res.original);
+    capture_stage("original", res.original, D3D12_RESOURCE_STATE_COPY_SOURCE, width, height);
   }
   Transition(
       command_list, res.original,
@@ -9377,6 +10019,7 @@ inline bool ProcessInline(
       &feature, "after", frame, motion_window, scale_source, motion_desc, &output_rect,
       resource_width, resource_height);
   frame.ui_correction = present != nullptr && present->ui_correction;
+  frame.diagnostic_model_ui = (present != nullptr ? present->diagnostic.model_ui : 0u);
 
   // One gain snapshot for the whole frame's encode, decode, and black
   // restore.  SDR worksets run the legacy codec family: Classic uses the
@@ -9394,18 +10037,23 @@ inline bool ProcessInline(
   // v6 constant snapshots (HDR worksets): the source transfer
   // (V6EncodingConstant), the 1-nit dark gate expressed in source units, and
   // the calibrated pedestal cap.
-  const uint32_t v6_encoding = V6EncodingConstant(res.units);
-  const float v6_dark_gate = V6DarkGate(res.units);
-  const float v6_pedestal_cap = codec::BlackPedestalCap(res.units);
+  const uint32_t v6_encoding = (present != nullptr ? present->hdr_encoding : V6EncodingConstant(res.units));
+  const float v6_dark_gate = (present != nullptr ? present->hdr_dark_gate : V6DarkGate(res.units));
+  const float v6_pedestal_cap = (present != nullptr ? present->hdr_pedestal_cap : codec::BlackPedestalCap(res.units));
   const float frame_divisor = res.hdr_mode == 0 ? 1.f
       : present != nullptr && present->divisor > 0.f ? present->divisor
       : FrameCodecDivisor(res);
+  if (present_snapshot) {
+    present_snapshot->hdr_effective_divisor = frame_divisor;
+    present_snapshot->hdr_feed = frame.feed;
+  }
   // Resolve-side chroma bound.  NR transfer otherwise runs at full authority.
   const float v6_chroma_clamp = chroma_clamp_stops.load(std::memory_order_relaxed);
-  LogFrameContract(game_parameters, current, res, frame_divisor, frame.feed, path_name);
-  if (capture_this_eval) {
+  LogFrameContract(game_parameters, current, res, frame_divisor, frame.feed, path_name, present);
+  if (recording != nullptr) recording->prepared = true;
+  if (capture_this_eval || capture_service_role) {
     SetPresentCaptureMeta(path_name, res, *present, look_chain.wanted,
-                          requested_stack, frame_divisor, v6_pedestal_cap, v6_dark_gate);
+                          requested_stack, frame_divisor, v6_pedestal_cap, v6_dark_gate, feature, look_chain.settings, frame);
   }
   // Exact zero-transfer bypass (handoff rule 3): with every pass's transfer
   // and color strength at zero the chain contributes nothing, so an HDR
@@ -9415,7 +10063,7 @@ inline bool ProcessInline(
   transfer_strength_inert.store(
       res.hdr_mode == 0 ? 2u : FramePedestalRemoval(res) ? 0u : 1u,
       std::memory_order_relaxed);
-  if (res.hdr_mode != 0 && !ChainActive(res, requested_stack)) {
+  if (res.hdr_mode != 0 && !ChainActive(res, requested_stack, present)) {
     // Explicit zero strength is the only v6 image-path bypass.
     if (capture_this_eval) {
       Transition(command_list, res.original, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -9488,7 +10136,7 @@ inline bool ProcessInline(
         0.f,
         v6_encoding,
         v6_dark_gate,
-        0.f);
+        0.f, present);
     command_list->Dispatch((width + 15) / 16, (height + 15) / 16, 1);
     UavBarrier(command_list, res.work0);
     Transition(
@@ -9511,6 +10159,9 @@ inline bool ProcessInline(
           res.work0,
           D3D12_RESOURCE_STATE_COPY_SOURCE,
           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    }
+    if (hdr_capture_plan) {
+      capture_stage("hdr_original_linear", res.work0, res.work0_state, width, height);
     }
     // Derive the relative-HDR divisor from this exact linearized frame before
     // it enters the model.  The producer and consumer stay on this command list.
@@ -9576,8 +10227,9 @@ inline bool ProcessInline(
     // (kDescriptor* layout) - no descriptor is rewritten mid-recording, so
     // earlier dispatches cannot read a later pass's surfaces.
     const uint32_t srv_table_start = pass * kCodecSrvSetStride;
-    const float pass_transfer = PassTransferStrength(pass);
-    const float pass_color = PassColorStrength(pass);
+    const float pass_transfer = (present != nullptr && res.hdr_mode != 0
+        ? present->pass_transfer_strength[pass] : PassTransferStrength(pass));
+    const float pass_color = (present != nullptr ? present->pass_color_strength[pass] : PassColorStrength(pass));
 
     if (res.hdr_mode != 0
         && pass_transfer <= 0.f && pass_color <= 0.f) {
@@ -9681,7 +10333,7 @@ inline bool ProcessInline(
           pass_color,
           v6_encoding,
           v6_dark_gate,
-          0.f);
+          0.f, present);
     } else {
       BindCodec(
           command_list,
@@ -9763,6 +10415,7 @@ inline bool ProcessInline(
     // tracked use, so a later retirement waits for exactly this submission.
     submission::TrackUse(command_list, feature.slots[pass].handle);
     NVSDK_NGX_Result nr_result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
+    if (recording != nullptr) recording->model_invoked = true;
     {
       DirectCallScope ngx_direct_call;
       try {
@@ -9792,6 +10445,7 @@ inline bool ProcessInline(
       break;
     }
     last_model_pass = static_cast<int32_t>(pass);
+    if (recording != nullptr) recording->model_recorded = true;
     // Decode pass: blend the neural result over this pass's reference image
     // and upscale from the NR working resolution to the output resolution.
     // v6 HDR resolves in LINEAR source units onto the work ping-pong
@@ -9827,6 +10481,11 @@ inline bool ProcessInline(
     // resolve, which then reads the route it returns.
     const LookRoute route =
         RunLookStage(command_list, device, res, feature.slots[pass], pass, look_chain, frame);
+    ID3D12Resource* const looked_neural =
+        (route.shaped ? (route.srv_set == kDescriptorTransportSet + srv_table_start
+                            ? res.look_up_neural : res.look_output) : res.nr_output);
+    capture_stage("post_look", looked_neural, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                  route.neural_width, route.neural_height, pass, requested_stack);
     Transition(
         command_list, write_surface,
         *write_state,
@@ -9855,7 +10514,7 @@ inline bool ProcessInline(
           pass_color,
           v6_encoding,
           v6_dark_gate,
-          v6_chroma_clamp);
+          v6_chroma_clamp, present);
     } else {
       BindCodec(
           command_list,
@@ -9880,18 +10539,27 @@ inline bool ProcessInline(
     }
     command_list->Dispatch((width + 15) / 16, (height + 15) / 16, 1);
     UavBarrier(command_list, write_surface);
-    RunBlackLevelRestore(
-        command_list,
-        res,
-        srv_table_start,
-        write_uav_index,
-        width,
-        height,
-        frame_paper_white,
-        frame_diffuse_white,
-        pass_transfer,
-        pass_color,
-        route.shaped);
+    capture_stage("post_resolve", write_surface, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                  width, height, pass, requested_stack);
+    if (present == nullptr
+        || present_sdr_restore::ShouldRestore(present->sdr_restore_policy, res.hdr_mode,
+                                             present->diagnostic.bypass_sdr_restore)) {
+      RunBlackLevelRestore(
+          command_list,
+          res,
+          srv_table_start,
+          write_uav_index,
+          width,
+          height,
+          frame_paper_white,
+          frame_diffuse_white,
+          pass_transfer,
+          pass_color,
+          route.shaped,
+          (present != nullptr ? std::optional<uint32_t>{present->sdr_restore_effective_mode} : std::nullopt));
+    }
+    capture_stage("post_restore", write_surface, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                  width, height, pass, requested_stack);
     if (timers_active) {
       gpu_timers::Mark(command_list, gpu_timers::PassResolveEnd(pass));
     }
@@ -9950,6 +10618,17 @@ inline bool ProcessInline(
             D3D12_RESOURCE_STATE_COPY_SOURCE,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
       }
+      if (hdr_capture_plan) {
+        capture_stage("hdr_pre_commit", work_final, *work_final_state, width, height);
+        if (frame.feed != FeedSource::kV1 && res.norm_scale != nullptr) {
+          if (screenshot::PrepareDiagnosticPlane(device, "hdr_norm_scale", res.norm_scale, 1, 1,
+                  screenshot::CaptureRect{.width = 1, .height = 1}, true)) {
+            Transition(command_list, res.norm_scale, res.norm_scale_state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            screenshot::RecordDiagnosticPlaneCopy(command_list, "hdr_norm_scale", res.norm_scale);
+            Transition(command_list, res.norm_scale, D3D12_RESOURCE_STATE_COPY_SOURCE, res.norm_scale_state);
+          }
+        }
+      }
       if (timers_active) {
         gpu_timers::Mark(command_list, gpu_timers::kSlotCommitStart);
       }
@@ -9960,7 +10639,10 @@ inline bool ProcessInline(
       // PedestalGate 0 multiplies the block means it would write by zero.
       const bool measure_unshaped = executed == 0 && final_pass_shaped
           && codec_pipeline.pedestal_reduce_unshaped != nullptr;
-      if (FramePedestalRemoval(res)) {
+      if (present_snapshot) {
+        present_snapshot->hdr_statistics_unshaped = measure_unshaped;
+      }
+      if (present != nullptr ? present->hdr_pedestal.measure_legacy : FramePedestalRemoval(res)) {
         BindCodecV6(
             command_list,
             res,
@@ -9984,9 +10666,152 @@ inline bool ProcessInline(
             final_pass_color,
             v6_encoding,
             v6_dark_gate,
-            v6_chroma_clamp);
+            v6_chroma_clamp, present);
         command_list->Dispatch((width + 31) / 32, (height + 31) / 32, 1);
         UavBarrier(command_list, res.block_mean);
+      }
+      std::shared_ptr<HdrCommitCapture> hdr_capture;
+      if (hdr_capture_plan) {
+        const char* failure = nullptr;
+        if (!queue_tracking_active.load(std::memory_order_relaxed)) failure = "exact_submission_tracking_unavailable";
+        if (screenshot::HdrCaptureSlotsFull(retired_hdr_captures.size())) {
+          failure = "capture_scratch_queue_full";
+        }
+        if (failure == nullptr && codec_pipeline.hdr_capture_root == nullptr) {
+          D3D12_DESCRIPTOR_RANGE ranges[2]{};
+          ranges[0] = {.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV, .NumDescriptors = 4};
+          ranges[1] = {.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV, .NumDescriptors = 6};
+          D3D12_ROOT_PARAMETER parameters[4]{};
+          for (uint32_t table = 0; table < 2; ++table) {
+            parameters[table].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+            parameters[table].DescriptorTable = {1, &ranges[table]};
+          }
+          parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+          parameters[2].Constants = {0, 0, 28};
+          parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+          parameters[3].Constants = {1, 0, 8};
+          const D3D12_ROOT_SIGNATURE_DESC desc{.NumParameters = 4, .pParameters = parameters};
+          ID3DBlob* serialized = nullptr;
+          ID3DBlob* errors = nullptr;
+          const HRESULT result = renodx::utils::directx::pD3D12SerializeRootSignature(
+              &desc, D3D_ROOT_SIGNATURE_VERSION_1, &serialized, &errors);
+          if (!CreateRootSignature(device, result, serialized, errors, &codec_pipeline.hdr_capture_root,
+                  L"DLSS5 HDR capture root", "HDR capture root serialization failed: ",
+                  "HDR capture root creation failed: ")) failure = "capture_root_failed";
+        }
+        if (failure == nullptr) {
+          const bool exposure_commit = frame.feed != FeedSource::kV1;
+          if (!CreateCodecPipelineState(device,
+                  exposure_commit ? std::span<const uint8_t>(__v6_commit_exposure_capture)
+                                  : std::span<const uint8_t>(__v6_commit_capture),
+                  exposure_commit ? &codec_pipeline.hdr_commit_exposure_capture : &codec_pipeline.hdr_commit_capture,
+                  L"DLSS5 HDR diagnostic commit", "HDR diagnostic commit", codec_pipeline.hdr_capture_root)) {
+            failure = "capture_pipeline_failed";
+          }
+        }
+        constexpr const char* plane_names[] = {
+            "hdr_post_pedestal_linear", "hdr_post_gamut_linear", "hdr_encoded_float", "hdr_pedestal_field"};
+        std::array<D3D12_RESOURCE_DESC, 4> plane_descs{};
+        std::array<screenshot::CaptureRect, 4> plane_rects{};
+        uint64_t temporary_bytes = 0;
+        if (failure == nullptr) {
+          for (uint32_t plane = 0; plane < 4; ++plane) {
+            plane_rects[plane] = screenshot::HdrPlaneRect(*hdr_capture_plan, plane_names[plane], width, height);
+            plane_descs[plane] = {
+                .Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D, .Width = plane_rects[plane].width,
+                .Height = plane_rects[plane].height, .DepthOrArraySize = 1, .MipLevels = 1,
+                .Format = DXGI_FORMAT_R32G32B32A32_FLOAT, .SampleDesc = {1, 0},
+                .Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN, .Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS};
+            // scRGB never writes u3; a typed null UAV retains the six-slot capture contract.
+            if (plane == 1 && v6_encoding != 4u) continue;
+            const auto allocation = device->GetResourceAllocationInfo(0, 1, &plane_descs[plane]);
+            if (allocation.SizeInBytes == UINT64_MAX || allocation.SizeInBytes > UINT64_MAX - temporary_bytes) {
+              failure = "capture_allocation_size_invalid";
+              break;
+            }
+            temporary_bytes += allocation.SizeInBytes;
+          }
+          // Descriptor allocation is separately bounded to ten immutable entries per capture.
+          if (failure == nullptr && !screenshot::ReserveHdrTemporaryBytes(temporary_bytes)) {
+            failure = "capture_temporary_budget_exceeded";
+          }
+        }
+        if (failure == nullptr) {
+          hdr_capture = std::make_shared<HdrCommitCapture>();
+          // Share the capture reservation so asynchronous export cannot free the scratch budget early.
+          {
+            std::scoped_lock capture_lock(screenshot::internal::state_mutex);
+            if (screenshot::internal::pending) {
+              hdr_capture->budget_reservation = screenshot::internal::pending->reservation;
+            }
+          }
+          hdr_capture->temporary_bytes = temporary_bytes;
+          present_snapshot->hdr_temporary_bytes = temporary_bytes;
+          hdr_capture->root = codec_pipeline.hdr_capture_root;
+          hdr_capture->root->AddRef();
+          hdr_capture->pipeline = (frame.feed != FeedSource::kV1
+              ? codec_pipeline.hdr_commit_exposure_capture : codec_pipeline.hdr_commit_capture);
+          hdr_capture->pipeline->AddRef();
+          const auto roi = hdr_capture_plan->roi;
+          hdr_capture->constants = {
+              .roi = {roi.x, roi.y, roi.width, roi.height},
+              .full_planes = static_cast<uint32_t>(!hdr_capture_plan->sequence
+                  && hdr_capture_plan->mode == screenshot::HdrCaptureMode::COMMIT_CORE),
+              .legacy_pedestal_gate = present->hdr_pedestal.legacy_gate,
+              .legacy_dark_gate_mode = present->hdr_pedestal.legacy_mode};
+          const D3D12_HEAP_PROPERTIES heap_properties{.Type = D3D12_HEAP_TYPE_DEFAULT};
+          for (uint32_t plane = 0; plane < 4; ++plane) {
+            if (plane == 1 && v6_encoding != 4u) {
+              screenshot::SkipHdrPlane(plane_names[plane], "scRGB_gamut_conversion_skipped");
+              continue;
+            }
+            if (FAILED(device->CreateCommittedResource(&heap_properties, D3D12_HEAP_FLAG_NONE,
+                    &plane_descs[plane], D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                    IID_PPV_ARGS(&hdr_capture->planes[plane])))
+                || !screenshot::PrepareHdrPlane(device, plane_names[plane], hdr_capture->planes[plane], plane_rects[plane])) {
+              failure = "capture_plane_allocation_or_readback_failed";
+              break;
+            }
+          }
+          const D3D12_DESCRIPTOR_HEAP_DESC heap_desc{
+              .Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, .NumDescriptors = 10,
+              .Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE};
+          if (failure == nullptr && FAILED(device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&hdr_capture->descriptors)))) {
+            failure = "capture_descriptor_allocation_failed";
+          }
+          if (failure == nullptr) {
+            const auto destination = hdr_capture->descriptors->GetCPUDescriptorHandleForHeapStart();
+            const auto source = res.descriptors->GetCPUDescriptorHandleForHeapStart();
+            device->CopyDescriptorsSimple(4, destination, DescriptorHeapSlot(source, commit_set, res.descriptor_size),
+                                          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            device->CopyDescriptorsSimple(2, DescriptorHeapSlot(destination, 4, res.descriptor_size),
+                DescriptorHeapSlot(source, kDescriptorDecodedUav, res.descriptor_size), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            const D3D12_UNORDERED_ACCESS_VIEW_DESC view{
+                .Format = DXGI_FORMAT_R32G32B32A32_FLOAT, .ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D};
+            for (uint32_t plane = 0; plane < 4; ++plane) {
+              device->CreateUnorderedAccessView(hdr_capture->planes[plane], nullptr, &view,
+                  DescriptorHeapSlot(destination, plane + 6, res.descriptor_size));
+            }
+            retired_hdr_captures.push_back(hdr_capture);
+            for (auto* plane : hdr_capture->planes) {
+              if (plane != nullptr) screenshot::TrackHdrTemporaryResource(command_list, plane);
+            }
+            for (auto* object : hdr_capture->Objects()) {
+              if (object != nullptr) submission::TrackUse(command_list, object);
+            }
+          }
+        }
+        if (failure != nullptr) {
+          hdr_capture.reset();
+          for (const auto* name : plane_names) screenshot::SkipHdrPlane(name, failure);
+          screenshot::FailRequest("hdr_commit_capture_failed", failure);
+        }
+        if (present->hdr_pedestal.measure_legacy) {
+          capture_stage("hdr_block_statistics", res.block_mean, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                        (width + 31) / 32, (height + 31) / 32);
+        } else {
+          screenshot::SkipHdrPlane("hdr_block_statistics", "legacy_measurement_disabled");
+        }
       }
       // `decoded` is `original` here (HDR): the linearize above read it for
       // the last time this frame.
@@ -9998,8 +10823,8 @@ inline bool ProcessInline(
       BindCodecV6(
           command_list,
           res,
-          frame.feed != FeedSource::kV1 ? codec_pipeline.commit_exposure
-                                        : codec_pipeline.commit,
+          hdr_capture != nullptr ? hdr_capture->pipeline
+              : (frame.feed != FeedSource::kV1 ? codec_pipeline.commit_exposure : codec_pipeline.commit),
           commit_set,
           kDescriptorDecodedUav,
           width,
@@ -10018,9 +10843,20 @@ inline bool ProcessInline(
           final_pass_color,
           v6_encoding,
           v6_dark_gate,
-          0.f);
+          0.f, present, hdr_capture.get());
       command_list->Dispatch((width + 15) / 16, (height + 15) / 16, 1);
       UavBarrier(command_list, res.decoded);
+      if (hdr_capture != nullptr) {
+        constexpr const char* names[] = {
+            "hdr_post_pedestal_linear", "hdr_post_gamut_linear", "hdr_encoded_float", "hdr_pedestal_field"};
+        for (uint32_t plane = 0; plane < 4; ++plane) {
+          if (hdr_capture->planes[plane] == nullptr) continue;
+          UavBarrier(command_list, hdr_capture->planes[plane]);
+          Transition(command_list, hdr_capture->planes[plane], D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                     D3D12_RESOURCE_STATE_COPY_SOURCE);
+          screenshot::RecordDiagnosticPlaneCopy(command_list, names[plane], hdr_capture->planes[plane]);
+        }
+      }
       if (timers_active) {
         gpu_timers::Mark(command_list, gpu_timers::kSlotCommitEnd);
       }
@@ -10028,8 +10864,14 @@ inline bool ProcessInline(
         norm_trace::Record(
             command_list, device, res.norm_scale, res.norm_scale_state,
             res.block_mean, width, height,
-            {present_generation, SteadyNowNs(), res.id, frame_snap,
-             static_cast<uint32_t>(frame.feed)});
+            {.generation = present_generation,
+             .time_ns = SteadyNowNs(),
+             .workset = res.id,
+             .snap = frame_snap,
+             .feed = static_cast<uint32_t>(frame.feed),
+             .present_domain = (present != nullptr ? present->domain : present_restore_scope::Domain::OTHER),
+             .chain_reset_epoch = chain_reset_epoch,
+             .last_model_pass_reset = last_model_pass >= 0 && feature.slots[last_model_pass].model_reset});
       }
       Transition(
           command_list, res.decoded,
@@ -10041,12 +10883,18 @@ inline bool ProcessInline(
         // pair always describes this full NR stack.
         screenshot::RecordPostCopy(command_list, res.decoded);
       }
+      if (capture_this_eval || capture_service_role) {
+        capture_stage("packed_final", res.decoded, D3D12_RESOURCE_STATE_COPY_SOURCE, width, height);
+      }
       Transition(
           command_list, output,
           output_rest,
           D3D12_RESOURCE_STATE_COPY_DEST,
           0u);
       CopyMip0(command_list, output, res.decoded, nullptr, output_rect.x, output_rect.y);
+      if (hdr_capture_plan) {
+        screenshot::RecordHdrReceiverCopy(device, command_list, output, output_rect.x, output_rect.y);
+      }
       Transition(
           command_list, output,
           D3D12_RESOURCE_STATE_COPY_DEST,
@@ -10080,12 +10928,18 @@ inline bool ProcessInline(
         // the pair always describes this full NR stack.
         screenshot::RecordPostCopy(command_list, final_surface);
       }
+      if (capture_this_eval || capture_service_role) {
+        capture_stage("packed_final", final_surface, D3D12_RESOURCE_STATE_COPY_SOURCE, width, height);
+      }
       Transition(
           command_list, output,
           output_rest,
           D3D12_RESOURCE_STATE_COPY_DEST,
           0u);
       CopyMip0(command_list, output, final_surface, nullptr, output_rect.x, output_rect.y);
+      if (capture_service_role) {
+        screenshot::RecordHdrReceiverCopy(device, command_list, output, output_rect.x, output_rect.y);
+      }
       Transition(
           command_list, output,
           D3D12_RESOURCE_STATE_COPY_DEST,
@@ -10102,6 +10956,16 @@ inline bool ProcessInline(
     }
   }
 
+  if (capture_service_role) {
+    screenshot::RecordPreFgRole(present->service_serial, present->restore_config_epoch,
+        present->domain == present_restore_scope::Domain::PRE_FG_HUDLESS, res.hdr_mode,
+        static_cast<uint32_t>(executed + 1), requested_stack, model_evaluated, frame.feed != FeedSource::kV1);
+  }
+  if (capture_this_eval || capture_service_role) {
+    SetPresentCaptureMeta(path_name, res, *present, look_chain.wanted, requested_stack,
+                          frame_divisor, v6_pedestal_cap, v6_dark_gate, feature, look_chain.settings, frame,
+                          executed, executed >= 0 && !NVSDK_NGX_FAILED(stack_failure));
+  }
   if (timers_active) {
     gpu_timers::End(command_list);
   }
@@ -10184,6 +11048,14 @@ inline bool ProcessInline(
   if (path_count == 1 || path_count == 60 || path_count == 600) {
     LogNrEvaluationSuccess(path_name, path_count, res, frame, requested_stack, false);
   }
+  if (recording != nullptr) recording->output_ready = true;
+  if (present != nullptr && recording == nullptr) {
+    PublishPresentRestoreOwner(present->domain, present->restore_decision.reason,
+        present->restore_contract_compatible, present->service_serial, present->restore_config_epoch, "nr_recorded");
+  } else if (present == nullptr) {
+    PublishPresentRestoreOwner(present_restore_scope::Domain::UPSCALED_FALLBACK,
+        present_restore_scope::Reason::INACTIVE_DOMAIN, true, 0, 0, "upscaled_nr_recorded");
+  }
   return true;
 }
 
@@ -10258,12 +11130,18 @@ inline bool ProcessInlinePreSR(
   auto* color = GetD3D12Resource(game_parameters, NVSDK_NGX_Parameter_Color);
   auto* motion = GetD3D12Resource(game_parameters, NVSDK_NGX_Parameter_MotionVectors);
   if (color != nullptr) CountMotionPresence(motion != nullptr);
-  if (!IsDlssEvaluation(game_parameters)) return false;
+  if (!IsDlssEvaluation(game_parameters)) {
+    CountNrDecline(NrDeclineReason::kNgxMissingGuides);
+    return false;
+  }
 
   auto* depth = GetD3D12Resource(game_parameters, NVSDK_NGX_Parameter_Depth);
   auto* exposure =
       GetD3D12Resource(game_parameters, NVSDK_NGX_Parameter_ExposureTexture);
-  if (color == nullptr || motion == nullptr || depth == nullptr) return false;
+  if (color == nullptr || motion == nullptr || depth == nullptr) {
+    CountNrDecline(NrDeclineReason::kNgxMissingGuides);
+    return false;
+  }
 
   // One NR pass per color surface per present per source handle
   // (mirrors the after path's admission; pre-SR never mixes with the
@@ -10479,7 +11357,11 @@ inline bool ProcessInlinePreSR(
           != configuration_generation.load();
   const bool hdr_changed = feature.slots[0].handle != nullptr
       && feature.slots[0].nr_hdr_mode != hdr_mode;
-  if (dimensions_changed || configuration_changed || hdr_changed) {
+  const bool create_flags_changed = std::ranges::any_of(feature.slots,
+      [flags = NrCreateFlags(feature.create_flags, hdr_mode != 0)](const NrFeatureSlot& slot) {
+        return slot.handle != nullptr && slot.nr_create_flags != flags;
+      });
+  if (dimensions_changed || configuration_changed || hdr_changed || create_flags_changed) {
     // Contract-level change: every stack pass's feature must be recreated,
     // and slots beyond the current stack depth are freed (via the overlay's
     // RecreateFeatures on pass-count changes).  A null slot-0 handle after a
@@ -11303,8 +12185,13 @@ inline bool ProcessInlinePreSR(
       norm_trace::Record(
           command_list, device, res.norm_scale, res.norm_scale_state,
           res.block_mean, width, height,
-          {present_generation, SteadyNowNs(), res.id, frame_snap,
-             static_cast<uint32_t>(frame.feed)});
+          {.generation = present_generation,
+           .time_ns = SteadyNowNs(),
+           .workset = res.id,
+           .snap = frame_snap,
+           .feed = static_cast<uint32_t>(frame.feed),
+           .chain_reset_epoch = chain_reset_epoch,
+           .last_model_pass_reset = last_model_pass >= 0 && feature.slots[last_model_pass].model_reset});
     }
     final_surface = res.decoded;
     final_state = res.DecodedState();
@@ -11617,7 +12504,7 @@ inline bool ProcessStreamlineInline(
   }
   // The Present hook point takes the guides here as the NGX hooks do; the
   // tags' own states are the before-states (unknown = the guide 3.4 state).
-  const bool present_takes = PresentTakesEvaluate();
+  const bool present_takes = fg::xefg::OwnsStream() || PresentTakesEvaluate();
   if (present_takes) {
     const auto tag_state = [](uint32_t state) {
       return state == UINT_MAX ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
@@ -11757,6 +12644,17 @@ inline bool FrameGenerationEvaluate(const NVSDK_NGX_Handle* handle,
 // present_path.hpp: NR on DLSS-G's input before its evaluate (NRPresentPreFg).
 // Returns the game's DLSSG.HUDLess when NR's stand-in replaced it in the block,
 // which RestorePresentPreFg puts back after the real evaluate.
+// Wrappers precede the present helpers they invoke; this dependency requires a declaration.
+inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* command_list, const NVSDK_NGX_Parameter* parameters,
+                                    const NVSDK_NGX_Handle* handle = nullptr, bool* backbuffer_replaced = nullptr);
+// The same wrapper ordering also requires the paired consumer restoration declaration.
+inline void RestoreNativePreFg(ID3D12GraphicsCommandList* command_list,
+                               const NVSDK_NGX_Parameter* parameters, ID3D12Resource* hudless, bool succeeded,
+                               const NVSDK_NGX_Handle* handle = nullptr, bool backbuffer_replaced = false);
+// Native stream storage follows these wrappers; release must retire its
+// models before a game can reuse the source handle identity.
+inline void OnNativeFgFeatureReleased(const NVSDK_NGX_Handle* handle);
+inline void OnNativePresentStreamRetired(const void* owner);
 inline ID3D12Resource* RunPresentPreFg(ID3D12GraphicsCommandList* command_list,
                                        const NVSDK_NGX_Parameter* parameters);
 inline void ObservePresentFrameGeneration(const NVSDK_NGX_Parameter* parameters);
@@ -11796,7 +12694,7 @@ inline bool RegisteredDlssEvaluate(const NVSDK_NGX_Handle* handle,
 // before.  Caller must hold runtime_mutex.
 inline std::atomic_bool logged_pre_sr_rr = false;
 inline bool PreSrTakes(const NVSDK_NGX_Handle* handle) {
-  if (!nr_before_upscale.load()) return false;
+  if (fg::xefg::OwnsStream() || !nr_before_upscale.load()) return false;
   NVSDK_NGX_Feature feature = kFeatureDlss;
   if (!KnownHandleFeature(handle, &feature) || feature != kFeatureDlssd) return true;
   if (!logged_pre_sr_rr.exchange(true)) {
@@ -11921,6 +12819,18 @@ inline void RegisterCreatedFeatureLocked(const NVSDK_NGX_Handle* handle,
     }
   }
   created_feature_ids[handle] = feature;
+  if (feature == NVSDK_NGX_Feature_FrameGeneration) {
+    const uint32_t ui_recomposition = GetUInt(parameters, NVSDK_NGX_DLSSG_Parameter_UserInterfaceRecompositionEnabled);
+    native_fg_ui_recomposition[handle] = ui_recomposition != 0;
+    std::ostringstream text;
+    text << "native FG create handle=" << handle
+         << " UserInterfaceRecompositionEnabled=" << ui_recomposition
+         << " ResourceAlwaysProvidedFlags=0x" << std::hex
+         << GetUInt(parameters, NVSDK_NGX_DLSSG_Parameter_ResourceAlwaysProvided_Flags)
+         << " ResourceNeverProvidedFlags=0x"
+         << GetUInt(parameters, NVSDK_NGX_DLSSG_Parameter_ResourceNeverProvided_Flags);
+    Log(reshade::log::level::info, text.str());
+  }
   if (feature != kFeatureDlss && feature != kFeatureDlssd) return;
   // The tool recreating its feature (TIME-12 b): the deferred teardown its
   // release armed is cancelled, and NR keeps its runtime and history.
@@ -11954,6 +12864,7 @@ inline void RegisterCreatedFeatureLocked(const NVSDK_NGX_Handle* handle,
 // a 2-minute session) accumulated orphans up to the cap.  Returns whether
 // that was the last DLSS feature.  Caller holds runtime_mutex.
 inline bool ForgetSourceHandleLocked(const NVSDK_NGX_Handle* handle) {
+  OnNativeFgFeatureReleased(handle);
   const auto entry = features.find(handle);
   if (entry != features.end()) {
     ReleaseAllNrSlots(entry->second, true);
@@ -11962,6 +12873,7 @@ inline bool ForgetSourceHandleLocked(const NVSDK_NGX_Handle* handle) {
     features.erase(entry);
   }
   created_feature_ids.erase(handle);
+  native_fg_ui_recomposition.erase(handle);
   uncreated_dlss_handles.erase(handle);
   block_classified_fg_handles.erase(handle);
   create_contracts.erase(handle);
@@ -13726,6 +14638,19 @@ inline void STDMETHODCALLTYPE HookedQueueExecuteCommandLists(
     // never guessed.
     submission::CompleteSubmission(
         pending_submissions, completion_fence.fence, completion_value);
+    const void* marker = native_fg_marker.load(std::memory_order_acquire);
+    if (marker != nullptr && native_fg_result.load(std::memory_order_acquire) == fg::Result::PREPARED) {
+      const auto serial = native_fg_recording_serial.load(std::memory_order_acquire);
+      std::vector<std::pair<FenceRef, uint64_t>> proofs;
+      if (submission::UseSubmissionTokens(marker, &proofs) == submission::UseSubmission::kTokens
+          && marker == native_fg_marker.load(std::memory_order_acquire)
+          && serial == native_fg_recording_serial.load(std::memory_order_acquire)) {
+        native_fg_result.store(fg::Result::SUBMITTED, std::memory_order_release);
+        CountNativeFgSubmission(serial);
+        native_fg_last_submission_ns.store(SteadyNowNs(), std::memory_order_release);
+        native_fg_continuing_submission.store(true, std::memory_order_release);
+      }
+    }
   });
 }
 
@@ -14336,6 +15261,8 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureSlot(
   // have always checked before locking).
   PreSrSwap pre_sr;
   ID3D12Resource* prefg_hudless = nullptr;
+  bool prefg_backbuffer_replaced = false;
+  bool prefg_owner = false;
   if (!nested_in_c_wrapper && !InsideDirectCall()) {
     RuntimeLock lock(runtime_mutex);
     // NRPresentPreFg (present_path.hpp): a DLSS-G evaluate gets NR on its
@@ -14343,12 +15270,28 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureSlot(
     // a HUD-less stand-in in its block for the duration of real().
     const bool frame_generation =
         handle != nullptr && FrameGenerationEvaluate(handle, parameters);
-    if (frame_generation) ObservePresentFrameGeneration(parameters);
+    if (frame_generation) {
+      ObservePresentFrameGeneration(parameters);
+      // Streamline applies options at a later application Present. A valid
+      // FG evaluate still consumes this image even after an Off request.
+      if (enabled.load() && hook_point.load() == kHookPresent && !fg::xefg::OwnsStream()
+          && (!native_fg_public_off.load(std::memory_order_acquire)
+              || fg::native_options::ObservesPresentDecisions())) {
+        native_fg_owner = handle;
+        native_fg_owns.store(true, std::memory_order_release);
+      }
+    }
     if (enabled.load() && frame_generation && !evaluate_chain.prefg_ran
         && !NrYieldsToForeign() && !NrWaitsForTeardown(command_list)
         && InstallCommandListStateHooks(command_list)) {
       evaluate_chain.prefg_ran = true;
-      prefg_hudless = RunPresentPreFg(command_list, parameters);
+      prefg_owner = true;
+      prefg_hudless = RunNativePreFg(command_list, parameters, handle, &prefg_backbuffer_replaced);
+    } else if (enabled.load() && frame_generation && !evaluate_chain.prefg_ran
+               && native_fg_owns.load(std::memory_order_acquire) && hook_point.load() == kHookPresent) {
+      native_fg_marker.store(nullptr, std::memory_order_release);
+      native_fg_continuing_submission.store(false, std::memory_order_release);
+      native_fg_result.store(fg::Result::NOT_SERVED, std::memory_order_release);
     }
     if (enabled.load()
         && handle != nullptr && parameters != nullptr
@@ -14392,7 +15335,12 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureSlot(
   }();
   state_envelope.StopCapture();
   RestorePreSrColor(parameters, pre_sr);
-  RestorePresentPreFg(parameters, prefg_hudless);
+  // A nested delegate must not invalidate the cache before the wrapper
+  // that replaced FG inputs has restored the original parameter bindings.
+  if (prefg_owner || !evaluate_chain.prefg_ran) {
+    RestoreNativePreFg(command_list, parameters, prefg_hudless, NVSDK_NGX_SUCCEED(result), handle,
+                       prefg_backbuffer_replaced);
+  }
   // Item 19: name every terminal.  This compound early-out used to return
   // without counting anything, so an NR-off session's evaluates (7807 in
   // the MSFS2024 field log of an otherwise healthy session) and a failed
@@ -14442,7 +15390,7 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureSlot(
   // The Present hook point: this evaluate lends NR its guides and NR runs
   // at the present (present_path.hpp).  When the present path cannot serve
   // (starved presents, an unusable swapchain) the after path below runs.
-  if (PresentTakesEvaluate()) {
+  if (fg::xefg::OwnsStream() || PresentTakesEvaluate()) {
     CapturePresentGuides(
         command_list, handle, parameters,
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -14540,18 +15488,36 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureCSlot(
   // The re-entrancy check gates the LOCK - see HookedEvaluateFeatureSlot.
   PreSrSwap pre_sr;
   ID3D12Resource* prefg_hudless = nullptr;
+  bool prefg_backbuffer_replaced = false;
+  bool prefg_owner = false;
   if (!InsideDirectCall()) {
     RuntimeLock lock(runtime_mutex);
     // NRPresentPreFg: NR on DLSS-G's input before DLSS-G reads it (see the
     // C++ wrapper).
     const bool frame_generation =
         handle != nullptr && FrameGenerationEvaluate(handle, parameters);
-    if (frame_generation) ObservePresentFrameGeneration(parameters);
+    if (frame_generation) {
+      ObservePresentFrameGeneration(parameters);
+      // Streamline applies options at a later application Present. A valid
+      // FG evaluate still consumes this image even after an Off request.
+      if (enabled.load() && hook_point.load() == kHookPresent && !fg::xefg::OwnsStream()
+          && (!native_fg_public_off.load(std::memory_order_acquire)
+              || fg::native_options::ObservesPresentDecisions())) {
+        native_fg_owner = handle;
+        native_fg_owns.store(true, std::memory_order_release);
+      }
+    }
     if (enabled.load() && frame_generation && !evaluate_chain.prefg_ran
         && !NrYieldsToForeign() && !NrWaitsForTeardown(command_list)
         && InstallCommandListStateHooks(command_list)) {
       evaluate_chain.prefg_ran = true;
-      prefg_hudless = RunPresentPreFg(command_list, parameters);
+      prefg_owner = true;
+      prefg_hudless = RunNativePreFg(command_list, parameters, handle, &prefg_backbuffer_replaced);
+    } else if (enabled.load() && frame_generation && !evaluate_chain.prefg_ran
+               && native_fg_owns.load(std::memory_order_acquire) && hook_point.load() == kHookPresent) {
+      native_fg_marker.store(nullptr, std::memory_order_release);
+      native_fg_continuing_submission.store(false, std::memory_order_release);
+      native_fg_result.store(fg::Result::NOT_SERVED, std::memory_order_release);
     }
     if (enabled.load()
         && handle != nullptr && parameters != nullptr
@@ -14585,14 +15551,31 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureCSlot(
   inside_game_evaluate_wrapper = false;
   state_envelope.StopCapture();
   RestorePreSrColor(parameters, pre_sr);
-  RestorePresentPreFg(parameters, prefg_hudless);
-  if (InsideDirectCall() || NVSDK_NGX_FAILED(result) || !enabled.load()
-      || handle == nullptr || parameters == nullptr) {
+  if (prefg_owner || !evaluate_chain.prefg_ran) {
+    RestoreNativePreFg(command_list, parameters, prefg_hudless, NVSDK_NGX_SUCCEED(result), handle,
+                       prefg_backbuffer_replaced);
+  }
+  if (InsideDirectCall()) {
+    return result;
+  }
+  if (NVSDK_NGX_FAILED(result)) {
+    CountNrDecline(NrDeclineReason::kGameEvaluateFailed);
+    return result;
+  }
+  if (!enabled.load()) {
+    CountNrDecline(NrDeclineReason::kNrDisabledEvaluation);
+    return result;
+  }
+  if (handle == nullptr || parameters == nullptr) {
+    CountNrDecline(NrDeclineReason::kMalformedEvaluate);
     return result;
   }
 
   RuntimeLock lock(runtime_mutex);
-  if (!RegisteredDlssEvaluate(handle, parameters)) return result;
+  if (!RegisteredDlssEvaluate(handle, parameters)) {
+    CountNrDecline(NrDeclineReason::kNgxNotDlssEvaluation);
+    return result;
+  }
   ObservePresentDlssEvaluate(parameters);
   ngx_dlss_evaluate_seen.store(true, std::memory_order_relaxed);
   if (NrYieldsToForeign()) {
@@ -14607,7 +15590,7 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureCSlot(
   // The Present hook point: this evaluate lends NR its guides and NR runs
   // at the present (present_path.hpp).  When the present path cannot serve
   // (starved presents, an unusable swapchain) the after path below runs.
-  if (PresentTakesEvaluate()) {
+  if (fg::xefg::OwnsStream() || PresentTakesEvaluate()) {
     CapturePresentGuides(
         command_list, handle, parameters,
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -14650,6 +15633,12 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedReleaseFeatureSlot(NVSDK_NGX_Handle* ha
       // P4 A2: was this the last DLSS feature bound on the NR device?  Read
       // under the lock that just erased; the teardown itself runs after
       // real() below, outside every lock.
+      if (native_fg_owner == handle) {
+        native_fg_owner = nullptr;
+        native_fg_owns.store(false, std::memory_order_release);
+        native_fg_result.store(fg::Result::NOT_SERVED, std::memory_order_release);
+        native_fg_marker.store(nullptr, std::memory_order_release);
+      }
       foreign_last_feature = ForgetSourceHandleLocked(handle);
     }
   }
@@ -16048,6 +17037,8 @@ inline void PreloadNrRuntime(ID3D12Device* device) {
 inline std::atomic_bool dx11_source_off_device_deferred{false};
 
 inline void OnInitDevice(reshade::api::device* device) {
+  fg::native_options::Configure(OnNativeFgOptions, OnNativePresentObserved);
+  fg::native_options::Poll();
   // The Direct3D 11 bridge's own private device (ReShade wraps it like any
   // other): not a D3D12 game, so none of the D3D12 half below applies.
   if (bridge_creating_device) return;
@@ -16057,6 +17048,9 @@ inline void OnInitDevice(reshade::api::device* device) {
     vulkan_device_seen.store(true, std::memory_order_relaxed);
     vk::OnInitDevice(device);
   }
+  fg::xefg::Configure(fg_service::Service, fg_service::PrepareCapture, fg_service::Retire,
+      fg_service::Requested, present_block_hudless.load(std::memory_order_relaxed));
+  fg::xefg::Poll();
   InstallHooks();
   const bool d3d12_device =
       device != nullptr && device->get_api() == reshade::api::device_api::d3d12;
@@ -16104,6 +17098,11 @@ inline void OnInitDevice(reshade::api::device* device) {
 // foreign tool's present callback can evaluate.  Under DX11Source=off the
 // first D3D12 swapchain also runs the device half held back at init_device.
 inline void OnInitSwapchain(reshade::api::swapchain* swapchain, bool /*resize*/) {
+  fg::native_options::Configure(OnNativeFgOptions, OnNativePresentObserved);
+  fg::native_options::Poll();
+  fg::xefg::Configure(fg_service::Service, fg_service::PrepareCapture, fg_service::Retire,
+      fg_service::Requested, present_block_hudless.load(std::memory_order_relaxed));
+  fg::xefg::Poll();
   if (swapchain == nullptr) return;
   reshade::api::device* const device = swapchain->get_device();
   if (device == nullptr) return;
@@ -16216,6 +17215,11 @@ inline void RecreateFeatures();
 // reader took it.
 inline void ToggleNrFromHotkey(uint32_t toggle_key, bool overlay_open) {
   const bool next = !enabled.load();
+  if (next && native_fg_owns.load(std::memory_order_acquire) && hook_point.load() == kHookPresent) {
+    native_fg_marker.store(nullptr, std::memory_order_release);
+    native_fg_continuing_submission.store(false, std::memory_order_release);
+    native_fg_result.store(fg::Result::PREPARED, std::memory_order_release);
+  }
   enabled = next;
   reshade::set_config_value(nullptr, kConfigSection, "NeuralUplift", next);
   Log(
@@ -16541,6 +17545,25 @@ inline FunnelInputs CollectFunnelInputs() {
   // `present_starved` report a funnel leak of exactly one.
   named += evaluations_in_flight.load(std::memory_order_relaxed);
   in.unaccounted = in.eligible > named ? in.eligible - named : 0;
+  // FG mode reports this application's current handoff. A model evaluation
+  // from an earlier frame, or a create-only recording, is not engagement.
+  const bool xefg_active = fg::xefg::OwnsStream();
+  const bool native_active = native_fg_owns.load(std::memory_order_acquire)
+      && hook_point.load(std::memory_order_relaxed) == kHookPresent;
+  if (xefg_active || native_active) {
+    const auto current = (xefg_active ? fg::xefg::CurrentResult() : native_fg_result.load(std::memory_order_acquire));
+    in.present_hook = true;
+    in.dx11_source_off = false;
+    in.seen = 1;
+    in.eligible = 1;
+    in.injected = current == fg::Result::SUBMITTED ? 1 : 0;
+    in.submitted_ok = in.injected;
+    in.unaccounted = 0;
+    in.top_decline_tag = (current == fg::Result::PREPARED ? "fg_preparing"
+        : current == fg::Result::FAILED ? "fg_handoff_failed"
+        : current == fg::Result::SUBMITTED ? nullptr : "fg_unserved");
+    in.top_decline_count = in.injected == 0 ? 1 : 0;
+  }
   return in;
 }
 
@@ -16554,6 +17577,7 @@ inline FunnelInputs CollectFunnelInputs() {
 inline std::atomic<NrState> last_emitted_state{NrState::kNotEngaged};
 inline std::atomic<FunnelStage> last_emitted_stage{FunnelStage::kCount};
 inline std::atomic<const char*> last_emitted_reason{nullptr};
+inline std::atomic_bool last_emitted_fg_progress = false;
 inline std::atomic_bool emitted_any_verdict = false;
 
 // The grep-able line.  One line, one schema version, every field a reporter
@@ -16579,13 +17603,19 @@ inline void EmitNrVerdict(const char* trigger) {
       intercepted_creates.load(std::memory_order_relaxed) > 0
       && verdict.seen > 0;
   Log(
-      verdict.state == NrState::kNotEngaged && had_its_chance
+      verdict.state == NrState::kNotEngaged && had_its_chance && !verdict.IsFgPreparing()
           ? reshade::log::level::warning
           : reshade::log::level::info,
       line);
   last_emitted_state.store(verdict.state, std::memory_order_relaxed);
   last_emitted_stage.store(verdict.stage, std::memory_order_relaxed);
   last_emitted_reason.store(verdict.reason, std::memory_order_relaxed);
+  last_emitted_fg_progress.store(
+      (fg::xefg::OwnsStream()
+          || (native_fg_owns.load(std::memory_order_acquire)
+              && hook_point.load(std::memory_order_relaxed) == kHookPresent))
+          && verdict.IsFgHandoffProgress(),
+      std::memory_order_relaxed);
   emitted_any_verdict.store(true, std::memory_order_relaxed);
 }
 
@@ -16604,12 +17634,22 @@ inline constexpr int64_t kVerdictSettleNs = 30LL * 1'000'000'000LL;
 // Returns the verdict it computed, so the status card reads the same one.
 inline NrVerdict MaybeEmitNrVerdict() {
   const NrVerdict verdict = ComputeNrVerdict(CollectFunnelInputs());
+  // Recording and queue submission are phases of one healthy handoff. Only
+  // coalesce their change lines; UI and periodic/settled snapshots keep the
+  // current truth, including a recording that never reaches submission.
+  const bool normal_fg_cycle = (fg::xefg::OwnsStream()
+      || (native_fg_owns.load(std::memory_order_acquire)
+          && hook_point.load(std::memory_order_relaxed) == kHookPresent))
+      && verdict.IsFgPreparing()
+      && last_emitted_fg_progress.load(std::memory_order_relaxed)
+      && last_emitted_state.load(std::memory_order_relaxed) == NrState::kEngaged;
   // The reason strings are static literals, so comparing pointers is
   // comparing identity - which is what "the same reason" means here.
   if (!emitted_any_verdict.load(std::memory_order_relaxed)
-      || verdict.state != last_emitted_state.load(std::memory_order_relaxed)
-      || verdict.stage != last_emitted_stage.load(std::memory_order_relaxed)
-      || verdict.reason != last_emitted_reason.load(std::memory_order_relaxed)) {
+      || (!normal_fg_cycle
+          && (verdict.state != last_emitted_state.load(std::memory_order_relaxed)
+              || verdict.stage != last_emitted_stage.load(std::memory_order_relaxed)
+              || verdict.reason != last_emitted_reason.load(std::memory_order_relaxed)))) {
     EmitNrVerdict("change");
     return verdict;
   }
@@ -16902,10 +17942,9 @@ inline uint32_t CountPeerAddonCopies() {
                                                                                 : peers;
 }
 
-// U4's issue notice: a corner line when a warn row enters, for a few
-// seconds, and again every five minutes while one stays active.  UiIssueNotice
-// (default on) mutes it; the overlay's list is not muted.
-inline std::atomic_bool health_notice_enabled{true};
+// UiIssueNotice keeps its config key for compatibility and now controls
+// every on-screen status notice. Home cards and diagnostics stay visible.
+inline std::atomic_bool hud_enabled{true};
 inline std::atomic_int64_t health_notice_until_ns{0};
 inline std::atomic_uint8_t health_notice_row{0};
 inline int64_t health_notice_shown_ns = 0;  // lifecycle tick only
@@ -17061,7 +18100,7 @@ inline void TickHealth(const NrVerdict& verdict, int64_t now_ns, bool frame) {
     health_active_mask.store(mask, std::memory_order_relaxed);
     health_entered.store(health_ledger.Entered(), std::memory_order_relaxed);
   }
-  if (!health_notice_enabled.load(std::memory_order_relaxed)
+  if (!hud_enabled.load(std::memory_order_relaxed)
       || !enabled.load(std::memory_order_relaxed) || health::CountedIssues(mask) == 0) {
     return;
   }
@@ -17088,6 +18127,21 @@ inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
                                         int64_t now_ns) {
   ui::CardInputs in;
   in.verdict = verdict;
+  // The funnel's 0/1 values describe the current handoff, not session totals.
+  if (fg::xefg::OwnsStream()) {
+    in.fg_submitted_frames = fg::xefg::SubmittedFrames();
+    in.fg_continuing_submission = fg::xefg::DisplayResult() == fg::Result::SUBMITTED;
+  } else if (native_fg_owns.load(std::memory_order_acquire)
+             && hook_point.load(std::memory_order_relaxed) == kHookPresent) {
+    in.fg_submitted_frames = native_fg_submitted_frames.load(std::memory_order_relaxed);
+    const auto submitted_ns = native_fg_last_submission_ns.load(std::memory_order_acquire);
+    in.fg_continuing_submission = native_fg_continuing_submission.load(std::memory_order_acquire)
+        && native_fg_display_epoch.load(std::memory_order_relaxed)
+               == history_reset_epoch.load(std::memory_order_relaxed)
+        // A queue can publish after the UI captured now_ns for this tick.
+        && submitted_ns > 0
+        && now_ns - submitted_ns <= kNativeFgDisplayContinuityNs;
+  }
   in.partial_latched = card_partial_latched.load(std::memory_order_relaxed);
   in.dlss_hint = dlss_user_hint.load(std::memory_order_relaxed);
   in.active_features = active_features.load(std::memory_order_relaxed)
@@ -17122,10 +18176,11 @@ inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
     in.frame_gen_multiplier = multiplier;
   }
   in.present_every_frame = present_frames.load(std::memory_order_relaxed) == 0;
-  in.present_before_fg = present_prefg_active.load(std::memory_order_relaxed);
+  in.present_before_fg = in.fg_submitted_frames.has_value()
+      || present_prefg_active.load(std::memory_order_relaxed);
   // The flicker at Present, with the verdict's top decline in the player's
   // words.
-  in.present_gaps = present_gaps.load(std::memory_order_relaxed);
+  in.present_gaps = in.fg_submitted_frames.has_value() ? 0 : present_gaps.load(std::memory_order_relaxed);
   if (verdict.reason != nullptr) {
     for (size_t i = 0; i < std::size(kSkipReasonText); ++i) {
       if (std::strcmp(kNrDeclineTags[i], verdict.reason) == 0) in.gap_reason = kSkipReasonText[i];
@@ -17151,29 +18206,54 @@ inline void EmitStatusCard(const ui::StatusCard& card, const char* trigger) {
   last_emitted_card.store(static_cast<uint8_t>(card.id), std::memory_order_relaxed);
 }
 
-// U4, the HUD (PLAN_UI_V7.md 4): a pill in the top-left corner while NR is
-// not working (ui::ShowsOnHud), and a 4-second toast when the card turns
-// green after a pill or for the first time in a session.  Both hide while
+// U4, the HUD (PLAN_UI_V7.md 4): a pill while NR is
+// not working (ui::ShowsOnHud), and a 2-second toast when the card turns
+// green after a pill or NR is enabled. Both hide while
 // ReShade's overlay is open, where the card itself is.  The tick below sets
 // the two; OnPresent listens to reshade_overlay only while one is due, so a
 // working session keeps ReShade's no-ImGui-frame early-out: zero cost by
 // construction when green or gray.
 inline std::atomic_bool hud_pill{false};
+// Lifecycle tick only (runtime_mutex). A neutral preparation clears the
+// visible pill but cannot consume recovery before a proven submission.
+inline bool hud_recovery_pending = false;
 inline std::atomic_int64_t hud_toast_until_ns{0};
-inline constexpr int64_t kHudToastNs = 4'000'000'000LL;
+inline constexpr int64_t kHudToastNs = 2'000'000'000LL;
+inline std::atomic<float> hud_position_x{50.f};
+inline std::atomic<float> hud_position_y{0.f};
 
 inline void MaybeEmitStatusCard(const NrVerdict& verdict, int64_t now_ns) {
+  const ui::CardInputs inputs = CollectCardInputs(verdict, now_ns);
   const ui::StatusCard card =
-      ui::ComputeStatusCard(CollectCardInputs(verdict, now_ns));
+      ui::ComputeStatusCard(inputs);
   card_partial_latched.store(card.id == ui::CardId::kPartlyActive, std::memory_order_relaxed);
   // Every tick, ahead of the line's dedupe and its token bucket.  A gray
   // flap (waiting_for_dlss across a resolution change) and amber (the pill
   // already said it) raise no toast.
-  if (card.tone != ui::CardTone::kGood) {
+  if (!hud_enabled.load(std::memory_order_relaxed)) {
+    hud_pill.store(false, std::memory_order_relaxed);
+    hud_toast_until_ns.store(0, std::memory_order_relaxed);
+    hud_recovery_pending = false;
+  } else if (card.tone != ui::CardTone::kGood) {
     hud_pill.store(ui::ShowsOnHud(card), std::memory_order_relaxed);
-  } else if (hud_pill.exchange(false, std::memory_order_relaxed)
-             || hud_toast_until_ns.load(std::memory_order_relaxed) == 0) {
-    hud_toast_until_ns.store(now_ns + kHudToastNs, std::memory_order_relaxed);
+    if (ui::ShowsOnHud(card)) {
+      hud_recovery_pending = true;
+    }
+    if (verdict.state == NrState::kOff || verdict.state == NrState::kUnavailable) {
+      hud_recovery_pending = false;
+      hud_toast_until_ns.store(0, std::memory_order_relaxed);
+    }
+  } else {
+    hud_pill.store(false, std::memory_order_relaxed);
+    // A Present tick can always land inside the next FG recording. The
+    // card's bounded, current-epoch submission proof also permits its toast;
+    // preparation without that proof remains silent.
+    if (!verdict.IsFgPreparing() || inputs.fg_continuing_submission) {
+      if (hud_recovery_pending || hud_toast_until_ns.load(std::memory_order_relaxed) == 0) {
+        hud_toast_until_ns.store(now_ns + kHudToastNs, std::memory_order_relaxed);
+      }
+      hud_recovery_pending = false;
+    }
   }
   if (card_line_refill_ns != 0) {
     card_line_tokens = std::min(
@@ -17342,7 +18422,8 @@ inline void RefreshUiLanguage() {
 inline void OnHudOverlay(reshade::api::effect_runtime* /*runtime*/) {
   // Registered only while due, except when a second effect runtime froze
   // the listeners (OnPresent): then this is the check.
-  if (hud_overlay_open.load(std::memory_order_relaxed)) return;
+  if (!hud_enabled.load(std::memory_order_relaxed)
+      || hud_overlay_open.load(std::memory_order_relaxed)) return;
   RefreshUiLanguage();
   const int64_t now_ns = SteadyNowNs();
   const ui::StatusCard card = ui::ComputeStatusCard(
@@ -17364,7 +18445,7 @@ inline void OnHudOverlay(reshade::api::effect_runtime* /*runtime*/) {
   const int64_t notice_ns =
       health_notice_until_ns.load(std::memory_order_relaxed) - now_ns;
   const bool notice = !pill && notice_ns > 0
-                      && health_notice_enabled.load(std::memory_order_relaxed);
+                      && hud_enabled.load(std::memory_order_relaxed);
   if (!pill && !notice && (toast_ns <= 0 || card.tone != ui::CardTone::kGood)) return;
   // One line per kind and session: the proof the HUD was entered, which no
   // counter of the listener's registration can give.
@@ -17390,8 +18471,15 @@ inline void OnHudOverlay(reshade::api::effect_runtime* /*runtime*/) {
       .Color(ImGuiCol_WindowBg, ui::tokens::kBgCard)
       .Color(ImGuiCol_Border, ui::tokens::kStroke)
       .Color(ImGuiCol_Text, ui::tokens::kTextPrimary);
-  ImGui::SetNextWindowPos(ImVec2(ui::tokens::kRowGap, ui::tokens::kRowGap),
-                          ImGuiCond_Always);
+  const ImVec2 display_size = ImGui::GetIO().DisplaySize;
+  const ImVec2 anchor(hud_position_x.load(std::memory_order_relaxed) / 100.f,
+                      hud_position_y.load(std::memory_order_relaxed) / 100.f);
+  // Matching the pivot to the normalized position keeps an auto-sized
+  // notice inside the screen at either edge and centered at 50%.
+  ImGui::SetNextWindowPos(
+      ImVec2(ui::tokens::kRowGap + (display_size.x - 2.f * ui::tokens::kRowGap) * anchor.x,
+             ui::tokens::kRowGap + (display_size.y - 2.f * ui::tokens::kRowGap) * anchor.y),
+      ImGuiCond_Always, anchor);
   if (ImGui::Begin("##nr_hud", nullptr,
                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs
                        | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings
@@ -17727,7 +18815,9 @@ inline void EmitTelemetry(int64_t now_ns, bool force = false) {
                      + d3d11_bytes(stream.neutral_depth11);
   }
   uint64_t bridge_bytes = 0;
-  for (const auto& [_, set] : bridge_sets) bridge_bytes += set.bytes + d3d11_bytes(set.depth_stage);
+  for (const auto& [_, set] : bridge_sets) {
+    bridge_bytes += set.bytes + d3d11_bytes(set.depth_stage) + d3d11_bytes(set.motion_stage);
+  }
   uint64_t vk_bytes = 0;
   for (const auto& [_, feature] : vk::features) {
     if (feature.device == nullptr) continue;
@@ -18516,7 +19606,9 @@ inline void OnPresent(
   if (shutting_down.load(std::memory_order_acquire)) return;
   // Counted before ANY early return below it: the question this answers is
   // "did the addon get ticked", not "did it get far".
+  fg::xefg::Poll(false);
   presents_observed.fetch_add(1, std::memory_order_relaxed);
+  fg::native_options::Poll();
   // The foreign-session discriminator (P4 A1): the presenting queue's device
   // API.  Two relaxed loads and two stores on the present thread; the sticky
   // flags are what keep every foreign-path install out of D3D12 sessions.
@@ -18622,7 +19714,7 @@ inline void OnPresent(
     static std::atomic_bool hotkeys_listening{false};
     const bool overlay_open = hud_overlay_open.load(std::memory_order_relaxed);
     listen(&hud_listening,
-           !overlay_open
+           !overlay_open && hud_enabled.load(std::memory_order_relaxed)
                && (hud_pill.load(std::memory_order_relaxed)
                    || present_ns < hud_toast_until_ns.load(std::memory_order_relaxed)
                    || present_ns < health_notice_until_ns.load(std::memory_order_relaxed)),
@@ -18868,6 +19960,11 @@ inline void RecreateFeatures() {
   RuntimeLock lock(runtime_mutex);
   ++configuration_generation;
   RequestHistoryReset(HistoryResetSource::kRecreate);
+  if (native_fg_owns.load(std::memory_order_acquire) && hook_point.load() == kHookPresent) {
+    native_fg_marker.store(nullptr, std::memory_order_release);
+    native_fg_continuing_submission.store(false, std::memory_order_release);
+    native_fg_result.store(fg::Result::PREPARED, std::memory_order_release);
+  }
   processed_outputs.clear();
   streamline_viewports.clear();
   if (direct_api.module == nullptr) direct_load_state = DirectLoadState::Unknown;
@@ -18899,13 +19996,20 @@ inline std::atomic_bool ui_welcomed{false};
 // kSettingSections, which is what Restore all and PersistConfig walk; gate
 // step 2g (tools/field/check_ui_reachability.py) holds that, and that every
 // key LoadConfiguration reads has a control in both layouts.
-enum class SettingEffect : uint8_t { kNone, kHistory, kRecreate };
+enum class SettingEffect : uint8_t { kNone, kHostHistory, kHistory, kRecreate };
 
 inline void ApplySettingEffect(SettingEffect effect) {
   if (effect == SettingEffect::kRecreate) {
     RecreateFeatures();
   } else if (effect == SettingEffect::kHistory) {
     RequestHistoryReset();
+  } else if (effect == SettingEffect::kHostHistory) {
+    RuntimeLock lock(runtime_mutex);
+    for (auto& [handle, state] : features) {
+      for (auto& slot : state.slots) {
+        slot.look_history.valid = false;
+      }
+    }
   }
 }
 
@@ -18930,6 +20034,14 @@ struct Setting {
   }
   // The value alone: no config write, no restart (the Defaults view).
   void Store(float value) const {
+    std::unique_lock config_lock(present_restore_configuration.mutex);
+    if (u == &present_sdr_restore_policy) {
+      if (!present_sdr_restore_config_writable.load(std::memory_order_relaxed)) return;
+      if (!std::isfinite(value) || value < 0.f || value > 4.f || std::floor(value) != value) {
+        value = static_cast<float>(present_sdr_restore::FALLBACK_POLICY);
+      }
+      present_sdr_restore_config_version.store(present_sdr_restore::CONFIG_VERSION, std::memory_order_relaxed);
+    }
     if (f != nullptr) {
       f->store(value);
     } else if (u != nullptr) {
@@ -18937,9 +20049,16 @@ struct Setting {
     } else {
       b->store(value != 0.f);
     }
+    ++present_restore_configuration.epoch;
   }
   // Always to the global config file, as PersistConfig explains.
   void Persist() const {
+    if (b == &debug_bypass_hdr_pedestal || u == &debug_hdr_capture_mode) return;
+    if (u == &present_sdr_restore_policy) {
+      if (!present_sdr_restore_config_writable.load(std::memory_order_relaxed)) return;
+      reshade::set_config_value(nullptr, kConfigSection, "NRPresentSdrRestoreConfigVersion",
+                                present_sdr_restore::CONFIG_VERSION);
+    }
     if (f != nullptr) {
       reshade::set_config_value(nullptr, kConfigSection, key, f->load());
     } else if (u != nullptr) {
@@ -18950,6 +20069,8 @@ struct Setting {
   }
   // A player's change: the value, its config write and its restart.
   void Commit(float value) const {
+    if (u == &present_sdr_restore_policy
+        && !present_sdr_restore_config_writable.load(std::memory_order_relaxed)) return;
     Store(value);
     Persist();
     DropIniIssue(key);
@@ -19006,6 +20127,9 @@ inline constexpr Setting kSetPresentGuides{
 inline constexpr Setting kSetPresentEncoding{
     "NRPresentEncoding", &present_encoding, defaults::kPresentEncoding,
     SettingEffect::kHistory};
+inline constexpr Setting kSetPresentSdrRestorePolicy{
+    "NRPresentSdrRestorePolicy", &present_sdr_restore_policy,
+    static_cast<uint32_t>(present_sdr_restore::DEFAULT_POLICY), SettingEffect::kHostHistory};
 inline constexpr Setting kSetPresentWhite{
     "NRPresentWhiteNits", &present_white_nits, defaults::kPresentWhiteNits,
     SettingEffect::kHistory};
@@ -19143,6 +20267,20 @@ inline constexpr Setting kSetScreenshotMaxMB{
     "NRScreenshotMaxMB", &screenshot::max_megabytes, 10u, SettingEffect::kNone};
 inline constexpr Setting kSetGpuTimers{
     "NRGpuTimers", &gpu_timers_enabled, defaults::kGpuTimers, SettingEffect::kNone};
+inline constexpr Setting kSetDebugRestore{
+    "NRDebugBypassSdrRestore", &debug_bypass_sdr_restore, false, SettingEffect::kHostHistory};
+inline constexpr Setting kSetDebugHdrPedestal{
+    "NRDebugBypassHdrPedestal", &debug_bypass_hdr_pedestal, false, SettingEffect::kNone};
+inline constexpr Setting kSetHdrCaptureMode{
+    "NRDebugHdrCaptureMode", &debug_hdr_capture_mode, 0u, SettingEffect::kNone};
+inline constexpr Setting kSetDebugLook{
+    "NRDebugBypassHostLook", &debug_bypass_host_look, false, SettingEffect::kHostHistory};
+inline constexpr Setting kSetPresentModelUi{
+    "NRPresentModelUI", &present_model_ui, 0u, SettingEffect::kHistory};
+inline constexpr Setting kSetDebugGuides{
+    "NRDebugGuideMode", &debug_guide_mode, 0u, SettingEffect::kHistory};
+inline constexpr Setting kSetDebugPlanes{
+    "NRDebugCapturePlanes", &screenshot::stage_planes_enabled, false, SettingEffect::kNone};
 inline constexpr Setting kSetCostMeter{
     "NRCostMeter", &cost_meter_enabled, defaults::kCostMeter, SettingEffect::kNone};
 inline constexpr Setting kSetEditTrace{
@@ -19319,7 +20457,8 @@ inline constexpr const Setting* kLookResultSettings[] = {
 // the link reset a control drawn outside it.
 inline constexpr const Setting* kHookPointSettings[] = {
     &kSetHookPoint,    &kSetPresentGuides,       &kSetPresentEncoding,
-    &kSetPresentWhite, &kSetPresentUiCorrection, &kSetPresentFrames, &kSetPresentFgSource};
+    &kSetPresentWhite, &kSetPresentUiCorrection, &kSetPresentFrames, &kSetPresentFgSource,
+    &kSetPresentSdrRestorePolicy};
 inline constexpr const Setting* kPerformanceSettings[] = {
     &kSetFollowInputRes, &kSetResolutionScale, &kSetLookUpsample};
 inline constexpr const Setting* kStackingSettings[] = {
@@ -19339,7 +20478,8 @@ inline constexpr const Setting* kHotkeySettings[] = {
     &kSetScreenshotFormat, &kSetScreenshotLayout,      &kSetScreenshotJpegQuality,
     &kSetScreenshotMaxMB};
 inline constexpr const Setting* kDiagnosticsSettings[] = {&kSetGpuTimers, &kSetCostMeter,
-                                                          &kSetEditTrace};
+    &kSetEditTrace, &kSetDebugRestore, &kSetDebugLook, &kSetPresentModelUi,
+    &kSetDebugGuides, &kSetDebugPlanes};
 inline constexpr const Setting* kFixesSettings[] = {
     &kSetCodecMode,       &kSetProxyAnchor,      &kSetSourceEncoding,
     &kSetLinearUnitNits,  &kSetSourcePrimaries,  &kSetPqCalibration,
@@ -19431,10 +20571,80 @@ inline void SetDefaultsView(bool on) {
 // moment ReShade had more than one runtime - a second window, or one
 // swapchain per eye in VR.  The settings appeared to take effect for the
 // session and were gone at the next launch.
-inline void PersistConfig() {
+inline std::optional<std::string> ReadPresentRestoreRaw(const char* key) {
+  size_t length = 0;
+  if (!reshade::get_config_value(nullptr, kConfigSection, key, nullptr, &length)) return std::nullopt;
+  if (length > 4096) return std::string{};
+  std::string text(length + 1, '\0');
+  size_t capacity = text.size();
+  if (!reshade::get_config_value(nullptr, kConfigSection, key, text.data(), &capacity)) return std::string{};
+  text.resize((std::min)(capacity, text.size()));
+  while (!text.empty() && text.back() == '\0') text.pop_back();
+  return text;
+}
+
+inline void WritePresentRestoreValue(const char* key, uint32_t value) {
+  reshade::set_config_value(nullptr, kConfigSection, key, value);
+}
+
+inline bool ApplyPresentRestoreDefaults() {
+  std::unique_lock config_lock(present_restore_configuration.mutex);
+  std::unique_lock policy_lock(hdr_pedestal_policy_state.mutex);
+  if (!present_restore_configuration.global_writable
+      || !present_restore_configuration.scope.writable
+      || !present_sdr_restore_config_writable.load()
+      || !hdr_pedestal_policy_state.configuration.writable) return false;
+
+  auto scope = present_restore_configuration.scope;
+  present_restore_configuration.scope.initialize_new = false;
+  if (!diagnostics::PersistRestoreScope(&scope,
+          present_restore_scope::Scope::FINAL_PRESENT_AND_PRE_FG,
+          WritePresentRestoreValue, ReadPresentRestoreRaw)) {
+    return false;
+  }
+  constexpr std::pair<const char*, uint32_t> values[] = {
+      {"NRPresentSdrRestorePolicy", static_cast<uint32_t>(present_sdr_restore::DEFAULT_POLICY)},
+      {"NRPresentSdrRestoreConfigVersion", present_sdr_restore::CONFIG_VERSION},
+      {"NRPresentHdrPedestalPolicy", static_cast<uint32_t>(present_hdr_pedestal::DEFAULT_POLICY)},
+      {"NRPresentHdrPedestalConfigVersion", present_hdr_pedestal::CONFIG_VERSION},
+      {"NRDebugBypassSdrRestore", 0u},
+      {"NRDebugBypassHdrPedestal", 0u},
+  };
+  for (const auto& [key, value] : values) {
+    WritePresentRestoreValue(key, value);
+  }
+  for (const auto& [key, value] : values) {
+    const auto actual = ReadPresentRestoreRaw(key);
+    if (!actual || *actual != std::to_string(value)) return false;
+  }
+  present_restore_configuration.scope = scope;
+  ++present_restore_configuration.epoch;
+  present_sdr_restore_policy = static_cast<uint32_t>(present_sdr_restore::DEFAULT_POLICY);
+  present_sdr_restore_config_version = present_sdr_restore::CONFIG_VERSION;
+  hdr_pedestal_policy_state.configuration = present_hdr_pedestal::LoadPolicy(
+      static_cast<uint32_t>(present_hdr_pedestal::DEFAULT_POLICY), present_hdr_pedestal::CONFIG_VERSION);
+  debug_bypass_sdr_restore = false;
+  debug_bypass_hdr_pedestal = false;
+  return true;
+}
+
+inline void PersistConfig(bool persist_present_restore = true) {
+  // Restore defaults have their own verified migration before the global stamp.
+  if (persist_present_restore) {
+    std::shared_lock policy_lock(hdr_pedestal_policy_state.mutex);
+    if (hdr_pedestal_policy_state.configuration.writable) {
+      reshade::set_config_value(nullptr, kConfigSection, "NRPresentHdrPedestalPolicy",
+                                static_cast<uint32_t>(hdr_pedestal_policy_state.configuration.policy));
+      reshade::set_config_value(nullptr, kConfigSection, "NRPresentHdrPedestalConfigVersion", present_hdr_pedestal::CONFIG_VERSION);
+    }
+  }
   reshade::set_config_value(nullptr, kConfigSection, "ConfigVersion", kConfigVersion);
   for (const SettingGroup& section : kSettingSections) {
-    for (const Setting* setting : section) setting->Persist();
+    for (const Setting* setting : section) {
+      // The verified restore migration has already saved this policy and its version.
+      if (!persist_present_restore && setting == &kSetPresentSdrRestorePolicy) continue;
+      setting->Persist();
+    }
   }
   reshade::set_config_value(nullptr, kConfigSection, "NRMaxWorksets", max_worksets.load());
   reshade::set_config_value(
@@ -19450,6 +20660,8 @@ inline void PersistConfig() {
       nullptr, kConfigSection, "UiMode",
       ui_classic_layout.load() ? "classic" : "modern");
   StoreUiLanguage(ui_language_choice.load());
+  reshade::set_config_value(nullptr, kConfigSection, "UiHudX", hud_position_x.load());
+  reshade::set_config_value(nullptr, kConfigSection, "UiHudY", hud_position_y.load());
 }
 
 // Config breaker: every user setting back to the defaults namespace,
@@ -19458,6 +20670,10 @@ inline void PersistConfig() {
 // it is a per-game support knob that applies at attach, not a user setting.
 // It also ends the Defaults view: its values are the defaults now.
 inline void ResetToDefaults(reshade::api::effect_runtime* runtime) {
+  if (!ApplyPresentRestoreDefaults()) {
+    Log(reshade::log::level::warning, "Restore defaults could not be saved; settings were not reset");
+    return;
+  }
   ui_defaults_view = false;
   for (const SettingGroup& section : kSettingSections) {
     for (const Setting* setting : section) setting->Store(setting->fallback);
@@ -19469,6 +20685,8 @@ inline void ResetToDefaults(reshade::api::effect_runtime* runtime) {
   shutdown_quiesce_latched.store(false, std::memory_order_relaxed);
   ui_classic_layout = false;
   ui_language_choice = 0;
+  hud_position_x = 50.f;
+  hud_position_y = 0.f;
   RecreateFeatures();
   PersistConfig();
   {
@@ -19500,6 +20718,11 @@ inline bool ui_open_diagnostics = false;
 // The switch, in one place: the checkbox and the Off card's button both
 // turn NR on or off through here.
 inline void SetNrEnabledFromUi(bool on) {
+  if (on && native_fg_owns.load(std::memory_order_acquire) && hook_point.load() == kHookPresent) {
+    native_fg_marker.store(nullptr, std::memory_order_release);
+    native_fg_continuing_submission.store(false, std::memory_order_release);
+    native_fg_result.store(fg::Result::PREPARED, std::memory_order_release);
+  }
   enabled = on;
   reshade::set_config_value(nullptr, kConfigSection, "NeuralUplift", on);
   if (on) RecreateFeatures();
@@ -19929,6 +21152,21 @@ inline const char* TransferStrengthTip(const ui::PanelText& text) {
     default: return text.modern ? ui::text::kTransferTip : nullptr;
   }
 }
+
+inline bool SavePresentRestoreScope(present_restore_scope::Scope scope) {
+  {
+    std::unique_lock config_lock(present_restore_configuration.mutex);
+    if (!present_restore_configuration.global_writable) return false;
+    if (!diagnostics::PersistRestoreScope(&present_restore_configuration.scope, scope,
+            WritePresentRestoreValue, ReadPresentRestoreRaw)) return false;
+    ++present_restore_configuration.epoch;
+  }
+  ApplySettingEffect(SettingEffect::kHostHistory);
+  return true;
+}
+
+
+
 
 // The hook point decides where every other control's effect lands, so it
 // draws at the top of both layouts (rc3), not inside Performance where the
@@ -20531,6 +21769,166 @@ inline void DrawSkippedReasons(bool player) {
 // The alpha44 counters, verbatim: the classic Guides & Diagnostics body and
 // the modern Diagnostics' Raw details.
 inline void DrawSectionDiagnosticsRaw() {
+  if (ImGui::TreeNode("P0 Present diagnostics")) {
+    const ui::PanelText text{.modern = false};
+    {
+      present_restore_scope::Configuration configuration;
+      {
+        std::shared_lock config_lock(present_restore_configuration.mutex);
+        configuration = present_restore_configuration.scope;
+      }
+      constexpr const char* choices[] = {"Final Present only", "Final Present and pre-FG"};
+      int selected = (configuration.inherited ? -1 : static_cast<int>(configuration.scope));
+      ImGui::BeginDisabled(!configuration.writable);
+      if (ImGui::Combo("Present restore scope", &selected, choices, 2)) {
+        if (!SavePresentRestoreScope(static_cast<present_restore_scope::Scope>(selected))) {
+          Log(reshade::log::level::warning, "Present restore scope pair could not be verified; selection not applied");
+        }
+      }
+      ImGui::EndDisabled();
+      if (configuration.inherited) {
+        ImGui::TextUnformatted("Inherited configuration: existing SDR behavior; HDR final Present only");
+      }
+      {
+        std::shared_lock lock(present_restore_effective.mutex);
+        ImGui::Text("Restore owner: %s (%s)",
+            present_restore_scope::DomainText(present_restore_effective.domain),
+            present_restore_effective.contract_compatible
+                ? present_restore_scope::ReasonText(present_restore_effective.reason) : "contract_rejected");
+        ImGui::Text("Owner service: %s", present_restore_effective.status.c_str());
+      }
+      if (!configuration.writable) ImGui::TextUnformatted("Scope configuration is read-only");
+      static int prefg_roi[4] = {0, 0, 256, 128};
+      static const char* prefg_request_status = "One bounded multi-role ROI; incomplete or unproven transactions remain invalid.";
+      ImGui::InputInt4("Pre-FG ROI x / y / width / height", prefg_roi);
+      if (ImGui::Button("Capture pre-FG service ROI")) {
+        if (prefg_roi[0] < 0 || prefg_roi[1] < 0 || prefg_roi[2] <= 0 || prefg_roi[3] <= 0) {
+          prefg_request_status = "Invalid ROI; request rejected.";
+        } else if (screenshot::RequestPreFgService({
+            .roi = {static_cast<uint32_t>(prefg_roi[0]), static_cast<uint32_t>(prefg_roi[1]),
+                    static_cast<uint32_t>(prefg_roi[2]), static_cast<uint32_t>(prefg_roi[3])}})) {
+          prefg_request_status = "Armed for one service transaction; validity requires stages, GPU completion and parameter restoration.";
+        } else {
+          prefg_request_status = "Capture busy or invalid; request rejected.";
+        }
+      }
+      ImGui::TextUnformatted(prefg_request_status);
+      if (!configuration.inherited && configuration.scope == present_restore_scope::Scope::FINAL_PRESENT_ONLY) {
+        ImGui::TextUnformatted("Pre-FG uses legacy modes; formal policies and restore bypasses apply only at final Present");
+      }
+    }
+    {
+      constexpr const char* policies[] = {
+          "Legacy (inherit NRSdrBlackRestore)", "Off (recommended)",
+          "Legacy Auto", "Legacy Every block", "Legacy Smooth"};
+      ImGui::BeginDisabled(hook_point.load() != kHookPresent
+                           || !present_sdr_restore_active.load(std::memory_order_relaxed)
+                           || !present_sdr_restore_config_writable.load(std::memory_order_relaxed));
+      ChoiceSetting(text, kSetPresentSdrRestorePolicy, "Present SDR restore", policies,
+                    "SDR Present only. Off skips legacy block subtraction; recommended for dark bands and text boxes."
+                    " Legacy inherits the global mode. New and migrated configurations use Off;"
+                    " explicit diagnostic choices are preserved after migration."
+                    " Inactive for HDR. A newer restore config version disables edits and preserves its keys.");
+      ImGui::EndDisabled();
+    }
+    {
+      present_hdr_pedestal::Configuration configuration;
+      {
+        std::shared_lock policy_lock(hdr_pedestal_policy_state.mutex);
+        configuration = hdr_pedestal_policy_state.configuration;
+      }
+      constexpr const char* policies[] = {"Legacy", "Off (recommended)", "Legacy Smooth"};
+      int selected = static_cast<int>(configuration.policy);
+      ImGui::BeginDisabled(!present_hdr_pedestal_active.load(std::memory_order_relaxed) || !configuration.writable);
+      if (ImGui::Combo("Present HDR pedestal", &selected, policies, 3)) {
+        std::unique_lock config_lock(present_restore_configuration.mutex);
+        std::unique_lock policy_lock(hdr_pedestal_policy_state.mutex);
+        if (hdr_pedestal_policy_state.configuration.writable) {
+          ++present_restore_configuration.epoch;
+          hdr_pedestal_policy_state.configuration = present_hdr_pedestal::LoadPolicy(
+              static_cast<uint32_t>(selected), present_hdr_pedestal::CONFIG_VERSION);
+          reshade::set_config_value(nullptr, kConfigSection, "NRPresentHdrPedestalPolicy", static_cast<uint32_t>(selected));
+          reshade::set_config_value(nullptr, kConfigSection, "NRPresentHdrPedestalConfigVersion", present_hdr_pedestal::CONFIG_VERSION);
+        }
+      }
+      ImGui::EndDisabled();
+      ImGui::Text("HDR pedestal: %s%s",
+                  present_hdr_pedestal::ReasonText(present_hdr_pedestal_reason.load(std::memory_order_relaxed)),
+                  (configuration.writable ? "" : " (read-only configuration)"));
+      ImGui::BeginDisabled(!present_hdr_pedestal_active.load(std::memory_order_relaxed));
+      ToggleSetting(text, kSetDebugHdrPedestal, "Bypass HDR pedestal (session only)",
+                    "Only zero the HDR commit application gate. Keep legacy measurement and NR history; never saved.");
+      ImGui::EndDisabled();
+    }
+    ToggleSetting(text, kSetDebugRestore, "Bypass SDR restore",
+                "Skip only SDR restore; keep the NR model and codec route.");
+    ToggleSetting(text, kSetDebugLook, "Bypass host look",
+                "Neutralize host look and detail stability; keep model input sampling.");
+    constexpr const char* model_ui_modes[] = {"Inherit", "Force off", "Force on"};
+    ChoiceSetting(text, kSetPresentModelUi, "Present model UI", model_ui_modes,
+                  "Overrides the final model UI flag in every Present pass. Changes reset NR once.");
+    constexpr const char* guide_modes[] = {"Inherit", "Require real", "Neutral"};
+    ChoiceSetting(text, kSetDebugGuides, "Present diagnostic guides", guide_modes,
+                  "Real mode declines when matching guides are missing; it never silently uses neutral guides.");
+    ToggleSetting(text, kSetDebugPlanes, "Capture stage planes",
+                "Each screenshot request saves one bounded same-frame sample, with raw float data and GPU proof.");
+    if (ImGui::TreeNode("H0 HDR capture")) {
+      static int roi[4] = {0, 0, 256, 128};
+      static std::string capture_message;
+      ImGui::InputInt4("ROI x / y / width / height", roi);
+      constexpr const char* capture_modes[] = {"CommitCore (full commit planes)", "ModelTrace (ROI)"};
+      ChoiceSetting(text, kSetHdrCaptureMode, "HDR capture mode", capture_modes,
+                    "ROI remains in the original full-frame grid. CommitCore has a 512 MiB readback limit.");
+      const auto sequence = screenshot::GetHdrSequenceStatus();
+      ImGui::BeginDisabled(!present_hdr_pedestal_active.load(std::memory_order_relaxed) || sequence.active);
+      const bool one_sample = ImGui::Button("Capture one HDR sample");
+      ImGui::SameLine();
+      const bool short_sequence = ImGui::Button("Capture 120 HDR Presents");
+      if (one_sample || short_sequence) {
+        if (roi[0] < 0 || roi[1] < 0 || roi[2] <= 0 || roi[3] <= 0) {
+          capture_message = "Invalid ROI: coordinates must be nonnegative and dimensions positive.";
+        } else {
+          const screenshot::HdrCapturePlan plan{
+              .mode = (debug_hdr_capture_mode.load(std::memory_order_relaxed) == 1u
+                  ? screenshot::HdrCaptureMode::MODEL_TRACE : screenshot::HdrCaptureMode::COMMIT_CORE),
+              .roi = {static_cast<uint32_t>(roi[0]), static_cast<uint32_t>(roi[1]),
+                      static_cast<uint32_t>(roi[2]), static_cast<uint32_t>(roi[3])}};
+          uint64_t first_generation = 0;
+          {
+            RuntimeLock lock(runtime_mutex);
+            first_generation = present_generation + 1;
+          }
+          const bool configured = (short_sequence ? screenshot::StartHdrSequence(plan, first_generation)
+                                                 : screenshot::ConfigureHdrCapture(plan));
+          if (configured) {
+            if (one_sample) {
+              screenshot::RequestCapture();
+            }
+            capture_message = "HDR capture armed. Keep scene and options stable; gaps are explicit.";
+          } else {
+            capture_message = "Capture busy or invalid ROI; let pending GPU copies and exports settle.";
+          }
+        }
+      }
+      ImGui::EndDisabled();
+      if (ImGui::Button("Cancel HDR sequence")) {
+        screenshot::CancelHdrSequence();
+      }
+      ImGui::Text("Present attempts: %u / 120%s", sequence.attempted, sequence.active ? " (active)" : "");
+      if (!capture_message.empty()) {
+        ImGui::TextWrapped("%s", capture_message.c_str());
+      }
+      ImGui::TextWrapped("Use a small ROI spanning the defect and adjacent blocks. Diagnostic capture can drop frames; only consecutive valid segments support temporal analysis.");
+      ImGui::TreePop();
+    }
+    if (ImGui::Button("Capture one P0 sample")) {
+      kSetDebugPlanes.Commit(1.f);
+      kSetScreenshotSource.Commit(1.f);
+      screenshot::RequestCapture();
+    }
+    ImGui::TextWrapped("%s", screenshot::StatusText());
+    ImGui::TreePop();
+  }
   // The frame generation + stacking warning moved beside Stack passes
   // (DrawSectionStackingResolution) in v8.0.3.
   uint32_t workset_count = 0;
@@ -20599,9 +21997,11 @@ inline void DrawSectionDiagnosticsRaw() {
         static_cast<unsigned long long>(present_history_resets.load(std::memory_order_relaxed)));
   }
   ImGui::Text(
-      "Successful NR frames: %llu",
+      "Successful NR model evaluations: %llu",
       static_cast<unsigned long long>(successful_evaluations.load()
           + successful_pre_sr_evaluations.load()));
+  ImGui::Text("NR frames submitted before FG: %llu",
+              static_cast<unsigned long long>(TotalFgSubmittedFrames()));
   ImGui::Text(
       "Bypassed NR frames: %llu",
       static_cast<unsigned long long>(bypassed_evaluations.load()));
@@ -20940,10 +22340,10 @@ inline void DrawSectionLanguage(const ui::PanelText& text) {
   }
 }
 
-// UiIssueNotice (rc11): the HUD's corner note when a health ledger warning
-// starts.  The issues under the status card are listed either way.
+// UiIssueNotice also mutes NR activation and failure notices. The Home
+// status card and its issues remain available regardless of this switch.
 inline void DrawSectionIssueNotice(const ui::PanelText& text) {
-  bool on = health_notice_enabled.load(std::memory_order_relaxed);
+  bool on = hud_enabled.load(std::memory_order_relaxed);
   bool changed = false;
   if (text.modern) {
     ui::RowLabel(ui::text::kIssueNotices, ui::text::kIssueNoticesTip);
@@ -20953,10 +22353,47 @@ inline void DrawSectionIssueNotice(const ui::PanelText& text) {
   }
   ui::ItemTooltip("%s", text.Tr(ui::text::kIssueNoticesTip));
   if (changed) {
-    health_notice_enabled = on;
-    if (!on) health_notice_until_ns = 0;
+    hud_enabled = on;
+    if (!on) {
+      health_notice_until_ns = 0;
+      hud_toast_until_ns = 0;
+      hud_pill = false;
+    }
     reshade::set_config_value(nullptr, kConfigSection, "UiIssueNotice", on);
   }
+}
+
+inline void DrawSectionHudPosition(const ui::PanelText& text) {
+  const auto draw_axis = [&](const char* key, const char* label,
+                             std::atomic<float>* position, float fallback) {
+    ImGui::PushID(key);
+    if (text.modern) {
+      ui::RowLabel(label, ui::text::kHudPositionTip);
+    }
+    float value = position->load(std::memory_order_relaxed);
+    bool changed = false;
+    if (text.modern) {
+      changed = ui::Slider("##position", &value, 0.f, 100.f, "%.0f%%", ui::text::kHudPositionTip);
+    } else {
+      changed = ImGui::SliderFloat(text.Tr(label), &value, 0.f, 100.f, "%.0f%%",
+                                   ImGuiSliderFlags_AlwaysClamp);
+    }
+    ui::ItemTooltip("%s", text.Tr(ui::text::kHudPositionTip));
+    char default_label[16];
+    std::snprintf(default_label, sizeof(default_label), "%.0f%%", fallback);
+    if (text.modern && value != fallback && ui::ResetButton("reset", default_label)) {
+      value = fallback;
+      changed = true;
+    }
+    if (changed) {
+      value = std::isfinite(value) ? std::clamp(value, 0.f, 100.f) : fallback;
+      position->store(value, std::memory_order_relaxed);
+      reshade::set_config_value(nullptr, kConfigSection, key, value);
+    }
+    ImGui::PopID();
+  };
+  draw_axis("UiHudX", ui::text::kHudPositionX, &hud_position_x, 50.f);
+  draw_axis("UiHudY", ui::text::kHudPositionY, &hud_position_y, 0.f);
 }
 
 // A header the card's "Open Diagnostics" button opens and scrolls to: the
@@ -21096,6 +22533,7 @@ inline std::string BuildSupportReport() {
          << "\n"
          << "counters: enhanced="
          << successful_evaluations.load() + successful_pre_sr_evaluations.load()
+         << " fg_submitted=" << TotalFgSubmittedFrames()
          << " bypassed=" << bypassed_evaluations.load()
          << " creates=" << intercepted_creates.load()
          << " evaluations=" << intercepted_evaluations.load()
@@ -21156,10 +22594,12 @@ inline void DrawDiagnostics(const NrVerdict& verdict) {
   // The values wrap inside the panel: a narrow panel ends them at its edge.
   ui::RowLabel(ui::text::kFramesThisSession);
   ImGui::TextWrapped(
-      ui::Tr("%llu enhanced | %llu bypassed"),
+      ui::Tr("%llu model evaluations | %llu bypassed"),
       static_cast<unsigned long long>(successful_evaluations.load()
                                       + successful_pre_sr_evaluations.load()),
       static_cast<unsigned long long>(bypassed_evaluations.load()));
+  ui::RowLabel("NR submissions before FG");
+  ImGui::Text("%llu", static_cast<unsigned long long>(TotalFgSubmittedFrames()));
   ui::RowLabel(ui::text::kSkippedBecause, ui::text::kSkippedBecauseTip);
   DrawSkippedReasons(true);
   // The Present hook point, from the counters the telemetry line's
@@ -21324,6 +22764,7 @@ inline void DrawClassicLayout(reshade::api::effect_runtime* runtime) {
   ImGui::Separator();
   DrawSectionLanguage(text);
   DrawSectionIssueNotice(text);
+  DrawSectionHudPosition(text);
   DrawSectionLayoutToggle();
 }
 
@@ -21456,6 +22897,7 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
   ui::SectionGap();
   DrawSectionLanguage(text);
   DrawSectionIssueNotice(text);
+  DrawSectionHudPosition(text);
   ImGui::Separator();
   {
     ui::StyleScope footer;
@@ -21973,6 +23415,7 @@ inline void ReadIniRawValues() {
       {"NRVkStateRestore", IniKind::kUint},
       {"NRPresentMVecUnits", IniKind::kUint},
       {"NRPresentPreFgContract", IniKind::kUint},
+      {"NRPresentBlockHudless", IniKind::kBool},
       {"NRAutoFgFallback", IniKind::kUint},
       {"NRNormTrace", IniKind::kBool},     {"NRScreenshotPlanes", IniKind::kBool},
       {"UiWelcomed", IniKind::kBool},      {"UiIssueNotice", IniKind::kBool},
@@ -22061,11 +23504,63 @@ inline void LoadConfiguration() {
   // future-version file is read tolerantly and never rewritten.
   // EnableHooks stays exempt - it is a per-game support knob, not a user
   // setting, and a migration must never flip a game's needed hook policy.
-  ReadIniRawValues();
+  // Classify the section before repairs, migrations, or automatic defaults.
+  bool section_known = false;
+  bool section_has_settings = false;
+  try {
+    const auto ini_path = ReShadeBaseDirectory() / "ReShade.ini";
+    std::error_code error;
+    const bool exists = std::filesystem::exists(ini_path, error);
+    if (!error && !exists) {
+      section_known = true;
+    } else if (!error) {
+      std::ifstream ini(ini_path);
+      bool in_section = false;
+      std::string line;
+      while (std::getline(ini, line)) {
+        const auto first = line.find_first_not_of(" \t\r");
+        if (first == std::string::npos || line[first] == ';' || line[first] == '#') continue;
+        if (line[first] == '[') {
+          const auto last = line.find(']', first);
+          in_section = last != std::string::npos && line.substr(first + 1, last - first - 1) == kConfigSection;
+        } else if (in_section && line.find('=', first) != std::string::npos) {
+          section_has_settings = true;
+        }
+      }
+      section_known = ini.eof() && !ini.bad();
+    }
+  } catch (...) {
+    section_known = false;
+  }
+  // Account for values already in ReShade's live registry but not flushed yet.
+  for (const SettingGroup& section : kSettingSections) {
+    for (const Setting* setting : section) {
+      if (ReadPresentRestoreRaw(setting->key)) section_has_settings = true;
+    }
+  }
+  const auto global_version_raw = ReadPresentRestoreRaw("ConfigVersion");
+  uint32_t raw_global_version = 0;
+  bool global_writable = true;
+  if (global_version_raw) {
+    section_has_settings = true;
+    const auto parsed = std::from_chars(global_version_raw->data(),
+        global_version_raw->data() + global_version_raw->size(), raw_global_version);
+    global_writable = !global_version_raw->empty() && parsed.ec == std::errc{}
+        && parsed.ptr == global_version_raw->data() + global_version_raw->size()
+        && raw_global_version <= kConfigVersion;
+  }
+  {
+    std::unique_lock config_lock(present_restore_configuration.mutex);
+    present_restore_configuration.scope = diagnostics::ReadRestoreScope(ReadPresentRestoreRaw,
+        section_known, section_has_settings, !global_writable);
+    present_restore_configuration.global_writable = global_writable;
+    ++present_restore_configuration.epoch;
+  }
+  if (global_writable) ReadIniRawValues();
   uint32_t stored_config_version = 0;
   const bool version_present = reshade::get_config_value(
       nullptr, kConfigSection, "ConfigVersion", stored_config_version);
-  const bool future_config = version_present && stored_config_version > kConfigVersion;
+  const bool future_config = !global_writable || (version_present && stored_config_version > kConfigVersion);
   const bool migrate_config = !future_config && stored_config_version != kConfigVersion;
 
   // Saved values start AT the defaults, so a stale config simply loads
@@ -22073,6 +23568,12 @@ inline void LoadConfiguration() {
   bool saved_enabled = defaults::kEnabled;
   bool saved_pre_upscale = defaults::kPreSr;
   uint32_t saved_present_guides = defaults::kPresentGuides;
+  bool saved_debug_restore = false;
+  bool saved_debug_hdr_pedestal = false;
+  bool saved_debug_look = false;
+  uint32_t saved_debug_ui = 0;
+  uint32_t saved_debug_guides = 0;
+  bool saved_debug_planes = false;
   uint32_t saved_present_encoding = defaults::kPresentEncoding;
   float saved_present_white = defaults::kPresentWhiteNits;
   uint32_t saved_present_white_source = defaults::kPresentWhiteSource;
@@ -22081,6 +23582,7 @@ inline void LoadConfiguration() {
   uint32_t saved_present_fg_source = defaults::kPresentFgSource;
   uint32_t saved_present_pre_fg = defaults::kPresentPreFg;
   uint32_t saved_present_pre_fg_contract = defaults::kPresentPreFgContract;
+  bool saved_present_block_hudless = false;
   uint32_t saved_present_mvec_units = defaults::kPresentMvecUnits;
   uint32_t saved_auto_fg_fallback = defaults::kAutoFgFallback;
   uint32_t saved_vk_state_restore = defaults::kVkStateRestore;
@@ -22161,6 +23663,12 @@ inline void LoadConfiguration() {
   reshade::get_config_value(nullptr, kConfigSection, "NRHookPoint", saved_hook_point);
   reshade::get_config_value(
       nullptr, kConfigSection, "NRPresentGuides", saved_present_guides);
+  reshade::get_config_value(nullptr, kConfigSection, "NRDebugBypassSdrRestore", saved_debug_restore);
+  reshade::get_config_value(nullptr, kConfigSection, "NRDebugBypassHdrPedestal", saved_debug_hdr_pedestal);
+  reshade::get_config_value(nullptr, kConfigSection, "NRDebugBypassHostLook", saved_debug_look);
+  reshade::get_config_value(nullptr, kConfigSection, "NRPresentModelUI", saved_debug_ui);
+  reshade::get_config_value(nullptr, kConfigSection, "NRDebugGuideMode", saved_debug_guides);
+  reshade::get_config_value(nullptr, kConfigSection, "NRDebugCapturePlanes", saved_debug_planes);
   reshade::get_config_value(
       nullptr, kConfigSection, "NRPresentEncoding", saved_present_encoding);
   reshade::get_config_value(
@@ -22177,6 +23685,8 @@ inline void LoadConfiguration() {
       nullptr, kConfigSection, "NRPresentPreFg", saved_present_pre_fg);
   reshade::get_config_value(
       nullptr, kConfigSection, "NRPresentPreFgContract", saved_present_pre_fg_contract);
+  reshade::get_config_value(
+      nullptr, kConfigSection, "NRPresentBlockHudless", saved_present_block_hudless);
   reshade::get_config_value(
       nullptr, kConfigSection, "NRPresentMVecUnits", saved_present_mvec_units);
   reshade::get_config_value(
@@ -22243,6 +23753,43 @@ inline void LoadConfiguration() {
   uint32_t saved_sdr_black_restore = defaults::kSdrBlackRestore;
   reshade::get_config_value(
       nullptr, kConfigSection, "NRSdrBlackRestore", saved_sdr_black_restore);
+  // The typed getter also returns false for a malformed value. Query presence separately
+  // so an existing explicit legacy choice is never mistaken for an absent key.
+  size_t restore_config_value_size = 0;
+  const bool legacy_restore_explicit = reshade::get_config_value(
+      nullptr, kConfigSection, "NRSdrBlackRestore", nullptr, &restore_config_value_size);
+  uint32_t saved_present_sdr_restore_policy = static_cast<uint32_t>(present_sdr_restore::DEFAULT_POLICY);
+  uint32_t saved_present_sdr_restore_version = 0;
+  restore_config_value_size = 0;
+  const bool present_restore_explicit = reshade::get_config_value(
+      nullptr, kConfigSection, "NRPresentSdrRestorePolicy", nullptr, &restore_config_value_size);
+  if (!reshade::get_config_value(nullptr, kConfigSection, "NRPresentSdrRestorePolicy", saved_present_sdr_restore_policy)
+      && present_restore_explicit) {
+    saved_present_sdr_restore_policy = static_cast<uint32_t>(present_sdr_restore::FALLBACK_POLICY);
+  }
+  size_t sdr_version_size = 0;
+  const bool sdr_version_present = reshade::get_config_value(
+      nullptr, kConfigSection, "NRPresentSdrRestoreConfigVersion", nullptr, &sdr_version_size);
+  if (!reshade::get_config_value(nullptr, kConfigSection, "NRPresentSdrRestoreConfigVersion", saved_present_sdr_restore_version)
+      && sdr_version_present) {
+    saved_present_sdr_restore_version = UINT32_MAX;
+  }
+  uint32_t saved_hdr_pedestal_policy = 0;
+  uint32_t saved_hdr_pedestal_version = 0;
+  size_t hdr_policy_size = 0;
+  const bool hdr_policy_present = reshade::get_config_value(
+      nullptr, kConfigSection, "NRPresentHdrPedestalPolicy", nullptr, &hdr_policy_size);
+  if (!reshade::get_config_value(nullptr, kConfigSection, "NRPresentHdrPedestalPolicy", saved_hdr_pedestal_policy)
+      && hdr_policy_present) {
+    saved_hdr_pedestal_policy = UINT32_MAX;
+  }
+  size_t hdr_version_size = 0;
+  const bool hdr_version_present = reshade::get_config_value(
+      nullptr, kConfigSection, "NRPresentHdrPedestalConfigVersion", nullptr, &hdr_version_size);
+  if (!reshade::get_config_value(nullptr, kConfigSection, "NRPresentHdrPedestalConfigVersion", saved_hdr_pedestal_version)
+      && hdr_version_present) {
+    saved_hdr_pedestal_version = UINT32_MAX;
+  }
   uint32_t saved_output_rect = defaults::kOutputRect;
   reshade::get_config_value(
       nullptr, kConfigSection, "NROutputRect", saved_output_rect);
@@ -22448,7 +23995,17 @@ inline void LoadConfiguration() {
   {
     bool saved_notice = true;
     reshade::get_config_value(nullptr, kConfigSection, "UiIssueNotice", saved_notice);
-    health_notice_enabled = saved_notice;
+    hud_enabled = saved_notice;
+  }
+  {
+    const auto load_position = [](const char* key, std::atomic<float>* position, float fallback) {
+      float value = fallback;
+      reshade::get_config_value(nullptr, kConfigSection, key, value);
+      position->store(std::isfinite(value) ? std::clamp(value, 0.f, 100.f) : fallback,
+                       std::memory_order_relaxed);
+    };
+    load_position("UiHudX", &hud_position_x, 50.f);
+    load_position("UiHudY", &hud_position_y, 0.f);
   }
   // NRReportHost (rc11, ini-only): the issue report's upload hosts, tried in
   // order; "none" saves the zip only.  ReShade splits the value on its
@@ -22742,6 +24299,12 @@ inline void LoadConfiguration() {
       saved_hook_point, defaults::kHookPoint, 0u, 2u, "NRHookPoint");
   present_guides = SanitizeEnumKey(
       saved_present_guides, defaults::kPresentGuides, 0u, 2u, "NRPresentGuides");
+  debug_bypass_sdr_restore = saved_debug_restore;
+  debug_bypass_hdr_pedestal = saved_debug_hdr_pedestal;
+  debug_bypass_host_look = saved_debug_look;
+  present_model_ui = SanitizeEnumKey(saved_debug_ui, 0u, 0u, 2u, "NRPresentModelUI");
+  debug_guide_mode = SanitizeEnumKey(saved_debug_guides, 0u, 0u, 2u, "NRDebugGuideMode");
+  screenshot::stage_planes_enabled = saved_debug_planes;
   present_encoding = SanitizeEnumKey(
       saved_present_encoding, defaults::kPresentEncoding, 0u, 3u, "NRPresentEncoding");
   present_white_nits = SanitizeFloatKey(
@@ -22760,6 +24323,7 @@ inline void LoadConfiguration() {
   present_pre_fg_contract = SanitizeEnumKey(
       saved_present_pre_fg_contract, defaults::kPresentPreFgContract, 0u, 1u,
       "NRPresentPreFgContract");
+  present_block_hudless = saved_present_block_hudless;
   present_mvec_units = SanitizeEnumKey(
       saved_present_mvec_units, defaults::kPresentMvecUnits, 0u, 2u,
       "NRPresentMVecUnits");
@@ -22830,6 +24394,23 @@ inline void LoadConfiguration() {
       saved_display_pedestal, defaults::kDisplayPedestal, 0u, 2u, "NRDisplayPedestal");
   sdr_black_restore = SanitizeEnumKey(
       saved_sdr_black_restore, defaults::kSdrBlackRestore, 0u, 2u, "NRSdrBlackRestore");
+  const auto restore_config = present_sdr_restore::LoadPolicy(
+      saved_present_sdr_restore_policy, saved_present_sdr_restore_version,
+      present_restore_explicit, legacy_restore_explicit && stored_config_version != kConfigVersion);
+  present_sdr_restore_policy = static_cast<uint32_t>(restore_config.policy);
+  present_sdr_restore_config_version = restore_config.version;
+  present_sdr_restore_config_writable = restore_config.writable && !future_config;
+  {
+    std::unique_lock policy_lock(hdr_pedestal_policy_state.mutex);
+    hdr_pedestal_policy_state.configuration = present_hdr_pedestal::LoadPolicy(
+        saved_hdr_pedestal_policy, saved_hdr_pedestal_version, hdr_policy_present);
+    hdr_pedestal_policy_state.configuration.writable &= !future_config;
+    if (hdr_pedestal_policy_state.configuration.reason == present_hdr_pedestal::Reason::INVALID_POLICY
+        || hdr_pedestal_policy_state.configuration.reason == present_hdr_pedestal::Reason::FUTURE_VERSION) {
+      Log(reshade::log::level::warning, std::string("HDR pedestal configuration: ")
+          + present_hdr_pedestal::ReasonText(hdr_pedestal_policy_state.configuration.reason));
+    }
+  }
   nr_output_rect = SanitizeEnumKey(
       saved_output_rect, defaults::kOutputRect, 0u, 2u, "NROutputRect");
   dedupe_mode = SanitizeEnumKey(
@@ -22882,8 +24463,20 @@ inline void LoadConfiguration() {
   // FUTURE-version file is never rewritten: no stamp, no persist - the
   // newer schema owns the file and this build only reads what it knows.
   if (future_config) return;
+  bool restore_defaults_needed = migrate_config;
+  {
+    std::shared_lock config_lock(present_restore_configuration.mutex);
+    const auto& scope = present_restore_configuration.scope;
+    restore_defaults_needed |= scope.initialize_new
+        || (scope.writable && scope.reason == present_restore_scope::Reason::NO_SCOPE_KEYS);
+  }
+  if (restore_defaults_needed && !ApplyPresentRestoreDefaults()) {
+    Log(reshade::log::level::warning,
+        "Present restore defaults migration could not be verified; global configuration version unchanged");
+    return;
+  }
   if (migrate_config) {
-    PersistConfig();
+    PersistConfig(false);
   } else {
     reshade::set_config_value(nullptr, kConfigSection, "ConfigVersion", kConfigVersion);
   }
@@ -22965,6 +24558,7 @@ inline void OnDestroyDevice(reshade::api::device* device) {
       if (released) screenshot::AbortPending();
       // The game's D3D11 features died with it (see the D3D12 case below).
       created_feature_ids.clear();
+      native_fg_ui_recomposition.clear();
       uncreated_dlss_handles.clear();
       block_classified_fg_handles.clear();
       create_contracts.clear();
@@ -23032,6 +24626,7 @@ inline void OnDestroyDevice(reshade::api::device* device) {
     // record left behind would classify a later handle at the same address.
     RuntimeLock lock(runtime_mutex);
     created_feature_ids.clear();
+    native_fg_ui_recomposition.clear();
     uncreated_dlss_handles.clear();
     block_classified_fg_handles.clear();
     create_contracts.clear();
@@ -23639,6 +25234,8 @@ inline void Use(DWORD reason, HMODULE module, LPVOID reserved) {
       lastgasp::MarkOnce("ngx:hooks-installed");
       break;
     case DLL_PROCESS_DETACH:
+      fg::xefg::Stop();
+      fg::native_options::Stop();
       debug::Mark("detach:begin");
       lastgasp::Phase("detach:begin", true);
       internal::PublishAddonCopy(false);

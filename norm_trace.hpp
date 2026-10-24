@@ -56,6 +56,7 @@
 
 #include "../../utils/directx.hpp"
 #include "gpu_lease.hpp"
+#include "present_restore_scope.hpp"
 #include "submission_tracker.hpp"
 
 namespace renodx::addons::dlss5::norm_trace {
@@ -95,10 +96,14 @@ constexpr float kUnwritten = -1.f;
 
 struct Meta {
   uint64_t generation = 0;
-  int64_t time_ns = 0;
+  int64_t time_ns = 0;  // Absolute steady_clock nanoseconds at recording, before GPU completion.
   uint32_t workset = 0;
   uint32_t snap = 0;
   uint32_t feed = 0;  // FeedSource: 0 = v1, else a feed v2 texel
+  present_restore_scope::Domain present_domain = present_restore_scope::Domain::OTHER;
+  uint64_t chain_reset_epoch = 0;
+  // DLSSNR.Reset sent by the last successfully evaluated model pass; false if none ran.
+  bool last_model_pass_reset = false;
 };
 
 struct Slot {
@@ -341,7 +346,7 @@ inline bool Publish(const Slot& slot) {
       csv_origin_ns = slot.meta.time_ns;
       csv << "t_ms,generation,workset,snap,committed,candidate,error_stops,"
              "gate_fraction,input_mean,output_mean,nr_ratio,nr_log_ratio,"
-             "feed,exposure,feed_state\n";
+             "feed,exposure,feed_state,time_ns,present_domain,chain_reset_epoch,last_model_pass_reset\n";
     } else {
       // A folder the game cannot write (Program Files, a redirected OneDrive
       // folder, ENV-12) is said once, and the open is not retried per frame.
@@ -353,15 +358,19 @@ inline bool Publish(const Slot& slot) {
     }
   }
   if (csv.is_open()) {
-    char row[320];
+    char row[448];
     std::snprintf(
         row, sizeof(row),
-        "%.3f,%llu,%u,%u,%.6f,%.6f,%.5f,%.5f,%.6g,%.6g,%.6f,%.6f,%u,%.6g,%u\n",
+        "%.3f,%llu,%u,%u,%.6f,%.6f,%.5f,%.5f,%.6g,%.6g,%.6f,%.6f,%u,%.6g,%u,%lld,%s,%llu,%u\n",
         (slot.meta.time_ns - csv_origin_ns) / 1e6,
         static_cast<unsigned long long>(slot.meta.generation),
         slot.meta.workset, slot.meta.snap, committed, candidate, error_stops,
         gate_fraction, input_mean, output_mean, ratio, log_ratio,
-        slot.meta.feed, exposure, state);
+        slot.meta.feed, exposure, state,
+        static_cast<long long>(slot.meta.time_ns),
+        present_restore_scope::DomainText(slot.meta.present_domain),
+        static_cast<unsigned long long>(slot.meta.chain_reset_epoch),
+        static_cast<uint32_t>(slot.meta.last_model_pass_reset));
     csv << row;
     if (slot.meta.time_ns - last_flush_ns > 1'000'000'000) {
       csv.flush();
@@ -665,13 +674,10 @@ inline void Record(
   }
   Slot& slot = slots[internal::head];
   if (slot.recorded) {
-    // Lapping an undrained slot: drop the oldest rather than overwrite a
-    // region the GPU may still be copying into.
-    slot.recorded = false;
+    // Preserve the pending copy and its proof; diagnostics may skip a new
+    // sample but must never reuse GPU-owned readback storage.
     ++internal::dropped;
-    if (internal::tail == internal::head) {
-      internal::tail = (internal::tail + 1) % kSlots;
-    }
+    return;
   }
   const uint64_t base = static_cast<uint64_t>(internal::head) * kSlotStride;
   const uint32_t row_pitch = static_cast<uint32_t>(
@@ -704,9 +710,8 @@ inline void Record(
   std::swap(barriers[1].Transition.StateBefore, barriers[1].Transition.StateAfter);
   list->ResourceBarrier(2, barriers);
 
-  // The slot is its own tracked object: its address never moves, and a
-  // lapped slot's earlier recording simply keeps it unreleased a little
-  // longer.  The CPU stamp lands before this list can be submitted.
+  // The slot's stable address carries the exact completion proof. The CPU
+  // stamp lands before this list can be submitted.
   reinterpret_cast<float*>(internal::mapped + base)[0] = kUnwritten;
   submission::TrackUse(list, &slot);
   slot.lease = AcquireGpuLease();
@@ -729,7 +734,9 @@ inline void Poll(bool exact_proofs) {
   using internal::slots;
   ++internal::ticks;
   uint32_t scanned = 0;
-  while (internal::tail != internal::head && scanned++ < kSlots) {
+  // Equal cursors also describe a full ring. The oldest slot distinguishes
+  // that case from empty, so a delayed batch can drain after completion.
+  while ((internal::tail != internal::head || slots[internal::tail].recorded) && scanned++ < kSlots) {
     Slot& slot = slots[internal::tail];
     if (!slot.recorded) {
       internal::tail = (internal::tail + 1) % kSlots;
