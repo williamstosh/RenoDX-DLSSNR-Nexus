@@ -111,35 +111,40 @@ remove/restore the `.addon64` file.
 
 ### Automated builds and releases
 
+NR Nexus is a personally maintained public open-source project. Day-to-day
+changes are tracked by commits without a version bump or release.
+
 [CI](.github/workflows/ci.yml) builds branch pushes, pull requests to `main`/`dev`
 and manual runs without publishing a Release. CI and the
 [tag workflow](.github/workflows/release.yml) share
 [one Windows x64 build](.github/workflows/build-windows.yml) on GitHub-hosted
 `windows-2022`: pinned setup, the existing Release build, PE/version checks,
-focused tests and package verification. `-SoftwareOnly` runs the bridge tests
-with WARP; hardware/game/visual acceptance remains separate. CI packages are
-available as Actions artifacts for 14 days.
+tests and package verification. `-SoftwareOnly` runs bridge tests with WARP;
+hardware/game/visual checks are selected for affected behavior and cannot be
+claimed from WARP results. Existing validation remains applicable only while
+its inputs and tested scope are unchanged. CI packages are available as Actions
+artifacts for 14 days.
 
-After the relevant milestone, visual and license reviews, update `version.h`,
-commit the version and obtain publication approval. Push an annotated
-`v<version>` tag matching that header to start the same build and publish the
-ZIP/checksum with GitHub-generated release notes. `-dev.*`, `-rc.*` and other
-SemVer prereleases become **Pre-releases**; stable versions become Releases.
-The build has read-only permissions; only the publication job receives
-`GITHUB_TOKEN` `contents: write`. No personal access token or repository secret
-is required.
+For a completed feature milestone, advance `dev.N` in `version.h`, commit it and
+push an annotated `v<version>` tag matching the header and source commit. The
+workflow automatically publishes a **Pre-release** once the base build,
+affected tests and necessary safety checks pass. RC is optional; dev can lead
+directly to a stable release. A stable release requires stable core features,
+no known severe blocking issues and the owner's explicit confirmation; it
+does not require zero bugs. Record known issues and unverified scope.
 
-Any failed gate blocks publication. Assets are uploaded to a draft and verified
-before it becomes public. Runs for the same tag are serialized; existing public
-assets are never overwritten. A retry with the exact assets is a no-op, and an
-incomplete matching draft can resume. Retry the failed publication job to reuse
-the same build artifact; a different artifact under an existing version is
-rejected. Tags must never be moved or reused. Use a new version for corrections.
+Required build, test and safety checks must pass before publication. Tooling
+failures are recorded separately from plug-in failures; checks without results
+remain unverified. Copyright, third-party licenses, sensitive information and
+release assets must be checked.
 
-Codex can prepare and verify the next version with this request: “Prepare
-`<version>` and validate it; after my release approval, create and push
-`v<version>` and check the Release workflow result.” Normal code pushes do not
-authorize or trigger a Release.
+Assets are uploaded to a draft and verified before it becomes public, with
+GitHub-generated release notes. SemVer prereleases, including `-dev.*` and
+`-rc.*`, become Pre-releases. Only the publication job receives `GITHUB_TOKEN`
+`contents: write`; no personal access token or extra repository secret is needed.
+Runs for the same tag are serialized. Matching drafts and identical assets can
+be reused on retry; existing assets are not overwritten. Changes to the add-on
+source or package contents require a new version. Tags must never be moved or reused.
 
 A repaired publisher can recover an existing tag without rebuilding or moving it. Run the separately reviewed `tools/publish-release.ps1` with `-Tag`, `-ArchivePath`, `-Repository` and `-SourceRoot <clean-checkout-at-tag>`, after verifying the original successful Actions artifact and its SHA-256 sidecar. `SourceRoot` supplies the tag, version and commit identity; it defaults to the publisher checkout for normal Tag workflows. The tool resumes a matching draft, verifies both assets before publishing and never replaces different assets.
 
@@ -287,25 +292,28 @@ ZIP 仅包含运行文件 `renodx-dlss5.addon64`、本 README、`VERSION.txt` �
 
 ### 自动构建与发布
 
+NR Nexus 按个人维护的公开开源项目管理。日常修改用 Commit 追溯，不升版本、不发版。
+
 [CI](.github/workflows/ci.yml) 在分支推送、面向 `main`／`dev` 的 PR 或手动运行时构建，
 不发布 Release。CI 与 [Tag 工作流](.github/workflows/release.yml) 共用
 [一套 Windows x64 构建](.github/workflows/build-windows.yml)，在 GitHub 托管
-`windows-2022` 上执行固定依赖初始化、现有 Release 构建、PE／版本校验、定向测试及打包校验。
-`-SoftwareOnly` 使 bridge 测试使用 WARP；硬件、游戏及视觉验收仍单独执行。
+`windows-2022` 上执行固定依赖初始化、现有 Release 构建、PE／版本校验、测试及打包校验。
+`-SoftwareOnly` 使 bridge 测试使用 WARP；硬件、游戏及视觉检查按受影响行为选择，
+不能由 WARP 结果推定通过。只有输入与已测范围不变时，既有验证结果才可继续适用。
 CI 安装包保留为 Actions artifacts，期限 14 天。
 
-完成对应里程碑、视觉及许可审查后，更新并提交 `version.h`，取得本次发布批准，
-推送与版本头一致的带注释 `v<version>` 标签，即自动执行同一构建并发布 ZIP／校验文件及
-GitHub 自动生成的更新说明。`-dev.*`、`-rc.*` 等 SemVer 预发布版本标记为 **Pre-release**，
-稳定版本发布为 Release。构建仅有只读权限；只有发布作业获得 `GITHUB_TOKEN` 的
-`contents: write`，无需个人访问令牌或额外仓库 Secret。
+完成功能里程碑后，递增 `version.h` 中的 `dev.N`，提交版本并推送与版本头、源码 Commit
+一致的带注释 `v<version>` 标签。基础构建、受影响测试及必要安全检查通过后，工作流自动发布
+**Pre-release**。RC 可选，可从 dev 直接进入正式版。正式版要求核心功能稳定、没有已知严重
+阻断问题，并获所有者明确确认，不要求零 Bug；记录已知问题及未验证范围。
 
-任何门槛失败均不公开发布：先上传并核对草稿附件，再公开草稿。同一 Tag 的运行串行执行，
-不覆盖已公开附件。完全相同的附件重复运行不作变更，匹配的未完成草稿可补齐；重跑失败的发布
-作业以复用原构建产物，同版本下不同产物会被拒绝。标签不可移动或复用，修正使用新版本。
+必需构建、测试及安全检查通过后才公开发布。自动化工具故障与插件功能故障分别记录，
+无结果的检查保留为未验证；保留版权、第三方许可、敏感信息及发布产物检查。
 
-通过 Codex 的最简请求：“准备 `<version>` 并完成验证；我批准发布后，创建并推送
-`v<version>`，核验 Release 工作流结果。”普通代码推送不授权或触发 Release。
+先上传并核对草稿附件，再公开并生成 GitHub 更新说明。`-dev.*`、`-rc.*` 等 SemVer 预发布版本
+标记为 Pre-release。只有发布作业获得 `GITHUB_TOKEN` 的 `contents: write`，
+无需个人访问令牌或额外仓库 Secret。同一 Tag 串行执行，重试可复用匹配草稿及完全相同的附件，
+不覆盖已有资产；插件源码或安装包内容变化须使用新版本，Tag 不可移动或复用。
 
 发布工具修复可单独审查提交，并补发已有 Tag，无须重构建或移动 Tag。先核对原成功 Actions 的安装包与 SHA-256 校验文件，再运行修复后的 `tools/publish-release.ps1`，传入 `-Tag`、`-ArchivePath`、`-Repository` 和 `-SourceRoot <位于原Tag的干净检出>`。`SourceRoot` 提供 Tag、版本及源码提交身份，正常 Tag 工作流默认使用工具自身检出。工具恢复匹配草稿，核对两份附件后公开，不覆盖不同资产。
 
