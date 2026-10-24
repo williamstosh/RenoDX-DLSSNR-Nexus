@@ -1,6 +1,11 @@
 # Local dependencies, build outputs, and diagnostics
 /tmp/
 /.local/
+/AGENTS.md
+/PROJECT_INDEX.md
+/docs/context/DECISIONS.md
+/docs/context/NOW.md
+/docs/context/RUNBOOK.md
 /build/
 /artifacts/
 /dist/

@@ -20,5 +20,5 @@ Lecram V8.5 RC10 和 NVIDIA 运行时／DLL 版本单独作为来源信息维护
 3. 已提交里程碑通过上述门槛后，新建带注释的 `v<version>` 标签，并执行 `tools/check-version.ps1 -ExpectedTag <tag> -VerifyTag`。标签不可覆盖。
 4. 开发标签通过门槛后可自动生成 GitHub **Pre-release**；RC 发布需内部验收，稳定 GitHub Release 还需所有者明确确认。仅上传合格插件二进制及必要声明，不上传厂商运行时 DLL 或模型。源码推送不自动触发发布或版本递增。
 
-当前未安装无条件的标签到 Release 自动化。代码与验收缺口统一见 [NOW](context/NOW.md)。
+当前未安装无条件的标签到 Release 自动化。公开开发状态及构建限制见 [README](../README.md#开发状态)。
 文档整理不递增版本，也不构成标签或 Release 的验收。
