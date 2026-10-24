@@ -38,6 +38,7 @@ jobs:
         run: |
           if ($env:EXPECTED_TAG) {
             ./tools/check-version.ps1 -ExpectedTag $env:EXPECTED_TAG -VerifyTag
+            ./tools/get-release-notes.ps1 -Tag $env:EXPECTED_TAG -Repository $env:GITHUB_REPOSITORY | Out-Null
           } else {
             ./tools/check-version.ps1
           }
@@ -54,7 +55,9 @@ jobs:
       - name: Validate packaging gates
         run: ./tests/run-package-tests.ps1
       - name: Validate publication failure and retry boundaries without publishing
-        run: ./tests/run-release-tests.ps1
+        run: |
+          ./tests/run-release-notes-tests.ps1
+          ./tests/run-release-tests.ps1
       - name: Package and verify versioned plugin archive
         id: package
         env:
