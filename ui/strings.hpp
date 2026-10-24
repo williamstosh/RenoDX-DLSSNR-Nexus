@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include "../brand.h"
 #include "i18n.hpp"
 
 namespace renodx::addons::dlss5::ui {
@@ -66,7 +67,7 @@ inline constexpr PanelText kClassicText = {
     "Guide overrides (leave at defaults unless diagnostics require them)",
 };
 
-// i18n: begin - display strings (tools/i18n/ui_strings.py catalog)
+// i18n: begin - display strings (ui/lang tables)
 inline constexpr PanelText kModernText = {
     true,
     "Neural Rendering",
@@ -115,10 +116,10 @@ inline constexpr const char* kRebindTip =
     "Click, then press the new key; Esc cancels.";
 inline constexpr const char* kNoneYet = "none yet";
 // i18n: end
-// Both layouts' footer: version, the loaded runtime's file version (through
+// Both layouts' status line: version, the loaded runtime's file version (through
 // v8.0.2 a fixed "v310.8.0", whatever build was loaded), the game's file name.
-inline constexpr const char* kFooter = "RenoDX DLSS5 Generic %s | DLSSNR %s | %s";
-// i18n: begin - display strings (tools/i18n/ui_strings.py catalog)
+inline constexpr const char* kFooter = NR_NEXUS_NAME " %s | DLSSNR %s | %s";
+// i18n: begin - display strings (ui/lang tables)
 
 // The Defaults view (alpha46): segment 0 runs the built-in look, segment 1
 // the player's own.
@@ -303,7 +304,7 @@ inline constexpr const char* kIssueNoticesTip =
     "Turning this off hides all on-screen notices; Home status and diagnostics remain available.";
 
 // The first-run welcome (U5), shown under the status card until dismissed.
-inline constexpr const char* kWelcomeTitle = "Welcome to DLSS 5 Neural Rendering";
+inline constexpr const char* kWelcomeTitle = "Welcome to " NR_NEXUS_NAME;
 inline constexpr const char* kWelcomeBody =
     "Neural Rendering is NVIDIA's DLSS enhancer.  It works on the image the"
     " game's own DLSS makes, so DLSS or DLAA has to be on in the game's"

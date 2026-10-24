@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include "brand.h"
+
 #include "version.h"
 
 #include <algorithm>
@@ -149,7 +151,7 @@ constexpr char kConfigSection[] = "RenoDX.DLSS5";
 // Dedicated overlay window title (Add-ons tab).  Registering a named overlay
 // instead of the nullptr generic callback keeps the NR UI in its own window,
 // separate from every other add-on's section.
-constexpr char kOverlayTitle[] = "DLSS 5 Neural Rendering";
+constexpr char kOverlayTitle[] = NR_NEXUS_ADDON_NAME;
 // Config schema marker stamped into [RenoDX.DLSS5].  Bump it whenever a
 // default changes or a key changes meaning: LoadConfiguration treats a stored
 // marker below this as a stale config, applies the defaults namespace instead
@@ -2742,7 +2744,7 @@ inline decltype(&slFreeResources) real_streamline_free[2] = {};
 inline detour_guard::Record streamline_records[5];
 
 inline void Log(reshade::log::level level, const std::string& message) {
-  reshade::log::message(level, ("DLSS5 Generic: " + message).c_str());
+  reshade::log::message(level, (NR_NEXUS_NAME ": " + message).c_str());
 }
 
 // ---- NR's cost, as the player sees it (rc11, NRCostMeter) -------------------
@@ -5295,7 +5297,7 @@ inline bool EnsureCodecRootSignature(ID3D12Device* device) {
       &errors);
   return CreateRootSignature(
       device, result, serialized, errors, &codec_pipeline.root_signature,
-      L"DLSS5 Generic Control codec root signature",
+      L"" NR_NEXUS_NAME " Control codec root signature",
       "codec root signature serialization failed: ",
       "codec root signature creation failed with HRESULT 0x");
 }
@@ -5336,25 +5338,25 @@ inline bool EnsureLegacyCodecPipeline(ID3D12Device* device) {
           device,
           __legacy_encode,
           &codec_pipeline.encode,
-          L"DLSS5 Generic Control proxy encode",
+          L"" NR_NEXUS_NAME " Control proxy encode",
           "legacy proxy encode")
       || !CreateCodecPipelineState(
           device,
           __legacy_decode,
           &codec_pipeline.decode,
-          L"DLSS5 Generic Control HDR transfer",
+          L"" NR_NEXUS_NAME " Control HDR transfer",
           "legacy proxy decode")
       || !CreateCodecPipelineState(
           device,
           __legacy_reduce,
           &codec_pipeline.block_mean_reduce,
-          L"DLSS5 Generic block mean reduce",
+          L"" NR_NEXUS_NAME " block mean reduce",
           "legacy block mean reduce")
       || !CreateCodecPipelineState(
           device,
           __legacy_apply,
           &codec_pipeline.black_restore_apply,
-          L"DLSS5 Generic black level restore",
+          L"" NR_NEXUS_NAME " black level restore",
           "legacy black level restore")) {
     ReleaseCom(codec_pipeline.encode);
     ReleaseCom(codec_pipeline.decode);
@@ -5366,7 +5368,7 @@ inline bool EnsureLegacyCodecPipeline(ID3D12Device* device) {
       device,
       __legacy_reduce_unshaped,
       &codec_pipeline.block_mean_reduce_unshaped,
-      L"DLSS5 Generic block mean reduce (unshaped)",
+      L"" NR_NEXUS_NAME " block mean reduce (unshaped)",
       "legacy block mean reduce, unshaped");
   Log(
       reshade::log::level::info,
@@ -5386,37 +5388,37 @@ inline bool EnsureV6CodecPipeline(ID3D12Device* device) {
           device,
           __v6_linearize,
           &codec_pipeline.linearize,
-          L"DLSS5 Generic v6 linearize",
+          L"" NR_NEXUS_NAME " v6 linearize",
           "v6 linearize")
       || !CreateCodecPipelineState(
           device,
           __v6_encode,
           &codec_pipeline.encode_v6,
-          L"DLSS5 Generic v6 proxy encode",
+          L"" NR_NEXUS_NAME " v6 proxy encode",
           "v6 proxy encode")
       || !CreateCodecPipelineState(
           device,
           __v6_resolve,
           &codec_pipeline.resolve_v6,
-          L"DLSS5 Generic v6 resolve",
+          L"" NR_NEXUS_NAME " v6 resolve",
           "v6 resolve")
       || !CreateCodecPipelineState(
           device,
           __v6_pedestal_reduce,
           &codec_pipeline.pedestal_reduce,
-          L"DLSS5 Generic v6 pedestal reduce",
+          L"" NR_NEXUS_NAME " v6 pedestal reduce",
           "v6 pedestal reduce")
       || !CreateCodecPipelineState(
           device,
           __v6_commit,
           &codec_pipeline.commit,
-          L"DLSS5 Generic v6 commit",
+          L"" NR_NEXUS_NAME " v6 commit",
           "v6 commit")
       || !CreateCodecPipelineState(
           device,
           __v6_autoscale,
           &codec_pipeline.autoscale,
-          L"DLSS5 Generic v6 same-frame autoscale",
+          L"" NR_NEXUS_NAME " v6 same-frame autoscale",
           "v6 same-frame autoscale")) {
     ReleaseCom(codec_pipeline.linearize);
     ReleaseCom(codec_pipeline.encode_v6);
@@ -5430,20 +5432,20 @@ inline bool EnsureV6CodecPipeline(ID3D12Device* device) {
       device,
       __v6_pedestal_reduce_unshaped,
       &codec_pipeline.pedestal_reduce_unshaped,
-      L"DLSS5 Generic v6 pedestal reduce (unshaped)",
+      L"" NR_NEXUS_NAME " v6 pedestal reduce (unshaped)",
       "v6 pedestal reduce, unshaped");
   // Feed v2 is a mode beside v1: if either program fails, FrameFeed runs v1.
   if (!CreateCodecPipelineState(
           device,
           __v6_exposure_scale,
           &codec_pipeline.exposure_scale,
-          L"DLSS5 Generic v6 exposure scale (feed v2)",
+          L"" NR_NEXUS_NAME " v6 exposure scale (feed v2)",
           "v6 exposure scale")
       || !CreateCodecPipelineState(
           device,
           __v6_commit_exposure,
           &codec_pipeline.commit_exposure,
-          L"DLSS5 Generic v6 commit (feed v2)",
+          L"" NR_NEXUS_NAME " v6 commit (feed v2)",
           "v6 commit, feed v2")) {
     ReleaseCom(codec_pipeline.exposure_scale);
     ReleaseCom(codec_pipeline.commit_exposure);
@@ -5477,24 +5479,24 @@ inline bool EnsureLookPipeline(ID3D12Device* device) {
         renodx::utils::directx::pD3D12SerializeRootSignature, &serialized, &errors);
     if (!CreateRootSignature(
             device, result, serialized, errors, &pipeline.root_signature,
-            L"DLSS5 Generic look root signature",
+            L"" NR_NEXUS_NAME " look root signature",
             "look root signature serialization failed: ",
             "look root signature creation failed with HRESULT 0x")) {
       return false;
     }
   }
   if (!CreateCodecPipelineState(
-          device, __look_compose, &pipeline.compose, L"DLSS5 Generic look compose",
+          device, __look_compose, &pipeline.compose, L"" NR_NEXUS_NAME " look compose",
           "look compose", pipeline.root_signature)
       || !CreateCodecPipelineState(
-          device, __look_band, &pipeline.band, L"DLSS5 Generic look bands",
+          device, __look_band, &pipeline.band, L"" NR_NEXUS_NAME " look bands",
           "look bands", pipeline.root_signature)
       || !CreateCodecPipelineState(
           device, __look_upsample, &pipeline.upsample,
-          L"DLSS5 Generic look edge-aware upsample", "look upsample",
+          L"" NR_NEXUS_NAME " look edge-aware upsample", "look upsample",
           pipeline.root_signature)
       || !CreateCodecPipelineState(
-          device, __look_trace, &pipeline.trace, L"DLSS5 Generic look edit trace",
+          device, __look_trace, &pipeline.trace, L"" NR_NEXUS_NAME " look edit trace",
           "look edit trace", pipeline.root_signature)) {
     ReleaseCom(pipeline.compose);
     ReleaseCom(pipeline.band);
@@ -6078,7 +6080,7 @@ inline FinalResources* EnsureWorkset(
           hdr_mode != 0 ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE,
            D3D12_RESOURCE_STATE_COPY_DEST,
            &resources.original,
-           L"DLSS5 Generic original DLSS output")
+           L"" NR_NEXUS_NAME " original DLSS output")
       || !CreateScratchTexture(
            device,
            input_width,
@@ -6087,7 +6089,7 @@ inline FinalResources* EnsureWorkset(
            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
           D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
           &resources.proxy,
-          L"DLSS5 Generic SDR proxy")
+          L"" NR_NEXUS_NAME " SDR proxy")
       || (create_pre_sr_color
           && !CreateScratchTexture(
               device,
@@ -6097,7 +6099,7 @@ inline FinalResources* EnsureWorkset(
               D3D12_RESOURCE_FLAG_NONE,
               D3D12_RESOURCE_STATE_COPY_DEST,
               &resources.pre_sr_color,
-              L"DLSS5 Generic pre-SR NR color"))
+              L"" NR_NEXUS_NAME " pre-SR NR color"))
       || !CreateScratchTexture(
            device,
            neural_width,
@@ -6106,7 +6108,7 @@ inline FinalResources* EnsureWorkset(
            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
           D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
           &resources.nr_output,
-          L"DLSS5 Generic raw neural output")
+          L"" NR_NEXUS_NAME " raw neural output")
       || (hdr_mode == 0
           && !CreateScratchTexture(
               device,
@@ -6116,7 +6118,7 @@ inline FinalResources* EnsureWorkset(
               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
               D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
               &resources.decoded,
-              L"DLSS5 Generic decoded DLSS output"))
+              L"" NR_NEXUS_NAME " decoded DLSS output"))
       || (hdr_mode == 0 && requested_stack > 1
           && !CreateScratchTexture(
               device,
@@ -6126,7 +6128,7 @@ inline FinalResources* EnsureWorkset(
               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
               D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
               &resources.decoded_alt,
-              L"DLSS5 Generic decoded DLSS output (stack ping-pong)"))
+              L"" NR_NEXUS_NAME " decoded DLSS output (stack ping-pong)"))
       || !CreateScratchTexture(
           device,
           (output_width + 31) / 32,
@@ -6135,7 +6137,7 @@ inline FinalResources* EnsureWorkset(
           D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
           D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
           &resources.block_mean,
-          L"DLSS5 Generic NR block means")) {
+          L"" NR_NEXUS_NAME " NR block means")) {
     ReleaseFinalResources(resources);
     return nullptr;
   }
@@ -6163,30 +6165,30 @@ inline FinalResources* EnsureWorkset(
             device, output_width, output_height, work_format,
             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            &resources.work0, L"DLSS5 Generic v6 linear source")
+            &resources.work0, L"" NR_NEXUS_NAME " v6 linear source")
         || !CreateScratchTexture(
                device, output_width, output_height, work_format,
                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-               &resources.work_a, L"DLSS5 Generic v6 resolve ping-pong A")
+               &resources.work_a, L"" NR_NEXUS_NAME " v6 resolve ping-pong A")
         || (requested_stack > 1
             && !CreateScratchTexture(
                    device, output_width, output_height, work_format,
                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                   &resources.work_b, L"DLSS5 Generic v6 resolve ping-pong B"))
+                   &resources.work_b, L"" NR_NEXUS_NAME " v6 resolve ping-pong B"))
         || !CreateScratchTexture(
                device, 1, 1, DXGI_FORMAT_R32G32B32A32_FLOAT,
                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-               &resources.norm_scale, L"DLSS5 Generic v6 frame scale")
+               &resources.norm_scale, L"" NR_NEXUS_NAME " v6 frame scale")
         || (!shared_commit
             && !CreateScratchTexture(
                    device, 1, 1, DXGI_FORMAT_R32G32B32A32_FLOAT,
                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                    &resources.norm_commit,
-                   L"DLSS5 Generic v6 committed frame scale"))) {
+                   L"" NR_NEXUS_NAME " v6 committed frame scale"))) {
       ReleaseFinalResources(resources);
       return nullptr;
     }
@@ -6199,45 +6201,45 @@ inline FinalResources* EnsureWorkset(
   if (look_alloc != 0
       && (!CreateScratchBuffer(
               device, look::kTraceWords * sizeof(uint32_t),
-              &resources.look_trace_histogram, L"DLSS5 Generic look trace histogram")
+              &resources.look_trace_histogram, L"" NR_NEXUS_NAME " look trace histogram")
           || ((look_alloc & kLookSurfaceOutput) != 0
               && !CreateScratchTexture(
                   device, input_width, input_height, kWorkingFormat,
                   D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &resources.look_output,
-                  L"DLSS5 Generic look output"))
+                  L"" NR_NEXUS_NAME " look output"))
           || ((look_alloc & kLookSurfaceBands) != 0
               && (!CreateScratchTexture(
                       device, band_width, band_height, DXGI_FORMAT_R32G32B32A32_FLOAT,
                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &resources.look_band_a,
-                      L"DLSS5 Generic look band A")
+                      L"" NR_NEXUS_NAME " look band A")
                   || !CreateScratchTexture(
                       device, band_width, band_height, DXGI_FORMAT_R32G32B32A32_FLOAT,
                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &resources.look_band_b,
-                      L"DLSS5 Generic look band B")
+                      L"" NR_NEXUS_NAME " look band B")
                   || !CreateScratchTexture(
                       device, band_width, band_height, DXGI_FORMAT_R32G32_FLOAT,
                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &resources.look_band_max_a,
-                      L"DLSS5 Generic look band peak A")
+                      L"" NR_NEXUS_NAME " look band peak A")
                   || !CreateScratchTexture(
                       device, band_width, band_height, DXGI_FORMAT_R32G32_FLOAT,
                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &resources.look_band_max_b,
-                      L"DLSS5 Generic look band peak B")))
+                      L"" NR_NEXUS_NAME " look band peak B")))
           || ((look_alloc & kLookSurfaceTransport) != 0
               && (!CreateScratchTexture(
                       device, output_width, output_height, kWorkingFormat,
                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &resources.look_up_proxy,
-                      L"DLSS5 Generic look transported proxy")
+                      L"" NR_NEXUS_NAME " look transported proxy")
                   || !CreateScratchTexture(
                       device, output_width, output_height, kWorkingFormat,
                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &resources.look_up_neural,
-                      L"DLSS5 Generic look transported output")))
+                      L"" NR_NEXUS_NAME " look transported output")))
           || ((look_alloc & kLookSurfaceTrace) != 0
               && !CreateScratchTexture(
                   device, (input_width + look::kTraceBlock - 1) / look::kTraceBlock,
@@ -6245,7 +6247,7 @@ inline FinalResources* EnsureWorkset(
                   DXGI_FORMAT_R32G32B32A32_FLOAT,
                   D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &resources.look_trace_blocks,
-                  L"DLSS5 Generic look trace blocks")))) {
+                  L"" NR_NEXUS_NAME " look trace blocks")))) {
     for (ID3D12Resource** surface :
          {&resources.look_trace_histogram, &resources.look_output, &resources.look_band_a,
           &resources.look_band_b, &resources.look_band_max_a, &resources.look_band_max_b,
@@ -6524,7 +6526,7 @@ inline FinalResources* EnsureWorkset(
               heap_start, kDescriptorLookUav + index, resources.descriptor_size));
     }
   }
-  resources.descriptors->SetName(L"DLSS5 Generic Control codec descriptors");
+  resources.descriptors->SetName(L"" NR_NEXUS_NAME " Control codec descriptors");
   resources.id = next_workset_id++;
   for (ID3D12Resource* surface :
        {resources.original, resources.proxy, resources.nr_output,
@@ -8335,9 +8337,9 @@ inline LookRoute RunLookStage(
   if (temporal && history.buffers[0] == nullptr) {
     const uint64_t bytes = static_cast<uint64_t>(res.input_width) * res.input_height
         * look::kHistoryBytesPerPixel;
-    if (CreateScratchBuffer(device, bytes, &history.buffers[0], L"DLSS5 Generic look history")
+    if (CreateScratchBuffer(device, bytes, &history.buffers[0], L"" NR_NEXUS_NAME " look history")
         && CreateScratchBuffer(
-            device, bytes, &history.buffers[1], L"DLSS5 Generic look history")) {
+            device, bytes, &history.buffers[1], L"" NR_NEXUS_NAME " look history")) {
       history.width = res.input_width;
       history.height = res.input_height;
     } else {
@@ -22488,7 +22490,7 @@ inline std::string BuildSupportReport() {
   char result[16];
   std::snprintf(result, sizeof(result), "0x%08X", last_result.load());
   std::ostringstream report;
-  report << "RenoDX DLSS5 Generic support report v1\n"
+  report << NR_NEXUS_NAME " support report v1\n"
          << "version: " << kAddonVersion << "\n"
          << "game: " << GameExeName() << "\n"
          << "card: " << card_title << "\n"
@@ -22899,15 +22901,6 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
   DrawSectionIssueNotice(text);
   DrawSectionHudPosition(text);
   ImGui::Separator();
-  {
-    ui::StyleScope footer;
-    footer.FontSize(ui::SmallFontSize())
-        .Color(ImGuiCol_Text, ui::tokens::kTextSecondary);
-    ImGui::PushTextWrapPos(0.f);
-    ImGui::Text(ui::text::kFooter, kAddonVersion, NrRuntimeVersionText(),
-                GameExeName().c_str());
-    ImGui::PopTextWrapPos();
-  }
   DrawSectionRestoreDefaults(runtime, text);
   ui::SameLineIfFits(ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x
                      + ImGui::CalcTextSize(ui::Tr(ui::text::kDeveloperView)).x);
@@ -23104,12 +23097,14 @@ inline void DrawPanelBody(reshade::api::effect_runtime* runtime) {
     DrawFasterPresets();
     DrawHealthIssues();
     DrawIssueReport();
-    if (classic) {
+    {
       ui::StyleScope footer;
       footer.FontSize(ui::SmallFontSize())
           .Color(ImGuiCol_Text, ui::tokens::kTextSecondary);
+      ImGui::PushTextWrapPos(0.f);
       ImGui::Text(ui::text::kFooter, kAddonVersion, NrRuntimeVersionText(),
                   GameExeName().c_str());
+      ImGui::PopTextWrapPos();
     }
     if (streamline_hooks_enabled.load() && hooks_enabled.load()) {
       ImGui::PushTextWrapPos(0.f);
@@ -25163,7 +25158,7 @@ inline void Use(DWORD reason, HMODULE module, LPVOID reserved) {
       debug::Mark("attach:config-loaded");
       internal::Log(
           reshade::log::level::info,
-          std::string("DLSS5 active settings: intensity=")
+          std::string("NR active settings: intensity=")
               + std::to_string(internal::intensity.load())
               + " color_strength=" + std::to_string(internal::color_strength.load())
               + " transfer=" + std::to_string(internal::transfer_strength.load())
@@ -25175,12 +25170,12 @@ inline void Use(DWORD reason, HMODULE module, LPVOID reserved) {
         internal::Log(
             reshade::log::level::info,
             "NR is currently OFF. To turn it on: open the ReShade overlay,"
-            " go to Add-ons -> DLSS 5 Neural Rendering, and tick 'Enable DLSS"
+            " go to Add-ons -> " NR_NEXUS_ADDON_NAME ", and tick 'Enable DLSS"
             " Neural Rendering' (or press the NR toggle hotkey in gameplay).");
       }
       internal::Log(
           reshade::log::level::info,
-          std::string("RenoDX DLSS5 Generic ") + internal::kAddonVersion
+          std::string(NR_NEXUS_NAME " ") + internal::kAddonVersion
               + " (build " __DATE__ " " __TIME__ ") loaded (hotkeys: NR toggle "
               + internal::VirtualKeyName(internal::toggle_hotkey.load())
               + ", screenshot "

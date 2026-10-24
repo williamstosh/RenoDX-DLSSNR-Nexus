@@ -14,12 +14,18 @@ function(nr_nexus_apply_version)
   set(nexus_minor "${CMAKE_MATCH_2}")
   set(nexus_patch "${CMAKE_MATCH_3}")
   if(NOT TARGET dlss5)
-    message(FATAL_ERROR "The RenoDX dlss5 target is required")
+    message(FATAL_ERROR "The dlss5 target in RenoDX is required")
   endif()
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${nexus_root}/version.h")
+  # Replace only this target's generated version resource; the host stays intact.
+  get_target_property(nexus_sources dlss5 SOURCES)
+  list(FILTER nexus_sources EXCLUDE REGEX "[/\\\\]resource[.]rc$")
+  set_property(TARGET dlss5 PROPERTY SOURCES "${nexus_sources}")
+  target_sources(dlss5 PRIVATE "${nexus_root}/cmake/nexus-version.rc")
   target_compile_definitions(dlss5 PRIVATE
     "VER_FILEVERSION=${nexus_major},${nexus_minor},${nexus_patch},0"
-    "VER_FILEVERSION_STR=\"${nexus_version}\\0\"")
+    "VER_FILEVERSION_STR=\"${nexus_version}\\0\""
+    "$<$<CONFIG:Debug>:RENODX_DLSS5_DEBUG>")
   message(STATUS "NR Nexus: v${nexus_version}; loader: renodx-dlss5.addon64")
 endfunction()
 

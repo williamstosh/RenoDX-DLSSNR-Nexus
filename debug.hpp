@@ -25,6 +25,8 @@
  */
 #pragma once
 
+#include "brand.h"
+
 #if defined(RENODX_DLSS5_DEBUG)
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -169,7 +171,7 @@ inline void WriteCrashReport(
   const EXCEPTION_RECORD* record =
       info != nullptr && info->ExceptionRecord != nullptr ? info->ExceptionRecord : nullptr;
   appendf(
-      "RenoDX DLSS5 debug build crash report\npid=%lu tid=%lu up_ms=%lld\n",
+      NR_NEXUS_DEBUG_NAME " crash report\npid=%lu tid=%lu up_ms=%lld\n",
       GetCurrentProcessId(), GetCurrentThreadId(),
       static_cast<long long>(ElapsedMs()));
   appendf(
@@ -354,7 +356,7 @@ inline void Init(HMODULE module) {
   if (trace_file == INVALID_HANDLE_VALUE) trace_file = nullptr;
   if (trace_file == nullptr) return;
 
-  Tracef("=== RenoDX DLSS5 DEBUG build: session begin, pid=%lu ===", GetCurrentProcessId());
+  Tracef("=== " NR_NEXUS_DEBUG_NAME " build: session begin, pid=%lu ===", GetCurrentProcessId());
   Tracef("game exe: %ls", exe);
   wchar_t self[MAX_PATH] = L"";
   GetModuleFileNameW(module, self, MAX_PATH);

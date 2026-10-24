@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (C) 2026
  * SPDX-License-Identifier: MIT
  */
@@ -51,6 +51,8 @@
 // than what the engine actually renders (black-margin titles).
 
 #pragma once
+
+#include "brand.h"
 
 #include <algorithm>
 #include <atomic>
@@ -184,7 +186,7 @@ constexpr uint32_t kUnwrittenStamp[4] = {0x7FC0DEADu, 0x7FC0BEEFu, 0x7FC0CAFEu, 
 // loading screen or with NR off fires much later on the first evaluate -
 // typically a black frame the user cannot make sense of.
 constexpr uint32_t kArmTimeoutPresents = 600;
-constexpr char kLogPrefix[] = "DLSS5 Generic";
+constexpr char kLogPrefix[] = NR_NEXUS_NAME;
 constexpr UINT64 MAX_STAGE_READBACK_BYTES = 512ull * 1024ull * 1024ull;
 constexpr size_t MAX_STAGE_PLANES = 24;
 // Cover delayed exact completion/recording retirement; byte budgets remain independent.
@@ -1235,7 +1237,7 @@ inline const std::vector<uint8_t>& Bt2100PqIcc() {
     }
     std::vector<uint8_t> cicp = element("cicp");
     cicp.insert(cicp.end(), {9, 16, 0, 1});
-    const std::vector<uint8_t> desc = text("BT.2100 PQ (RenoDX DLSS5 screenshot)");
+    const std::vector<uint8_t> desc = text("BT.2100 PQ (" NR_NEXUS_NAME " screenshot)");
     const std::vector<uint8_t> cprt = text("No copyright, use freely");
     const std::vector<uint8_t> wtpt = xyz(0.9642, 1.0, 0.8249);
     const std::vector<uint8_t> red = xyz(adapted[0][0], adapted[1][0], adapted[2][0]);

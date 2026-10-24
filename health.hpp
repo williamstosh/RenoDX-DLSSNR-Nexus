@@ -862,7 +862,7 @@ inline constexpr Row kRows[] = {
         .body = "Another copy of this add-on runs in the same game, so Neural"
                 " Rendering can be applied twice on each frame: stronger halos"
                 " and darker edges.",
-        .fix = "Keep one DLSS5 .addon64 file in the game's folder, remove the"
+        .fix = "Keep one renodx-dlss5.addon64 file in the game's folder, remove the"
                " others, and restart the game.",
         .measure = "%.0f other copy loaded",
     },

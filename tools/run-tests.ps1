@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('all','native','sdr-policy','hdr-policy','scope','config','constants','fg-xefg','fg-native','lifecycle','bridge-motion')]
+    [ValidateSet('all','branding','native','sdr-policy','hdr-policy','scope','config','constants','fg-xefg','fg-native','lifecycle','bridge-motion')]
     [string[]]$Suite = @('all'),
     [string]$SourceRoot = (Split-Path $PSScriptRoot -Parent),
     [string]$HostRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) '.local/renodx'),
@@ -23,6 +23,7 @@ $HostRoot = [IO.Path]::GetFullPath($HostRoot)
 $ShaderIncludeDirectory = [IO.Path]::GetFullPath($ShaderIncludeDirectory)
 $OutputDirectory = Initialize-TestOutput $OutputDirectory
 $sources = [ordered]@{
+    branding='branding_tests'
     native='native_contract_tests'; 'sdr-policy'='present_sdr_restore_policy_tests'
     'hdr-policy'='present_hdr_pedestal_policy_tests'; scope='present_restore_scope_tests'
     config='present_restore_configuration_tests'; constants='present_hdr_runtime_constants_tests'
@@ -55,11 +56,14 @@ foreach ($item in $Suite) {
         continue
     }
     $directory = Initialize-TestOutput $directory
+    if ($item -eq 'branding') {
+        & (Join-Path $testRoot 'run-branding-check-tests.ps1') -OutputDirectory $directory
+    }
     $name = $sources[$item]
     $exe = Join-Path $directory "$name.exe"
     $arguments = $common + @($includes | ForEach-Object { "/I$_" })
     $link = $libraries
-    if ($item -in @('sdr-policy','hdr-policy','scope')) { $link = @() }
+    if ($item -in @('branding','sdr-policy','hdr-policy','scope')) { $link = @() }
     if ($item -in @('fg-native','bridge-motion')) {
         if (-not (Test-Path -LiteralPath "$ShaderIncludeDirectory/embed/shaders.h")) { throw 'Build new shaders first.' }
         $arguments += @('/bigobj','/Gy','/Gw','/DNDEBUG','/DRESHADE_ADDON=1',
@@ -68,6 +72,7 @@ foreach ($item in $Suite) {
         $link += @('user32.lib','gdi32.lib','ole32.lib','psapi.lib')
         if ($item -eq 'bridge-motion') { $link += 'd3dcompiler.lib' }
     }
+    if ($item -eq 'branding') { $arguments += '/DRENODX_DLSS5_DEBUG' }
     $arguments += @((Join-Path $testRoot "$name.cpp"), "/Fo$directory/$name.obj", "/Fe$exe",
         '/sourceDependencies', "$directory/dependencies.json", '/link', '/OPT:REF', '/OPT:ICF') + $link
     $arguments | ConvertTo-Json | Set-Content -LiteralPath "$directory/arguments.json" -Encoding utf8

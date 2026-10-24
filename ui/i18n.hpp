@@ -15,9 +15,10 @@
 // what a support thread reads, in one language - and so do the Language
 // row's choices (DrawSectionLanguage).
 //
-// The tables live in ui/lang/<code>.hpp, written by tools/i18n/ui_strings.py
-// from reviewed JSON; the same tool lists the English strings the panel
-// draws and checks every table against them.  A translation whose printf
+// The inherited tables live in ui/lang/<code>.hpp and are maintained directly
+// in this source-only project; the upstream generator/JSON are not included.
+// Brand fragments use brand.h; tools/check-branding.ps1 checks changed sources.
+// A translation whose printf
 // conversions differ from its English (count, order or type) is dropped when
 // the table is loaded, so a bad entry falls back to English instead of
 // reading the wrong argument.
@@ -29,6 +30,8 @@
 // platform-neutral - dlssnr.hpp reads the thread's language.
 
 #pragma once
+
+#include "../brand.h"
 
 #include <algorithm>
 #include <cstddef>

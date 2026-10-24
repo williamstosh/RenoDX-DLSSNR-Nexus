@@ -290,7 +290,7 @@ inline void RunReportCaptureJob() {
   // all.  Skipped when the addon never opened it, so a clean session ships
   // without the entry.
   if (!lastgasp::crash_log_path.empty()) {
-    add_text("Crash log (RenoDX-DLSS5)",
+    add_text("Crash log (" NR_NEXUS_NAME ")",
              "logs/RenoDX-DLSS5-crash.log",  // i18n: skip
              read_text(std::filesystem::path(lastgasp::crash_log_path)));
   }

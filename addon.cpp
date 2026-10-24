@@ -13,22 +13,13 @@
 
 #include <windows.h>
 
+#include "brand.h"
 #include "dlssnr.hpp"
 
 #include "lastgasp.hpp"
 
-#if defined(RENODX_DLSS5_DEBUG)
-extern "C" __declspec(dllexport) constexpr const char* NAME =
-    "DLSS 5 Neural Rendering (Debug)";
-extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION =
-    "Generic experimental DLSS Neural Rendering post-pass for DX12 games using "
-    "NGX or Streamline DLSS (DEBUG BUILD: trace log + crash minidumps - see "
-    "RenoDX-DLSS5-debug.log next to the game exe)";
-#else
-extern "C" __declspec(dllexport) constexpr const char* NAME = "DLSS 5 Neural Rendering";
-extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION =
-    "Generic experimental DLSS Neural Rendering post-pass for DX12 games using NGX or Streamline DLSS";
-#endif
+extern "C" __declspec(dllexport) constexpr const char* NAME = NR_NEXUS_ADDON_NAME;
+extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION = NR_NEXUS_DESCRIPTION;
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
   if (reason == DLL_PROCESS_ATTACH) {

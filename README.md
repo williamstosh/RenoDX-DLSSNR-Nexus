@@ -4,7 +4,7 @@
 
 ## English
 
-**Unofficial DLSS Neural Rendering add-on for RenoDX/ReShade**
+**DLSS Neural Rendering Add-on for RenoDX**
 
 [NR Nexus](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus) is an independent,
 source-only project for NVIDIA DLSS Neural Rendering (DLSSNR, NGX feature 18),
@@ -13,7 +13,7 @@ existing DLSS evaluation; it performs no denoising.
 
 ### Development status
 
-The independent version is **v0.1.0-dev.2**, defined in [version.h](version.h).
+The independent SemVer is defined in [version.h](version.h).
 This integration contains the Present SDR/HDR restoration policies, configuration
 schema v8, native DLSS Frame Generation and XeFG coordination, and D3D11 motion
 texture sharing fallback developed from Lecram **V8.5 RC10**,
@@ -64,6 +64,17 @@ The build checks pinned inputs, rebuilds Detours from source, and uses RenoDX's
 `dlss5` target with the independent version definitions. The output is
 `build/Release/renodx-dlss5.addon64`.
 
+The ReShade tab/window is **NR Nexus** (**NR Nexus (Debug)** in Debug builds).
+The status line shows `NR Nexus v<SemVer> | DLSSNR <loaded runtime version> | <game.exe>`.
+The add-on version comes from `version.h`; the runtime version and process name
+are read at runtime. Brand strings and PE metadata share [brand.h](brand.h).
+Translations are maintained directly in `ui/lang/`; the upstream translation
+generator is not included. `tools/check-branding.ps1` checks changed source files
+by default (also run by the build); use `-Path ui/strings.hpp` for a focused check
+or `-All` for an explicit source audit. `tools/run-tests.ps1 -Suite branding`
+checks all language tables. Historical attribution and compatibility identifiers
+such as loader/configuration names and report paths retain their original values.
+
 Sources, shaders, host patch and test tools are included. The full RenoDX host,
 vendor SDK distributions, runtime DLLs/models, ReShade loader and game assets
 are obtained separately under their own licenses. The loader filename,
@@ -102,7 +113,7 @@ language. Lecram and NVIDIA runtime versions are separate from NR Nexus SemVer.
 
 ## 简体中文
 
-**面向 RenoDX/ReShade 的非官方 DLSS 神经渲染插件**
+**面向 RenoDX 的 DLSS 神经渲染插件**
 
 [NR Nexus](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus) 是独立、仅提供源码的
 NVIDIA DLSS 神经渲染项目（DLSSNR，NGX feature 18，通常称为 DLSS5）。它围绕游戏已有的
@@ -110,7 +121,7 @@ DLSS 求值过程应用视觉增强，不执行降噪。
 
 ### 开发状态
 
-独立版本为 **v0.1.0-dev.2**，定义于 [version.h](version.h)。本次集成包含基于 Lecram
+独立 SemVer 定义于 [version.h](version.h)。本次集成包含基于 Lecram
 **V8.5 RC10** 提交 [`9bb6c0f`](https://github.com/williamstosh/RenoDX-DLSS5-Generic/commit/9bb6c0fec57ecb28c77938f3feb8155433396d93)
 开发的 Present SDR/HDR 恢复策略、配置 schema v8、原生 DLSS 帧生成及 XeFG 协调、
 D3D11 运动纹理共享回退。NR 可在超分前、超分后或 Present 路径执行；帧生成路由保留现有后端与渲染设置。
@@ -148,6 +159,15 @@ pwsh ./tools/run-tests.ps1 -Suite all
 `-HostRoot <new-host-directory>`，再向构建脚本传入该路径的 `-RenodxRoot`、
 向测试脚本传入 `-HostRoot`。构建核对固定输入，从源码重建 Detours，复用 RenoDX 的
 `dlss5` 目标并加入独立版本定义，产物为 `build/Release/renodx-dlss5.addon64`。
+
+ReShade 页签／窗口名称为 **NR Nexus**（Debug 构建为 **NR Nexus (Debug)**）。
+状态栏显示 `NR Nexus v<SemVer> | DLSSNR <已加载运行时版本> | <游戏.exe>`。
+插件版本来自 `version.h`；运行时版本和进程名称在运行时读取。品牌文本与 PE 元数据共用
+[brand.h](brand.h)。翻译直接维护于 `ui/lang/`，仓库未包含上游翻译生成器。
+`tools/check-branding.ps1` 默认只检查变更的源码文件，构建时也会调用；可用
+`-Path ui/strings.hpp` 定向检查，或用 `-All` 显式审查全部源码。
+`tools/run-tests.ps1 -Suite branding` 检查全部语言表。历史来源及加载器／配置名称、
+报告路径等兼容标识沿用原值。
 
 仓库包含源码、着色器、宿主补丁和测试工具。完整 RenoDX 宿主、厂商 SDK 分发包、
 运行时 DLL／模型、ReShade 加载器及游戏资源须按各自许可另行获取。加载器文件名、
