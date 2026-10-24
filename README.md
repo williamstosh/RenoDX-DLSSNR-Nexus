@@ -7,7 +7,7 @@
 **DLSS Neural Rendering Add-on for RenoDX**
 
 [NR Nexus](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus) is an independent,
-source-only project for NVIDIA DLSS Neural Rendering (DLSSNR, NGX feature 18),
+source project for NVIDIA DLSS Neural Rendering (DLSSNR, NGX feature 18),
 often referred to as DLSS5. It applies a visual enhancement around a game's
 existing DLSS evaluation; it performs no denoising.
 
@@ -57,6 +57,11 @@ pwsh ./tools/build.ps1 -ToolRoot <shader-tool-directory>
 pwsh ./tools/run-tests.ps1 -Suite all
 ```
 
+To obtain the pinned DXC and Slang releases automatically, run
+`pwsh ./tools/setup-build-tools.ps1`, then use `-ToolRoot .local/shader-tools`.
+Downloads and SHA-256 values are pinned in [host/tools.lock.json](host/tools.lock.json);
+FXC comes from Windows SDK 10.0.26100.0. Existing tool directories are not overwritten.
+
 Setup defaults to `.local/renodx` and refuses to overwrite an existing directory;
 use `-HostRoot <new-host-directory>` for a fresh independent checkout, then pass
 that path to the build script as `-RenodxRoot` and the test script as `-HostRoot`.
@@ -80,6 +85,60 @@ vendor SDK distributions, runtime DLLs/models, ReShade loader and game assets
 are obtained separately under their own licenses. The loader filename,
 namespaces, exported names, configuration keys, hooks and runtime identifiers
 retain their existing names.
+
+### Installation
+
+Download the versioned `NR-Nexus-v<version>-<commit>-windows-x64.zip` asset from
+the selected Release, rather than GitHub's automatic source archive. Verify it
+against the accompanying `.zip.sha256` file. The ZIP contains the single runtime
+file `renodx-dlss5.addon64`, this README, `VERSION.txt` and required licenses/notices;
+shaders, UI and translations are embedded. No PDBs, SDKs, models or user settings
+are included. The Release build uses the static MSVC runtime.
+
+The game must already have add-on-enabled ReShade compatible with ReShade API 18;
+obtain the loader from [ReShade](https://reshade.me/). NR separately requires a
+legally obtained, compatible NVIDIA `nvngx_dlssnr.dll` beside the add-on or game
+executable, plus a supported GPU/driver/rendering chain. This package does not
+redistribute the loader or NVIDIA runtimes/models.
+
+Close the game, back up the existing add-on and copy `renodx-dlss5.addon64` beside
+the game executable or into ReShade's configured `AddonPath`. Retain the license
+materials; preserve ReShade settings, presets, saves and other DLSS/FG files.
+Confirm that **NR Nexus** appears in ReShade and check its NR status; successful
+loading alone does not prove NR is active. To uninstall, close the game and
+remove/restore the `.addon64` file.
+
+### Automated builds and releases
+
+[CI](.github/workflows/ci.yml) builds branch pushes, pull requests to `main`/`dev`
+and manual runs without publishing a Release. CI and the
+[tag workflow](.github/workflows/release.yml) share
+[one Windows x64 build](.github/workflows/build-windows.yml) on GitHub-hosted
+`windows-2022`: pinned setup, the existing Release build, PE/version checks,
+focused tests and package verification. `-SoftwareOnly` runs the bridge tests
+with WARP; hardware/game/visual acceptance remains separate. CI packages are
+available as Actions artifacts for 14 days.
+
+After the relevant milestone, visual and license reviews, update `version.h`,
+commit the version and obtain publication approval. Push an annotated
+`v<version>` tag matching that header to start the same build and publish the
+ZIP/checksum with GitHub-generated release notes. `-dev.*`, `-rc.*` and other
+SemVer prereleases become **Pre-releases**; stable versions become Releases.
+The build has read-only permissions; only the publication job receives
+`GITHUB_TOKEN` `contents: write`. No personal access token or repository secret
+is required.
+
+Any failed gate blocks publication. Assets are uploaded to a draft and verified
+before it becomes public. Runs for the same tag are serialized; existing public
+assets are never overwritten. A retry with the exact assets is a no-op, and an
+incomplete matching draft can resume. Retry the failed publication job to reuse
+the same build artifact; a different artifact under an existing version is
+rejected. Tags must never be moved or reused. Use a new version for corrections.
+
+Codex can prepare and verify the next version with this request: “Prepare
+`<version>` and validate it; after my release approval, create and push
+`v<version>` and check the Release workflow result.” Normal code pushes do not
+authorize or trigger a Release.
 
 ### Compatibility and verification limits
 
@@ -115,7 +174,7 @@ language. Lecram and NVIDIA runtime versions are separate from NR Nexus SemVer.
 
 **面向 RenoDX 的 DLSS 神经渲染插件**
 
-[NR Nexus](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus) 是独立、仅提供源码的
+[NR Nexus](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus) 是独立的源码项目，面向
 NVIDIA DLSS 神经渲染项目（DLSSNR，NGX feature 18，通常称为 DLSS5）。它围绕游戏已有的
 DLSS 求值过程应用视觉增强，不执行降噪。
 
@@ -155,6 +214,11 @@ pwsh ./tools/build.ps1 -ToolRoot <shader-tool-directory>
 pwsh ./tools/run-tests.ps1 -Suite all
 ```
 
+可先运行 `pwsh ./tools/setup-build-tools.ps1` 自动获取固定 DXC／Slang，再使用
+`-ToolRoot .local/shader-tools`。下载地址及 SHA-256 固定于
+[host/tools.lock.json](host/tools.lock.json)；FXC 来自 Windows SDK 10.0.26100.0。
+初始化不会覆盖已有工具目录。
+
 初始化默认写入 `.local/renodx`，拒绝覆盖已有目录；需要全新独立副本时使用
 `-HostRoot <new-host-directory>`，再向构建脚本传入该路径的 `-RenodxRoot`、
 向测试脚本传入 `-HostRoot`。构建核对固定输入，从源码重建 Detours，复用 RenoDX 的
@@ -172,6 +236,45 @@ ReShade 页签／窗口名称为 **NR Nexus**（Debug 构建为 **NR Nexus (Debu
 仓库包含源码、着色器、宿主补丁和测试工具。完整 RenoDX 宿主、厂商 SDK 分发包、
 运行时 DLL／模型、ReShade 加载器及游戏资源须按各自许可另行获取。加载器文件名、
 命名空间、导出名称、配置键、钩子及运行时标识沿用现有名称。
+
+### 安装
+
+从目标 Release 下载 `NR-Nexus-v<version>-<commit>-windows-x64.zip` 资产，
+使用随附 `.zip.sha256` 校验；不要下载 GitHub 自动生成的源码压缩包作为插件。
+ZIP 仅包含运行文件 `renodx-dlss5.addon64`、本 README、`VERSION.txt` 及必要许可证／声明。
+着色器、UI、翻译均已编入插件；不包含 PDB、SDK、模型或用户配置，Release 静态链接 MSVC 运行库。
+
+游戏须已安装启用完整 Add-on 支持、兼容 ReShade API 18 的 ReShade，加载器从
+[ReShade 官网](https://reshade.me/)获取。NR 另需合法取得的兼容 NVIDIA `nvngx_dlssnr.dll`，
+放在插件所在目录或游戏 EXE 目录，且 GPU／驱动／渲染链路支持所选模式。
+本包不分发加载器或 NVIDIA 运行时／模型。
+
+关闭游戏并备份现有插件，将 `renodx-dlss5.addon64` 放到游戏 EXE 目录或 ReShade 已配置的
+`AddonPath`，保留随附许可材料；不覆盖 ReShade 配置、预设、存档或其他 DLSS／FG 文件。
+启动后确认出现 **NR Nexus** 并检查 NR 状态；插件加载不等于 NR 已生效。
+卸载时关闭游戏并移除／恢复该 `.addon64`。
+
+### 自动构建与发布
+
+[CI](.github/workflows/ci.yml) 在分支推送、面向 `main`／`dev` 的 PR 或手动运行时构建，
+不发布 Release。CI 与 [Tag 工作流](.github/workflows/release.yml) 共用
+[一套 Windows x64 构建](.github/workflows/build-windows.yml)，在 GitHub 托管
+`windows-2022` 上执行固定依赖初始化、现有 Release 构建、PE／版本校验、定向测试及打包校验。
+`-SoftwareOnly` 使 bridge 测试使用 WARP；硬件、游戏及视觉验收仍单独执行。
+CI 安装包保留为 Actions artifacts，期限 14 天。
+
+完成对应里程碑、视觉及许可审查后，更新并提交 `version.h`，取得本次发布批准，
+推送与版本头一致的带注释 `v<version>` 标签，即自动执行同一构建并发布 ZIP／校验文件及
+GitHub 自动生成的更新说明。`-dev.*`、`-rc.*` 等 SemVer 预发布版本标记为 **Pre-release**，
+稳定版本发布为 Release。构建仅有只读权限；只有发布作业获得 `GITHUB_TOKEN` 的
+`contents: write`，无需个人访问令牌或额外仓库 Secret。
+
+任何门槛失败均不公开发布：先上传并核对草稿附件，再公开草稿。同一 Tag 的运行串行执行，
+不覆盖已公开附件。完全相同的附件重复运行不作变更，匹配的未完成草稿可补齐；重跑失败的发布
+作业以复用原构建产物，同版本下不同产物会被拒绝。标签不可移动或复用，修正使用新版本。
+
+通过 Codex 的最简请求：“准备 `<version>` 并完成验证；我批准发布后，创建并推送
+`v<version>`，核验 Release 工作流结果。”普通代码推送不授权或触发 Release。
 
 ### 兼容性与验证边界
 

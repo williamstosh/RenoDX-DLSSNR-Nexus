@@ -1,0 +1,12 @@
+{
+  "dxc": {
+    "version": "1.9.2602",
+    "url": "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602/dxc_2026_02_20.zip",
+    "sha256": "A1E89031421CF3C1FCA6627766AB3020CA4F962AC7E2CAA7FAB2B33A8436151E"
+  },
+  "slang": {
+    "version": "2026.14.1",
+    "url": "https://github.com/shader-slang/slang/releases/download/v2026.14.1/slang-2026.14.1-windows-x86_64.zip",
+    "sha256": "5ED0A59D650A0AF0ACA45D5DB4E083B3D8FB5CEA05748747DD95DFBE9C580658"
+  }
+}
