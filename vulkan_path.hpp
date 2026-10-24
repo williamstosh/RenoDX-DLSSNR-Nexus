@@ -2019,8 +2019,16 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
     // The runtime exports no Vulkan parameter allocator; the block is the
     // addon's own, as on the D3D12 path without a public core (OwnedParameters).
     if (slot.parameters == nullptr) bridge::AllocateOwnedParameters(&slot.parameters);
+    const uint32_t requested = (pass == 0 || pass_preset[pass - 1].load() == 0
+                                   ? preset.load() : pass_preset[pass - 1].load());
+    slot.nr_preset = nr_model::ResolvePreset(requested, 0, direct_runtime_requirements.dual_models);
+    if (requested != 0 && requested != slot.nr_preset) {
+      Log(reshade::log::level::warning,
+          "NR Vulkan pass " + std::to_string(pass + 1) + " unsupported preset "
+              + std::to_string(requested) + "; using A (Legacy), saved selection preserved");
+    }
     SetNrCreateParameters(slot.parameters, width, height, width, height, feature.create_flags,
-                          hdr_mode != 0);
+                          hdr_mode != 0, slot.nr_preset);
     NVSDK_NGX_Result result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
     {
       DirectCallScope direct;
@@ -2047,6 +2055,9 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
       return false;
     }
     Log(reshade::log::level::info, text);
+    Log(reshade::log::level::info,
+        "NR Vulkan pass " + std::to_string(pass + 1) + " requested network="
+            + nr_model::PresetName(slot.nr_preset) + " (runtime confirmation unavailable)");
     nr_feature_ever_ready.store(true, std::memory_order_relaxed);
     live_nr_features.fetch_add(1, std::memory_order_relaxed);
     feature.nr_use[pass] = next_use_id++;

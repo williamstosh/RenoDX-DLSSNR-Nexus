@@ -124,7 +124,8 @@ try {
         'pre8-explicit', 'pre8-legacy-key', 'pre8-future-scope', 'pre8-future-policy',
         'pre8-fail-scope', 'pre8-fail-sdr', 'pre8-fail-hdr', 'pre8-fail-bypass',
         'fail-sdr', 'fail-hdr', 'fail-bypass', 'fail-sdr-version', 'fail-hdr-version',
-        'pre8-malformed-sdr-version', 'pre8-future-sdr-version', 'pre8-fail-sdr-bypass', 'v8-legacy-key', 'reset')
+        'pre8-malformed-sdr-version', 'pre8-future-sdr-version', 'pre8-fail-sdr-bypass', 'v8-legacy-key', 'reset',
+        'nr-model-default', 'nr-model-explicit', 'nr-model-invalid', 'nr-model-legacy')
     $totalChecks = 0
     $totalFailures = 0
     $failedCases = @()

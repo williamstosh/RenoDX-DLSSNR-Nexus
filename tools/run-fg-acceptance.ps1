@@ -14,12 +14,20 @@ param(
     [switch]$BlockOptionalHudless,
     [switch]$ShowGameHud,
     [switch]$IsolateOverlayKey,
+    [string]$NrRuntimePath,
+    [ValidateRange(-1,3)][int]$NrPreset = -1,
+    [ValidateRange(-1,2)][int]$NrPass2Preset = -1,
+    [ValidateRange(0,4)][int]$NrPasses = 0,
     [switch]$InstallOnly,
     [switch]$RestoreInstallation,
     [switch]$AddonAbsentControl
 )
 $ErrorActionPreference = 'Stop'
 if ($AddonAbsentControl -and $InstallOnly) { throw 'An absent-add-on control cannot be retained without a test' }
+if (($NrRuntimePath -or $NrPreset -ge 0 -or $NrPass2Preset -ge 0 -or $NrPasses -gt 0) -and
+    (-not $RestoreInstallation -or $InstallOnly)) {
+    throw 'Model tests require a protected session and -RestoreInstallation; -InstallOnly is not supported.'
+}
 function Set-FgPresentSection([string]$Text, [bool]$BlockHudless) {
     if ($Text -notmatch '(?m)^NRHookPoint=') { throw 'NRHookPoint is missing' }
     $Text = [regex]::Replace($Text, '(?m)^NRHookPoint=[^\r\n]*', 'NRHookPoint=2')
@@ -47,6 +55,14 @@ $taskDll = Join-Path $taskGame 'renodx-dlss5.addon64'
 $taskConfig = Join-Path $taskGame 'ReShade.ini'
 $taskGameConfig = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'The Witcher 3/dx12user.settings'
 $taskBackupFiles = @($taskDll, $taskConfig)
+if ($NrRuntimePath) {
+    $taskRuntimeVersion = (Get-Item -LiteralPath $NrRuntimePath).VersionInfo
+    if ($taskRuntimeVersion.FileMajorPart -ne 310 -or $taskRuntimeVersion.FileMinorPart -ne 9 -or
+        $taskRuntimeVersion.FileBuildPart -ne 16 -or $taskRuntimeVersion.FilePrivatePart -ne 0) {
+        throw 'The dual-model test requires the identified 310.9.16 runtime.'
+    }
+    $taskBackupFiles += Join-Path $taskGame 'nvngx_dlssnr.dll'
+}
 if ($CleanEnvironment) {
     $taskBackupFiles += Join-Path $taskGame 'OptiScaler.ini'
     $taskBackupFiles += Join-Path $taskGame 'ReShadePreset.ini'
@@ -92,6 +108,7 @@ $taskReceipt = [ordered]@{
     installation_verified=$false; runtime_verified=$false; restored=$false
     test_exit_code=$null; visual_quality='not_tested'; performance_target_fps=$taskPerformanceTarget
     gpu_timers_requested=[bool]$GpuTimers
+    nr_model_test=@{runtime=$NrRuntimePath; main=$NrPreset; pass2=$NrPass2Preset; passes=$NrPasses}
     temporary_game_sdr=[bool]$SdrGameOutput
     start_nr_disabled=[bool]$StartNrDisabled
     clean_environment=[bool]$CleanEnvironment
@@ -138,6 +155,13 @@ try {
         Copy-Item -LiteralPath $taskCandidate.path -Destination $taskDll
         if ((Get-FileHash -LiteralPath $taskDll).Hash -ne $taskCandidate.sha256) { throw 'Installed candidate hash mismatch' }
     }
+    if ($NrRuntimePath) {
+        Copy-Item -LiteralPath $NrRuntimePath -Destination (Join-Path $taskGame 'nvngx_dlssnr.dll')
+        if ((Get-FileHash -LiteralPath $NrRuntimePath).Hash -ne
+            (Get-FileHash -LiteralPath (Join-Path $taskGame 'nvngx_dlssnr.dll')).Hash) {
+            throw 'Installed NR runtime hash mismatch'
+        }
+    }
     $taskConfigText = [IO.File]::ReadAllText($taskConfig)
     if ($IsolateOverlayKey) {
         # Home also toggles the game's HUD in some profiles. Only the backed-up
@@ -153,6 +177,19 @@ try {
     if (-not $taskSection.Success) { throw 'RenoDX configuration section is missing' }
     $taskSectionText = $taskSection.Value
     $taskSectionText = Set-FgPresentSection $taskSectionText ([bool]$BlockOptionalHudless)
+    $taskModelSettings = @{}
+    if ($NrPreset -ge 0) { $taskModelSettings.NRPreset = $NrPreset }
+    if ($NrPass2Preset -ge 0) { $taskModelSettings.NRPass2Preset = $NrPass2Preset }
+    if ($NrPasses -gt 0) { $taskModelSettings.NRPasses = $NrPasses }
+    foreach ($taskEntry in $taskModelSettings.GetEnumerator()) {
+        $taskPattern = '(?m)^' + $taskEntry.Key + '=[^\r\n]*'
+        $taskLine = $taskEntry.Key + '=' + $taskEntry.Value
+        if ($taskSectionText -match $taskPattern) {
+            $taskSectionText = [regex]::Replace($taskSectionText, $taskPattern, $taskLine)
+        } else {
+            $taskSectionText = $taskSectionText.TrimEnd() + "`r`n$taskLine`r`n"
+        }
+    }
     if ($CleanEnvironment) {
         foreach ($taskKey in @('NRDebugXeFgObserve','NRDebugXeFgService','NRDebugCapturePlanes','NRDebugXeFgReadbackGuides','NRGpuTimers','NRCostMeter')) {
             $taskSectionText = [regex]::Replace($taskSectionText, '(?m)^' + $taskKey + '=[^\r\n]*', $taskKey + '=0')

@@ -1342,6 +1342,22 @@ inline constexpr Translation kDe[] = {
      "\x58\x65\x46\x47\x2d\x50\x72\x6f\x62\x6c\x65\x6d"},
     {"Game compatibility",
      "\x53\x70\x69\x65\x6c\x6b\x6f\x6d\x70\x61\x74\x69\x62\x69\x6c\x69\x74\xc3\xa4\x74"},
+    {"NR model",
+     "NR-Modell"},
+    {"A (Legacy)",
+     "A (Altmodell)"},
+    {"B (Small FP8)",
+     "B (Small FP8)"},
+    {"Inherit main model",
+     "Hauptmodell \xc3\xbc" "bernehmen"},
+    {"Model selection recreates every pass and resets temporal history. Appearance sharing does not change the model.",
+     "Die Modellauswahl erstellt alle Durchl\xc3\xa4ufe neu und setzt den zeitlichen Verlauf zur\xc3\xbc" "ck. Das Teilen der Darstellung \xc3\xa4ndert das Modell nicht."},
+    {"Automatic selects B on DLSS NR 310.9.16; other runtimes keep their default. Explicit choices are preserved.",
+     "Automatisch w\xc3\xa4hlt bei DLSS NR 310.9.16 das Modell B; andere Laufzeitversionen behalten ihre Standardeinstellung. Explizite Auswahlen bleiben erhalten."},
+    {"B requires DLSS NR 310.9.16. Unsupported selections use A; saved choices are preserved.",
+     "B erfordert DLSS NR 310.9.16. Nicht unterst\xc3\xbctzte Auswahlen verwenden A; gespeicherte Auswahlen bleiben erhalten."},
+    {"Model selection is unavailable until the NR runtime is identified.",
+     "Die Modellauswahl ist erst verf\xc3\xbcgbar, wenn die NR-Laufzeit identifiziert wurde."},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

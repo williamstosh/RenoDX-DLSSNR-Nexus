@@ -1342,6 +1342,22 @@ inline constexpr Translation kFr[] = {
      "\x50\x72\x6f\x62\x6c\xc3\xa8\x6d\x65\x20\x58\x65\x46\x47"},
     {"Game compatibility",
      "\x43\x6f\x6d\x70\x61\x74\x69\x62\x69\x6c\x69\x74\xc3\xa9\x20\x64\x75\x20\x6a\x65\x75"},
+    {"NR model",
+     "Mod\xc3\xa8le NR"},
+    {"A (Legacy)",
+     "A (Ancien)"},
+    {"B (Small FP8)",
+     "B (Small FP8)"},
+    {"Inherit main model",
+     "H\xc3\xa9riter du mod\xc3\xa8le principal"},
+    {"Model selection recreates every pass and resets temporal history. Appearance sharing does not change the model.",
+     "La s\xc3\xa9lection du mod\xc3\xa8le recr\xc3\xa9" "e toutes les passes et r\xc3\xa9initialise l'historique temporel. Le partage de l'apparence ne change pas le mod\xc3\xa8le."},
+    {"Automatic selects B on DLSS NR 310.9.16; other runtimes keep their default. Explicit choices are preserved.",
+     "Auto s\xc3\xa9lectionne B avec DLSS NR 310.9.16 ; les autres versions du moteur d'ex\xc3\xa9" "cution conservent leur choix par d\xc3\xa9" "faut. Les choix explicites sont conserv\xc3\xa9s."},
+    {"B requires DLSS NR 310.9.16. Unsupported selections use A; saved choices are preserved.",
+     "B n\xc3\xa9" "cessite DLSS NR 310.9.16. Les s\xc3\xa9lections non prises en charge utilisent A ; les choix enregistr\xc3\xa9s sont conserv\xc3\xa9s."},
+    {"Model selection is unavailable until the NR runtime is identified.",
+     "La s\xc3\xa9lection du mod\xc3\xa8le est indisponible tant que le moteur d'ex\xc3\xa9" "cution NR n'est pas identifi\xc3\xa9."},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

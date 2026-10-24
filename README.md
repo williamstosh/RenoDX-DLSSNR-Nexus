@@ -31,6 +31,7 @@ the selected version's notes before installing.
 | Capability | What it does |
 | --- | --- |
 | Neural rendering | Applies NR to game images, with controls for quality, strength, processing size and precision. |
+| Per-pass NR models | With DLSS NR 310.9.16, selects A (Legacy / preset 1) or B (Small FP8 / preset 2) independently for up to four passes. |
 | Three processing positions | `Render` processes input before DLSS upscaling; `Upscaled` processes the DLSS output; `Present` processes the final image after game post-processing/HUD and before ReShade effects. |
 | NR with frame generation | Integrates native DLSS FG/MFG and XeFG routes, processing game frames before FG while retaining the chosen backend and rendering settings. |
 | SDR/HDR restoration | Independent restoration policies for SDR and HDR in diagnostics. These default to Off; selecting an NR position does not enable them automatically. |
@@ -39,6 +40,21 @@ the selected version's notes before installing.
 
 These features are implemented; their tested and experimental scope is
 separated under [Compatibility](#compatibility-and-known-limits).
+
+The NR model control keeps the existing `NRPreset` key: `0` selects B on
+310.9.16.0, `1` selects A and `2` selects B. `NRPass2Preset` through
+`NRPass4Preset` use `0` to inherit the main model, `1` for A and `2` for B,
+independently of appearance sharing. Existing explicit choices are retained.
+Other or unidentified runtimes disable B and resolve a saved B request to A;
+their automatic selection keeps the runtime default. Legacy preset 3 remains
+stored but resolves to A on 310.9.16. It is hidden from the model menu;
+an existing selection of 3 is shown as Custom without rewriting it.
+A model change recreates the chain and
+resets its history; old handles remain protected until GPU retirement and
+working image resources are reused.
+Diagnostics distinguish the preset requested at creation from a runtime-confirmed
+network. A successful API call alone does not confirm the actual network or image quality.
+These model controls are available starting with v0.1.0-dev.3; dev.2 predates them.
 
 ### Download, install and use
 
@@ -98,6 +114,7 @@ for version-specific results.
 | --- | --- |
 | The Witcher 3, Steam/D3D12, HDR, Present, XeFG 4× | Focused dev.2 game sessions verified NR toggles, movement, visible NR effect and HUD. |
 | D3D12 `Render` / `Upscaled` / `Present` | Implemented. The focused result above does not qualify every processing position, game or FG combination. |
+| 310.9.16 dual models (dev.3) | A/B and AB/BA/BB passed synthetic GPU inference and focused Witcher 3 D3D12/Present scene checks. Main B→A switching was exercised in game. Live network-name confirmation uses a local isolated probe; the add-on reports creation requests. HDR visual quality and long sessions remain unvalidated. |
 | Native DLSS FG/MFG | Integrated with focused automated coverage. A complete in-game matrix across modes and multipliers has not been validated for this release. |
 | SDR and HDR restoration | Independent policies with focused automated coverage; the complete in-game SDR/HDR matrix has not been validated. |
 | D3D11 motion sharing | Texture fallback passed targeted hardware/WARP checks; full game compatibility remains unverified. |
@@ -219,6 +236,7 @@ Present 色彩恢复策略、运动纹理共享回退，以及带隐私预览的
 | 能力 | 用途 |
 | --- | --- |
 | 神经渲染增强 | 对游戏画面应用 NR，可调节质量、强度、处理尺寸及精度。 |
+| 逐 Pass NR 模型 | 使用 DLSS NR 310.9.16 时，最多四个 Pass 可独立选择 A（Legacy／Preset 1）或 B（Small FP8／Preset 2）。 |
 | 三种处理位置 | `Render` 在 DLSS 超分前处理输入；`Upscaled` 处理 DLSS 输出；`Present` 处理游戏后处理／HUD 之后、ReShade 效果之前的最终画面。 |
 | NR 配合帧生成 | 集成原生 DLSS FG/MFG 与 XeFG 路径，在帧生成前处理游戏帧，保留所选后端和渲染设置。 |
 | SDR/HDR 恢复 | 诊断中提供相互独立的 SDR、HDR 恢复策略，默认 Off；切换 NR 处理位置不会自动启用这些策略。 |
@@ -226,6 +244,16 @@ Present 色彩恢复策略、运动纹理共享回退，以及带隐私预览的
 | 问题报告 | 支持仅文字反馈、可选诊断与截图、本地 ZIP 保存及浏览器 GitHub Issue 草稿。 |
 
 以上功能已实现；已验证及实验性范围在[兼容性](#兼容性与已知限制)中分别说明。
+
+模型设置保留现有 `NRPreset` 键：`0` 在 310.9.16.0 上选择 B，`1` 选择 A，
+`2` 选择 B。`NRPass2Preset` 至 `NRPass4Preset` 的 `0` 表示继承主模型，
+`1` 为 A、`2` 为 B，与外观参数共享相互独立。已有显式选择保留。
+其他或未识别的 Runtime 禁用 B，将已保存的 B 请求解析为 A；其自动选项继续使用
+Runtime 默认值。旧 Preset 3 保留存储，在 310.9.16 上解析为 A；菜单不显示该选项，
+已有值为 3 时显示“自定义”，不自动改写配置。
+切换模型会重建整链并重置历史，旧 Feature 按 GPU 完成证明退休，工作图像资源复用。
+诊断区分创建时请求的 Preset 与 Runtime 确认的网络；API 调用成功不代表实际模型或画质验收通过。
+这些模型控件自 v0.1.0-dev.3 起提供，dev.2 安装包不包含。
 
 ### 下载、安装与使用
 
@@ -275,6 +303,7 @@ Present 色彩恢复策略、运动纹理共享回退，以及带隐私预览的
 | --- | --- |
 | 巫师 3，Steam／D3D12、HDR、Present、XeFG 4× | dev.2 定向实机验证通过 NR 开关、移动、可见 NR 效果及 HUD 检查。 |
 | D3D12 `Render`／`Upscaled`／`Present` | 已实现；上述定向结果不代表所有处理位置、游戏或 FG 组合均已验收。 |
+| 310.9.16 双模型（dev.3） | A/B、AB/BA/BB 通过合成 GPU 推理及巫师3 D3D12／Present 定向场景检查；实机测试主模型 B→A 切换。实际网络名由本地隔离探针确认，插件显示创建请求；HDR 人眼画质及长时运行尚未验收。 |
 | 原生 DLSS FG/MFG | 已集成并有定向自动化覆盖；该版本尚未验证跨模式、倍率的完整实机矩阵。 |
 | SDR、HDR 恢复 | 策略相互独立并有定向自动化覆盖；尚未验证完整的游戏内 SDR/HDR 组合。 |
 | D3D11 运动纹理共享 | 纹理回退已通过定向硬件／WARP 检查，完整游戏兼容性尚未验证。 |

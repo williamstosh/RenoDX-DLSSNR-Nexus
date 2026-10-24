@@ -1342,6 +1342,22 @@ inline constexpr Translation kPtBr[] = {
      "\x50\x72\x6f\x62\x6c\x65\x6d\x61\x20\x64\x6f\x20\x58\x65\x46\x47"},
     {"Game compatibility",
      "\x43\x6f\x6d\x70\x61\x74\x69\x62\x69\x6c\x69\x64\x61\x64\x65\x20\x63\x6f\x6d\x20\x6f\x20\x6a\x6f\x67\x6f"},
+    {"NR model",
+     "Modelo de NR"},
+    {"A (Legacy)",
+     "A (Legado)"},
+    {"B (Small FP8)",
+     "B (Small FP8)"},
+    {"Inherit main model",
+     "Herdar modelo principal"},
+    {"Model selection recreates every pass and resets temporal history. Appearance sharing does not change the model.",
+     "A sele\xc3\xa7\xc3\xa3o do modelo recria todas as passagens e redefine o hist\xc3\xb3rico temporal. O compartilhamento da apar\xc3\xaancia n\xc3\xa3o altera o modelo."},
+    {"Automatic selects B on DLSS NR 310.9.16; other runtimes keep their default. Explicit choices are preserved.",
+     "Autom\xc3\xa1tico seleciona B no DLSS NR 310.9.16; os demais ambientes de execu\xc3\xa7\xc3\xa3o mant\xc3\xaam seu modelo padr\xc3\xa3o. As escolhas expl\xc3\xad" "citas s\xc3\xa3o preservadas."},
+    {"B requires DLSS NR 310.9.16. Unsupported selections use A; saved choices are preserved.",
+     "B requer DLSS NR 310.9.16. Sele\xc3\xa7\xc3\xb5" "es n\xc3\xa3o compat\xc3\xadveis usam A; as escolhas salvas s\xc3\xa3o preservadas."},
+    {"Model selection is unavailable until the NR runtime is identified.",
+     "A sele\xc3\xa7\xc3\xa3o do modelo fica indispon\xc3\xadvel at\xc3\xa9 que o ambiente de execu\xc3\xa7\xc3\xa3o de NR seja identificado."},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

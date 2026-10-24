@@ -1342,6 +1342,22 @@ inline constexpr Translation kTr[] = {
      "\x58\x65\x46\x47\x20\x73\x6f\x72\x75\x6e\x75"},
     {"Game compatibility",
      "\x4f\x79\x75\x6e\x20\x75\x79\x75\x6d\x6c\x75\x6c\x75\xc4\x9f\x75"},
+    {"NR model",
+     "NR modeli"},
+    {"A (Legacy)",
+     "A (Eski)"},
+    {"B (Small FP8)",
+     "B (Small FP8)"},
+    {"Inherit main model",
+     "Ana modeli devral"},
+    {"Model selection recreates every pass and resets temporal history. Appearance sharing does not change the model.",
+     "Model se\xc3\xa7imi t\xc3\xbcm ge\xc3\xa7i\xc5\x9fleri yeniden olu\xc5\x9fturur ve zamansal ge\xc3\xa7mi\xc5\x9fi s\xc4\xb1" "f\xc4\xb1rlar. G\xc3\xb6r\xc3\xbcn\xc3\xbcm payla\xc5\x9f\xc4\xb1m\xc4\xb1 modeli de\xc4\x9fi\xc5\x9ftirmez."},
+    {"Automatic selects B on DLSS NR 310.9.16; other runtimes keep their default. Explicit choices are preserved.",
+     "Otomatik, DLSS NR 310.9.16 \xc3\xbczerinde B modelini se\xc3\xa7" "er; di\xc4\x9f" "er \xc3\xa7" "al\xc4\xb1\xc5\x9fma zamanlar\xc4\xb1 varsay\xc4\xb1lan modellerini korur. A\xc3\xa7\xc4\xb1k\xc3\xa7" "a yap\xc4\xb1lan se\xc3\xa7imler korunur."},
+    {"B requires DLSS NR 310.9.16. Unsupported selections use A; saved choices are preserved.",
+     "B i\xc3\xa7in DLSS NR 310.9.16 gerekir. Desteklenmeyen se\xc3\xa7imlerde A kullan\xc4\xb1l\xc4\xb1r; kaydedilen se\xc3\xa7imler korunur."},
+    {"Model selection is unavailable until the NR runtime is identified.",
+     "NR \xc3\xa7" "al\xc4\xb1\xc5\x9fma zaman\xc4\xb1 tan\xc4\xb1mlanana kadar model se\xc3\xa7imi kullan\xc4\xb1lamaz."},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

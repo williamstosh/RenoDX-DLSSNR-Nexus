@@ -24,6 +24,11 @@ int main() {
   std::snprintf(footer, sizeof(footer), text::kFooter, "v" NR_NEXUS_VERSION, "test-runtime", "test.exe");
   if (std::string_view(footer) != NR_NEXUS_NAME " v" NR_NEXUS_VERSION " | DLSSNR test-runtime | test.exe") return 1;
   const char* report_strings[] = {
+      "NR model", "A (Legacy)", "B (Small FP8)", "Inherit main model",
+      "Model selection recreates every pass and resets temporal history. Appearance sharing does not change the model.",
+      "Automatic selects B on DLSS NR 310.9.16; other runtimes keep their default. Explicit choices are preserved.",
+      "B requires DLSS NR 310.9.16. Unsupported selections use A; saved choices are preserved.",
+      "Model selection is unavailable until the NR runtime is identified.",
       text::kReportSteps, text::kReportCapture, text::kReportCollect,
       text::kReportWithoutDiagnostics, text::kReportFeature, text::kReportPrivacy,
       text::kReportPreviewLimit, text::kReportOpenPreview, text::kReportPreview,
@@ -54,7 +59,9 @@ int main() {
         if (matches != 0 || std::string_view(translated) != english) return 5;
         continue;
       }
-      if (matches != 1 || std::string_view(translated) == english) return 5;
+      const bool model_identifier = std::string_view(english) == "A (Legacy)"
+          || std::string_view(english) == "B (Small FP8)";
+      if (matches != 1 || (!model_identifier && std::string_view(translated) == english)) return 5;
       if (FormatConversions(english) != FormatConversions(translated)) return 6;
     }
     std::printf("%s: %s | %s\n", kLanguages[language].code, welcome.data(), crash.data());

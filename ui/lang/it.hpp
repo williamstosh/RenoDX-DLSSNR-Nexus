@@ -1342,6 +1342,22 @@ inline constexpr Translation kIt[] = {
      "\x50\x72\x6f\x62\x6c\x65\x6d\x61\x20\x58\x65\x46\x47"},
     {"Game compatibility",
      "\x43\x6f\x6d\x70\x61\x74\x69\x62\x69\x6c\x69\x74\xc3\xa0\x20\x64\x65\x6c\x20\x67\x69\x6f\x63\x6f"},
+    {"NR model",
+     "Modello NR"},
+    {"A (Legacy)",
+     "A (Precedente)"},
+    {"B (Small FP8)",
+     "B (Small FP8)"},
+    {"Inherit main model",
+     "Eredita il modello principale"},
+    {"Model selection recreates every pass and resets temporal history. Appearance sharing does not change the model.",
+     "La selezione del modello ricrea tutti i passaggi e azzera la cronologia temporale. La condivisione dell'aspetto non modifica il modello."},
+    {"Automatic selects B on DLSS NR 310.9.16; other runtimes keep their default. Explicit choices are preserved.",
+     "Automatico seleziona B con DLSS NR 310.9.16; gli altri ambienti di esecuzione mantengono il proprio modello predefinito. Le scelte esplicite vengono mantenute."},
+    {"B requires DLSS NR 310.9.16. Unsupported selections use A; saved choices are preserved.",
+     "B richiede DLSS NR 310.9.16. Le selezioni non supportate usano A; le scelte salvate vengono mantenute."},
+    {"Model selection is unavailable until the NR runtime is identified.",
+     "La selezione del modello non \xc3\xa8 disponibile finch\xc3\xa9 non viene identificato l'ambiente di esecuzione NR."},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

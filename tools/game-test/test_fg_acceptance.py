@@ -1,11 +1,26 @@
 """Input regression checks for the static NR-Off flicker control."""
 import json
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
 
 import fg_acceptance
+
+
+class ModelInstallationTests(unittest.TestCase):
+    def test_model_overrides_require_full_restoration_before_input_access(self):
+        script = fg_acceptance.ROOT / 'tools' / 'run-fg-acceptance.ps1'
+        for overrides in (['-NrPreset', '2'], ['-NrPasses', '2'],
+                          ['-NrPass2Preset', '1', '-RestoreInstallation', '-InstallOnly']):
+            with self.subTest(overrides=overrides):
+                result = subprocess.run(['pwsh.exe', '-NoProfile', '-File', str(script),
+                    '-CandidateManifest', 'missing-test-manifest', '-GameBinaryDirectory', 'missing-test-game',
+                    '-Python', 'missing-test-python', *overrides],
+                    capture_output=True, text=True, encoding='utf-8', timeout=15)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Model tests require a protected session', result.stderr)
 
 
 def setUpModule():

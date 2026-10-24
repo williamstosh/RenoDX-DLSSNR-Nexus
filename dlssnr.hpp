@@ -89,6 +89,7 @@
 #include "reset_epoch.hpp"
 #include "root_arguments.hpp"
 #include "runtime_lock.hpp"
+#include "nr_model.hpp"
 #include "capture_arena.hpp"
 #include "command_state.hpp"
 #include "evaluate_chain.hpp"
@@ -305,6 +306,7 @@ struct NrFeatureSlot {
   bool via_core = false;
   uint8_t nr_hdr_mode = 0;  // hdr_mode the NR feature was created with
   uint32_t nr_create_flags = 0;  // effective flags sent when this handle was created
+  uint32_t nr_preset = 0;  // Resolved creation request, not a runtime confirmation.
   bool failed = false;
   // Steady-clock time at which `failed` was latched; the slot retries
   // automatically once the backoff interval expires (see ProcessInline).
@@ -1992,6 +1994,7 @@ inline void OnNativeFgOptions(bool mode_enabled) noexcept {
 }
 inline std::atomic_uint64_t configuration_generation = 1;
 inline std::atomic_uint32_t preset = defaults::kPreset;
+inline std::atomic_uint32_t pass_preset[kMaxNrPasses - 1] = {0u, 0u, 0u};
 inline std::atomic<float> intensity = defaults::kIntensity;
 inline std::atomic_uint32_t style = defaults::kStyle;
 inline std::atomic<float> local_tone_strength = defaults::kLocalTone;
@@ -3486,6 +3489,7 @@ inline std::string ComputeRuntimeSha256(const std::filesystem::path& path) {
 // not be read", which every consumer treats as unknown.
 struct NrRuntimeRequirements {
   std::string file_version;      // "310.8.0.0"
+  bool dual_models = false;
   std::string gpu_architecture;  // NGXGpuArchitecture
   uint32_t minimum_driver_x100 = 0;
   uint32_t driver_x100 = 0;
@@ -3660,6 +3664,9 @@ inline NrRuntimeRequirements ReadNrRuntimeRequirements(const std::filesystem::pa
              LOWORD(fixed->dwFileVersionMS), HIWORD(fixed->dwFileVersionLS),
              LOWORD(fixed->dwFileVersionLS));
     requirements.file_version = version;
+    requirements.dual_models = nr_model::SupportsSmallModel(
+        HIWORD(fixed->dwFileVersionMS), LOWORD(fixed->dwFileVersionMS),
+        HIWORD(fixed->dwFileVersionLS), LOWORD(fixed->dwFileVersionLS));
   }
   // The string table the runtime's own translation entry names, then the two
   // US-English tables NVIDIA builds use (310.8.0 ships 040904E4).
@@ -5069,7 +5076,10 @@ inline bool EnsureDirectRuntime(ID3D12GraphicsCommandList* command_list,
   renodx::utils::directx::NativeFromReShadeProxy(&direct_device_native);
   last_nr_device_native = direct_device_native;
   direct_runtime_failed = false;
-  Log(reshade::log::level::info, "signed DLSSNR 310.8.0 D3D12 runtime initialized");
+  Log(reshade::log::level::info,
+      "DLSSNR " + (direct_runtime_requirements.file_version.empty()
+          ? std::string("unknown version") : direct_runtime_requirements.file_version)
+          + " D3D12 runtime initialized");
   lastgasp::MarkOnce("nr:runtime-loaded");
   // ENV-04's pair: the declared minimum is not a hard floor for this
   // runtime, and a session that starts below it says so once, at info.
@@ -6612,7 +6622,7 @@ inline uint32_t NrCreateFlags(uint32_t create_flags, bool hdr) {
 inline void SetNrCreateParameters(NVSDK_NGX_Parameter* parameters, uint32_t input_width,
                                   uint32_t input_height, uint32_t output_width,
                                   uint32_t output_height, uint32_t create_flags,
-                                  bool hdr) {
+                                  bool hdr, uint32_t model_preset) {
   // Keep the standard NGX dimensions coherent with the private DLSSNR
   // dimensions.  The probe uses render Width/Height for input and OutWidth /
   // OutHeight for native output, while DLSSNR.Width/Height identify the
@@ -6642,7 +6652,7 @@ inline void SetNrCreateParameters(NVSDK_NGX_Parameter* parameters, uint32_t inpu
       "DLSSNRComputeScalingRatioCallback",
       reinterpret_cast<void*>(&DlssNrScalingRatioCallback));
   NVSDK_NGX_Parameter_SetUI(
-      parameters, "DLSSNR.Hint.Render.Preset", preset.load());
+      parameters, "DLSSNR.Hint.Render.Preset", model_preset);
   // Control creates the native-resolution NR pass with default quality, independent
   // of the game's DLSS SR quality mode.
   NVSDK_NGX_Parameter_SetI(parameters, NVSDK_NGX_Parameter_PerfQualityValue, 0);
@@ -6698,8 +6708,16 @@ inline bool EnsureNrFeature(
     }
   }
   NVSDK_NGX_Parameter* parameters = slot.parameters;
+  const uint32_t requested = (slot_index == 0 || pass_preset[slot_index - 1].load() == 0
+                                 ? preset.load() : pass_preset[slot_index - 1].load());
+  slot.nr_preset = nr_model::ResolvePreset(requested, 0, direct_runtime_requirements.dual_models);
+  if (requested != 0 && requested != slot.nr_preset) {
+    Log(reshade::log::level::warning,
+        "NR pass " + std::to_string(slot_index + 1) + " preset " + std::to_string(requested)
+            + " is unsupported by this runtime; using A (Legacy), saved selection preserved");
+  }
   SetNrCreateParameters(parameters, input_width, input_height, output_width,
-                        output_height, state.create_flags, resources.hdr_mode != 0);
+                        output_height, state.create_flags, resources.hdr_mode != 0, slot.nr_preset);
   // v8.5.0-rc8: the create's shape before it runs.  Endfield rc4/rc5 died in
   // a bridge create that never returned (a C++ throw 2.5 s in, no outcome
   // line); the crash line says inside=nr-create, and this line says which.
@@ -6796,6 +6814,8 @@ inline bool EnsureNrFeature(
           << (state.create_input_height != 0 ? state.create_input_height
                                              : state.input_height)
           << (slot_index != 0 ? " (stack pass " + std::to_string(slot_index + 1) + ")" : "");
+  message << ", requested network=" << nr_model::PresetName(slot.nr_preset)
+          << " (preset " << slot.nr_preset << "; runtime confirmation unavailable)";
   Log(reshade::log::level::info, message.str());
   return true;
 }
@@ -9239,6 +9259,8 @@ __declspec(noinline) inline void SetPresentCaptureMeta(
   }
   for (int32_t pass = 0; pass <= executed; ++pass) {
     meta << "pass[" << pass << "].model_ui=" << feature.slots[pass].model_ui_sent
+         << "\npass[" << pass << "].requested_preset=" << feature.slots[pass].nr_preset
+         << "\npass[" << pass << "].network_confirmation=unavailable"
          << "\npass[" << pass << "].color_strength=" << present.pass_color_strength[pass]
          << "\npass[" << pass << "].transfer_strength=" << present.pass_transfer_strength[pass]
          << "\npass[" << pass << "].executed=1"
@@ -19961,8 +19983,7 @@ inline void OnPresent(
   UpdateDlssUserHint(present_ns);
 }
 
-inline void RecreateFeatures() {
-  RuntimeLock lock(runtime_mutex);
+inline void RecreateFeaturesLocked() {
   ++configuration_generation;
   RequestHistoryReset(HistoryResetSource::kRecreate);
   if (native_fg_owns.load(std::memory_order_acquire) && hook_point.load() == kHookPresent) {
@@ -19981,6 +20002,11 @@ inline void RecreateFeatures() {
       slot.fail_count = 0;
     }
   }
+}
+
+inline void RecreateFeatures() {
+  RuntimeLock lock(runtime_mutex);
+  RecreateFeaturesLocked();
 }
 
 // The panel layout (UiMode, U2): modern by default, classic behind the
@@ -20076,10 +20102,19 @@ struct Setting {
   void Commit(float value) const {
     if (u == &present_sdr_restore_policy
         && !present_sdr_restore_config_writable.load(std::memory_order_relaxed)) return;
-    Store(value);
+    const bool model_selection = u == &preset || u == &pass_preset[0]
+        || u == &pass_preset[1] || u == &pass_preset[2];
+    if (model_selection) {
+      // Publish the selection and retire its old features in one runtime turn.
+      RuntimeLock lock(runtime_mutex);
+      Store(value);
+      RecreateFeaturesLocked();
+    } else {
+      Store(value);
+    }
     Persist();
     DropIniIssue(key);
-    ApplySettingEffect(effect);
+    if (!model_selection) ApplySettingEffect(effect);
   }
 
   const char* key;
@@ -20097,6 +20132,11 @@ inline constexpr Setting kSetIntensity{
 
 inline constexpr Setting kSetPreset{
     "NRPreset", &preset, defaults::kPreset, SettingEffect::kRecreate};
+inline constexpr Setting kSetPassPreset[] = {
+    {"NRPass2Preset", &pass_preset[0], 0u, SettingEffect::kRecreate},
+    {"NRPass3Preset", &pass_preset[1], 0u, SettingEffect::kRecreate},
+    {"NRPass4Preset", &pass_preset[2], 0u, SettingEffect::kRecreate}};
+static_assert(std::size(kSetPassPreset) == kMaxNrPasses - 1);
 inline constexpr Setting kSetStyle{
     "NRStyle", &style, defaults::kStyle, SettingEffect::kHistory};
 inline constexpr Setting kSetLocalTone{
@@ -20467,6 +20507,7 @@ inline constexpr const Setting* kHookPointSettings[] = {
 inline constexpr const Setting* kPerformanceSettings[] = {
     &kSetFollowInputRes, &kSetResolutionScale, &kSetLookUpsample};
 inline constexpr const Setting* kStackingSettings[] = {
+    &kSetPassPreset[0], &kSetPassPreset[1], &kSetPassPreset[2],
     &kSetStackPasses,     &kSetPassIntensity[0], &kSetPassIntensity[1],
     &kSetPassIntensity[2], &kSetPassTransfer[0], &kSetPassTransfer[1],
     &kSetPassTransfer[2], &kSetPassColor[0],     &kSetPassColor[1],
@@ -20969,14 +21010,46 @@ inline void DrawModelSteering(const ui::PanelText& text, uint32_t pass) {
 // most (owner direction, alpha46: "those are the most important settings");
 // the classic layout keeps them under its collapsed "Model styling
 // (advanced)".
+inline void DrawNrModelSetting(const ui::PanelText& text, const Setting& setting, bool inherit) {
+  bool identified;
+  bool dual_models;
+  {
+    RuntimeLock lock(runtime_mutex);
+    identified = !direct_runtime_requirements.file_version.empty();
+    dual_models = direct_runtime_requirements.dual_models;
+  }
+  const char* items[] = {inherit ? "Inherit main model" : "Auto", "A (Legacy)",
+                        "B (Small FP8)"};
+  const uint32_t selected = static_cast<uint32_t>(setting.Get());
+  ImGui::PushID(setting.key);
+  if (text.modern) ui::RowLabel("NR model");
+  // Legacy preset 3 remains stored; opening the menu must not rewrite it.
+  if (ImGui::BeginCombo(text.modern ? "##model" : text.Tr("NR model"),
+                        text.Tr(selected < std::size(items) ? items[selected] : "Custom"))) {
+    for (uint32_t index = 0; index < std::size(items); ++index) {
+      ImGui::BeginDisabled(!identified || (index == 2 && !dual_models));
+      if (ImGui::Selectable(text.Tr(items[index]), selected == index)) setting.Commit(static_cast<float>(index));
+      ImGui::EndDisabled();
+    }
+    ImGui::EndCombo();
+  }
+  ui::ItemTooltip("%s", text.Tr(inherit
+      ? "Model selection recreates every pass and resets temporal history. Appearance sharing does not change the model."
+      : "Automatic selects B on DLSS NR 310.9.16; other runtimes keep their default. Explicit choices are preserved."));
+  if (text.modern && setting.Modified() && ui::ResetButton("reset", text.Tr(items[0]))) {
+    setting.Commit(0.f);
+  }
+  if (!identified) {
+    ImGui::TextWrapped("%s", text.Tr("Model selection is unavailable until the NR runtime is identified."));
+  } else if (selected == 2 && !dual_models) {
+    ImGui::TextWrapped("%s", text.Tr("B requires DLSS NR 310.9.16. Unsupported selections use A; saved choices are preserved."));
+  }
+  ImGui::PopID();
+}
+
 inline void DrawSectionModelStyling(const ui::PanelText& text) {
   if (text.modern) ui::SubCaption(ui::text::kLookModel);
-  constexpr const char* kPresets[] = {
-      "Default", "Preset #1", "Preset #2", "Preset #3"};
-  ChoiceSetting(
-      text, kSetPreset, text.Pick("NR Preset", "Preset"), kPresets,
-      "Which of the NR runtime's model presets it uses; each gives a slightly"
-      " different look.  Default lets the runtime choose.");
+  DrawNrModelSetting(text, kSetPreset, false);
   DrawModelSteering(text, 0);
 }
 
@@ -21349,6 +21422,7 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
     } else {
       ImGui::TextUnformatted(caption);
     }
+    DrawNrModelSetting(text, kSetPassPreset[pass - 1], true);
     SliderSetting(text, kSetPassIntensity[pass - 1], text.Pick("Intensity", "Strength"),
                   0.f, 2.f, "%.2f", ui::text::kIntensityTip);
     // Greyed out like pass 1's (DrawSectionHdrDetails), the value still shown.
@@ -22043,6 +22117,25 @@ inline void DrawSectionDiagnosticsRaw() {
     ImGui::Text("Runtime file version: %s",
                 direct_runtime_requirements.file_version.c_str());
   }
+  {
+    RuntimeLock lock(runtime_mutex);
+    for (const auto& [stream, feature] : features) {
+      for (uint32_t pass = 0; pass < kMaxNrPasses; ++pass) {
+        const NrFeatureSlot& slot = feature.slots[pass];
+        if (slot.handle == nullptr) continue;
+        ImGui::Text("D3D12 NR stream %p pass %u: %s, preset %u (creation request; unconfirmed)",
+                    static_cast<const void*>(stream), pass + 1, nr_model::PresetName(slot.nr_preset), slot.nr_preset);
+      }
+    }
+    for (const auto& [stream, feature] : vk::features) {
+      for (uint32_t pass = 0; pass < kMaxNrPasses; ++pass) {
+        const NrFeatureSlot& slot = feature.slots[pass];
+        if (slot.handle == nullptr) continue;
+        ImGui::Text("Vulkan NR stream %p pass %u: %s, preset %u (creation request; unconfirmed)",
+                    static_cast<const void*>(stream), pass + 1, nr_model::PresetName(slot.nr_preset), slot.nr_preset);
+      }
+    }
+  }
   int ngx_hooked_count = 0;
   for (int s = 0; s < kMaxNgxSlots; ++s) if (ngx_slot_used[s]) ++ngx_hooked_count;
   ImGui::Text("NGX modules detoured: %d", ngx_hooked_count);
@@ -22520,6 +22613,10 @@ inline std::string BuildSupportReport() {
          << "settings: NeuralUplift=" << enabled.load()
          << " NRIntensity=" << intensity.load()
          << " NRPasses=" << stack_passes.load()
+         << " NRPreset=" << preset.load()
+         << " NRPass2Preset=" << pass_preset[0].load()
+         << " NRPass3Preset=" << pass_preset[1].load()
+         << " NRPass4Preset=" << pass_preset[2].load()
          << " NRPreUpscale=" << nr_before_upscale.load()
          << " NRCodecMode=" << codec_mode.load()
          << " NRFollowInputRes=" << nr_follow_input_res.load()
@@ -23588,6 +23685,7 @@ inline void LoadConfiguration() {
   uint32_t saved_codec_mode = defaults::kCodecMode;
   float saved_anchor = defaults::kProxyAnchorNits;
   uint32_t saved_preset = defaults::kPreset;
+  uint32_t saved_pass_presets[kMaxNrPasses - 1] = {};
   uint32_t saved_style = defaults::kStyle;
   float saved_intensity = defaults::kIntensity;
   float saved_local_tone = defaults::kLocalTone;
@@ -23841,6 +23939,7 @@ inline void LoadConfiguration() {
   saved_passes = saved_passes_read;
   for (uint32_t pass = 1; pass < kMaxNrPasses; ++pass) {
     const std::string prefix = "NRPass" + std::to_string(pass + 1);
+    reshade::get_config_value(nullptr, kConfigSection, (prefix + "Preset").c_str(), saved_pass_presets[pass - 1]);
     reshade::get_config_value(
         nullptr, kConfigSection, (prefix + "Intensity").c_str(),
         saved_pass_values[pass - 1][0]);
@@ -24214,6 +24313,8 @@ inline void LoadConfiguration() {
       saved_passes, defaults::kStackPasses, 1u, kMaxNrPasses, "NRPasses");
   // Each pass's own key, so a clamp names the line the player wrote.
   for (uint32_t pass = 1; pass < kMaxNrPasses; ++pass) {
+    pass_preset[pass - 1] = SanitizeEnumKey(saved_pass_presets[pass - 1], 0u, 0u, 2u,
+                                          kSetPassPreset[pass - 1].key);
     pass_intensity[pass - 1] = SanitizeFloatKey(
         saved_pass_values[pass - 1][0], defaults::kPassStrength, 0.f, 2.f,
         kSetPassIntensity[pass - 1].key);

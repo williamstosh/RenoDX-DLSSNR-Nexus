@@ -227,6 +227,15 @@ int main(int argc, char** argv) {
         addon = current_global + "NRPresentSdrRestorePolicy=99\r\nNRPresentSdrRestoreConfigVersion=99\r\n"
                 "NRPresentHdrPedestalPolicy=99\r\nNRPresentHdrPedestalConfigVersion=99\r\n"
                 "NRPresentRestoreScope=0\r\nNRPresentRestoreScopeConfigVersion=1\r\n";
+      } else if (test_case.starts_with("nr-model-")) {
+        addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\n";
+        if (test_case == "nr-model-explicit") {
+          addon += "NRPreset=1\r\nNRPass2Preset=2\r\nNRPass3Preset=1\r\nNRPass4Preset=0\r\nNRPass2FollowPass1=1\r\n";
+        } else if (test_case == "nr-model-invalid") {
+          addon += "NRPreset=99\r\nNRPass2Preset=99\r\nNRPass3Preset=3\r\n";
+        } else if (test_case == "nr-model-legacy") {
+          addon += "NRPreset=3\r\nNRPass2Preset=2\r\n";
+        }
       } else if (test_case == "incomplete-pair") {
         addon += "NRPresentRestoreScope=1\r\n";
       } else {
@@ -249,6 +258,55 @@ int main(int argc, char** argv) {
     if (test_case == "fail-sdr-version") failed_key = "NRPresentSdrRestoreConfigVersion";
     if (test_case == "fail-hdr-version") failed_key = "NRPresentHdrPedestalConfigVersion";
     runtime::LoadConfiguration();
+    if (test_case.starts_with("nr-model-")) {
+      namespace model = renodx::addons::dlss5::nr_model;
+      Check(model::SupportsSmallModel(310, 9, 16, 0), "identified 310.9.16 supports B");
+      Check(!model::SupportsSmallModel(310, 8, 3, 0) && !model::SupportsSmallModel(310, 9, 15, 0)
+                && !model::SupportsSmallModel(310, 9, 17, 0) && !model::SupportsSmallModel(0, 0, 0, 0),
+            "old and unknown runtimes do not expose unverified B capability");
+      Check(model::ResolvePreset(0, 0, true) == 2 && model::ResolvePreset(0, 0, false) == 0,
+            "automatic is B only on the identified runtime");
+      Check(model::ResolvePreset(1, 0, true) == 1 && model::ResolvePreset(2, 0, true) == 2,
+            "stack inheritance preserves explicit main A/B");
+      Check(model::ResolvePreset(1, 2, true) == 2 && model::ResolvePreset(2, 1, true) == 1,
+            "A to B and B to A select independent networks");
+      Check(model::ResolvePreset(2, 2, true) == 2 && model::ResolvePreset(1, 1, true) == 1,
+            "B to B and A to A remain supported");
+      Check(model::ResolvePreset(2, 0, false) == 1 && model::ResolvePreset(1, 2, false) == 1,
+            "unsupported B falls back to A for main and explicit stack pass");
+      Check(model::ResolvePreset(3, 0, false) == 3 && model::ResolvePreset(3, 0, true) == 1,
+            "legacy preset 3 round trips and safely falls back on 310.9.16");
+      if (test_case == "nr-model-explicit") {
+        Check(runtime::preset == 1 && runtime::pass_preset[0] == 2 && runtime::pass_preset[1] == 1
+                  && runtime::pass_preset[2] == 0 && runtime::pass_follow[0],
+              "production load preserves explicit pass models independently of appearance sharing");
+      } else if (test_case == "nr-model-legacy") {
+        Check(runtime::preset == 3 && runtime::pass_preset[0] == 2, "production load preserves legacy main and unsupported B request");
+      } else {
+        Check(runtime::preset == 0 && runtime::pass_preset[0] == 0 && runtime::pass_preset[1] == 0
+                  && runtime::pass_preset[2] == 0, "missing/invalid selections use automatic and inherit defaults");
+      }
+      runtime::PersistConfig();
+      Check(Read("NRPreset") == std::to_string(runtime::preset.load())
+                && Read("NRPass2Preset") == std::to_string(runtime::pass_preset[0].load())
+                && Read("NRPass3Preset") == std::to_string(runtime::pass_preset[1].load())
+                && Read("NRPass4Preset") == std::to_string(runtime::pass_preset[2].load()),
+            "production persistence saves raw model choices, not runtime fallback values");
+      const uint64_t generation = runtime::configuration_generation.load();
+      runtime::kSetPreset.Commit(2.f);
+      runtime::kSetPassPreset[0].Commit(1.f);
+      Check(runtime::configuration_generation.load() == generation + 2,
+            "main and per-pass model changes each trigger production feature recreation");
+      runtime::kSetPassPreset[0].Commit(0.f);
+      Check(runtime::pass_preset[0] == 0 && Read("NRPass2Preset") == "0", "inherit reset is persisted");
+      renodx::addons::dlss5::bridge::OwnedParameters parameters;
+      for (uint32_t selected : {1u, 2u}) {
+        runtime::SetNrCreateParameters(&parameters, 640, 360, 640, 360, 0, false, selected);
+        uint32_t sent = 99;
+        Check(NVSDK_NGX_SUCCEED(parameters.Get("DLSSNR.Hint.Render.Preset", &sent)) && sent == selected,
+              "production create block writes the resolved network as an unsigned NGX parameter");
+      }
+    }
     Check(reads > 0, "production load called real ReShade typed/raw boundary");
     Check(runtime::ReShadeBaseDirectory() == base_directory && base_queries > 0,
           "production raw INI base path is the controlled fixture directory");
@@ -327,6 +385,10 @@ int main(int argc, char** argv) {
         if (event.key == "ConfigVersion") Check(event.pair_present_at_global, "reset verifies restore defaults before stamp");
       }
       Check(Read("UnregisteredPersistentKnob") == "42", "reset preserves unregistered key");
+    } else if (test_case.starts_with("nr-model-")) {
+      CheckPair("1");
+      Check(!Configuration().inherited && Configuration().scope == scope::Scope::FINAL_PRESENT_AND_PRE_FG,
+            "model selection leaves explicit restore scope unchanged");
     } else if (test_case == "v8-legacy-key") {
       CheckPair("0");
       Check(!Configuration().inherited && Configuration().scope == scope::Scope::FINAL_PRESENT_ONLY,

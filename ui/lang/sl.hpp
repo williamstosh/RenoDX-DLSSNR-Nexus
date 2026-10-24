@@ -1342,6 +1342,22 @@ inline constexpr Translation kSl[] = {
      "\x54\x65\xc5\xbe\x61\x76\x61\x20\x7a\x20\x58\x65\x46\x47"},
     {"Game compatibility",
      "\x5a\x64\x72\x75\xc5\xbe\x6c\x6a\x69\x76\x6f\x73\x74\x20\x7a\x20\x69\x67\x72\x6f"},
+    {"NR model",
+     "Model NR"},
+    {"A (Legacy)",
+     "A (Starej\xc5\xa1i)"},
+    {"B (Small FP8)",
+     "B (Small FP8)"},
+    {"Inherit main model",
+     "Podeduj glavni model"},
+    {"Model selection recreates every pass and resets temporal history. Appearance sharing does not change the model.",
+     "Izbira modela znova ustvari vse prehode in ponastavi \xc4\x8d" "asovno zgodovino. Skupna raba videza ne spremeni modela."},
+    {"Automatic selects B on DLSS NR 310.9.16; other runtimes keep their default. Explicit choices are preserved.",
+     "Samodejno izbere B pri DLSS NR 310.9.16; druga izvajalna okolja ohranijo svojo privzeto izbiro. Izrecne izbire se ohranijo."},
+    {"B requires DLSS NR 310.9.16. Unsupported selections use A; saved choices are preserved.",
+     "B zahteva DLSS NR 310.9.16. Nepodprte izbire uporabljajo A; shranjene izbire se ohranijo."},
+    {"Model selection is unavailable until the NR runtime is identified.",
+     "Izbira modela ni na voljo, dokler ni prepoznano izvajalno okolje NR."},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang
