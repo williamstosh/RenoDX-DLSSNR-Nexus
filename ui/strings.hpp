@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include "../brand.h"
 #include "i18n.hpp"
 
 namespace renodx::addons::dlss5::ui {
@@ -66,7 +67,7 @@ inline constexpr PanelText kClassicText = {
     "Guide overrides (leave at defaults unless diagnostics require them)",
 };
 
-// i18n: begin - display strings (tools/i18n/ui_strings.py catalog)
+// i18n: begin - display strings (ui/lang tables)
 inline constexpr PanelText kModernText = {
     true,
     "Neural Rendering",
@@ -81,6 +82,35 @@ inline constexpr PanelText kModernText = {
 };
 
 namespace text {
+
+inline constexpr const char* kReportSteps = "Reproduction steps (optional)";
+inline constexpr const char* kReportCapture = "Include an optional screenshot comparison";
+inline constexpr const char* kReportCollect = "Generate local diagnostics";
+inline constexpr const char* kReportWithoutDiagnostics = "Continue without diagnostics";
+inline constexpr const char* kReportFeature = "Feature request";
+inline constexpr const char* kReportPrivacy = "Review every attachment. Screenshots may contain personal information; they are excluded by default. Redaction may not detect every secret.";
+inline constexpr const char* kReportPreviewLimit = "Text preview shows the first 64 KiB. Open the staged file to review the full text or image.";
+inline constexpr const char* kReportOpenPreview = "Open staged file";
+inline constexpr const char* kReportPreview = "Preview text";
+inline constexpr const char* kReportUploadConsent = "I authorize uploading the selected files to the temporary hosts shown above.";
+inline constexpr const char* kReportPublicSummaryConsent = "Include the reviewed diagnostic summary in the GitHub draft";
+inline constexpr const char* kReportPublicLinkConsent = "Include the temporary report link in the public GitHub draft";
+inline constexpr const char* kReportGitHub = "Prepare GitHub Issue";
+inline constexpr const char* kReportPlainIssue = "Copy Markdown and open a blank Issue";
+inline constexpr const char* kReportPublicNotice = "GitHub Issues are public. Review the draft and submit it yourself in the browser. This does not upload files.";
+inline constexpr const char* kReportBrowserFailed = "The browser could not be opened. Copy the Markdown below and open the repository Issues page manually.";
+inline constexpr const char* kReportClipboardFailed = "The clipboard was unavailable. Copy the Markdown below manually.";
+inline constexpr const char* kReportManualFallback = "The full Markdown is available below. Paste it into a blank Issue if prefill fails or GitHub is offline.";
+inline constexpr const char* kReportDraftReady = "The browser request was sent. No Issue has been submitted.";
+inline constexpr const char* kReportLinkReady = "Temporary report link ready";
+inline constexpr const char* kReportLocalSaved = "The ZIP stays on this PC until you explicitly upload or share it.";
+inline constexpr const char* kReportCleaning = "Cleaning temporary report files...";
+inline constexpr const char* kReportFailed = "Report operation failed: %s";
+inline constexpr const char* kReportNativeFg = "Native FG/MFG issue";
+inline constexpr const char* kReportColour = "HDR/SDR or wrong colours";
+inline constexpr const char* kReportVisual = "Flicker, ghosting or distortion";
+inline constexpr const char* kReportXefg = "XeFG issue";
+inline constexpr const char* kReportCompatibility = "Game compatibility";
 
 inline constexpr const char* kNrEnableTip =
     "Turns Neural Rendering on and off.  The key shown next to the switch"
@@ -115,10 +145,10 @@ inline constexpr const char* kRebindTip =
     "Click, then press the new key; Esc cancels.";
 inline constexpr const char* kNoneYet = "none yet";
 // i18n: end
-// Both layouts' footer: version, the loaded runtime's file version (through
+// Both layouts' status line: version, the loaded runtime's file version (through
 // v8.0.2 a fixed "v310.8.0", whatever build was loaded), the game's file name.
-inline constexpr const char* kFooter = "RenoDX DLSS5 Generic %s | DLSSNR %s | %s";
-// i18n: begin - display strings (tools/i18n/ui_strings.py catalog)
+inline constexpr const char* kFooter = NR_NEXUS_NAME " %s | DLSSNR %s | %s";
+// i18n: begin - display strings (ui/lang tables)
 
 // The Defaults view (alpha46): segment 0 runs the built-in look, segment 1
 // the player's own.
@@ -303,7 +333,7 @@ inline constexpr const char* kIssueNoticesTip =
     "Turning this off hides all on-screen notices; Home status and diagnostics remain available.";
 
 // The first-run welcome (U5), shown under the status card until dismissed.
-inline constexpr const char* kWelcomeTitle = "Welcome to DLSS 5 Neural Rendering";
+inline constexpr const char* kWelcomeTitle = "Welcome to " NR_NEXUS_NAME;
 inline constexpr const char* kWelcomeBody =
     "Neural Rendering is NVIDIA's DLSS enhancer.  It works on the image the"
     " game's own DLSS makes, so DLSS or DLAA has to be on in the game's"

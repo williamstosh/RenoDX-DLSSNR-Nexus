@@ -226,7 +226,7 @@ class Session:
         shutil.copyfile(self.out / 'latest.png', self.out / f'{label}.png')
         shutil.copyfile(self.out / 'observation.json', self.out / f'{label}.json')
 
-    def key(self, name, seconds=.08):
+    def key(self, name, seconds=.2):
         desktop.key(self.window, name, seconds)
         self.event('key', key=name, seconds=seconds, state=self.ui_state)
 
@@ -428,7 +428,9 @@ class Session:
         self.ui_state = 'pause_menu'
         self.select_menu('继续', PAUSE_MENU)
         self.evidence('pause-menu')
-        self.key('ENTER')
+        # Escape resumes the observed pause menu even when OCR inferred the
+        # focused row from its neighbours and did not recognize its own text.
+        self.key('ESC')
         self.ui_state = 'scene'
         self.wait_scene(timeout=20)
         self.status['functionality'] = 'pause_and_resume_input_response_confirmed_mod_features_not_tested'

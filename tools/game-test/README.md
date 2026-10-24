@@ -47,6 +47,8 @@
 
 直接 wrapper 入口同样可使用 `-Python $pythonPath -TargetPath <配置> -OutputRoot <目录> -RestoreInstallation`。普通 smoke／menu／calibrate 入口为 `tools/run-game-test.ps1`，继续接受原 `-Game/-Platform/-Scenario/-Save/-CaptureHoldSeconds/-Retries/-Preflight` 参数。`-Preflight` 会构建 OCR 并写自检产物，不能与只读语法检查混淆。
 
+若游戏将 Home 绑定为切换 HUD，直接 wrapper 可加 `-IsolateOverlayKey`，仅在本次备份保护的 ReShade 配置中将叠加层热键设为 F7；调用方须先确认 F7 无冲突并使用 F7 开关叠加层。测试结束完整恢复原配置。默认菜单按键保持 200 ms、鼠标保持 120 ms，以避免按帧采样的界面漏掉瞬时输入；释放采集等待前须确认叠加层已关闭，不能将等待结束视为菜单状态已确认。
+
 完整 FG 入口保持原 HDR 显示条件检查、NR 开关／移动及退出流程；显示器名称和性能目标来自本地 target。测试通过仅覆盖相应保护与编排合同，截图仍需单独判断。
 
 性能对照前核对原 `NRPresentBlockHudless` 值：入口省略 `--block-optional-hudless` 时临时设为 `0`，传入时临时设为 `1`。应与既有验收条件一致，分别记录两个颜色面和单面路由，不能将不同路由的 FPS 直接比较；完整恢复开关会在退出后恢复原值。

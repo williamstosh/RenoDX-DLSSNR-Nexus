@@ -9,6 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
 & (Join-Path $PSScriptRoot 'check-version.ps1') | Format-List
+& (Join-Path $PSScriptRoot 'check-branding.ps1')
 $taskSource = (Resolve-Path -LiteralPath $RenodxRoot).Path
 $taskTools = (Resolve-Path -LiteralPath $ToolRoot).Path
 $taskBuild = if ($BuildDirectory) { [IO.Path]::GetFullPath($BuildDirectory) } else { Join-Path $taskRoot 'build' }

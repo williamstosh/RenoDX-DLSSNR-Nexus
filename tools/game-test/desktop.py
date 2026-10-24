@@ -183,7 +183,7 @@ u.SendInput.argtypes = [W.UINT, C.POINTER(INPUT), C.c_int]
 u.SendInput.restype = W.UINT
 KEYS = dict(ENTER=0x1C, ESC=0x01, SPACE=0x39, UP=0x48, DOWN=0x50, LEFT=0x4B, RIGHT=0x4D, HOME=0x47, W=0x11, A=0x1E, S=0x1F, D=0x20, E=0x12)
 
-def key(window, name, seconds=.08):
+def key(window, name, seconds=.2):
     activate(window)
     if name not in KEYS or not 0 < seconds <= 2:
         raise ValueError('Unsupported key or hold duration')
@@ -194,6 +194,7 @@ def key(window, name, seconds=.08):
     try:
         if u.SendInput(1, C.byref(down), C.sizeof(INPUT)) != 1:
             raise C.WinError(C.get_last_error())
+        # Hold across render polls; short menu taps can be consumed between frames.
         time.sleep(seconds)
     finally:
         if u.SendInput(1, C.byref(up), C.sizeof(INPUT)) != 1:
@@ -212,6 +213,8 @@ def click(window, x, y):
     try:
         if u.SendInput(1, C.byref(down), C.sizeof(INPUT)) != 1:
             raise RuntimeError('Mouse down failed')
+        # Frame-polled overlays can miss a down/up pair delivered between frames.
+        time.sleep(.12)
     finally:
         if u.SendInput(1, C.byref(up), C.sizeof(INPUT)) != 1:
             raise RuntimeError('Mouse release failed')

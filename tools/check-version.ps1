@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$ExpectedTag,
-    [switch]$VerifyTag
+    [switch]$VerifyTag,
+    [string[]]$BinaryPath = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,6 +34,23 @@ if ($VerifyTag) {
     if ($LASTEXITCODE -ne 0 -or $taskTagCommit -cne $taskHead) { throw 'The version tag must point to HEAD.' }
     $taskDirty = & git -C $taskRoot status --porcelain --untracked-files=normal
     if ($LASTEXITCODE -ne 0 -or $taskDirty) { throw 'Tag verification requires a clean working tree.' }
+}
+if ($BinaryPath.Count) {
+    $taskBrand = Get-Content -LiteralPath (Join-Path $taskRoot 'brand.h') -Raw
+    $taskName = [regex]::Match($taskBrand, '(?m)^#define NR_NEXUS_NAME "([^"]+)"').Groups[1].Value
+    $taskDescription = [regex]::Match($taskBrand, '(?m)^#define NR_NEXUS_DESCRIPTION "([^"]+)"').Groups[1].Value
+    foreach ($taskBinary in $BinaryPath) {
+        $taskInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path -LiteralPath $taskBinary).Path)
+        if ($taskInfo.FileVersion -cne $taskVersion -or $taskInfo.ProductVersion -cne $taskVersion -or
+            $taskInfo.ProductName -cne $taskName -or $taskInfo.FileDescription -cne $taskDescription -or
+            $taskInfo.OriginalFilename -cne 'renodx-dlss5.addon64' -or
+            $taskInfo.FileMajorPart -ne [int]$taskMatch.Groups[1].Value -or
+            $taskInfo.FileMinorPart -ne [int]$taskMatch.Groups[2].Value -or
+            $taskInfo.FileBuildPart -ne [int]$taskMatch.Groups[3].Value -or $taskInfo.FilePrivatePart -ne 0) {
+            throw "PE brand/version metadata mismatch: $taskBinary"
+        }
+        Write-Host "PE brand/version verified: $taskBinary"
+    }
 }
 $taskRevision = & git -C $taskRoot rev-parse --short=8 HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Cannot identify source commit.' }

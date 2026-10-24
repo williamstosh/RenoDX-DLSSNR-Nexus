@@ -53,7 +53,7 @@ class ExitTests(unittest.TestCase):
             self.session.smoke()
         self.assertEqual(select_menu.call_args_list,
             [mock.call('读取游戏', runner.MAIN_MENU), mock.call('继续', runner.PAUSE_MENU)])
-        self.assertEqual(key.call_args_list, [mock.call('ENTER'), mock.call('ESC'), mock.call('ENTER')])
+        self.assertEqual(key.call_args_list, [mock.call('ENTER'), mock.call('ESC'), mock.call('ESC')])
         self.assertEqual(self.session.status['functionality'],
             'pause_and_resume_input_response_confirmed_mod_features_not_tested')
 

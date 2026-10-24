@@ -52,6 +52,8 @@
 
 #pragma once
 
+#include "brand.h"
+
 #include <d3d12.h>
 
 #include <algorithm>
@@ -183,7 +185,7 @@ inline int64_t last_sweep_ns = 0;
 inline std::map<std::pair<uint32_t, uint32_t>, Track> tracks;
 
 inline void Log(reshade::log::level level, const std::string& message) {
-  reshade::log::message(level, ("DLSS5 Generic: " + message).c_str());
+  reshade::log::message(level, (NR_NEXUS_NAME ": " + message).c_str());
 }
 
 inline void Release() {

@@ -13,6 +13,7 @@ param(
     [switch]$CleanEnvironment,
     [switch]$BlockOptionalHudless,
     [switch]$ShowGameHud,
+    [switch]$IsolateOverlayKey,
     [switch]$InstallOnly,
     [switch]$RestoreInstallation,
     [switch]$AddonAbsentControl
@@ -96,6 +97,7 @@ $taskReceipt = [ordered]@{
     clean_environment=[bool]$CleanEnvironment
     block_optional_hudless=[bool]$BlockOptionalHudless
     temporary_game_hud_visible=[bool]$ShowGameHud
+    temporary_overlay_key=$(if ($IsolateOverlayKey) { 'F7' } else { $null })
     install_only=[bool]$InstallOnly
     candidate_retained=$false; test_changes_restored=$false
     isolated_addons=@()
@@ -137,6 +139,16 @@ try {
         if ((Get-FileHash -LiteralPath $taskDll).Hash -ne $taskCandidate.sha256) { throw 'Installed candidate hash mismatch' }
     }
     $taskConfigText = [IO.File]::ReadAllText($taskConfig)
+    if ($IsolateOverlayKey) {
+        # Home also toggles the game's HUD in some profiles. Only the backed-up
+        # ReShade input section is changed; the whole file is restored in finally.
+        $taskInputSections = [regex]::Matches($taskConfigText, '(?ms)^\[INPUT\]\r?\n(?:(?!^\[).)*')
+        if ($taskInputSections.Count -ne 1) { throw 'Expected one ReShade INPUT section' }
+        $taskInput = $taskInputSections[0]
+        if ([regex]::Matches($taskInput.Value, '(?m)^KeyOverlay=').Count -ne 1) { throw 'Expected one overlay shortcut' }
+        $taskInputText = [regex]::Replace($taskInput.Value, '(?m)^KeyOverlay=[^\r\n]*', 'KeyOverlay=118,0,0,0')
+        $taskConfigText = $taskConfigText.Substring(0,$taskInput.Index) + $taskInputText + $taskConfigText.Substring($taskInput.Index+$taskInput.Length)
+    }
     $taskSection = [regex]::Match($taskConfigText, '(?ms)^\[RenoDX\.DLSS5\]\r?\n(?:(?!^\[).)*')
     if (-not $taskSection.Success) { throw 'RenoDX configuration section is missing' }
     $taskSectionText = $taskSection.Value

@@ -27,6 +27,8 @@
 
 #pragma once
 
+#include "brand.h"
+
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -78,7 +80,7 @@ constexpr uint64_t kStaleTicks = 64;
 // Written by the CPU over a segment's frame-start texel at End; the resolve
 // replaces it with a timestamp.
 constexpr uint64_t kUnwritten = UINT64_MAX;
-constexpr char kLogPrefix[] = "DLSS5 Generic";
+constexpr char kLogPrefix[] = NR_NEXUS_NAME;
 
 constexpr uint32_t PassEncodeStart(uint32_t pass) {
   return kSlotPassBase + pass * kSlotPerPass;

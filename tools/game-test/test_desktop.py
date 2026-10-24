@@ -124,6 +124,35 @@ class DesktopTests(unittest.TestCase):
         desktop.close(self.window)
         self.u.PostMessageW.assert_called_once_with(123, 0x10, 0, 0)
 
+    def test_click_spans_a_render_poll_and_always_releases(self):
+        self.u.GetClientRect.side_effect = lambda hwnd, rect: (
+            setattr(rect._obj, 'right', 3840), setattr(rect._obj, 'bottom', 2160))
+        self.u.SetCursorPos.return_value = True
+        self.u.SendInput.return_value = 1
+        order = []
+        self.u.SendInput.side_effect = lambda count, value, size: order.append(value._obj.mi.dwFlags) or 1
+        with mock.patch.object(desktop, 'activate'), \
+                mock.patch.object(desktop.time, 'sleep', side_effect=lambda seconds: order.append(seconds)):
+            desktop.click(self.window, 100, 100)
+        self.assertEqual(order[0], 2)
+        self.assertGreaterEqual(order[1], .1)
+        self.assertEqual(order[2], 4)
+
+        order.clear()
+        with mock.patch.object(desktop, 'activate'), \
+                mock.patch.object(desktop.time, 'sleep', side_effect=RuntimeError('interrupted')):
+            with self.assertRaisesRegex(RuntimeError, 'interrupted'):
+                desktop.click(self.window, 100, 100)
+        self.assertEqual(order, [2, 4])
+
+    def test_default_menu_key_spans_render_polls(self):
+        order = []
+        self.u.SendInput.side_effect = lambda count, value, size: order.append(value._obj.ki.dwFlags) or 1
+        with mock.patch.object(desktop, 'activate'), \
+                mock.patch.object(desktop.time, 'sleep', side_effect=lambda seconds: order.append(seconds)):
+            desktop.key(self.window, 'ENTER')
+        self.assertEqual(order, [8, .2, 10])
+
     def test_reused_pid_with_same_hwnd_does_not_close(self):
         with mock.patch.object(desktop, '_metrics', return_value=dict(created=101)):
             desktop.close(self.window)

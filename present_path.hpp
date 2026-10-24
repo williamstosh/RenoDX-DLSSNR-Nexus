@@ -1072,8 +1072,8 @@ inline void CapturePresentGuides(
     return true;
   };
   const bool cloned =
-      ensure_clone(&target->motion, motion_desc, L"DLSS5 Generic present motion capture")
-      && ensure_clone(&target->depth, depth_desc, L"DLSS5 Generic present depth capture");
+      ensure_clone(&target->motion, motion_desc, L"" NR_NEXUS_NAME " present motion capture")
+      && ensure_clone(&target->depth, depth_desc, L"" NR_NEXUS_NAME " present depth capture");
   if (cloned) {
     target->device_identity = device_identity;
     target->source_handle = handle;
@@ -1473,7 +1473,7 @@ inline uint32_t ComposePresentPreFg(ID3D12GraphicsCommandList* command_list,
   device->Release();  // the list keeps it alive
   if (!EnsureCodecRootSignature(device)
       || !CreateCodecPipelineState(device, __prefg_compose, &present_prefg_compose_pso,
-                                   L"DLSS5 Generic pre-FG compose", "pre-FG compose")) {
+                                   L"" NR_NEXUS_NAME " pre-FG compose", "pre-FG compose")) {
     compose.unavailable = true;
     return kPreFgTwoPassUnavailable;
   }
@@ -1518,7 +1518,7 @@ inline uint32_t ComposePresentPreFg(ID3D12GraphicsCommandList* command_list,
     if (FAILED(device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&compose.heap)))) {
       compose.heap = nullptr;
     } else {
-      compose.heap->SetName(L"DLSS5 Generic pre-FG compose descriptors");
+      compose.heap->SetName(L"" NR_NEXUS_NAME " pre-FG compose descriptors");
       compose.descriptor_size =
           device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     }
@@ -1529,16 +1529,16 @@ inline uint32_t ComposePresentPreFg(ID3D12GraphicsCommandList* command_list,
                                    back_desc.Height, format,
                                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &compose.output,
-                                   L"DLSS5 Generic pre-FG composite"))
+                                   L"" NR_NEXUS_NAME " pre-FG composite"))
       || (compose.stats == nullptr
           && !CreateScratchBuffer(device,
                                   sizeof(uint32_t) * kPresentPreFgStatsWords
                                       * kPresentPreFgComposeSets,
-                                  &compose.stats, L"DLSS5 Generic pre-FG HUD counts"))
+                                  &compose.stats, L"" NR_NEXUS_NAME " pre-FG HUD counts"))
       || !host_buffer(D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ, &compose.zero,
-                      L"DLSS5 Generic pre-FG zero")
+                      L"" NR_NEXUS_NAME " pre-FG zero")
       || !host_buffer(D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST,
-                      &compose.readback, L"DLSS5 Generic pre-FG HUD readback")) {
+                      &compose.readback, L"" NR_NEXUS_NAME " pre-FG HUD readback")) {
     return kPreFgTwoPassUnavailable;
   }
   if (compose.readback_data == nullptr) {
@@ -2267,7 +2267,7 @@ inline ID3D12Resource* RunPresentPreFg(ID3D12GraphicsCommandList* command_list,
                                   + std::to_string(static_cast<uint32_t>(hudless_desc.Format))
                                   + ")");
       }
-      present_prefg_hudless->SetName(L"DLSS5 Generic pre-FG HUD-less");
+      present_prefg_hudless->SetName(L"" NR_NEXUS_NAME " pre-FG HUD-less");
       present_prefg_hudless_device = frame_identity;
       present_prefg_hudless_state = input_state;
     }
@@ -3359,9 +3359,9 @@ inline void RunPresentPath(
     // 0, which DepthInverted below reads as the far plane.
     for (auto [surface, surface_format, name] :
          {std::tuple{&stream.neutral_motion, DXGI_FORMAT_R16G16_FLOAT,
-                     L"DLSS5 Generic present neutral motion"},
+                     L"" NR_NEXUS_NAME " present neutral motion"},
           std::tuple{&stream.neutral_depth, DXGI_FORMAT_R32_FLOAT,
-                     L"DLSS5 Generic present neutral depth"}}) {
+                     L"" NR_NEXUS_NAME " present neutral depth"}}) {
       if (*surface != nullptr
           && ((*surface)->GetDesc().Width != back_width
               || (*surface)->GetDesc().Height != back_height)) {

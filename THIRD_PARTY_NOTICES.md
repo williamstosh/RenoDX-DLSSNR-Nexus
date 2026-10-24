@@ -57,3 +57,14 @@ An add-on binary can incorporate dependency code even when this source-only
 repository does not. Before distributing one, check the exact versions' licenses
 and include the required copyright, license, and NOTICE files in the package.
 The root MIT license does not relicense NVIDIA SDKs, runtime DLLs, or models.
+
+## Binary package notices
+
+The Windows x64 add-on incorporates Microsoft Detours and uses code from the
+RenoDX, ReShade, Dear ImGui, nlohmann/json, Streamline and DLSS SDK headers.
+`tools/package.ps1` obtains the applicable license texts from the commits in
+`host/lock.json`, preserves additional header copyright notices and includes
+them under `licenses/` alongside this notice and the original project license.
+The package does not redistribute the ReShade loader, NVIDIA runtime DLLs,
+models, SDK distributions or shader compiler binaries. Those dependencies
+remain subject to their own terms and are obtained separately.
