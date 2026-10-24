@@ -31,7 +31,7 @@ jobs:
         with:
           name: ${{ needs.build.outputs.artifact_name }}
           path: dist
-      - name: Publish verified assets with generated release notes
+      - name: Publish verified assets with reviewed release notes
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

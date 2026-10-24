@@ -32,20 +32,20 @@ $releaseTestOldToken = $env:GH_TOKEN
 $env:GH_TOKEN = 'synthetic-test-token'
 $releaseTestResults = @()
 try {
-    foreach ($releaseTestScenario in @('new','empty-array-response','unrelated-array-response','separate-source-root','annotated-tag','existing-exact','existing-different','existing-wrong-source','draft-resume','draft-empty','draft-array-response','multiple-release-array','draft-page-two','duplicate-draft','draft-starter','upload-failure','wrong-remote-tag','forbidden','incomplete-assets','unexpected-draft-asset','checksum-mismatch','tag-version-mismatch')) {
+    foreach ($releaseTestScenario in @('new','empty-array-response','unrelated-array-response','separate-source-root','annotated-tag','existing-exact','existing-different','existing-wrong-source','draft-wrong-source','draft-resume','draft-empty','draft-array-response','multiple-release-array','draft-page-two','duplicate-draft','draft-starter','upload-failure','wrong-remote-tag','forbidden','incomplete-assets','unexpected-draft-asset','checksum-mismatch','tag-version-mismatch','notes-missing','notes-pr-only')) {
         Reset-TestChecksum
         & {
             $releaseTestState = @{calls=[Collections.Generic.List[object]]::new();release=$null}
-            if ($releaseTestScenario -in @('existing-exact','existing-different','existing-wrong-source','draft-resume','draft-empty','draft-array-response','multiple-release-array','draft-page-two','duplicate-draft','draft-starter','unexpected-draft-asset')) {
+            if ($releaseTestScenario -in @('existing-exact','existing-different','existing-wrong-source','draft-wrong-source','draft-resume','draft-empty','draft-array-response','multiple-release-array','draft-page-two','duplicate-draft','draft-starter','unexpected-draft-asset')) {
                 $releaseTestState.release = [pscustomobject]@{
-                    id=1;tag_name=$releaseTestVersion.Tag;target_commitish=$releaseTestSource
-                    draft=($releaseTestScenario -in @('draft-resume','draft-empty','draft-array-response','multiple-release-array','draft-page-two','duplicate-draft','draft-starter','unexpected-draft-asset'))
+                    id=1;tag_name=$releaseTestVersion.Tag;target_commitish=$releaseTestSource;name='Previous draft title'
+                    draft=($releaseTestScenario -in @('draft-wrong-source','draft-resume','draft-empty','draft-array-response','multiple-release-array','draft-page-two','duplicate-draft','draft-starter','unexpected-draft-asset'))
                     assets=@((New-TestAsset $releaseTestArchive),(New-TestAsset $releaseTestChecksum))
                     html_url='https://github.com/fixture/repository/releases/example'
                     body="Source: https://github.com/fixture/repository/commit/$releaseTestSource"
                 }
                 if ($releaseTestScenario -eq 'existing-different') { $releaseTestState.release.assets[0].digest='sha256:wrong' }
-                if ($releaseTestScenario -eq 'existing-wrong-source') { $releaseTestState.release.body='Source: different' }
+                if ($releaseTestScenario -in @('existing-wrong-source','draft-wrong-source')) { $releaseTestState.release.body='Source: different' }
                 if ($releaseTestScenario -in @('draft-resume','draft-array-response','draft-page-two')) { $releaseTestState.release.assets=@($releaseTestState.release.assets[0]) }
                 if ($releaseTestScenario -eq 'draft-empty') { $releaseTestState.release.assets=@() }
                 if ($releaseTestScenario -eq 'draft-starter') {
@@ -64,6 +64,10 @@ try {
                 if ($args -contains '--porcelain') { return }
                 if ($args -contains '--short=8') { return $releaseTestSource.Substring(0,8) }
                 if ($args -contains 'rev-parse') { return $releaseTestSource }
+                if ($args -contains 'merge-base') { return }
+                if ($args -contains 'log') {
+                    return @("$releaseTestSource`tdirect feature: add independent per-pass models", "$releaseTestSource`tMerge pull request #3 from fixture/publisher")
+                }
                 throw "Unexpected Git call in publication test: $args"
             }
             function Invoke-RestMethod {
@@ -99,10 +103,11 @@ try {
                 }
                 if ($Uri -eq 'https://api.github.com/repos/fixture/repository/releases' -and $Method -eq 'POST') {
                     Assert-Test $payload.draft 'Creation must remain private until assets pass'
-                    Assert-Test $payload.generate_release_notes 'Automatic notes were not requested'
+                    Assert-Test (-not $payload.generate_release_notes) 'GitHub PR-only notes must not replace reviewed highlights'
+                    Assert-Test ($payload.body.Contains('## Highlights') -and $payload.body.Contains('direct feature: add independent per-pass models')) 'Reviewed highlights and direct commit references must be included'
                     Assert-Test ($payload.PSObject.Properties.Name -notcontains 'target_commitish') 'An existing tag needs no target_commitish/workflow-write permission'
                     $releaseTestState.release = [pscustomobject]@{
-                        id=1;tag_name=$payload.tag_name;target_commitish='main';body=$payload.body;draft=$true;assets=@()
+                        id=1;tag_name=$payload.tag_name;target_commitish='main';body=$payload.body;name=$payload.name;draft=$true;assets=@()
                         html_url='https://github.com/fixture/repository/releases/example'
                     }
                     return $releaseTestState.release
@@ -122,6 +127,13 @@ try {
                     return $releaseTestState.release
                 }
                 if ($Uri -eq 'https://api.github.com/repos/fixture/repository/releases/1' -and $Method -eq 'PATCH') {
+                    if ($payload.PSObject.Properties.Name -notcontains 'draft') {
+                        Assert-Test $releaseTestState.release.draft 'Retry must not edit published release notes'
+                        Assert-Test ($payload.body.Contains('## Highlights') -and $payload.body.Contains('direct feature: add independent per-pass models')) 'Draft recovery lost reviewed features or direct commits'
+                        $releaseTestState.release.body=$payload.body
+                        $releaseTestState.release.name=$payload.name
+                        return $releaseTestState.release
+                    }
                     Assert-Test (-not $payload.draft) 'Final transition must publish the verified draft'
                     Assert-Test ($releaseTestState.release.assets.Count -eq 2) 'Missing assets at publish boundary'
                     $releaseTestState.release.draft=$false
@@ -134,17 +146,26 @@ try {
                 $tag = if ($releaseTestScenario -eq 'tag-version-mismatch') { 'v999.0.0' } else { $releaseTestVersion.Tag }
                 $publishArguments = @{Tag=$tag;ArchivePath=$releaseTestArchive;Repository='fixture/repository'}
                 if ($releaseTestScenario -eq 'separate-source-root') { $publishArguments.SourceRoot=$releaseTestSourceRoot }
+                $publishArguments.NotesPath=Join-Path $releaseTestRoot "docs/releases/$($releaseTestVersion.Tag).md"
+                if ($releaseTestScenario -eq 'notes-missing') { $publishArguments.NotesPath=Join-Path $releaseTestDirectory 'absent.md' }
+                if ($releaseTestScenario -eq 'notes-pr-only') {
+                    $publishArguments.NotesPath=Join-Path $releaseTestDirectory 'pr-only.md'
+                    [IO.File]::WriteAllText($publishArguments.NotesPath, "# NR Nexus $($releaseTestVersion.Tag)`n`n## Highlights`n- [#3](https://github.com/fixture/repository/pull/3)`n")
+                }
                 & (Join-Path $releaseTestRoot 'tools/publish-release.ps1') @publishArguments
             } catch { $failed=$true }
             $success = $releaseTestScenario -in @('new','empty-array-response','unrelated-array-response','separate-source-root','annotated-tag','existing-exact','draft-resume','draft-empty','draft-array-response','multiple-release-array','draft-page-two','draft-starter')
             Assert-Test ($failed -ne $success) "Unexpected outcome: $releaseTestScenario"
-            $published=@($releaseTestState.calls | Where-Object method -EQ 'PATCH')
+            $published=@($releaseTestState.calls | Where-Object { $_.method -eq 'PATCH' -and $_.payload.PSObject.Properties.Name -contains 'draft' })
             Assert-Test ($published.Count -eq $(if ($success -and $releaseTestScenario -ne 'existing-exact') { 1 } else { 0 })) "Publication boundary failed: $releaseTestScenario"
             if ($releaseTestScenario -in @('draft-empty','draft-array-response','multiple-release-array')) {
                 Assert-Test (@($releaseTestState.calls | Where-Object { $_.method -eq 'POST' -and $_.uri -eq 'https://api.github.com/repos/fixture/repository/releases' }).Count -eq 0) 'Existing drafts must be resumed, not recreated'
             }
-            if ($releaseTestScenario -in @('existing-exact','existing-different','existing-wrong-source','duplicate-draft','wrong-remote-tag','forbidden','checksum-mismatch','tag-version-mismatch')) {
+            if ($releaseTestScenario -in @('existing-exact','existing-different','existing-wrong-source','draft-wrong-source','duplicate-draft','wrong-remote-tag','forbidden','checksum-mismatch','tag-version-mismatch','notes-missing','notes-pr-only')) {
                 Assert-Test (@($releaseTestState.calls | Where-Object method -NE 'GET').Count -eq 0) "Unexpected mutation: $releaseTestScenario"
+            }
+            if ($releaseTestScenario -in @('notes-missing','notes-pr-only')) {
+                Assert-Test ($releaseTestState.calls.Count -eq 0) 'Invalid notes must fail before remote publication calls'
             }
             if ($published.Count) {
                 $expectedPrerelease=$releaseTestVersion.Version.Split('+')[0].Contains('-')

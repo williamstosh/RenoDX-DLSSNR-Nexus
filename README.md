@@ -189,6 +189,8 @@ DLLs, models and game assets are obtained separately.
 
 ### Versions and releases
 
+Reviewed highlights, validation scope and known limits are kept in the [version notes](docs/releases/).
+
 [version.h](version.h) defines the independent SemVer; Git commits identify the
 source. Daily commits and Actions artifacts are not published releases.
 `dev.N` and optional `rc.N` builds are **Pre-releases**; stable builds are
@@ -368,6 +370,8 @@ Runtime DLL、模型和游戏资源另行获取。
 <a id="自动构建与发布"></a>
 
 ### 版本与发布
+
+各版本的主要变化、验证范围与已知限制保存在[版本说明](docs/releases/)中。
 
 [version.h](version.h) 定义独立 SemVer，Git Commit 用于追溯源码。
 日常提交及 Actions artifacts 不等于已发布版本。`dev.N` 和可选的 `rc.N`
