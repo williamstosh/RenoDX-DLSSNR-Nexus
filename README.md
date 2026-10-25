@@ -230,12 +230,12 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 
 参数值、依赖、继承和配置示例见[玩家指南](docs/USER_GUIDE.md)。
 
-![Cyber Neon 多层处理链及第 2 层独立编辑器](docs/images/ui/multipass.webp)
+![Cyber Neon 多层处理链及第 2 层独立编辑器](docs/images/ui/multipass-zh.webp)
 
 *当前 dev 的生产 ImGui 菜单离屏捕获，状态为合成夹具；本图经过裁切，仅展示界面，
 不是游戏画质对比或性能测量。*
 
-![Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED](docs/images/ui/themes.webp)
+![Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED](docs/images/ui/themes-zh.webp)
 
 *同一 dev 菜单的四套主题，主题只影响界面。*
 

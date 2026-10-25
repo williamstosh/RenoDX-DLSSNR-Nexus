@@ -29,7 +29,7 @@ The development interface has four pages: **Quality**, **Multi-Pass**, **Diagnos
 
 Defaults below are for a fresh configuration. Existing saved choices and migrations can retain different values. Settings normally save as you edit them; changing a model, pass count, location or working size may recreate features and briefly rebuild temporal history. Wait for a stable scene after a change before comparing.
 
-**Image note (applies to every image below, including the Chinese section):** these are state examples composed offscreen with the current production ImGui interface. They illustrate controls and layout, and do not represent in-game image quality, FPS, or measured runtime performance. Image captions are in English for both language sections; a separate Chinese Multi-Pass example is included.
+**Image note (applies to every image below, including the Chinese section):** these are state examples composed offscreen with the current production ImGui interface. They illustrate controls and layout, and do not represent in-game image quality, FPS, or measured runtime performance. Screenshots and captions match the language of each section.
 
 <a id="en-quality"></a>
 ### Quality: model, location and resolution
@@ -370,14 +370,14 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 
 下文默认值针对全新配置；已有保存值或迁移配置可能不同。一般编辑会即时保存。更换模型、层数、介入点或工作尺寸可能重建 Feature，并短暂重建时序历史，比较前应等待场景和历史稳定。
 
-**配图说明：** 所有配图均为当前生产 ImGui 界面离屏合成的状态示例，用来说明布局与控件，不代表实机画质、FPS 或运行时性能测量。英文图注供中英文共读；叠层另有中文示例。顶部版本范围同样适用于本节。
+**配图说明：** 所有配图均为当前生产 ImGui 界面离屏合成的状态示例，用来说明布局与控件，不代表实机画质、FPS 或运行时性能测量。中文章节使用简体中文界面截图与中文图注。顶部版本范围同样适用于本节。
 
 <a id="zh-quality"></a>
 ### 画质：模型、介入点与尺寸
 
-![Quality page](images/ui/quality.webp)
+![画质页](images/ui/quality-zh.webp)
 
-*Quality — NR enable, effect comparison, model, shared working resolution and processing location.*
+*画质页：NR 开关、效果比较、模型、共用工作尺寸与介入点。*
 
 #### 开关与比较
 
@@ -464,9 +464,9 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 <a id="zh-results"></a>
 ### 结果调整与稳定性
 
-![Result controls](images/ui/results.webp)
+![NR 结果调整四组控件](images/ui/results-zh.webp)
 
-*Result adjustment — live shaping, brightness/colour limits, detail, halos and temporal controls.*
+*结果调整：实时外观、亮度与色彩限制、细节、光晕及时域控件。*
 
 **调整 NR 外观（Adjust NR's look）默认关**，重塑模型已经返回的改变量，不改变模型本身。关闭保留参数；下列重塑滑块须开关开启且结果处理可用才生效。改动实时应用，不重启 NR 模型历史，但启用处理仍可能需要资源。
 
@@ -499,9 +499,9 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 <a id="zh-multipass"></a>
 ### 叠层
 
-![Chinese Multi-Pass page](images/ui/multipass-zh.webp)
+![叠层页](images/ui/multipass-zh.webp)
 
-*Multi-Pass (Chinese) — sequential chain, selected pass, and separate model/style/result inheritance.*
+*叠层页：顺序处理链、选中层，以及独立的模型、外观和结果继承。*
 
 **叠层数为 1–4，默认 1，包含第 1 层**，顺序如下：
 
@@ -526,9 +526,9 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 <a id="zh-diagnostics"></a>
 ### 诊断与报告
 
-![Diagnostics page](images/ui/diagnostics.webp)
+![诊断页](images/ui/diagnostics-zh.webp)
 
-*Diagnostics — status reasons, observed resources, cost and detailed counters; displayed sample values are not runtime measurements.*
+*诊断页：状态原因、资源观测、开销与详细计数；示例值不是运行时测量结果。*
 
 先看状态与警告，再看资源和性能，避免混淆不同证据：
 
@@ -567,9 +567,9 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 <a id="zh-advanced"></a>
 ### 高级、截图与主题
 
-![Advanced page](images/ui/advanced.webp)
+![高级页](images/ui/advanced-zh.webp)
 
-*Advanced — hotkeys/capture, compatibility controls, theme, language, notifications, reset and version information.*
+*高级页：快捷键与截图、兼容性、主题、语言、通知、恢复默认及版本信息。*
 
 #### 界面与通用设置
 
@@ -584,9 +584,9 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 | 恢复全部默认 | 两步恢复／取消 | 重置覆盖的强度、编解码、尺寸、叠层、快捷键、语言、布局、提示位置等并重建 Feature；主题另行恢复，加载时的 Hook 支持配置不重置。 |
 | 版本与关于 | 只读 | 显示插件版本、已加载 NR 运行时版本、游戏可执行文件名；插件与运行时版本独立。 |
 
-![Theme choices](images/ui/themes.webp)
+![四套界面主题](images/ui/themes-zh.webp)
 
-*Themes — Cyber Neon, Nexus Dark, Fluent Light and Midnight OLED affect only the add-on interface.*
+*主题：Cyber Neon、Nexus Dark、Fluent Light 和 Midnight OLED 仅影响插件界面。*
 
 #### 快捷键与截图
 

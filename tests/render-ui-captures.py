@@ -81,22 +81,28 @@ if __name__ == '__main__':
         crops = {
             'quality': (0, 174, 1400, 1000),
             'multipass': (0, 174, 1400, 870),
-            'multipass-zh': (0, 174, 1400, 870),
             'results': (710, 615, 1380, 1560),
             'diagnostics': (0, 174, 1400, 670),
             'advanced': (0, 174, 1400, 850),
         }
-        for name, bounds in crops.items():
-            with Image.open(args.output_directory / ('doc-' + name + '.webp')) as original:
-                original.crop(bounds).save(args.output_directory / (name + '.webp'), lossless=True, method=6)
         themes = (('cyber_neon', 'Cyber Neon'), ('nexus_dark', 'Nexus Dark'),
                   ('fluent_light', 'Fluent Light'), ('midnight_oled', 'Midnight OLED'))
-        sheet = Image.new('RGB', (1300, 1220), '#10141b')
-        draw = ImageDraw.Draw(sheet)
         font = ImageFont.truetype('C:/Windows/Fonts/segoeui.ttf', 24)
-        for index, (slug, title) in enumerate(themes):
-            x, y = index % 2 * 650, index // 2 * 610
-            draw.text((x + 20, y + 5), title, font=font, fill='white')
-            with Image.open(args.output_directory / ('doc-theme-' + slug + '.webp')) as original:
-                sheet.paste(original.crop((0, 174, 650, 742)), (x, y + 42))
-        sheet.save(args.output_directory / 'themes.webp', lossless=True, method=6)
+        for suffix, language in (('', 1), ('-zh', 14)):
+            for name, bounds in crops.items():
+                stem = 'doc-' + name + suffix
+                if json.loads((args.directory / (stem + '.json')).read_text(encoding='utf-8'))['language'] != language:
+                    parser.error('Capture language mismatch: ' + stem)
+                with Image.open(args.output_directory / (stem + '.webp')) as original:
+                    original.crop(bounds).save(args.output_directory / (name + suffix + '.webp'), lossless=True, method=6)
+            sheet = Image.new('RGB', (1300, 1220), '#10141b')
+            draw = ImageDraw.Draw(sheet)
+            for index, (slug, title) in enumerate(themes):
+                stem = 'doc-theme-' + slug + suffix
+                if json.loads((args.directory / (stem + '.json')).read_text(encoding='utf-8'))['language'] != language:
+                    parser.error('Capture language mismatch: ' + stem)
+                x, y = index % 2 * 650, index // 2 * 610
+                draw.text((x + 20, y + 5), title, font=font, fill='white')
+                with Image.open(args.output_directory / (stem + '.webp')) as original:
+                    sheet.paste(original.crop((0, 174, 650, 742)), (x, y + 42))
+            sheet.save(args.output_directory / ('themes' + suffix + '.webp'), lossless=True, method=6)

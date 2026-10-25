@@ -965,18 +965,23 @@ int main() {
       runtime::pass_look_result[0].mode = true;
       runtime::StoreUiTheme(ui::ThemeId::CYBER_NEON);
       documentation_capture("doc-quality", 0, 1, false);
+      documentation_capture("doc-quality-zh", 0, 14, false);
       documentation_capture("doc-multipass", 1, 1, false);
       documentation_capture("doc-multipass-zh", 1, 14, false);
       panel_height = 2100.f;
       documentation_capture("doc-results", 0, 1, true);
+      documentation_capture("doc-results-zh", 0, 14, true);
       panel_height = 1400.f;
       documentation_capture("doc-diagnostics", 2, 1, false);
+      documentation_capture("doc-diagnostics-zh", 2, 14, false);
       documentation_capture("doc-advanced", 3, 1, false);
+      documentation_capture("doc-advanced-zh", 3, 14, false);
       panel_width = 650.f;
       panel_height = 1000.f;
       for (const auto& theme : ui::kThemes) {
         runtime::StoreUiTheme(theme.id);
         documentation_capture((std::string("doc-theme-") + theme.slug).c_str(), 0, 1, false);
+        documentation_capture((std::string("doc-theme-") + theme.slug + "-zh").c_str(), 0, 14, false);
       }
       std::puts("documentation captures: production menu, synthetic status, no game or GPU measurements");
     }

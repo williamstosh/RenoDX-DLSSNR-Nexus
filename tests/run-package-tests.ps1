@@ -39,6 +39,19 @@ function Read-ZipText([string]$Name) {
 }
 
 function Assert-DocumentLinks([string]$Name, [string]$Text, [hashtable]$Documents, [string[]]$Paths, [bool]$Source = $false) {
+    $chineseStart = $Text.IndexOf('## 简体中文', [StringComparison]::Ordinal)
+    Assert-Test ($chineseStart -ge 0) "Chinese section missing in $Name"
+    $englishImages = @()
+    $chineseImages = @()
+    foreach ($image in [regex]::Matches($Text, '!\[[^\]]*\]\(([^\s)]+)\)')) {
+        $file = [IO.Path]::GetFileName($image.Groups[1].Value)
+        $chinese = $image.Index -gt $chineseStart
+        Assert-Test (($file -cmatch '-zh\.webp$') -eq $chinese) "Image language mismatch in ${Name}: $file"
+        if ($chinese) { $chineseImages += $file -creplace '-zh\.webp$', '.webp' }
+        else { $englishImages += $file }
+    }
+    Assert-Test ($englishImages.Count -gt 0 -and $englishImages.Count -eq $chineseImages.Count -and
+        -not (Compare-Object $englishImages $chineseImages -CaseSensitive)) "Unpaired language images in $Name"
     foreach ($link in [regex]::Matches($Text, '\]\(([^\s)]+)\)')) {
         $target = $link.Groups[1].Value
         if ($target -match '^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|//)') { continue }
@@ -87,7 +100,8 @@ try {
         'licenses/ReShade/LICENSE.md', 'licenses/DearImGui/LICENSE.txt', 'licenses/nlohmann-json/LICENSE.MIT',
         'licenses/nlohmann-json/NOTICE.txt', 'licenses/Streamline/license.txt', 'licenses/Streamline/NOTICE.txt',
         'licenses/NVIDIA-DLSS/LICENSE.txt')
-    $taskImageNames = @('quality', 'multipass', 'results', 'diagnostics', 'advanced', 'themes', 'multipass-zh')
+    $taskImageNames = @('quality', 'multipass', 'results', 'diagnostics', 'advanced', 'themes',
+        'quality-zh', 'multipass-zh', 'results-zh', 'diagnostics-zh', 'advanced-zh', 'themes-zh')
     $taskExpected += @($taskImageNames | ForEach-Object { "images/ui/$_.webp" })
     Assert-Test ($taskNames.Count -eq $taskExpected.Count -and
         -not (Compare-Object $taskExpected $taskNames -CaseSensitive)) 'Complete ZIP whitelist mismatch.'
@@ -155,6 +169,15 @@ try {
             [regex]::Replace($taskSourceText, $taskLinkPattern, '<link>')) "Document source mismatch: $taskSourceDocument"
         Assert-DocumentLinks $taskSourceDocument $taskSourceText $taskSourceDocuments @($taskMapping.Keys) $true
         Assert-DocumentLinks $taskMapping[$taskSourceDocument] $taskPackedText $taskPackedDocuments $taskNames
+        # 原问题复现：链接仍有效，但中文章节误用了英文图片，必须拒绝。
+        $taskWrongLanguage = $taskSourceText -creplace '-zh\.webp', '.webp'
+        $taskRejectedLanguage = $false
+        try { Assert-DocumentLinks $taskSourceDocument $taskWrongLanguage $taskSourceDocuments @($taskMapping.Keys) $true }
+        catch {
+            if ($_.Exception.Message -notmatch 'Image language mismatch') { throw }
+            $taskRejectedLanguage = $true
+        }
+        Assert-Test $taskRejectedLanguage "Mixed-language screenshots were accepted in $taskSourceDocument"
     }
     $taskReader = [IO.StreamReader]::new($taskZip.GetEntry('licenses/nlohmann-json/NOTICE.txt').Open())
     try { $taskJsonNotice = $taskReader.ReadToEnd() } finally { $taskReader.Dispose() }
