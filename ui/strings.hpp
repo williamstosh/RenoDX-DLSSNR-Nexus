@@ -83,6 +83,16 @@ inline constexpr PanelText kModernText = {
 
 namespace text {
 
+inline constexpr const char* kInterfaceTheme = "Interface theme";
+inline constexpr const char* kRestoreTheme = "Restore default theme";
+inline constexpr const char* kThemeTip = "Theme changes only this interface. Saved for this game; picture settings stay unchanged.";
+inline constexpr const char* kEditing = "Editing";
+inline constexpr const char* kStyleFollows = "Model style: follows Pass 1";
+inline constexpr const char* kStyleIndependent = "Model style: independent";
+inline constexpr const char* kResultFollows = "Result: follows Pass 1";
+inline constexpr const char* kResultIndependent = "Result: independent";
+inline constexpr const char* kRuntimeUnconfirmed = "Runtime model: unconfirmed";
+
 inline constexpr const char* kModelStructure = "Model structure";
 inline constexpr const char* kModelStrength = "Model strength";
 inline constexpr const char* kResultStrength = "Result adjustment strength";

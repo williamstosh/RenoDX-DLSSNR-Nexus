@@ -18445,6 +18445,14 @@ inline void OnDockOverlayWindow(reshade::api::effect_runtime* /*runtime*/) {
 // "auto".
 inline std::atomic_int ui_language_choice{0};
 
+// UI preferences stay outside the picture-setting registry and NR rebuilds.
+inline std::atomic<ui::ThemeId> ui_theme_choice{ui::ThemeId::CYBER_NEON};
+inline void StoreUiTheme(ui::ThemeId id) {
+  const auto& theme = ui::GetTheme(id);
+  ui_theme_choice.store(theme.id, std::memory_order_relaxed);
+  reshade::set_config_value(nullptr, kConfigSection, "UiTheme", theme.slug);
+}
+
 // Sets UiLanguage and writes it: the Language row, its reset and
 // PersistConfig.
 inline void StoreUiLanguage(int choice) {
@@ -18577,9 +18585,9 @@ inline void OnHudOverlay(reshade::api::effect_runtime* /*runtime*/) {
       .Var(ImGuiStyleVar_WindowRounding, ui::tokens::kRadiusCard)
       .Var(ImGuiStyleVar_WindowPadding,
            ImVec2(ui::tokens::kCardPadding, ui::tokens::kRowGap))
-      .Color(ImGuiCol_WindowBg, ui::tokens::kBgCard)
-      .Color(ImGuiCol_Border, ui::tokens::kStroke)
-      .Color(ImGuiCol_Text, ui::tokens::kTextPrimary);
+      .Color(ImGuiCol_WindowBg, ui::CurrentTheme().bg_card)
+      .Color(ImGuiCol_Border, ui::CurrentTheme().stroke)
+      .Color(ImGuiCol_Text, ui::CurrentTheme().text_primary);
   const ImVec2 display_size = ImGui::GetIO().DisplaySize;
   const ImVec2 anchor(hud_position_x.load(std::memory_order_relaxed) / 100.f,
                       hud_position_y.load(std::memory_order_relaxed) / 100.f);
@@ -18606,7 +18614,7 @@ inline void OnHudOverlay(reshade::api::effect_runtime* /*runtime*/) {
                        .title = health::kRows[notice_row].title});
       ui::StyleScope hint;
       hint.FontSize(ui::SmallFontSize())
-          .Color(ImGuiCol_Text, ui::tokens::kTextSecondary);
+          .Color(ImGuiCol_Text, ui::CurrentTheme().text_secondary);
       if (others != 0 && others < health::kRowCount) {
         ImGui::Text(ui::Tr(ui::text::kIssueNoticeMore), others);
       }
@@ -18617,7 +18625,7 @@ inline void OnHudOverlay(reshade::api::effect_runtime* /*runtime*/) {
     if (pill) {
       ui::StyleScope hint;
       hint.FontSize(ui::SmallFontSize())
-          .Color(ImGuiCol_Text, ui::tokens::kTextSecondary);
+          .Color(ImGuiCol_Text, ui::CurrentTheme().text_secondary);
       ImGui::Text(ui::Tr(ui::text::kHudHint), kOverlayTitle,
                   VirtualKeyName(toggle_hotkey.load()).c_str());
     }
@@ -21179,7 +21187,7 @@ inline void DrawSectionNrCore(const ui::PanelText& text) {
     if (view >= 0) SetDefaultsView(view == 0);
     if (ui_defaults_view) {
       ui::StyleScope note;
-      note.FontSize(ui::SmallFontSize()).Color(ImGuiCol_Text, ui::tokens::kAccent);
+      note.FontSize(ui::SmallFontSize()).Color(ImGuiCol_Text, ui::CurrentTheme().accent);
       ImGui::PushTextWrapPos(0.f);
       ImGui::TextUnformatted(ui::Tr(ui::text::kDefaultsViewNote));
       ImGui::PopTextWrapPos();
@@ -21226,7 +21234,7 @@ inline void DrawModelSteering(const ui::PanelText& text, uint32_t pass) {
   if (masked && independent && structure > 1.f) {
     if (text.modern) ui::RowLabel("");
     ui::StyleScope note;
-    note.Color(ImGuiCol_Text, ui::tokens::kTextSecondary);
+    note.Color(ImGuiCol_Text, ui::CurrentTheme().text_secondary);
     ImGui::TextWrapped("%s", text.Tr(ui::text::kStructureCapped));
   }
   ImGui::BeginDisabled(!masked);
@@ -21579,7 +21587,7 @@ inline void DrawFgRoute(bool stacking = false, bool detailed = false) {
   }
   ImGui::PushID("fg_route");
   ui::StyleScope tone;
-  tone.Color(ImGuiCol_Text, warning ? ui::tokens::kWarn : ui::tokens::kTextSecondary);
+  tone.Color(ImGuiCol_Text, warning ? ui::CurrentTheme().warn : ui::CurrentTheme().text_secondary);
   if (detailed) {
     ImGui::TextWrapped("%s", ui::Tr(message));
     if (ui_fg_route.previous.multiplier <= 1 && (declared || route == ui::FgRoute::kBeforeFg)) {
@@ -21692,7 +21700,7 @@ inline void DrawSectionHookPoint(const ui::PanelText& text, bool present_details
   if (fallback != nullptr) {
     if (text.modern) ui::RowLabel("");
     ImGui::PushTextWrapPos(0.f);
-    ImGui::TextColored(ui::tokens::kWarn, "%s", text.Tr(fallback));
+    ImGui::TextColored(ui::CurrentTheme().warn, "%s", text.Tr(fallback));
     ImGui::PopTextWrapPos();
   }
   if (present_details) {
@@ -21857,15 +21865,16 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
   if (text.modern) {
     const int count = std::clamp(static_cast<int>(stack_passes.load()), 1, static_cast<int>(kMaxNrPasses));
     ui_selected_pass = std::clamp(ui_selected_pass, 0, count - 1);
-    if (count > 1) {
+    {
       ui::SubCaption(ui::text::kPassOverview);
       ImGui::TextWrapped("%s", ui::Tr(ui::text::kChainNote));
       ImGui::Text("%s >", ui::Tr(ui::text::kInput));
-      const int columns = (std::min)(count, (std::max)(1, static_cast<int>(
-                                                              ImGui::GetContentRegionAvail().x / (ImGui::GetFontSize() * ui::tokens::kPassNodeEm))));
+      // A continuous row when every node fits; a vertical chain otherwise.
+      // This avoids ambiguous cross-row execution arrows at intermediate widths.
+      const int columns = (ImGui::GetContentRegionAvail().x >= ImGui::GetFontSize() * ui::tokens::kPassNodeEm * count ? count : 1);
       ui::StyleScope chain_spacing;
-      chain_spacing.Var(ImGuiStyleVar_CellPadding, ImVec2(ImGui::GetFontSize() * 0.7f, 3.f));
-      if (ImGui::BeginTable("##pass_chain", columns, ImGuiTableFlags_SizingStretchSame)) {
+      chain_spacing.Var(ImGuiStyleVar_CellPadding, ImVec2(ImGui::GetFontSize() * 0.7f, ImGui::GetFontSize() * 0.45f));
+      if (ImGui::BeginTable("##pass_chain", columns, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoClip)) {
         ImVec2 previous_end;
         for (int pass = 0; pass < count; ++pass) {
           ImGui::TableNextColumn();
@@ -21894,36 +21903,51 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
           const bool modified = AnyModified({node_settings})
                                 || (pass != 0 && AnyModified({SettingGroup(kPassLookResultSettings).subspan((pass - 1) * result_count, result_count)}))
                                 || (pass != 0 && kSetPassFollow[pass - 1].Modified())
-                                || (pass == 0 && kSetSkinIndependent.Modified());
+                                || (pass == 0 && (kSetSkinIndependent.Modified() || AnyModified({kLookResultSettings})));
           const std::string label = std::string(caption) + "\n"
                                     + ui::Ellipsize(ui::Tr(model), width - ImGui::GetStyle().FramePadding.x * 2.f
                                                                        - (modified ? ImGui::GetFontSize() : 0.f))
-                                    + (modified ? " *" : "") + "###chain_pass";
+                                    + (modified ? " *" : "") + "\n"
+                                    + ui::Ellipsize(ui::Tr(pass == ui_selected_pass ? ui::text::kEditing : ui::text::kConfigured),
+                                                    width - ImGui::GetStyle().FramePadding.x * 2.f)
+                                    + "###chain_pass";
           {
             ui::StyleScope node;
-            node.Var(ImGuiStyleVar_FrameBorderSize, 1.f);
+            node.Color(ImGuiCol_Button, ui::CurrentTheme().bg_card)
+                .Color(ImGuiCol_Border, ui::CurrentTheme().node_border)
+                .Var(ImGuiStyleVar_FrameBorderSize, pass == ui_selected_pass ? 2.f : 1.f);
             if (pass == ui_selected_pass) {
-              node.Color(ImGuiCol_Button, ui::tokens::kAccentActive)
-                  .Color(ImGuiCol_Border, ui::tokens::kAccentHover);
+              node.Color(ImGuiCol_Button, ui::CurrentTheme().node_selected)
+                  .Color(ImGuiCol_Border, ui::CurrentTheme().accent);
             }
-            if (ImGui::Button(label.c_str(), ImVec2(width, ImGui::GetTextLineHeightWithSpacing() * 2.f
+            if (ImGui::Button(label.c_str(), ImVec2(width, ImGui::GetTextLineHeightWithSpacing() * 3.f
                                                                + ImGui::GetStyle().FramePadding.y * 2.f))) {
               ui_selected_pass = pass;
             }
           }
-          ui::ItemTooltip("%s\n%s: %s\n%s\n%s\n%s", caption, ui::Tr(ui::text::kRequest), ui::Tr(model),
+          ui::ItemTooltip("%s\n%s: %s\n%s\n%s\n%s\n%s\n%s", caption, ui::Tr(ui::text::kRequest), ui::Tr(model),
                           ui::Tr(requested == 0 && pass != 0 ? ui::text::kInheritModel : ui::text::kIndependentModel),
-                          ui::Tr(ui::text::kConfigured), ui::Tr(ui::text::kChainMarkTip));
+                          ui::Tr(pass != 0 && pass_follow[pass - 1].load() ? ui::text::kStyleFollows : ui::text::kStyleIndependent),
+                          ui::Tr(pass != 0 && pass_look_result[pass - 1].follow.load() ? ui::text::kResultFollows : ui::text::kResultIndependent),
+                          ui::Tr(ui::text::kRuntimeUnconfirmed), ui::Tr(ui::text::kChainMarkTip));
           const ImVec2 begin = ImGui::GetItemRectMin();
           const ImVec2 end = ImGui::GetItemRectMax();
           if (pass % columns != 0) {
             const float y = (begin.y + end.y) * 0.5f;
             ImGui::GetWindowDrawList()->AddLine(ImVec2(previous_end.x + 1.f, y), ImVec2(begin.x - 1.f, y),
-                                                ui::ToU32(ui::tokens::kTextSecondary));
+                                                ui::ToU32(ui::CurrentTheme().connector));
             const float arrow = ImGui::GetFontSize() * 0.18f;
             ImGui::GetWindowDrawList()->AddTriangleFilled(ImVec2(begin.x - 1.f, y),
                                                           ImVec2(begin.x - arrow * 2.f, y - arrow), ImVec2(begin.x - arrow * 2.f, y + arrow),
-                                                          ui::ToU32(ui::tokens::kTextSecondary));
+                                                          ui::ToU32(ui::CurrentTheme().connector));
+          } else if (pass != 0) {
+            const float x = (begin.x + end.x) * 0.5f;
+            const float arrow = ImGui::GetFontSize() * 0.18f;
+            ImGui::GetWindowDrawList()->AddLine(ImVec2(x, previous_end.y + 1.f), ImVec2(x, begin.y - 2.f),
+                                                ui::ToU32(ui::CurrentTheme().connector));
+            ImGui::GetWindowDrawList()->AddTriangleFilled(ImVec2(x, begin.y - 2.f),
+                ImVec2(x - arrow, begin.y - arrow * 2.f - 2.f), ImVec2(x + arrow, begin.y - arrow * 2.f - 2.f),
+                ui::ToU32(ui::CurrentTheme().connector));
           }
           previous_end = end;
           ImGui::PopID();
@@ -22916,18 +22940,69 @@ inline void DrawSectionHotkeys(const ui::PanelText& text) {
 // has no Defaults view, so a switch ends it and the player's values return.
 inline void DrawSectionLayoutToggle() {
   bool classic = ui_classic_layout.load();
-  ui::StyleScope selected;
-  if (classic) {
-    selected.Color(ImGuiCol_Button, ui::tokens::kAccentActive);
-  }
-  if (ui::ActionButton(ui::Tr(ui::text::kDeveloperView), "developer_view")) {
-    classic = !classic;
-    SetDefaultsView(false);
-    ui_classic_layout = classic;
-    reshade::set_config_value(
-        nullptr, kConfigSection, "UiMode", classic ? "classic" : "modern");
+  {
+    ui::StyleScope selected;
+    if (classic) {
+      selected.Color(ImGuiCol_Button, ui::CurrentTheme().accent)
+          .Color(ImGuiCol_ButtonHovered, ui::CurrentTheme().accent_hover)
+          .Color(ImGuiCol_ButtonActive, ui::CurrentTheme().accent_active)
+          .Color(ImGuiCol_Text, ui::CurrentTheme().on_accent);
+    }
+    if (ui::ActionButton(ui::Tr(ui::text::kDeveloperView), "developer_view")) {
+      classic = !classic;
+      SetDefaultsView(false);
+      ui_classic_layout = classic;
+      reshade::set_config_value(
+          nullptr, kConfigSection, "UiMode", classic ? "classic" : "modern");
+    }
   }
   ui::ItemTooltip("%s", ui::Tr(ui::text::kDeveloperViewTip));
+}
+
+inline void DrawSectionTheme() {
+  ui::SectionCaption(ui::text::kInterfaceTheme, nullptr, false);
+  const int columns = (ImGui::GetContentRegionAvail().x >= ImGui::GetFontSize() * 38.f ? 2 : 1);
+  if (ImGui::BeginTable("##ui_themes", columns, ImGuiTableFlags_SizingStretchSame)) {
+    for (const auto& palette : ui::kThemes) {
+      ImGui::TableNextColumn();
+      ImGui::PushID(palette.slug);
+      const bool selected = ui_theme_choice.load(std::memory_order_relaxed) == palette.id;
+      const float width = ImGui::GetContentRegionAvail().x;
+      const float padding = ImGui::GetStyle().FramePadding.x;
+      const float swatch = ImGui::GetFontSize() * 0.65f;
+      const std::string label = ui::Ellipsize(palette.name, (std::max)(1.f, width - padding * 2.f - swatch * 4.f))
+                                + "\n" + ui::Ellipsize(ui::Tr(palette.description), (std::max)(1.f, width - padding * 2.f))
+                                + "###theme";
+      {
+        ui::StyleScope card;
+        card.Color(ImGuiCol_Button, selected ? ui::CurrentTheme().node_selected : ui::CurrentTheme().bg_card)
+            .Color(ImGuiCol_Border, selected ? ui::CurrentTheme().accent : ui::CurrentTheme().node_border)
+            .Var(ImGuiStyleVar_FrameBorderSize, selected ? 2.f : 1.f)
+            .Var(ImGuiStyleVar_ButtonTextAlign, ImVec2(0.f, 0.5f));
+        if (ImGui::Button(label.c_str(), ImVec2(width, ImGui::GetTextLineHeightWithSpacing() * 2.f
+                                                       + ImGui::GetStyle().FramePadding.y * 2.f))) {
+          StoreUiTheme(palette.id);
+        }
+      }
+      const ImVec2 lo = ImGui::GetItemRectMin();
+      const ImVec2 hi = ImGui::GetItemRectMax();
+      const ImVec4 colors[] = {palette.bg_window, palette.bg_card, palette.accent};
+      for (int i = 0; i < 3; ++i) {
+        const ImVec2 at(hi.x - padding - (3 - i) * (swatch + 2.f), lo.y + padding);
+        ImGui::GetWindowDrawList()->AddRectFilled(at, ImVec2(at.x + swatch, at.y + swatch), ui::ToU32(colors[i]), 2.f);
+        ImGui::GetWindowDrawList()->AddRect(at, ImVec2(at.x + swatch, at.y + swatch), ui::ToU32(ui::CurrentTheme().node_border), 2.f);
+      }
+      ui::ItemTooltip("%s\n%s\n%s", palette.name, ui::Tr(palette.description), ui::Tr(ui::text::kThemeTip));
+      ImGui::PopID();
+    }
+    ImGui::EndTable();
+  }
+  if (ImGui::Button(ui::Tr(ui::text::kRestoreTheme),
+                    ImVec2((std::min)(ImGui::GetContentRegionAvail().x,
+                                      ImGui::CalcTextSize(ui::Tr(ui::text::kRestoreTheme)).x + ImGui::GetStyle().FramePadding.x * 2.f), 0.f))) {
+    StoreUiTheme(ui::ThemeId::CYBER_NEON);
+  }
+  ui::ItemTooltip("%s", ui::Tr(ui::text::kThemeTip));
 }
 
 // The panel's language (UiLanguage): Auto, or one of ui::kLanguages.  The
@@ -23245,7 +23320,7 @@ inline void DrawDiagnostics(const NrVerdict& verdict) {
     } else if (result == NVSDK_NGX_Result_FAIL_NotInitialized) {
       ImGui::TextUnformatted(ui::Tr(ui::text::kNoneYet));
     } else {
-      ImGui::TextColored(ui::tokens::kBad, ui::Tr("failed (0x%08X)"), result);
+      ImGui::TextColored(ui::CurrentTheme().bad, ui::Tr("failed (0x%08X)"), result);
     }
     ui::RowLabel(ui::text::kNrCost, ui::text::kNrCostTip);
     if (char cost[256]; ui::FormatNrCost(cost, sizeof(cost),
@@ -23336,7 +23411,7 @@ inline void DrawDiagnostics(const NrVerdict& verdict) {
       }
     }
     if (copied_ns != 0 && SteadyNowNs() - copied_ns < 4'000'000'000LL) {
-      ImGui::TextColored(ui::tokens::kGood, "%s", ui::Tr(ui::text::kReportCopied));
+      ImGui::TextColored(ui::CurrentTheme().good, "%s", ui::Tr(ui::text::kReportCopied));
     }
     DrawSectionDiagnosticsRaw();
   }
@@ -23547,7 +23622,7 @@ inline void DrawRuntimeStatus(const ui::StatusCard& card) {
   DrawHealthIssues();
   if (streamline_hooks_enabled.load() && hooks_enabled.load()) {
     ui::StyleScope warning;
-    warning.Color(ImGuiCol_Text, ui::tokens::kWarn);
+    warning.Color(ImGuiCol_Text, ui::CurrentTheme().warn);
     ImGui::TextWrapped("%s", ui::Tr("Streamline hooks are on (EnableHooks=1). If the game crashes at boot,"
                                     " set EnableHooks=2: NGX-only still covers Streamline's DLSS calls."));
   }
@@ -23619,6 +23694,7 @@ inline void DrawClassicLayout(reshade::api::effect_runtime* runtime, const ui::S
     DrawSectionHotkeys(text);
   }
   ImGui::Separator();
+  DrawSectionTheme();
   DrawSectionLanguage(text);
   DrawSectionIssueNotice(text);
   DrawSectionHudPosition(text);
@@ -23753,7 +23829,7 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
                             AnyModified({kFixesSettings}), &reset)) {
         {
           ui::StyleScope warning;
-          warning.Color(ImGuiCol_Text, ui::tokens::kWarn);
+          warning.Color(ImGuiCol_Text, ui::CurrentTheme().warn);
           ImGui::TextUnformatted(ui::icons::kWarning);
           ImGui::SameLine();
           ImGui::PushTextWrapPos(0.f);
@@ -23768,6 +23844,8 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
       }
       if (reset) ResetSettings({kFixesSettings});
 
+      ui::SectionGap();
+      DrawSectionTheme();
       ui::SectionGap();
       ui::SectionCaption(ui::text::kGeneral, nullptr, false);
       DrawSectionLanguage(text);
@@ -23837,6 +23915,9 @@ inline void DrawPanelBody(reshade::api::effect_runtime* runtime) {
 // its settings scroller separate from the summary and category navigation.
 inline void OnOverlay(reshade::api::effect_runtime* runtime) {
   const int64_t started = ui_capture_dir.empty() ? 0 : SteadyNowNs();
+  // One palette for the whole callback, including its popups and custom draws.
+  // A clicked preference is visible on the next frame without rebuilding NR.
+  ui::SetTheme(ui_theme_choice.load(std::memory_order_relaxed));
   RefreshUiLanguage();
   ui::reset_buttons_drawn = 0;
   overlay_window_stranded.store(
@@ -24236,6 +24317,20 @@ inline void LoadConfiguration() {
     global_writable = !global_version_raw->empty() && parsed.ec == std::errc{}
         && parsed.ptr == global_version_raw->data() + global_version_raw->size()
         && raw_global_version <= kConfigVersion;
+  }
+  {
+    const auto saved_theme = ReadPresentRestoreRaw("UiTheme");
+    const auto selected = (saved_theme ? ui::ParseTheme(*saved_theme)
+                                      : (section_known && !section_has_settings ? ui::ThemeId::CYBER_NEON
+                                                                               : ui::ThemeId::NEXUS_DARK));
+    ui_theme_choice.store(selected, std::memory_order_relaxed);
+    ui::SetTheme(selected);
+    // Only a confirmed fresh installation needs a stamp: after other defaults
+    // are saved it must still load Cyber Neon next time. Existing files retain
+    // their read-only load contract; choosing a theme explicitly saves its key.
+    if (section_known && !section_has_settings && global_writable && !saved_theme) {
+      StoreUiTheme(selected);
+    }
   }
   {
     std::unique_lock config_lock(present_restore_configuration.mutex);

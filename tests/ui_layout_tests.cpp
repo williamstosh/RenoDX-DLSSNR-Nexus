@@ -6,9 +6,12 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <string>
+#include <string_view>
 
 #include "ui/fg_route.hpp"
 #include "ui/widgets.hpp"
@@ -37,6 +40,93 @@ int main() {
       }
     }
   };
+
+  const auto luminance = [](const ImVec4& color) {
+    const auto linear = [](float value) {
+      return (value <= 0.04045f ? value / 12.92f : std::pow((value + 0.055f) / 1.055f, 2.4f));
+    };
+    return 0.2126f * linear(color.x) + 0.7152f * linear(color.y) + 0.0722f * linear(color.z);
+  };
+  const auto contrast = [&](const ImVec4& foreground, const ImVec4& background) {
+    const float a = luminance(foreground);
+    const float b = luminance(background);
+    return ((std::max)(a, b) + 0.05f) / ((std::min)(a, b) + 0.05f);
+  };
+  const ui::ThemeId expected_ids[] = {ui::ThemeId::CYBER_NEON, ui::ThemeId::NEXUS_DARK,
+                                    ui::ThemeId::FLUENT_LIGHT, ui::ThemeId::MIDNIGHT_OLED};
+  check(ui::kThemes.size() == 4, "four public themes are available");
+  for (size_t index = 0; index < ui::kThemes.size(); ++index) {
+    const auto& palette = ui::kThemes[index];
+    check(palette.id == expected_ids[index], "theme IDs retain their public order");
+    check(&ui::GetTheme(palette.id) == &palette, "theme lookup returns the registered palette");
+    check(ui::ParseTheme(palette.slug) == palette.id, "stored slug parses to its public theme ID");
+    check(palette.slug[0] != '\0' && palette.name[0] != '\0' && palette.description[0] != '\0',
+          "theme identity and description are present");
+    for (size_t previous = 0; previous < index; ++previous) {
+      check(std::string_view(palette.slug) != ui::kThemes[previous].slug, "theme slugs are unique");
+      check(std::string_view(palette.name) != ui::kThemes[previous].name, "theme names are unique");
+    }
+    for (const ImVec4 background : {palette.bg_window, palette.bg_card, palette.bg_control,
+                                     palette.bg_control_hover, palette.bg_control_active}) {
+      check(contrast(palette.text_primary, background) >= 4.5f, "primary text contrast includes active controls");
+      check(contrast(palette.text_secondary, background) >= 3.f, "secondary text contrast includes active controls");
+    }
+    for (const ImVec4 accent : {palette.accent, palette.accent_hover, palette.accent_active}) {
+      check(contrast(palette.on_accent, accent) >= 4.5f, "on-accent text contrast covers normal/hover/active");
+    }
+    check(contrast(palette.text_primary, palette.node_selected) >= 4.5f,
+          "selected processing node retains readable text");
+    for (const ImVec4 background : {palette.bg_window, palette.bg_card}) {
+      for (const ImVec4 status : {palette.good, palette.warn, palette.bad, palette.idle}) {
+        check(contrast(status, background) >= 3.f, "semantic status indicators contrast with panel and card");
+      }
+    }
+    for (const ImVec4 color : {palette.bg_window, palette.bg_card, palette.bg_control,
+                              palette.bg_control_hover, palette.bg_control_active, palette.stroke,
+                              palette.text_primary, palette.text_secondary, palette.good, palette.warn,
+                              palette.bad, palette.idle, palette.accent, palette.accent_hover,
+                              palette.accent_active, palette.on_accent, palette.node_selected,
+                              palette.node_border, palette.connector, palette.slider_knob, palette.switch_knob,
+                              palette.slider_rail, palette.text_selection}) {
+      for (float channel : {color.x, color.y, color.z, color.w}) {
+        check(std::isfinite(channel) && channel >= 0.f && channel <= 1.f, "palette channels are finite normalized values");
+      }
+    }
+    ui::SetTheme(palette.id);
+    check(ui::CurrentThemeId() == palette.id && &ui::CurrentTheme() == &palette, "theme selection exposes the selected palette");
+    ImGui::NewFrame();
+    ImGui::Begin("theme scope");
+    const ImGuiStyle before = ImGui::GetStyle();
+    ImGuiContext& context = *ImGui::GetCurrentContext();
+    const int colors = context.ColorStack.Size;
+    const int vars = context.StyleVarStack.Size;
+    const int fonts = context.FontStack.Size;
+    {
+      ui::StyleScope scope;
+      ui::PushPanelTheme(scope);
+      scope.FontSize(21.f);
+      check(ImGui::GetStyle().Colors[ImGuiCol_FrameBgActive].x == palette.bg_control_active.x
+                && ImGui::GetStyle().Colors[ImGuiCol_FrameBgActive].y == palette.bg_control_active.y
+                && ImGui::GetStyle().Colors[ImGuiCol_FrameBgActive].z == palette.bg_control_active.z,
+            "active frame uses its own palette token");
+      const float alpha = ImGui::GetStyle().Alpha;
+      ImGui::BeginDisabled();
+      check(ImGui::GetStyle().Alpha < alpha && context.DisabledStackSize > 0,
+            "disabled controls retain the ImGui disabled state and dimming");
+      ImGui::Button("disabled themed control");
+      ImGui::EndDisabled();
+    }
+    check(std::memcmp(&before, &ImGui::GetStyle(), sizeof(before)) == 0, "complete ImGuiStyle restored after themed widgets");
+    check(context.ColorStack.Size == colors && context.StyleVarStack.Size == vars
+              && context.FontStack.Size == fonts && context.DisabledStackSize == 0 && ui::style_depth == 0,
+          "color, variable, font and disabled stacks restored");
+    ImGui::End();
+    ImGui::Render();
+  }
+  check(ui::ParseTheme("") == ui::ThemeId::CYBER_NEON
+            && ui::ParseTheme("invalid-theme") == ui::ThemeId::CYBER_NEON,
+        "empty and unknown stored slugs use Cyber Neon");
+  ui::SetTheme(ui::ThemeId::CYBER_NEON);
 
   {
     ui::StatusCard card;
@@ -225,6 +315,22 @@ int main() {
   check(old_active - old_idle > 20.f, "baseline reproduces automatic height movement");
   float max_delta = 0.f;
   unsigned scenarios = 0;
+  for (const auto& theme : ui::kThemes) {
+    ui::SetTheme(theme.id);
+    for (int language : {0, 3, 13}) {
+      ui::SelectLanguage(language);
+      for (const auto& size : {ImVec2(320.f, 13.f), ImVec2(450.f, 26.f), ImVec2(1600.f, 39.f)}) {
+        const float anchor = frame(idle, size.x, size.y, 0, true, false);
+        for (ui::CardTone tone : {ui::CardTone::kGood, ui::CardTone::kWarn, ui::CardTone::kBad, ui::CardTone::kIdle}) {
+          auto card = active;
+          card.tone = tone;
+          check(std::abs(frame(card, size.x, size.y, 4, true, false) - anchor) <= 0.01f,
+                "all-theme summary geometry remains stable");
+        }
+      }
+    }
+  }
+  ui::SetTheme(ui::ThemeId::CYBER_NEON);
   for (int language = 0; language < ui::kLanguageCount; ++language) {
     ui::SelectLanguage(language);
     for (float font : {13.f, 26.f, 39.f}) {

@@ -1044,7 +1044,7 @@ inline void DrawIssueReport() {
   }
 
   ui::StyleScope frame;
-  frame.Color(ImGuiCol_ChildBg, ui::tokens::kBgCard)
+  frame.Color(ImGuiCol_ChildBg, ui::CurrentTheme().bg_card)
       .Var(ImGuiStyleVar_WindowPadding, ImVec2(ui::tokens::kCardPadding, ui::tokens::kCardPadding));
   if (ImGui::BeginChild("##nr_issue_report", ImVec2(0.f, 0.f),
                         ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding)) {
@@ -1223,7 +1223,7 @@ inline void DrawIssueReport() {
           zip = issue_report::zip;
         }
         if (!link.empty()) {
-          ImGui::TextColored(ui::tokens::kGood, "%s %s", ui::icons::kCheck,
+          ImGui::TextColored(ui::CurrentTheme().good, "%s %s", ui::icons::kCheck,
                              ui::Tr(ui::text::kReportLinkReady));
           ImGui::SetNextItemWidth(-FLT_MIN);
           ImGui::InputText("##issue_link", link.data(), link.size() + 1, ImGuiInputTextFlags_ReadOnly);
@@ -1232,7 +1232,7 @@ inline void DrawIssueReport() {
           ui::SameLineIfFits(ImGui::GetFontSize() * 12.f);
         } else {
           if (!error.empty()) {
-            ImGui::TextColored(ui::tokens::kWarn, ui::Tr(ui::text::kReportFailed), error.c_str());
+            ImGui::TextColored(ui::CurrentTheme().warn, ui::Tr(ui::text::kReportFailed), error.c_str());
           }
           if (!zip.empty()) {
             ImGui::Text(ui::Tr("Saved: %s"), report::Utf8(zip.filename().wstring()).c_str());

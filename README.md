@@ -129,7 +129,12 @@ upsampling and the hook point remain shared across the chain. Requested and conf
 network. Detailed diagnostics explains that actual-network readback is unavailable
 in this build. Wide panels use two columns where useful;
 narrow panels stack them. Advanced contains shortcuts/screenshots, compatibility
-fixes, language/notifications, Developer view, restore defaults and version/about.
+fixes, language/notifications, interface themes, Developer view, restore defaults
+and version/about. Choose **Cyber Neon** (default for new installations),
+**Nexus Dark** (classic appearance retained for existing settings without a theme key),
+**Fluent Light** or **Midnight OLED**. Themes apply immediately and are saved as stable
+IDs in `UiTheme` in this game's `ReShade.ini`, independently of picture settings.
+**Restore default theme** returns to Cyber Neon without resetting picture settings.
 Existing configuration keys and reset behavior remain available.
 
 **Model strength** controls the value sent to the NR model (0–2, default 1).
@@ -362,7 +367,10 @@ Present 紧凑提示要求连续运行观测，不能仅凭配置确认 Pre-FG�
 重新开启继承也会保留保存的自定义值。结果继承与模型风格继承分别控制；工作分辨率、上采样和介入点仍为全链共享。
 请求模型和配置解析模型保留，详细诊断明确说明当前版本不提供实际网络回读。
 宽窗口按需双列，窄窗口纵向排列。高级页包含快捷键／截图、兼容性修复、语言／通知、
-开发者视图、恢复默认和版本／关于；现有配置键与重置行为保留。
+界面主题、开发者视图、恢复默认和版本／关于。主题可选 **Cyber Neon**（新装默认）、
+**Nexus Dark**（无主题键的已有设置保留经典外观）、**Fluent Light** 或 **Midnight OLED**。
+主题即时应用，以稳定 ID 保存至本游戏 `ReShade.ini` 的 `UiTheme`，与画质设置独立。
+**恢复默认主题**返回 Cyber Neon，不重置画质设置。现有配置键与重置行为保留。
 
 **模型强度**控制发给 NR 模型的值（0–2，默认 1），插件不在 1 处截断，但尚未确认所有
 模型／Runtime 在大于 1 时都会产生更强响应。**结果调整强度**在 Look Stage 中、限制处理之前

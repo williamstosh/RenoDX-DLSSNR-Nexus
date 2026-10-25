@@ -24,6 +24,11 @@ int main() {
   std::snprintf(footer, sizeof(footer), text::kFooter, "v" NR_NEXUS_VERSION, "test-runtime", "test.exe");
   if (std::string_view(footer) != NR_NEXUS_NAME " v" NR_NEXUS_VERSION " | DLSSNR test-runtime | test.exe") return 1;
   const char* report_strings[] = {
+      text::kInterfaceTheme, text::kRestoreTheme, text::kThemeTip, text::kEditing,
+      text::kStyleFollows, text::kStyleIndependent, text::kResultFollows,
+      text::kResultIndependent, text::kRuntimeUnconfirmed,
+      "Precision cyan on deep blue.", "Classic teal and charcoal.",
+      "Clear blue on bright surfaces.", "Pure black with restrained green.",
       text::kPresentGuideCountersTip,
       text::kPassCountTip, text::kSettingsViewTips[0], text::kSettingsViewTips[1],
       text::kModelStructure,

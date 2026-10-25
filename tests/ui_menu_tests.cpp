@@ -6,11 +6,14 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -96,9 +99,12 @@ std::map<ImGuiID, Item> items;
 void ImGuiTestEngineHook_ItemAdd(ImGuiContext* context, ImGuiID id, const ImRect& rect, const ImGuiLastItemData*) {
   items[id] = {.id = id, .rect = rect, .disabled = (context->CurrentItemFlags & ImGuiItemFlags_Disabled) != 0, .window = context->CurrentWindow};
   // BeginCombo does not emit ItemInfo in the pinned ImGui version.
-  if (context->CurrentWindow != nullptr && !context->CurrentWindow->IDStack.empty()
-      && id == context->CurrentWindow->GetID("##model")) {
-    items[id].label = "##model";
+  if (context->CurrentWindow != nullptr && !context->CurrentWindow->IDStack.empty()) {
+    for (const char* label : {"##model", "##theme"}) {
+      if (id == context->CurrentWindow->GetID(label)) {
+        items[id].label = label;
+      }
+    }
   }
 }
 void ImGuiTestEngineHook_ItemInfo(ImGuiContext*, ImGuiID id, const char* label, ImGuiItemStatusFlags) {
@@ -123,8 +129,10 @@ extern "C" __declspec(dllexport) bool ReShadeGetBasePath(char* path, size_t* siz
 extern "C" __declspec(dllexport) bool ReShadeGetConfigValue(
     void*, reshade::api::effect_runtime*, const char* section, const char* key, char* value, size_t* size) {
   char buffer[32768]{};
-  const DWORD count = GetPrivateProfileStringA(section, key, "", buffer, sizeof(buffer), ".\\ReShade.ini");
-  if (count == 0) {
+  // ReShade distinguishes a missing key from a present empty value. The
+  // Win32 count alone is zero for both, so retain a missing-key sentinel.
+  const DWORD count = GetPrivateProfileStringA(section, key, "\x01", buffer, sizeof(buffer), ".\\ReShade.ini");
+  if (count == 1 && buffer[0] == '\x01') {
     *size = 0;
     return false;
   }
@@ -185,7 +193,6 @@ int main() {
     int atlas_width, atlas_height;
     io.Fonts->GetTexDataAsRGBA32(&atlas, &atlas_width, &atlas_height);
     io.Fonts->SetTexID(1);
-    runtime::LoadConfiguration();
     runtime::ui_welcomed = true;
     runtime::ui_language_choice = 1;
     runtime::direct_runtime_requirements.file_version = "310.9.16.0";
@@ -200,10 +207,58 @@ int main() {
         throw std::runtime_error(message);
       }
     };
+    // Exercise the production loader before it has a chance to migrate or
+    // stamp defaults into a fresh section. All writes stay in the fixture's INI.
+    const auto load_theme_case = [&](const char* content, ui::ThemeId expected) {
+      WritePrivateProfileStringA(nullptr, nullptr, nullptr, ".\\ReShade.ini");
+      if (content != nullptr) {
+        std::ofstream("ReShade.ini", std::ios::trunc | std::ios::binary) << content;
+      } else {
+        std::filesystem::remove("ReShade.ini");
+      }
+      WritePrivateProfileStringA(nullptr, nullptr, nullptr, ".\\ReShade.ini");
+      runtime::ui_theme_choice = ui::ThemeId::MIDNIGHT_OLED;
+      runtime::LoadConfiguration();
+      if (runtime::ui_theme_choice.load() != expected) {
+        std::printf("theme load case: expected=%s actual=%s ini=%s\n", ui::GetTheme(expected).slug,
+                    ui::GetTheme(runtime::ui_theme_choice.load()).slug, (content != nullptr ? content : "<missing file>"));
+      }
+      check(runtime::ui_theme_choice.load() == expected, "production loader selected the wrong theme for this INI");
+    };
+    load_theme_case(nullptr, ui::ThemeId::CYBER_NEON);
+    load_theme_case("", ui::ThemeId::CYBER_NEON);
+    load_theme_case("[OTHER]\nValue=1\n", ui::ThemeId::CYBER_NEON);
+    const std::string section = std::string("[") + runtime::kConfigSection + "]\n";
+    load_theme_case((section + "; empty section\n").c_str(), ui::ThemeId::CYBER_NEON);
+    load_theme_case((section + "NRIntensity=1.3\n").c_str(), ui::ThemeId::NEXUS_DARK);
+    load_theme_case((section + "ConfigVersion=8\n").c_str(), ui::ThemeId::NEXUS_DARK);
+    load_theme_case((section + "UiTheme=invalid-theme\nNRIntensity=1.3\n").c_str(), ui::ThemeId::CYBER_NEON);
+    load_theme_case((section + "UiTheme=\n").c_str(), ui::ThemeId::CYBER_NEON);
+    const std::string future_ini = section + "ConfigVersion=4294967295\nNRIntensity=1.3\n";
+    load_theme_case(future_ini.c_str(), ui::ThemeId::NEXUS_DARK);
+    {
+      std::ifstream input("ReShade.ini", std::ios::binary);
+      const std::string actual((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+      check(actual == future_ini, "future schema theme fallback rewrote the configuration");
+    }
+    for (const auto& theme : ui::kThemes) {
+      load_theme_case((section + "UiTheme=" + theme.slug + "\nNRIntensity=1.3\n").c_str(), theme.id);
+      runtime::StoreUiTheme(theme.id);
+      char stored[64]{};
+      GetPrivateProfileStringA(runtime::kConfigSection, "UiTheme", "missing", stored, sizeof(stored), ".\\ReShade.ini");
+      check(std::string(stored) == theme.slug, "StoreUiTheme did not persist the public slug");
+      runtime::ui_theme_choice = ui::ThemeId::CYBER_NEON;
+      runtime::LoadConfiguration();
+      check(runtime::ui_theme_choice.load() == theme.id, "theme preference did not survive production reload");
+    }
+    load_theme_case("", ui::ThemeId::CYBER_NEON);
+    runtime::ui_welcomed = true;
+    runtime::ui_language_choice = 1;
     float panel_width = 1000.f;
     float font_size = 18.f;
     double panel_total_ms = 0.0;
     unsigned panel_frames = 0;
+    bool clipped_callback = false;
     const auto frame = [&](const ui::StatusCard* diagnostic_case = nullptr) {
       items.clear();
       rendered_text.clear();
@@ -213,6 +268,16 @@ int main() {
       ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
       ImGui::SetNextWindowSize(ImVec2(panel_width, 1100.f));
       ImGui::Begin("NR Nexus menu fixture", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
+      auto& context = *ImGui::GetCurrentContext();
+      const ImGuiStyle style_before = ImGui::GetStyle();
+      const int color_depth = context.ColorStack.Size;
+      const int var_depth = context.StyleVarStack.Size;
+      const int font_depth = context.FontStack.Size;
+      const int disabled_depth = context.DisabledStackSize;
+      const int window_depth = context.CurrentWindowStack.Size;
+      if (clipped_callback) {
+        ImGui::PushClipRect(ImVec2(-10.f, -10.f), ImVec2(-1.f, -1.f), true);
+      }
       const auto panel_start = std::chrono::steady_clock::now();
       if (diagnostic_case != nullptr) {
         ui::StyleScope theme;
@@ -221,6 +286,15 @@ int main() {
       } else {
         runtime::OnOverlay(nullptr);
       }
+      if (clipped_callback) {
+        ImGui::PopClipRect();
+      }
+      check(std::memcmp(&style_before, &ImGui::GetStyle(), sizeof(style_before)) == 0,
+            "production callback did not restore the full host ImGuiStyle");
+      check(context.ColorStack.Size == color_depth && context.StyleVarStack.Size == var_depth
+                && context.FontStack.Size == font_depth && context.DisabledStackSize == disabled_depth
+                && context.CurrentWindowStack.Size == window_depth,
+            "production callback leaked an ImGui stack");
       panel_total_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - panel_start).count();
       ++panel_frames;
       ImGui::End();
@@ -306,13 +380,17 @@ int main() {
       io.AddMousePosEvent(-100.f, -100.f);
       frame();
     };
-    const auto capture = [&](const char* name) {
+    const auto capture = [&](const char* name, const ui::StatusCard* diagnostic_case = nullptr, bool settle = true) {
       // Store the actual ImGui mesh and atlas; the optional CPU renderer uses
       // these without substituting HTML controls or a second menu definition.
-      frame();
-      frame();
-      frame();
-      Json output{{"width", panel_width}, {"height", 1100}, {"lists", Json::array()}};
+      if (settle) {
+        frame(diagnostic_case);
+        frame(diagnostic_case);
+        frame(diagnostic_case);
+      }
+      Json output{{"width", panel_width}, {"height", 1100}, {"theme", ui::CurrentTheme().slug},
+                  {"page", runtime::ui_menu_page}, {"language", runtime::ui_language_choice.load()},
+                  {"font_size", font_size}, {"expanded", ui::expand_all_sections}, {"lists", Json::array()}};
       const ImDrawData* data = ImGui::GetDrawData();
       for (const ImDrawList* list : data->CmdLists) {
         Json vertices = Json::array(), indices = Json::array(), commands = Json::array();
@@ -339,6 +417,37 @@ int main() {
     };
 
     frame();
+    frame();
+    for (const auto& theme : ui::kThemes) {
+      const auto previous = ui::CurrentThemeId();
+      runtime::StoreUiTheme(theme.id);
+      check(ui::CurrentThemeId() == previous, "theme persistence changed visual state outside the overlay frame");
+      frame();
+      check(ui::CurrentThemeId() == theme.id, "overlay did not apply the saved theme on the next frame");
+      clipped_callback = true;
+      frame();
+      clipped_callback = false;
+    }
+    runtime::StoreUiTheme(ui::ThemeId::CYBER_NEON);
+    frame();
+    runtime::ui_menu_page = 3;
+    panel_width = 1400.f;
+    frame();
+    frame();
+    for (const auto& theme : ui::kThemes) {
+      click(find(theme.name));
+      check(runtime::ui_theme_choice.load() == theme.id && ui::CurrentThemeId() == theme.id,
+            "clicking the visible theme name did not apply its palette");
+      char stored[64]{};
+      GetPrivateProfileStringA(runtime::kConfigSection, "UiTheme", "missing", stored, sizeof(stored), ".\\ReShade.ini");
+      check(std::string(stored) == theme.slug, "theme selection click did not save its slug");
+    }
+    click(find(ui::text::kRestoreTheme));
+    check(runtime::ui_theme_choice.load() == ui::ThemeId::CYBER_NEON
+              && ui::CurrentThemeId() == ui::ThemeId::CYBER_NEON,
+          "theme reset did not restore Cyber Neon");
+    runtime::ui_menu_page = 0;
+    panel_width = 1000.f;
     frame();
     const ui::StatusCard normal_card{.tone = ui::CardTone::kGood, .title = "Normal synthetic state", .body = "Normal synthetic detail"};
     frame(&normal_card);
@@ -379,6 +488,8 @@ int main() {
     click(find("##nr_enable"));
     check(runtime::enabled.load() == enabled_before, "NR switch restore failed");
     const float own_intensity = runtime::kSetIntensity.Get();
+    runtime::StoreUiTheme(ui::ThemeId::FLUENT_LIGHT);
+    frame();
     runtime::kSetIntensity.Store(1.3f);
     click(find("Built-in effect"));
     check(runtime::ui_defaults_view && runtime::kSetIntensity.Get() == runtime::kSetIntensity.fallback,
@@ -386,6 +497,8 @@ int main() {
     click(find("Mine"));
     check(!runtime::ui_defaults_view && runtime::kSetIntensity.Get() == 1.3f,
           "Mine did not restore the player's values");
+    check(runtime::ui_theme_choice.load() == ui::ThemeId::FLUENT_LIGHT,
+          "quality preset comparison changed the selected theme");
     runtime::kSetIntensity.Store(own_intensity);
     const uint32_t old_hook = runtime::hook_point.load();
     const uint32_t old_multiplier = runtime::present_fg_multiplier.load();
@@ -531,17 +644,30 @@ int main() {
       frame();
       unsigned nodes = 0;
       for (const auto& [id, item] : items) {
-        if (item.label.ends_with("###chain_pass")) ++nodes;
+        if (item.label.ends_with("###chain_pass")) {
+          ++nodes;
+          check(std::count(item.label.begin(), item.label.end(), '\n') == 2,
+                "processing node must retain three stable lines");
+          check(item.label.find(ui::text::kEditing) != std::string::npos
+                    || item.label.find(ui::text::kConfigured) != std::string::npos,
+                "processing nodes must describe configuration/editor state, not inferred execution");
+        }
       }
-      check(nodes == (count > 1 ? count : 0), "single-pass editor or multi-pass chain has the wrong node count");
-      if (count > 1) {
-        click(find("Pass " + std::to_string(count)));
-        check(runtime::ui_selected_pass == count - 1, "chain selects the wrong editor");
+      check(nodes == count, "processing chain must include the single base pass");
+      for (unsigned pass = 1; pass <= count; ++pass) {
+        click(find("Pass " + std::to_string(pass)));
+        check(runtime::ui_selected_pass == pass - 1, "chain selects the wrong editor");
       }
     }
     runtime::stack_passes = 4;
     frame();
     frame();
+    const std::string chain_tip = std::string("Pass 4\n") + ui::text::kRequest + ": " + ui::text::kInheritModel
+        + "\n" + ui::text::kInheritModel
+        + "\n" + (runtime::pass_follow[2].load() ? ui::text::kStyleFollows : ui::text::kStyleIndependent)
+        + "\n" + (runtime::pass_look_result[2].follow.load() ? ui::text::kResultFollows : ui::text::kResultIndependent)
+        + "\n" + ui::text::kRuntimeUnconfirmed + "\n" + ui::text::kChainMarkTip;
+    hover(find("Pass 4"), chain_tip.c_str(), nullptr);
     click(find("Pass 2"));
     check(runtime::ui_selected_pass == 1, "pass navigation failed");
     click(switch_for_label(ui::text::kInheritResult));
@@ -618,6 +744,8 @@ int main() {
     click(find("Restore"));
     check(runtime::stack_passes.load() == 1 && runtime::kSetPassPreset[0].Get() == 0.f,
           "confirmed restore defaults did not reset pass settings");
+    check(runtime::ui_theme_choice.load() == ui::ThemeId::FLUENT_LIGHT,
+          "global quality reset changed the selected theme");
     runtime::stack_passes = 4;
 
     click(find("developer_view"));
@@ -631,6 +759,7 @@ int main() {
     runtime::local_structure_strength = 2.f;
     runtime::use_auto_mask = true;
     runtime::skin_independent = true;
+    runtime::StoreUiTheme(ui::ThemeId::CYBER_NEON);
     for (bool classic : {false, true}) {
       runtime::ui_classic_layout = classic;
       for (float font : {13.f, 26.f, 39.f}) {
@@ -694,6 +823,96 @@ int main() {
     runtime::local_structure_strength = matrix_structure;
     runtime::use_auto_mask = matrix_mask;
     runtime::skin_independent = matrix_skin;
+    runtime::ui_classic_layout = false;
+    runtime::ui_language_choice = 1;
+    runtime::hook_point = runtime::kHookPresent;
+    runtime::stack_passes = 4;
+    runtime::ui_selected_pass = 1;
+    runtime::pass_look_result[0].follow = false;
+    runtime::pass_look_result[0].mode = true;
+    io.AddMousePosEvent(-100.f, -100.f);
+    unsigned themed_captures = 0;
+    for (const auto& theme : ui::kThemes) {
+      runtime::StoreUiTheme(theme.id);
+      for (const auto& size : {ImVec2(320.f, 13.f), ImVec2(450.f, 26.f), ImVec2(1600.f, 39.f)}) {
+        panel_width = size.x;
+        font_size = size.y;
+        for (int language : {1, 4, 14}) {
+          runtime::ui_language_choice = language;
+          for (int page = 0; page < 4; ++page) {
+            runtime::ui_menu_page = page;
+            frame();
+            frame();
+          }
+        }
+      }
+      runtime::ui_language_choice = 1;
+      font_size = 18.f;
+      for (float width : {450.f, 1400.f}) {
+        panel_width = width;
+        for (int page = 0; page < 4; ++page) {
+          runtime::ui_menu_page = page;
+          for (bool expanded : {false, true}) {
+            // Remove prior interaction/matrix fold state to capture genuine
+            // default-open groups rather than a previous page's manual edits.
+            for (ImGuiWindow* window : ImGui::GetCurrentContext()->Windows) {
+              window->StateStorage.Clear();
+              window->Scroll = ImVec2(0.f, 0.f);
+            }
+            for (auto& scope : ui::fold_scopes) {
+              scope = {};
+            }
+            ui::expand_all_sections = expanded;
+            const std::string name = std::string("theme-") + theme.slug + "-page-" + std::to_string(page)
+                + (width < 500.f ? "-narrow" : "-wide") + (expanded ? "-expanded" : "-default");
+            capture(name.c_str());
+            ++themed_captures;
+          }
+        }
+      }
+      panel_width = 450.f;
+      runtime::ui_menu_page = 2;
+      for (ui::CardTone tone : {ui::CardTone::kWarn, ui::CardTone::kBad}) {
+        const ui::StatusCard fault{.tone = tone, .title = "Synthetic diagnostic fault",
+                                   .body = "Fixture-only warning/error; no runtime failure inferred.",
+                                   .fix = {"Synthetic repair instruction"}, .fix_count = 1};
+        const std::string name = std::string("theme-") + theme.slug
+            + (tone == ui::CardTone::kWarn ? "-warning" : "-error");
+        capture(name.c_str(), &fault);
+        ++themed_captures;
+      }
+      runtime::ui_menu_page = 0;
+      ui::expand_all_sections = false;
+      frame();
+      frame();
+      click(find("##model"));
+      check(std::ranges::any_of(items, [](const auto& entry) { return entry.second.label == "B"; }),
+            "all-theme narrow model popup did not expose its real choices");
+      capture((std::string("theme-") + theme.slug + "-popup").c_str(), nullptr, false);
+      ++themed_captures;
+      io.AddKeyEvent(ImGuiKey_Escape, true);
+      frame();
+      io.AddKeyEvent(ImGuiKey_Escape, false);
+      frame();
+      panel_width = 1400.f;
+      frame();
+      frame();
+      const Item model_a = find("A");
+      for (int tick = 0; tick < 40; ++tick) {
+        const ImVec2 center = items.at(model_a.id).rect.GetCenter();
+        io.AddMousePosEvent(center.x, center.y);
+        frame();
+      }
+      check(std::ranges::find(tooltip_text, ui::text::kModelATip) != tooltip_text.end(),
+            "all-theme tooltip did not describe the hovered model");
+      capture((std::string("theme-") + theme.slug + "-tooltip").c_str(), nullptr, false);
+      ++themed_captures;
+      io.AddMousePosEvent(-100.f, -100.f);
+    }
+    check(themed_captures == 80, "four themes must each capture four pages, both widths/fold states, faults, popup and tooltip");
+    std::printf("all-theme mesh captures=%u; synthetic fixture, no game/GPU/visual acceptance inferred\n", themed_captures);
+    runtime::StoreUiTheme(ui::ThemeId::CYBER_NEON);
+    runtime::ui_language_choice = 14;
     ui::expand_all_sections = false;
     panel_width = 1400.f;
     font_size = 18.f;

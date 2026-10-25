@@ -49,12 +49,12 @@ inline void ItemTooltip(const char* fmt, ...) {
 
 inline ImVec4 ToneColor(CardTone tone) {
   switch (tone) {
-    case CardTone::kGood: return tokens::kGood;
-    case CardTone::kWarn: return tokens::kWarn;
-    case CardTone::kBad: return tokens::kBad;
-    case CardTone::kIdle: return tokens::kIdle;
+    case CardTone::kGood: return CurrentTheme().good;
+    case CardTone::kWarn: return CurrentTheme().warn;
+    case CardTone::kBad: return CurrentTheme().bad;
+    case CardTone::kIdle: return CurrentTheme().idle;
   }
-  return tokens::kIdle;
+  return CurrentTheme().idle;
 }
 
 // The tone as 8-bit RGB, for the capture lane's pixel count.
@@ -124,7 +124,7 @@ inline std::string Ellipsize(const char* text, float width) {
 inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count) {
   StyleScope frame;
   frame.FontSize(BodyFontSize())
-      .Color(ImGuiCol_ChildBg, tokens::kBgCard)
+      .Color(ImGuiCol_ChildBg, CurrentTheme().bg_card)
       .Var(ImGuiStyleVar_WindowPadding, ImVec2(tokens::kCardPadding + kStripeWidth, tokens::kCardPadding));
   const float height = ImGui::GetTextLineHeightWithSpacing() * 4.f
                        + ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y * 2.f;
@@ -157,12 +157,12 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count) {
     if (FormatCardDetail(detail, sizeof(detail), card) == 0) {
       std::snprintf(detail, sizeof(detail), "%s", Tr(card.body));
     }
-    line(detail, tokens::kTextSecondary);
+    line(detail, CurrentTheme().text_secondary);
     char cost[256];
     if (FormatNrCost(cost, sizeof(cost), card.nr_gpu_ms, card.nr_present_ms, card.frame_ms, true) == 0) {
       std::snprintf(cost, sizeof(cost), "%s: %s", Tr(text::kNrCost), Tr(text::kNoneYet));
     }
-    line(cost, tokens::kTextSecondary);
+    line(cost, CurrentTheme().text_secondary);
     char path[256];
     if (card.frame_gen_multiplier > 1 || card.fg_declared || card.observed_fg_route != FgRoute::kUnknown) {
       std::snprintf(path, sizeof(path), Tr(FrameGenText(card)),
@@ -170,13 +170,13 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count) {
     } else {
       std::snprintf(path, sizeof(path), "%s", Tr(card.path_note != nullptr ? card.path_note : card.body));
     }
-    line(path, tokens::kTextSecondary);
+    line(path, CurrentTheme().text_secondary);
     char label[160];
     std::snprintf(label, sizeof(label), Tr(text::kStatusDetails), warning_count);
     {
       StyleScope button;
       if (warning_count != 0) {
-        button.Color(ImGuiCol_Text, tokens::kWarn).Color(ImGuiCol_Border, tokens::kWarn);
+        button.Color(ImGuiCol_Text, CurrentTheme().warn).Color(ImGuiCol_Border, CurrentTheme().warn);
       }
       const std::string shown = Ellipsize(label, ImGui::GetContentRegionAvail().x - ImGui::GetStyle().FramePadding.x * 2.f);
       details = ImGui::Button((shown + "###status_details").c_str(), ImVec2(-1.f, 0.f));
@@ -209,7 +209,7 @@ inline bool DrawStatusCard(const StatusCard& card, bool show_metrics = true) {
   bool pressed = false;
 
   StyleScope frame;
-  frame.Color(ImGuiCol_ChildBg, kBgCard)
+  frame.Color(ImGuiCol_ChildBg, CurrentTheme().bg_card)
       .Var(ImGuiStyleVar_WindowPadding,
            ImVec2(kCardPadding + kStripeWidth, kCardPadding));
   const bool visible = ImGui::BeginChild(
@@ -237,7 +237,7 @@ inline bool DrawStatusCard(const StatusCard& card, bool show_metrics = true) {
     const bool frame_gen = show_metrics && (card.frame_gen_multiplier > 1 || card.fg_declared || card.observed_fg_route != FgRoute::kUnknown);
     if (has_detail || (show_metrics && card.path_note != nullptr) || has_cost || frame_gen) {
       StyleScope secondary;
-      secondary.FontSize(SmallFontSize()).Color(ImGuiCol_Text, kTextSecondary);
+      secondary.FontSize(SmallFontSize()).Color(ImGuiCol_Text, CurrentTheme().text_secondary);
       if (has_detail) ImGui::TextUnformatted(detail);
       if (show_metrics && card.path_note != nullptr) ImGui::TextUnformatted(Tr(card.path_note));
       // The Present hook point with frame generation: its multiplier, and
@@ -255,7 +255,7 @@ inline bool DrawStatusCard(const StatusCard& card, bool show_metrics = true) {
     // reason: the one Present counter a player has to see.
     if (card.present_gaps != 0) {
       StyleScope warn;
-      warn.Color(ImGuiCol_Text, kWarn);
+      warn.Color(ImGuiCol_Text, CurrentTheme().warn);
       ImGui::Text(Tr(text::kPresentGapsCard),
                   static_cast<unsigned long long>(card.present_gaps),
                   card.gap_reason != nullptr ? Tr(card.gap_reason) : Tr(text::kNoneYet));
@@ -268,10 +268,10 @@ inline bool DrawStatusCard(const StatusCard& card, bool show_metrics = true) {
 
     if (const char* label = ActionLabel(card.action); label != nullptr) {
       StyleScope button;
-      button.Color(ImGuiCol_Button, kAccent)
-          .Color(ImGuiCol_ButtonHovered, kAccentHover)
-          .Color(ImGuiCol_ButtonActive, kAccentActive)
-          .Color(ImGuiCol_Text, kBgWindow);
+      button.Color(ImGuiCol_Button, CurrentTheme().accent)
+          .Color(ImGuiCol_ButtonHovered, CurrentTheme().accent_hover)
+          .Color(ImGuiCol_ButtonActive, CurrentTheme().accent_active)
+          .Color(ImGuiCol_Text, CurrentTheme().on_accent);
       pressed = ImGui::Button(label);
     }
   }
@@ -327,7 +327,7 @@ inline void RowLabel(const char* label, const char* tooltip = nullptr) {
   if (!stacked || *label != '\0') {
     {
       StyleScope secondary;
-      secondary.Color(ImGuiCol_Text, tokens::kTextSecondary);
+      secondary.Color(ImGuiCol_Text, CurrentTheme().text_secondary);
       ImGui::TextUnformatted(Ellipsize(label, fit).c_str());
     }
     if (clipped && tooltip != nullptr) {
@@ -436,7 +436,7 @@ inline bool TreeNode(const char* id, const char* title, ImGuiTreeNodeFlags flags
   if (open) {
     const ImVec2 begin = ImGui::GetItemRectMin();
     const ImVec2 end = ImGui::GetItemRectMax();
-    ImGui::GetWindowDrawList()->AddRectFilled(begin, ImVec2(begin.x + 2.f, end.y), ToU32(tokens::kAccent));
+    ImGui::GetWindowDrawList()->AddRectFilled(begin, ImVec2(begin.x + 2.f, end.y), ToU32(CurrentTheme().accent));
   }
   if (shown != caption) {
     ItemTooltip("%s", caption.c_str());
@@ -455,8 +455,8 @@ inline bool ResetButton(const char* id, const char* default_text) {
   bool clicked = false;
   {
     StyleScope flat;
-    flat.Color(ImGuiCol_Button, tokens::kBgControl)
-        .Color(ImGuiCol_Text, tokens::kAccent)
+    flat.Color(ImGuiCol_Button, CurrentTheme().bg_control)
+        .Color(ImGuiCol_Text, CurrentTheme().accent)
         .Var(ImGuiStyleVar_FramePadding, ImVec2(0.f, ImGui::GetStyle().FramePadding.y));
     ImGui::PushID(id);
     clicked = ImGui::Button(icons::kUndo, ImVec2(ImGui::GetFrameHeight(), 0.f));
@@ -528,14 +528,14 @@ inline bool Slider(const char* id, float* value, float min, float max,
   const float rail = (std::max)(2.f, height * 0.14f);
   ImDrawList* draw = ImGui::GetWindowDrawList();
   draw->AddRectFilled(ImVec2(x0, y - rail * 0.5f), ImVec2(x1, y + rail * 0.5f),
-                      ToU32(tokens::kBgControlHover), rail);
+                      ToU32(CurrentTheme().slider_rail), rail);
   draw->AddRectFilled(ImVec2(x0, y - rail * 0.5f), ImVec2(x, y + rail * 0.5f),
-                      ToU32(tokens::kAccent), rail);
+                      ToU32(CurrentTheme().accent), rail);
   if (active || ImGui::IsItemHovered()) {
-    draw->AddCircleFilled(ImVec2(x, y), knob + 3.f, ToU32(ImVec4(tokens::kAccent.x,
-                          tokens::kAccent.y, tokens::kAccent.z, 0.35f)));
+    draw->AddCircleFilled(ImVec2(x, y), knob + 3.f, ToU32(ImVec4(CurrentTheme().accent.x,
+                          CurrentTheme().accent.y, CurrentTheme().accent.z, 0.35f)));
   }
-  draw->AddCircleFilled(ImVec2(x, y), knob, ToU32(tokens::kTextPrimary));
+  draw->AddCircleFilled(ImVec2(x, y), knob, ToU32(CurrentTheme().slider_knob));
 
   ImGui::SameLine(0.f, 0.f);
   ImGui::SetCursorScreenPos(
@@ -547,7 +547,7 @@ inline bool Slider(const char* id, float* value, float min, float max,
 // Static captions have no disclosure arrow or interactive background.
 inline void SubCaption(const char* caption) {
   StyleScope caption_text;
-  caption_text.FontSize(SmallFontSize()).Color(ImGuiCol_Text, tokens::kTextPrimary);
+  caption_text.FontSize(SmallFontSize()).Color(ImGuiCol_Text, CurrentTheme().text_primary);
   ImGui::TextUnformatted(Tr(caption));
 }
 
@@ -578,7 +578,7 @@ inline bool SectionCaption(const char* caption, const char* reset_label, bool mo
     caption_text.FontSize(SmallFontSize());
     {
       StyleScope secondary;
-      secondary.Color(ImGuiCol_Text, tokens::kTextPrimary);
+      secondary.Color(ImGuiCol_Text, CurrentTheme().text_primary);
       ImGui::TextUnformatted(Ellipsize(title, title_width).c_str());
       ItemTooltip("%s", title);
     }
@@ -641,7 +641,7 @@ inline bool SectionHeader(const char* english, const char* hint, const char* res
   }
   const ImVec2 lo = ImGui::GetItemRectMin();
   if (open) {
-    ImGui::GetWindowDrawList()->AddRectFilled(lo, ImVec2(lo.x + 2.f, ImGui::GetItemRectMax().y), ToU32(tokens::kAccent));
+    ImGui::GetWindowDrawList()->AddRectFilled(lo, ImVec2(lo.x + 2.f, ImGui::GetItemRectMax().y), ToU32(CurrentTheme().accent));
   }
   float hint_end = right;
   *reset = false;
@@ -657,7 +657,7 @@ inline bool SectionHeader(const char* english, const char* hint, const char* res
     const ImVec2 hint_at(title_end + font, lo.y + kPadY);
     const float room = hint_end - font - hint_at.x;
     if (room >= (std::min)(ImGui::CalcTextSize(hint).x, font * 6.f)) {
-      ImGui::GetWindowDrawList()->AddText(hint_at, ToU32(tokens::kTextSecondary),
+      ImGui::GetWindowDrawList()->AddText(hint_at, ToU32(CurrentTheme().text_secondary),
                                           Ellipsize(hint, room).c_str());
     }
   }
@@ -671,16 +671,17 @@ inline bool Switch(const char* id, bool* value) {
   const float width = height * 1.9f;
   const float radius = height * 0.5f;
   const ImVec2 at = ImGui::GetCursorScreenPos();
-  const bool pressed = ImGui::InvisibleButton(id, ImVec2(width, height));
+  const bool pressed = ImGui::InvisibleButton(id, ImVec2(width, height), ImGuiButtonFlags_EnableNav);
   if (pressed) *value = !*value;
   const bool hovered = ImGui::IsItemHovered();
-  const ImVec4& track = *value ? (hovered ? tokens::kAccentHover : tokens::kAccent)
-                               : (hovered ? tokens::kBgControlHover : tokens::kBgControl);
+  const ImVec4& track = *value ? (hovered ? CurrentTheme().accent_hover : CurrentTheme().accent)
+                               : (hovered ? CurrentTheme().bg_control_hover : CurrentTheme().bg_control);
   ImDrawList* draw = ImGui::GetWindowDrawList();
   draw->AddRectFilled(at, ImVec2(at.x + width, at.y + height), ToU32(track), radius);
+  draw->AddRect(at, ImVec2(at.x + width, at.y + height), ToU32(CurrentTheme().node_border), radius);
   draw->AddCircleFilled(
       ImVec2(*value ? at.x + width - radius : at.x + radius, at.y + radius),
-      radius - 3.f, ToU32(tokens::kTextPrimary));
+      radius - 3.f, ToU32(*value ? CurrentTheme().switch_knob : CurrentTheme().slider_knob));
   return pressed;
 }
 
@@ -729,9 +730,10 @@ inline int Segmented(const char* id, const char* const* english, int count,
     {
       StyleScope segment;
       if (i == current) {
-        segment.Color(ImGuiCol_Button, tokens::kAccent)
-            .Color(ImGuiCol_ButtonHovered, tokens::kAccentHover)
-            .Color(ImGuiCol_Text, tokens::kBgWindow);
+        segment.Color(ImGuiCol_Button, CurrentTheme().accent)
+            .Color(ImGuiCol_ButtonHovered, CurrentTheme().accent_hover)
+            .Color(ImGuiCol_ButtonActive, CurrentTheme().accent_active)
+            .Color(ImGuiCol_Text, CurrentTheme().on_accent);
       }
       ImGui::BeginDisabled(disabled != nullptr && disabled[i]);
       if (ImGui::Button(labels[i], ImVec2(width, 0.f))) clicked = i;
