@@ -1136,8 +1136,8 @@ inline void DrawIssueReport() {
             ImGui::EndDisabled();
             ImGui::PopID();
           }
-          if (!item.preview.empty() && ImGui::TreeNode((std::string(ui::Tr(ui::text::kReportPreview))
-                  + "##" + std::to_string(i)).c_str())) {
+          if (!item.preview.empty() && ui::TreeNode((std::string("attachment_preview_")
+                  + std::to_string(i)).c_str(), ui::Tr(ui::text::kReportPreview))) {
             if (ImGui::BeginChild(("##attachment_preview" + std::to_string(i)).c_str(),
                 ImVec2(0.f, ImGui::GetTextLineHeightWithSpacing() * 8.f), ImGuiChildFlags_Borders)) {
               ImGui::TextUnformatted(item.preview.c_str());
@@ -1263,7 +1263,7 @@ inline void DrawIssueReport() {
               : notice == "clipboard_unavailable" ? ui::text::kReportClipboardFailed
               : notice == "manual_fallback" ? ui::text::kReportManualFallback : ui::text::kReportDraftReady));
         }
-        if (!body.empty() && ImGui::TreeNode(ui::Tr(ui::text::kReportPreview))) {
+        if (!body.empty() && ui::TreeNode("public_report_preview", ui::Tr(ui::text::kReportPreview))) {
           ImGui::InputTextMultiline("##public_markdown", body.data(), body.size() + 1,
               ImVec2(-FLT_MIN, ImGui::GetTextLineHeightWithSpacing() * 8.f), ImGuiInputTextFlags_ReadOnly);
           if (ui::ActionButton(ui::Tr("Copy again"))) ImGui::SetClipboardText(body.c_str());

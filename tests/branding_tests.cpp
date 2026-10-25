@@ -24,11 +24,13 @@ int main() {
   std::snprintf(footer, sizeof(footer), text::kFooter, "v" NR_NEXUS_VERSION, "test-runtime", "test.exe");
   if (std::string_view(footer) != NR_NEXUS_NAME " v" NR_NEXUS_VERSION " | DLSSNR test-runtime | test.exe") return 1;
   const char* report_strings[] = {
+      text::kExpandAll, text::kCollapseAll, text::kChanged, text::kNrResolution, text::kResolutionFine, text::kProcessingLocation, text::kFgAdvanced, text::kFgFramePolicy, text::kFgFramePolicyTip, text::kResultBasic, text::kResultLimits, text::kResultDetail, text::kResultTemporal, text::kTemporalIndependent, text::kModelAutoTip, text::kModelATip, text::kModelBTip, text::kModelInheritTip, text::kChainMarkTip,
+      text::kFrameGenUnconfirmed, text::kFrameGenFallback, text::kFgNoMultiplier, text::kFgUnknown, text::kFgOtherStage, text::kFgBefore, text::kFgEvery, text::kFgGame, text::kFgFallback, text::kFgUpscaled, text::kFgMixed, text::kFgDiagnostics,
       text::kSettingsViewTip, text::kStatusDetails, "Advanced", text::kPassOverview,
       "Multi-Pass", "Pass Count", text::kOpenPresentSettings, text::kAbout,
       text::kRuntimeStatus, text::kResources, text::kDetails, text::kResultShaping,
       text::kResultChanged, text::kPresentSettings, text::kPresentDisplay,
-      text::kGeneral, text::kStoredValues, text::kChainNote, text::kModelNote, text::kResourceNote,
+      text::kGeneral, text::kChainNote, text::kModelNote, text::kResourceNote,
       text::kSharedResult, text::kInheritResult, text::kInheritResultTip, text::kInheritedResult,
       text::kRequest, text::kResolved, text::kNetwork, text::kNetworkUnavailable,
       text::kIndependentModel, text::kInheritModel, text::kInput, text::kOutput,

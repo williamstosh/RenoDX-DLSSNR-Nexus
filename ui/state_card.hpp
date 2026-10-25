@@ -27,6 +27,8 @@
 
 #pragma once
 
+#include "fg_route.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -257,6 +259,7 @@ struct StatusCard {
   std::uint32_t frame_gen_multiplier = 0;
   bool present_every_frame = true;
   bool present_before_fg = false;
+  FgRoute observed_fg_route = FgRoute::kUnknown;
   std::uint64_t present_gaps = 0;
   const char* gap_reason = nullptr;
 };

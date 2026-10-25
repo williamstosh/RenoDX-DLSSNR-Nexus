@@ -102,14 +102,19 @@ The development menu keeps a fixed-height live summary above **Quality**,
 opens Diagnostics inside the same menu, with full causes, repair steps, resource
 observations, performance counters, logs and issue reports. Present-specific
 Depth/Motion, HUD and generated-frame policies are available on Quality when
-Present is selected; Diagnostics links back to them. Result shaping hides inactive
-sliders unless you choose to inspect their stored values.
+Present is selected; Diagnostics links back to them. Model choices use parallel
+Auto/A/B buttons, with a dropdown on narrow panels. Working-resolution presets,
+custom scale, upsampling and the last observed NR size are together on Quality.
+Present route notices require repeated runtime observations; configuration alone
+does not confirm Pre-FG. Result adjustment keeps four inspectable parameter groups
+while disabled; detail stability retains its independent behavior. Expand all /
+Collapse all applies once to the current page, with later manual toggles preserved.
 
 Multi-Pass shows a clickable processing chain and one pass editor at a time.
 **Pass Count includes Pass 1.** Model inheritance remains independent of appearance
 sharing. Result shaping (including limits and stability) runs after each pass.
 Quality controls Pass 1's result settings; passes 2–4 inherit those by default.
-In each pass editor, expand **Result shaping** and turn off **Inherit Pass 1 result
+In each pass editor, expand **NR result adjustment** and turn off **Inherit Pass 1 result
 settings** to use independent values. Model styling and result inheritance are
 separate. Re-enabling inheritance preserves the stored custom values. Working resolution,
 upsampling and the hook point remain shared across the chain. Requested and configuration-resolved models are distinct from the runtime
@@ -322,11 +327,15 @@ Runtime 默认值。旧 Preset 3 保留存储，在 310.9.16 上解析为 A；�
 开发版菜单采用固定高度实时摘要，以及**画质／叠层／诊断／高级**分类导航。
 点击**状态与警告**直接进入同一菜单中的诊断页，集中查看完整原因、修复建议、资源观测、
 性能计数、日志和问题报告。选择 Present 后，画质页直接提供深度／运动、HUD 和生成帧策略，
-诊断页也提供返回入口。结果调整关闭时隐藏无效滑块，仍可选择查看保存值。
+诊断页也提供返回入口。模型采用自动／A／B 并列按钮，窄窗口改用下拉菜单。
+工作分辨率预设、自定义比例、上采样和上次实际 NR 尺寸集中在画质页。
+Present 路径提示要求连续运行观测，不能仅凭配置确认 Pre-FG。结果调整关闭时仍可
+展开四组参数查看禁用值，细节稳定保留独立生效规则。全部展开／收起仅对当前页
+执行一次，随后仍可手动调整各分组。
 
 叠层页用可点击的处理链选择编辑层，**叠层数包含第 1 层（基础层）**。模型继承和外观共享
 相互独立。结果调整（包含限制与稳定性）在每一层 NR 后执行；画质页控制第 1 层，
-第 2–4 层默认继承。进入对应层的**结果调整**，关闭**继承第 1 层结果设置**即可独立调节，
+第 2–4 层默认继承。进入对应层的**NR 结果调整**，关闭**继承第 1 层结果设置**即可独立调节，
 重新开启继承也会保留保存的自定义值。结果继承与模型风格继承分别控制；工作分辨率、上采样和介入点仍为全链共享。
 请求模型和配置解析模型保留，详细诊断明确说明当前版本不提供实际网络回读。
 宽窗口按需双列，窄窗口纵向排列。高级页包含快捷键／截图、兼容性修复、语言／通知、

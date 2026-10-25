@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <string>
 
+#include "ui/fg_route.hpp"
 #include "ui/widgets.hpp"
 
 namespace ui = renodx::addons::dlss5::ui;
@@ -36,6 +37,94 @@ int main() {
       }
     }
   };
+
+  {
+    ui::StatusCard card;
+    card.present_before_fg = true;
+    check(ui::FrameGenText(card) == ui::text::kFrameGenUnconfirmed,
+          "a single old Pre-FG flag must not confirm the summary route");
+    card.observed_fg_route = ui::FgRoute::kBeforeFg;
+    check(ui::FrameGenText(card) == ui::text::kFrameGenBeforeFg, "confirmed Pre-FG summary missing");
+    card.observed_fg_route = ui::FgRoute::kGameFrames;
+    check(ui::FrameGenText(card) == ui::text::kFrameGenGameFrames, "summary ignores observed game-frame route");
+  }
+  {
+    ui::FgRouteObserver observation;
+    ui::FgRouteInputs input{.enabled = true, .present = true, .prefg_active = true, .multiplier = 4, .prefg_policy = 3};
+    int64_t ns = 1;
+    observation.Update(input, ns);
+    const auto sample = [&] {
+      ns += 300'000'000LL;
+      input.nr_successes += 8;
+      observation.Update(input, ns);
+    };
+    input.prefg_frames += 4;
+    sample();
+    check(observation.route == ui::FgRoute::kUnknown, "one Pre-FG window is not stable evidence");
+    input.prefg_frames += 4;
+    sample();
+    check(observation.route == ui::FgRoute::kBeforeFg, "repeated successful Pre-FG is recognized");
+    input.prefg_active = false;
+    input.fallbacks += 4;
+    input.captures += 4;
+    sample();
+    check(observation.route == ui::FgRoute::kBeforeFg, "a transient miss does not flash a fallback warning");
+    input.fallbacks += 4;
+    input.captures += 4;
+    sample();
+    check(observation.route == ui::FgRoute::kFallbackPresent, "repeated Present fallback is recognized");
+    input.upscaled_active = true;
+    for (int i = 0; i < 2; ++i) {
+      input.upscaled_frames += 4;
+      sample();
+    }
+    check(observation.route == ui::FgRoute::kFallbackUpscaled, "Upscaled fallback must not be labeled ordinary Present");
+    input.upscaled_active = false;
+    input.prefg_policy = 0;
+    observation.Update(input, ++ns);
+    for (int i = 0; i < 2; ++i) {
+      input.captures += 4;
+      sample();
+    }
+    check(observation.route == ui::FgRoute::kEveryPresent, "explicit Present uses the every-present policy");
+    input.frame_policy = 1;
+    observation.Update(input, ++ns);
+    for (int i = 0; i < 2; ++i) {
+      input.captures += 4;
+      sample();
+    }
+    check(observation.route == ui::FgRoute::kGameFrames, "game-frame policy is distinguished");
+    ns += 300'000'000LL;
+    observation.Update(input, ns);
+    ns += 300'000'000LL;
+    observation.Update(input, ns);
+    check(observation.route == ui::FgRoute::kUnknown, "stale counters cannot confirm an active route");
+    input.prefg_active = true;
+    input.prefg_policy = 3;
+    input.prefg_frames += 1000;
+    observation.Update(input, ++ns);
+    sample();
+    sample();
+    check(observation.route == ui::FgRoute::kUnknown, "configuration and old successful totals are insufficient");
+    for (int i = 0; i < 2; ++i) {
+      input.prefg_frames += 3;
+      input.fallbacks += 1;
+      sample();
+    }
+    check(observation.route == ui::FgRoute::kMixed, "simultaneous success and fallback remains mixed");
+    input.submitted_before_fg = true;
+    for (int i = 0; i < 2; ++i) {
+      input.fg_submitted += 4;
+      input.fallbacks += 1;
+      sample();
+    }
+    check(observation.route == ui::FgRoute::kBeforeFg,
+          "queue-confirmed native/XeFG handoff takes precedence over legacy Pre-FG misses");
+    input.submitted_before_fg = false;
+    input.enabled = false;
+    observation.Update(input, ++ns);
+    check(observation.route == ui::FgRoute::kUnknown, "disabled NR clears the route");
+  }
   const auto frame = [&](const ui::StatusCard& card, float panel_width, float font,
                          unsigned warnings, bool summary, bool popup) {
     ImGui::GetStyle().FontSizeBase = font;

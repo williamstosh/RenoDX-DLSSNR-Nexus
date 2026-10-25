@@ -73,6 +73,7 @@ namespace ui = renodx::addons::dlss5::ui;
 using Json = nlohmann::json;
 
 struct Item {
+  ImGuiID id = 0;
   ImRect rect;
   std::string label;
   bool disabled = false;
@@ -81,7 +82,7 @@ struct Item {
 std::map<ImGuiID, Item> items;
 
 void ImGuiTestEngineHook_ItemAdd(ImGuiContext* context, ImGuiID id, const ImRect& rect, const ImGuiLastItemData*) {
-  items[id] = {.rect = rect, .disabled = (context->CurrentItemFlags & ImGuiItemFlags_Disabled) != 0, .window = context->CurrentWindow};
+  items[id] = {.id = id, .rect = rect, .disabled = (context->CurrentItemFlags & ImGuiItemFlags_Disabled) != 0, .window = context->CurrentWindow};
   // BeginCombo does not emit ItemInfo in the pinned ImGui version.
   if (context->CurrentWindow != nullptr && !context->CurrentWindow->IDStack.empty()
       && id == context->CurrentWindow->GetID("##model")) {
@@ -232,14 +233,21 @@ int main() {
     };
     const auto find = [&](const std::string& label) {
       for (const auto& [id, item] : items) {
-        if (item.label == label || item.label.starts_with(label + "\n") || item.label.ends_with("###" + label)) {
+        if (item.label == label || item.label.starts_with(label + "\n") || item.label.starts_with(label + " (") || item.label.ends_with("###" + label)) {
           return item;
         }
       }
       throw std::runtime_error("menu item missing: " + label);
     };
     const auto click = [&](const Item& item) {
-      const ImVec2 center = item.rect.GetCenter();
+      ImVec2 center = item.rect.GetCenter();
+      if (item.window != nullptr && (center.y < item.window->InnerRect.Min.y || center.y > item.window->InnerRect.Max.y)) {
+        ImGui::SetScrollY(item.window, item.window->Scroll.y + center.y - item.window->InnerRect.GetCenter().y);
+        frame();
+        frame();
+        check(items.contains(item.id), "scrolling lost the target control");
+        center = items.at(item.id).rect.GetCenter();
+      }
       io.AddMousePosEvent(center.x, center.y);
       frame();
       io.AddMouseButtonEvent(0, true);
@@ -318,6 +326,70 @@ int main() {
           "Mine did not restore the player's values");
     runtime::kSetIntensity.Store(own_intensity);
 
+    // Main zero means Auto; changing the UI must retain legacy stored values.
+    for (const auto& [label, value] : {std::pair{"A", 1.f}, {"B", 2.f}, {"Auto", 0.f}}) {
+      click(find(label));
+      check(runtime::kSetPreset.Get() == value, "main segmented model selection failed");
+    }
+    runtime::kSetPreset.Store(3.f);
+    frame();
+    check(runtime::kSetPreset.Get() == 3.f, "legacy model request was rewritten by drawing");
+    runtime::kSetPreset.Store(0.f);
+    panel_width = 320.f;
+    frame();
+    frame();
+    click(find("##model"));
+    click(find("B"));
+    check(runtime::kSetPreset.Get() == 2.f, "narrow model dropdown does not preserve B semantics");
+    click(find("##model"));
+    click(find("Auto"));
+    check(runtime::kSetPreset.Get() == 0.f, "narrow main-model zero is not Auto");
+    panel_width = 1000.f;
+    frame();
+    frame();
+
+    const auto fold_open = [&](const char* label) {
+      const Item item = find(label);
+      return item.window->StateStorage.GetInt(item.id, 0) != 0;
+    };
+    runtime::kLookResult[0].max_brighten.Store(0.6f);
+    click(find("expand_all"));
+    check(fold_open(ui::text::kResolutionFine) && fold_open(ui::text::kResultLimits),
+          "expand all did not reach nested Quality groups");
+    click(find("collapse_all"));
+    frame();
+    check(!fold_open(ui::text::kResolutionFine) && !fold_open(ui::text::kResultLimits),
+          "changed parameters reopened a manually collapsed group");
+    click(find(ui::text::kResultLimits));
+    check(fold_open(ui::text::kResultLimits), "one-shot collapse prevents later manual opening");
+    runtime::ui_language_choice = 3;
+    frame();
+    check(fold_open(ui::Tr(ui::text::kResultLimits)), "language change lost stable fold state");
+    runtime::ui_language_choice = 1;
+    runtime::ui_menu_page = 3;
+    frame();
+    click(find("collapse_all"));
+    click(find("expand_all"));
+    check(fold_open(ui::text::kHotkeys), "SectionHeader ignores the bulk command");
+    click(find("collapse_all"));
+    runtime::ui_menu_page = 0;
+    frame();
+    check(fold_open(ui::text::kResultLimits), "another page changed Quality fold state");
+    check(runtime::kLookResult[0].max_brighten.Get() == 0.6f, "fold controls changed a parameter");
+    runtime::kLookResult[0].max_brighten.Store(0.f);
+    click(find("collapse_all"));
+
+    click(find("Balanced"));
+    check(!runtime::nr_follow_input_res.load() && std::abs(runtime::nr_resolution_scale.load() - 0.58f) < 0.001f,
+          "resolution preset did not select its original parameter pair");
+    click(find("Match game"));
+    check(runtime::nr_follow_input_res.load(), "Match game did not select follow-input mode");
+    runtime::nr_follow_input_res = false;
+    runtime::nr_resolution_scale = 0.75f;
+    frame();
+    check(runtime::nr_resolution_scale.load() == 0.75f, "drawing custom resolution changed its saved scale");
+    runtime::nr_resolution_scale = 1.f;
+
     // A diagnostic shortcut must select the real Present controls, not a popup.
     runtime::hook_point = runtime::kHookPresent;
     runtime::ui_menu_page = 2;
@@ -331,6 +403,15 @@ int main() {
         if (text.text == value) return true;
       }
       return false;
+    };
+    const auto switch_for_label = [&](const char* label) {
+      for (const auto& text : rendered_text) {
+        if (text.text != label) continue;
+        for (const auto& [id, item] : items) {
+          if (item.label == "##value" && std::abs(item.rect.GetCenter().y - text.rect.GetCenter().y) < 5.f) return item;
+        }
+      }
+      throw std::runtime_error(std::string("switch missing for label: ") + label);
     };
     check(!has_text(ui::text::kNetwork), "Quality still shows unavailable runtime-network readback");
     runtime::ui_menu_page = 2;
@@ -349,14 +430,14 @@ int main() {
     frame();
     runtime::look_mode = false;
     frame();
-    check(!has_text("Edit strength"), "disabled result shaping still draws its sliders");
-    click(find(ui::text::kStoredValues));
-    check(has_text("Edit strength"), "stored result values cannot be inspected");
-    check(runtime::look_mode.load() == false, "inspecting stored values enabled result shaping");
-    click(find(ui::text::kStoredValues));
+    click(find(ui::text::kResultBasic));
+    check(has_text("Edit strength"), "disabled result parameters cannot be inspected");
+    check(!runtime::look_mode.load(), "inspecting result groups enabled result shaping");
+    click(find(ui::text::kResultTemporal));
+    check(has_text("Detail stability"), "independent detail stability is missing while look is off");
     runtime::look_mode = true;
     frame();
-    check(has_text("Edit strength"), "enabled result shaping hides its parameters");
+    check(has_text("Edit strength"), "enabling result shaping lost its parameters");
 
     click(find("Multi-Pass"));
     for (unsigned count = 1; count <= 4; ++count) {
@@ -379,15 +460,6 @@ int main() {
     click(find("Pass 2"));
     check(runtime::ui_selected_pass == 1, "pass navigation failed");
     click(find(ui::text::kResultShaping));
-    const auto switch_for_label = [&](const char* label) {
-      for (const auto& text : rendered_text) {
-        if (text.text != label) continue;
-        for (const auto& [id, item] : items) {
-          if (item.label == "##value" && std::abs(item.rect.GetCenter().y - text.rect.GetCenter().y) < 5.f) return item;
-        }
-      }
-      throw std::runtime_error(std::string("switch missing for label: ") + label);
-    };
     click(switch_for_label(ui::text::kInheritResult));
     check(!runtime::pass_look_result[0].follow.load(), "result inheritance switch failed");
     click(switch_for_label("Adjust NR's look"));
@@ -402,8 +474,11 @@ int main() {
           "custom results were not restored after disabling inheritance");
     click(find(ui::text::kResultShaping));
 
-    click(find("##model"));
-    click(find("B (Small FP8)"));
+    bool model_combo = false;
+    for (const auto& [id, item] : items)
+      if (item.label == "##model") model_combo = true;
+    if (model_combo) click(find("##model"));
+    click(find("B"));
     check(runtime::kSetPassPreset[0].Get() == 2.f, "pass model change failed");
     char saved[32]{};
     GetPrivateProfileStringA(runtime::kConfigSection, "NRPass2Preset", "missing", saved, sizeof(saved), ".\\ReShade.ini");
@@ -415,7 +490,7 @@ int main() {
     runtime::stack_passes = 4;
     frame();
     click(find("Pass 2"));
-    const Item model = find("##model");
+    const Item model = model_combo ? find("##model") : find("B");
     bool reset_found = false;
     Item model_reset;
     for (const auto& [id, item] : items) {
@@ -432,8 +507,8 @@ int main() {
     runtime::direct_runtime_requirements.dual_models = false;
     runtime::kSetPassPreset[0].Store(2.f);
     capture("model-fallback");
-    click(find("##model"));
-    check(find("B (Small FP8)").disabled, "unsupported model B remains editable");
+    if (model_combo) click(find("##model"));
+    check(find("B").disabled, "unsupported model B remains editable");
     io.AddKeyEvent(ImGuiKey_Escape, true);
     frame();
     io.AddKeyEvent(ImGuiKey_Escape, false);
@@ -441,7 +516,12 @@ int main() {
     runtime::direct_runtime_requirements.file_version.clear();
     frame();
     frame();
-    check(find("##model").disabled, "unidentified runtime permits model changes");
+    if (model_combo) click(find("##model"));
+    check(find("A").disabled && find("B").disabled, "unidentified runtime permits model changes");
+    io.AddKeyEvent(ImGuiKey_Escape, true);
+    frame();
+    io.AddKeyEvent(ImGuiKey_Escape, false);
+    frame();
     check(runtime::kSetPassPreset[0].Get() == 2.f,
           "unidentified runtime rewrote the saved request");
     runtime::direct_runtime_requirements.file_version = "310.9.16.0";

@@ -17,11 +17,13 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <unordered_map>
 
 #include "state_card.hpp"
 #include "strings.hpp"
@@ -88,6 +90,17 @@ inline const char* ActionLabel(CardAction action) {
 
 inline constexpr float kStripeWidth = 4.f;
 
+inline const char* FrameGenText(const StatusCard& card) {
+  switch (card.observed_fg_route) {
+    case FgRoute::kBeforeFg:         return text::kFrameGenBeforeFg;
+    case FgRoute::kEveryPresent:
+    case FgRoute::kFallbackPresent:  return text::kFrameGenEvery;
+    case FgRoute::kGameFrames:       return text::kFrameGenGameFrames;
+    case FgRoute::kFallbackUpscaled: return text::kFrameGenFallback;
+    default:                         return text::kFrameGenUnconfirmed;
+  }
+}
+
 // Keep complete UTF-8 characters when a single-line summary or label is shortened.
 inline std::string Ellipsize(const char* text, float width) {
   std::string shown(text);
@@ -147,8 +160,7 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count) {
     line(cost, tokens::kTextSecondary);
     char path[256];
     if (card.frame_gen_multiplier > 1) {
-      std::snprintf(path, sizeof(path), Tr(card.present_before_fg ? text::kFrameGenBeforeFg : card.present_every_frame ? text::kFrameGenEvery
-                                                                                                                       : text::kFrameGenGameFrames),
+      std::snprintf(path, sizeof(path), Tr(FrameGenText(card)),
                     card.frame_gen_multiplier);
     } else {
       std::snprintf(path, sizeof(path), "%s", Tr(card.path_note != nullptr ? card.path_note : card.body));
@@ -226,9 +238,7 @@ inline bool DrawStatusCard(const StatusCard& card, bool show_metrics = true) {
       // The Present hook point with frame generation: its multiplier, and
       // whether the generated frames get NR too.
       if (frame_gen) {
-        ImGui::Text(Tr(card.present_before_fg     ? text::kFrameGenBeforeFg
-                       : card.present_every_frame ? text::kFrameGenEvery
-                                                  : text::kFrameGenGameFrames),
+        ImGui::Text(Tr(FrameGenText(card)),
                     card.frame_gen_multiplier);
       }
       if (has_cost) {
@@ -380,13 +390,51 @@ inline bool ActionButton(const char* label, const char* id = nullptr) {
   return clicked;
 }
 
-inline bool TreeNode(const char* id, const char* title, ImGuiTreeNodeFlags flags = 0) {
+// Player commands are one-shot epochs, separate from capture-only forcing.
+// Scopes separate pages and their mode-specific controls. Hidden descendants
+// receive a pending command when reached; later individual toggles remain free.
+struct FoldState {
+  unsigned epoch = 0;
+  bool seen = false;
+};
+struct FoldScope {
+  unsigned epoch = 0;
+  bool target = false;
+  std::unordered_map<ImGuiID, FoldState> nodes;
+};
+inline std::array<FoldScope, 32> fold_scopes;
+inline int fold_scope = -1;
+inline void PrepareFold(const char* id, bool changed = false) {
+  if (expand_all_sections) {
+    ImGui::SetNextItemOpen(true);
+    return;
+  }
+  if (fold_scope < 0) return;
+  FoldScope& scope = fold_scopes[fold_scope];
+  FoldState& state = scope.nodes[ImGui::GetID(id)];
+  if (state.epoch != scope.epoch) {
+    ImGui::SetNextItemOpen(scope.target);
+    state.epoch = scope.epoch;
+  } else if (!state.seen && changed && scope.epoch == 0) {
+    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+  }
+  state.seen = true;
+}
+inline bool TreeNode(const char* id, const char* title, ImGuiTreeNodeFlags flags = 0, bool changed = false) {
+  PrepareFold(id, changed);
   const float width = (std::max)(0.f, ImGui::GetContentRegionAvail().x
                                           - ImGui::GetFontSize() - ImGui::GetStyle().FramePadding.x * 3.f);
-  const std::string shown = Ellipsize(title, width);
-  const bool open = ImGui::TreeNodeEx(id, flags, "%s", shown.c_str());
-  if (shown != title) {
-    ItemTooltip("%s", title);
+  const std::string caption = std::string(title) + (changed ? std::string(" (") + Tr(text::kChanged) + ")" : "");
+  const std::string shown = Ellipsize(caption.c_str(), width);
+  const bool open = ImGui::TreeNodeEx(id, flags | ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_SpanAvailWidth,
+                                      "%s", shown.c_str());
+  if (open) {
+    const ImVec2 begin = ImGui::GetItemRectMin();
+    const ImVec2 end = ImGui::GetItemRectMax();
+    ImGui::GetWindowDrawList()->AddRectFilled(begin, ImVec2(begin.x + 2.f, end.y), ToU32(tokens::kAccent));
+  }
+  if (shown != caption) {
+    ItemTooltip("%s", caption.c_str());
   }
   return open;
 }
@@ -491,11 +539,10 @@ inline bool Slider(const char* id, float* value, float min, float max,
   return changed;
 }
 
-// A group's name inside a section ("Pass 2", "HDR"): small text in the
-// secondary colour.
+// Static captions have no disclosure arrow or interactive background.
 inline void SubCaption(const char* caption) {
   StyleScope caption_text;
-  caption_text.FontSize(SmallFontSize()).Color(ImGuiCol_Text, tokens::kTextSecondary);
+  caption_text.FontSize(SmallFontSize()).Color(ImGuiCol_Text, tokens::kTextPrimary);
   ImGui::TextUnformatted(Tr(caption));
 }
 
@@ -508,7 +555,7 @@ inline bool RightLink(const char* label, float right) {
   return ImGui::TextLink(label);
 }
 
-// An always-open section's caption: small capitals in the secondary colour
+// An always-open section's caption: small text in the primary colour
 // over a hairline, and at the right end a link that resets the section,
 // shown while `modified`.  Returns true on the frame the link was clicked.
 inline bool SectionCaption(const char* caption, const char* reset_label, bool modified) {
@@ -526,7 +573,7 @@ inline bool SectionCaption(const char* caption, const char* reset_label, bool mo
     caption_text.FontSize(SmallFontSize());
     {
       StyleScope secondary;
-      secondary.Color(ImGuiCol_Text, tokens::kTextSecondary);
+      secondary.Color(ImGuiCol_Text, tokens::kTextPrimary);
       ImGui::TextUnformatted(Ellipsize(title, title_width).c_str());
       ItemTooltip("%s", title);
     }
@@ -556,7 +603,8 @@ inline void SectionGap() {
 // its open state across a language change.
 inline bool SectionHeader(const char* english, const char* hint, const char* reset_label,
                           bool modified, bool* reset) {
-  const char* title = Tr(english);
+  const std::string caption = std::string(Tr(english)) + (modified ? std::string(" (") + Tr(text::kChanged) + ")" : "");
+  const char* title = caption.c_str();
   hint = Tr(hint);
   reset_label = Tr(reset_label);
   // The header's vertical padding, which is also where the hint's baseline
@@ -576,7 +624,7 @@ inline bool SectionHeader(const char* english, const char* hint, const char* res
   const std::string shown_title = Ellipsize(title, (std::max)(0.f, right - at.x - font - pad * 3.f - reserved));
   const float title_end = at.x + font + pad * 3.f + ImGui::CalcTextSize(shown_title.c_str()).x;
   bool open = false;
-  if (expand_all_sections) ImGui::SetNextItemOpen(true);
+  PrepareFold((std::string("###") + english).c_str(), modified);
   {
     StyleScope tall;
     tall.Var(ImGuiStyleVar_FramePadding, ImVec2(pad, kPadY));
@@ -587,6 +635,9 @@ inline bool SectionHeader(const char* english, const char* hint, const char* res
     ItemTooltip("%s", title);
   }
   const ImVec2 lo = ImGui::GetItemRectMin();
+  if (open) {
+    ImGui::GetWindowDrawList()->AddRectFilled(lo, ImVec2(lo.x + 2.f, ImGui::GetItemRectMax().y), ToU32(tokens::kAccent));
+  }
   float hint_end = right;
   *reset = false;
   if (modified && reset_label != nullptr) {
@@ -635,7 +686,7 @@ inline bool Switch(const char* id, bool* value) {
 // narrow for its longest label (ReShade docks the panel at ~450 px) draws a
 // dropdown of the same choices instead of clipped words.
 inline int Segmented(const char* id, const char* const* english, int count,
-                     int current, const char* tooltip) {
+                     int current, const char* tooltip, const char* const* option_tips = nullptr, const bool* disabled = nullptr, bool compact_combo = false) {
   constexpr float kGap = 2.f;
   constexpr int kMaxSegments = 8;
   const char* labels[kMaxSegments] = {};
@@ -650,10 +701,13 @@ inline int Segmented(const char* id, const char* const* english, int count,
     widest = (std::max)(widest, ImGui::CalcTextSize(labels[i]).x);
   }
   int clicked = -1;
-  if (widest + ImGui::GetStyle().FramePadding.x * 2.f > width) {
+  if (compact_combo || widest + ImGui::GetStyle().FramePadding.x * 2.f > width) {
     if (ImGui::BeginCombo(id, current >= 0 && current < count ? labels[current] : Tr("Custom"))) {
       for (int i = 0; i < count; ++i) {
+        ImGui::BeginDisabled(disabled != nullptr && disabled[i]);
         if (ImGui::Selectable(labels[i], i == current)) clicked = i;
+        ImGui::EndDisabled();
+        if (option_tips != nullptr) ItemTooltip("%s", Tr(option_tips[i]));
       }
       ImGui::EndCombo();
     }
@@ -672,12 +726,17 @@ inline int Segmented(const char* id, const char* const* english, int count,
             .Color(ImGuiCol_ButtonHovered, tokens::kAccentHover)
             .Color(ImGuiCol_Text, tokens::kBgWindow);
       }
+      ImGui::BeginDisabled(disabled != nullptr && disabled[i]);
       if (ImGui::Button(labels[i], ImVec2(width, 0.f))) clicked = i;
+      ImGui::EndDisabled();
     }
     // After the segment's colours pop: a tooltip draws its text in the
     // current ImGuiCol_Text, and the selected segment's is the window
     // background, which on the popup's dark fill left the text unreadable.
-    if (tooltip != nullptr) ItemTooltip("%s", tooltip);
+    if (option_tips != nullptr)
+      ItemTooltip("%s", Tr(option_tips[i]));
+    else if (tooltip != nullptr)
+      ItemTooltip("%s", tooltip);
   }
   ImGui::PopID();
   return clicked;
