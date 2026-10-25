@@ -59,7 +59,7 @@ inline constexpr PanelText kClassicText = {
     "Enable DLSS Neural Rendering",
     "Overall Intensity",
     "NR Hook Point",
-    "NR Passes (stack)",
+    "Pass Count",
     "NR Codec",
     "Diffuse White (nits)",
     "Governor attack (stops/s)",
@@ -73,7 +73,7 @@ inline constexpr PanelText kModernText = {
     "Neural Rendering",
     "Strength",
     "Hook point",
-    "Stack passes",
+    "Pass Count",
     "HDR mode",
     "Paper white (nits)",
     "Brighten speed",
@@ -82,6 +82,42 @@ inline constexpr PanelText kModernText = {
 };
 
 namespace text {
+
+inline constexpr const char* kStatusDetails = "Status & warnings (%u)";
+inline constexpr const char* kMenuPages[] = {"Quality", "Multi-Pass", "Diagnostics", "Advanced"};
+inline constexpr const char* kPassOverview = "Pass Overview";
+inline constexpr const char* kOpenPresentSettings = "Open Present settings";
+inline constexpr const char* kAbout = "Version & about";
+inline constexpr const char* kRuntimeStatus = "Runtime status";
+inline constexpr const char* kResources = "Resources & compatibility";
+inline constexpr const char* kDetails = "Detailed diagnostics";
+inline constexpr const char* kResultShaping = "Result shaping";
+inline constexpr const char* kResultChanged = "Result shaping (changed)";
+inline constexpr const char* kPresentSettings = "Present settings";
+inline constexpr const char* kPresentDisplay = "HDR & compatibility";
+inline constexpr const char* kGeneral = "Language & notifications";
+inline constexpr const char* kStoredValues = "Show stored values";
+inline constexpr const char* kChainNote = "Configured chain; execution is reported in Diagnostics.";
+inline constexpr const char* kModelNote =
+    "This build does not read the runtime's actual network. Resolved models describe configuration only.";
+inline constexpr const char* kResourceNote = "Observed this session; the selected resource policy is not proof of availability.";
+inline constexpr const char* kSharedResult =
+    "Result settings apply to Pass 1 and every pass inheriting them. Customize other passes in Multi-Pass.";
+inline constexpr const char* kInheritResult =
+    "Inherit Pass 1 result settings";
+inline constexpr const char* kInheritResultTip =
+    "Result shaping and stability only. Model choice and model styling have separate inheritance. Stored custom values are preserved.";
+inline constexpr const char* kInheritedResult =
+    "Uses Pass 1 result settings. Turn inheritance off to edit this pass.";
+inline constexpr const char* kRequest = "Requested model";
+inline constexpr const char* kResolved = "Resolved model";
+inline constexpr const char* kNetwork = "Runtime network";
+inline constexpr const char* kNetworkUnavailable = "Readback unavailable";
+inline constexpr const char* kIndependentModel = "Independent Model";
+inline constexpr const char* kInheritModel = "Inherit Main Model";
+inline constexpr const char* kInput = "Input";
+inline constexpr const char* kOutput = "Output";
+inline constexpr const char* kConfigured = "Configured";
 
 inline constexpr const char* kReportSteps = "Reproduction steps (optional)";
 inline constexpr const char* kReportCapture = "Include an optional screenshot comparison";
@@ -153,11 +189,9 @@ inline constexpr const char* kFooter = NR_NEXUS_NAME " %s | DLSSNR %s | %s";
 // The Defaults view (alpha46): segment 0 runs the built-in look, segment 1
 // the player's own.
 inline constexpr const char* kSettingsView = "Settings";
-inline constexpr const char* kSettingsViewLabels[] = {"Defaults", "Mine"};
+inline constexpr const char* kSettingsViewLabels[] = {"Built-in effect", "Mine"};
 inline constexpr const char* kSettingsViewTip =
-    "Compare in game: Defaults runs the built-in look (Strength, the Look"
-    " section and stacking) while your own values wait; Mine brings them"
-    " back.  Nothing is saved while Defaults is on.";
+    "Compare in game: Built-in effect temporarily uses stock Strength, Look and Multi-Pass settings. Mine restores your values. Nothing is saved while Built-in effect is selected.";
 inline constexpr const char* kDefaultsViewNote =
     "Showing the built-in look.  Your settings are kept; pick Mine to return.";
 

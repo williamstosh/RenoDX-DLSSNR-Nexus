@@ -34,7 +34,8 @@ namespace renodx::addons::dlss5::ui {
 // ImGui::SetItemTooltip, with the text wrapped at kTooltipEm.  The one way
 // the add-on shows a tooltip.
 inline void ItemTooltip(const char* fmt, ...) {
-  if (!ImGui::BeginItemTooltip()) return;
+  if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) return;
+  ImGui::BeginTooltip();
   ImGui::PushTextWrapPos(ImGui::GetFontSize() * tokens::kTooltipEm);
   va_list args;
   va_start(args, fmt);
@@ -87,6 +88,88 @@ inline const char* ActionLabel(CardAction action) {
 
 inline constexpr float kStripeWidth = 4.f;
 
+// Keep complete UTF-8 characters when a single-line summary or label is shortened.
+inline std::string Ellipsize(const char* text, float width) {
+  std::string shown(text);
+  if (ImGui::CalcTextSize(text).x <= width) return shown;
+  while (!shown.empty() && ImGui::CalcTextSize((shown + "...").c_str()).x > width) {
+    while (!shown.empty() && (static_cast<unsigned char>(shown.back()) & 0xC0) == 0x80) {
+      shown.pop_back();
+    }
+    if (!shown.empty()) shown.pop_back();
+  }
+  return shown + "...";
+}
+
+// Only this child participates in the settings layout. Full messages, actions
+// and repair steps belong to the Diagnostics page.
+inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count) {
+  StyleScope frame;
+  frame.FontSize(BodyFontSize())
+      .Color(ImGuiCol_ChildBg, tokens::kBgCard)
+      .Var(ImGuiStyleVar_WindowPadding, ImVec2(tokens::kCardPadding + kStripeWidth, tokens::kCardPadding));
+  const float height = ImGui::GetTextLineHeightWithSpacing() * 4.f
+                       + ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y * 2.f;
+  bool details = false;
+  if (ImGui::BeginChild("##nr_status_summary", ImVec2(0.f, height),
+                        ImGuiChildFlags_AlwaysUseWindowPadding,
+                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+    const ImVec2 origin = ImGui::GetWindowPos();
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        origin, ImVec2(origin.x + kStripeWidth, origin.y + ImGui::GetWindowSize().y),
+        ToU32(ToneColor(card.tone)), tokens::kRadiusCard, ImDrawFlags_RoundCornersLeft);
+    // A missing measurement still consumes its line. Wrapping is disabled
+    // locally even when the surrounding ReShade panel enables it.
+    const auto line = [](const char* value, const ImVec4& color) {
+      StyleScope text;
+      text.Color(ImGuiCol_Text, color);
+      std::string single_line(value);
+      std::replace(single_line.begin(), single_line.end(), '\n', ' ');
+      std::replace(single_line.begin(), single_line.end(), '\r', ' ');
+      ImGui::PushTextWrapPos(-1.f);
+      ImGui::TextUnformatted(Ellipsize(single_line.c_str(), ImGui::GetContentRegionAvail().x).c_str());
+      ImGui::PopTextWrapPos();
+      ItemTooltip("%s", value);
+    };
+    char title[256];
+    FormatCardTitle(title, sizeof(title), card);
+    const std::string heading = std::string(GlyphIcon(card.glyph)) + " " + title;
+    line(heading.c_str(), ToneColor(card.tone));
+    char detail[256];
+    if (FormatCardDetail(detail, sizeof(detail), card) == 0) {
+      std::snprintf(detail, sizeof(detail), "%s", Tr(card.body));
+    }
+    line(detail, tokens::kTextSecondary);
+    char cost[256];
+    if (FormatNrCost(cost, sizeof(cost), card.nr_gpu_ms, card.nr_present_ms, card.frame_ms, true) == 0) {
+      std::snprintf(cost, sizeof(cost), "%s: %s", Tr(text::kNrCost), Tr(text::kNoneYet));
+    }
+    line(cost, tokens::kTextSecondary);
+    char path[256];
+    if (card.frame_gen_multiplier > 1) {
+      std::snprintf(path, sizeof(path), Tr(card.present_before_fg ? text::kFrameGenBeforeFg : card.present_every_frame ? text::kFrameGenEvery
+                                                                                                                       : text::kFrameGenGameFrames),
+                    card.frame_gen_multiplier);
+    } else {
+      std::snprintf(path, sizeof(path), "%s", Tr(card.path_note != nullptr ? card.path_note : card.body));
+    }
+    line(path, tokens::kTextSecondary);
+    char label[160];
+    std::snprintf(label, sizeof(label), Tr(text::kStatusDetails), warning_count);
+    {
+      StyleScope button;
+      if (warning_count != 0) {
+        button.Color(ImGuiCol_Text, tokens::kWarn).Color(ImGuiCol_Border, tokens::kWarn);
+      }
+      const std::string shown = Ellipsize(label, ImGui::GetContentRegionAvail().x - ImGui::GetStyle().FramePadding.x * 2.f);
+      details = ImGui::Button((shown + "###status_details").c_str(), ImVec2(-1.f, 0.f));
+    }
+    ItemTooltip("%s", label);
+  }
+  ImGui::EndChild();
+  return details;
+}
+
 // The glyph in the card's tone and the title, at the title size: the card's
 // first line, and all of the HUD pill but its hint.
 inline void CardHeading(const StatusCard& card) {
@@ -104,7 +187,7 @@ inline void CardHeading(const StatusCard& card) {
 }
 
 // Draws the card; returns true on the frame its button was pressed.
-inline bool DrawStatusCard(const StatusCard& card) {
+inline bool DrawStatusCard(const StatusCard& card, bool show_metrics = true) {
   using namespace tokens;
   bool pressed = false;
 
@@ -130,17 +213,16 @@ inline bool DrawStatusCard(const StatusCard& card) {
     CardHeading(card);
     ImGui::TextUnformatted(Tr(card.body));
     char detail[160];
-    const bool has_detail = FormatCardDetail(detail, sizeof(detail), card) > 0;
+    const bool has_detail = show_metrics && FormatCardDetail(detail, sizeof(detail), card) > 0;
     char cost[256];
     const bool has_cost =
-        FormatNrCost(cost, sizeof(cost), card.nr_gpu_ms, card.nr_present_ms, card.frame_ms,
-                     true) > 0;
-    const bool frame_gen = card.frame_gen_multiplier > 1;
-    if (has_detail || card.path_note != nullptr || has_cost || frame_gen) {
+        show_metrics && FormatNrCost(cost, sizeof(cost), card.nr_gpu_ms, card.nr_present_ms, card.frame_ms, true) > 0;
+    const bool frame_gen = show_metrics && card.frame_gen_multiplier > 1;
+    if (has_detail || (show_metrics && card.path_note != nullptr) || has_cost || frame_gen) {
       StyleScope secondary;
       secondary.FontSize(SmallFontSize()).Color(ImGuiCol_Text, kTextSecondary);
       if (has_detail) ImGui::TextUnformatted(detail);
-      if (card.path_note != nullptr) ImGui::TextUnformatted(Tr(card.path_note));
+      if (show_metrics && card.path_note != nullptr) ImGui::TextUnformatted(Tr(card.path_note));
       // The Present hook point with frame generation: its multiplier, and
       // whether the generated frames get NR too.
       if (frame_gen) {
@@ -194,21 +276,6 @@ inline float row_slot_x = 0.f;
 // Test-only (RENODX_NR_TEST_UI_EXPAND): every section header opens, so a
 // capture lane draws the collapsed sections' controls too.
 inline bool expand_all_sections = false;
-
-// `text` cut to fit `width` with "..." at the end, or whole when it fits.
-// The cut falls between UTF-8 characters: a translated label is Cyrillic,
-// Thai or CJK, and half a character draws as a stray glyph.
-inline std::string Ellipsize(const char* text, float width) {
-  std::string shown(text);
-  if (ImGui::CalcTextSize(text).x <= width) return shown;
-  while (!shown.empty() && ImGui::CalcTextSize((shown + "...").c_str()).x > width) {
-    while (!shown.empty() && (static_cast<unsigned char>(shown.back()) & 0xC0) == 0x80) {
-      shown.pop_back();
-    }
-    if (!shown.empty()) shown.pop_back();
-  }
-  return shown + "...";
-}
 
 // This frame's count of drawn reset buttons: the capture line states it
 // (resets=), so a lane can tell a changed setting's row from a stock one.
@@ -271,6 +338,59 @@ inline void SameLineIfFits(float width) {
   }
 }
 
+// Native controls keep their values and keyboard interaction; placing long
+// labels above them lets the flat Developer view fit a narrow ReShade dock.
+inline std::string ControlLabel(const char* label) {
+  ImGui::TextWrapped("%s", label);
+  ImGui::SetNextItemWidth(-1.f);
+  return std::string("##") + label;
+}
+
+inline bool Checkbox(const char* label, bool* value) {
+  if (ImGui::CalcTextSize(label).x + ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x
+      <= ImGui::GetContentRegionAvail().x) {
+    return ImGui::Checkbox(label, value);
+  }
+  ImGui::BeginGroup();
+  bool changed = ImGui::Checkbox((std::string("##") + label).c_str(), value);
+  ImGui::SameLine();
+  ImGui::TextWrapped("%s", label);
+  if (ImGui::IsItemClicked()) {
+    *value = !*value;
+    changed = true;
+  }
+  ImGui::EndGroup();
+  return changed;
+}
+
+// Native button interaction with a fully wrapped action label. Long repair
+// actions must remain readable at large font sizes in a narrow dock.
+inline bool ActionButton(const char* label, const char* id = nullptr) {
+  const ImVec2 padding = ImGui::GetStyle().FramePadding;
+  const float width = (std::min)(ImGui::GetContentRegionAvail().x,
+                                 ImGui::CalcTextSize(label).x + padding.x * 2.f);
+  const float wrap_width = (std::max)(1.f, width - padding.x * 2.f);
+  const ImVec2 text_size = ImGui::CalcTextSize(label, nullptr, false, wrap_width);
+  const bool clicked = ImGui::Button((std::string("###") + (id != nullptr ? id : label)).c_str(),
+                                     ImVec2(width, text_size.y + padding.y * 2.f));
+  const ImVec2 origin = ImGui::GetItemRectMin();
+  ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
+                                      ImVec2(origin.x + (width - text_size.x) * 0.5f, origin.y + padding.y),
+                                      ImGui::GetColorU32(ImGuiCol_Text), label, nullptr, wrap_width);
+  return clicked;
+}
+
+inline bool TreeNode(const char* id, const char* title, ImGuiTreeNodeFlags flags = 0) {
+  const float width = (std::max)(0.f, ImGui::GetContentRegionAvail().x
+                                          - ImGui::GetFontSize() - ImGui::GetStyle().FramePadding.x * 3.f);
+  const std::string shown = Ellipsize(title, width);
+  const bool open = ImGui::TreeNodeEx(id, flags, "%s", shown.c_str());
+  if (shown != title) {
+    ItemTooltip("%s", title);
+  }
+  return open;
+}
+
 // The reset button in the row's slot: an undo arrow, drawn only for a
 // setting that differs from its default (the caller decides).  `id` keeps
 // the buttons apart; `default_text` names what a click restores.  Returns
@@ -282,8 +402,8 @@ inline bool ResetButton(const char* id, const char* default_text) {
   bool clicked = false;
   {
     StyleScope flat;
-    flat.Color(ImGuiCol_Button, ImVec4(0.f, 0.f, 0.f, 0.f))
-        .Color(ImGuiCol_Text, tokens::kTextSecondary)
+    flat.Color(ImGuiCol_Button, tokens::kBgControl)
+        .Color(ImGuiCol_Text, tokens::kAccent)
         .Var(ImGuiStyleVar_FramePadding, ImVec2(0.f, ImGui::GetStyle().FramePadding.y));
     ImGui::PushID(id);
     clicked = ImGui::Button(icons::kUndo, ImVec2(ImGui::GetFrameHeight(), 0.f));
@@ -392,9 +512,14 @@ inline bool RightLink(const char* label, float right) {
 // over a hairline, and at the right end a link that resets the section,
 // shown while `modified`.  Returns true on the frame the link was clicked.
 inline bool SectionCaption(const char* caption, const char* reset_label, bool modified) {
+  const char* title = Tr(caption);
   reset_label = Tr(reset_label);
   ImGui::Dummy(ImVec2(0.f, tokens::kRowGap * 0.5f));
   const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+  const float width = ImGui::GetContentRegionAvail().x;
+  const bool words = !modified || ImGui::CalcTextSize(title).x + ImGui::CalcTextSize(reset_label).x + ImGui::GetFontSize() <= width;
+  const char* shown_reset = (words ? reset_label : icons::kUndo);
+  const float title_width = width - (modified ? ImGui::CalcTextSize(shown_reset).x + ImGui::GetFontSize() : 0.f);
   bool clicked = false;
   {
     StyleScope caption_text;
@@ -402,9 +527,13 @@ inline bool SectionCaption(const char* caption, const char* reset_label, bool mo
     {
       StyleScope secondary;
       secondary.Color(ImGuiCol_Text, tokens::kTextSecondary);
-      ImGui::TextUnformatted(Tr(caption));
+      ImGui::TextUnformatted(Ellipsize(title, title_width).c_str());
+      ItemTooltip("%s", title);
     }
-    if (modified) clicked = RightLink(reset_label, right);
+    if (modified) {
+      clicked = RightLink(shown_reset, right);
+      ItemTooltip("%s", reset_label);
+    }
   }
   ImGui::Separator();
   return clicked;
@@ -439,26 +568,34 @@ inline bool SectionHeader(const char* english, const char* hint, const char* res
   const float right = at.x + ImGui::GetContentRegionAvail().x - pad;
   // ImGui draws a framed header's title after the arrow: one font size plus
   // three paddings in.
-  const float title_end = at.x + font + pad * 3.f + ImGui::CalcTextSize(title).x;
+  const float full_title_end = at.x + font + pad * 3.f + ImGui::CalcTextSize(title).x;
+  const bool reset_words = reset_label != nullptr
+                           && full_title_end + font + ImGui::CalcTextSize(reset_label).x <= right;
+  const char* shown_reset = (reset_words ? reset_label : icons::kUndo);
+  const float reserved = (modified && reset_label != nullptr ? ImGui::CalcTextSize(shown_reset).x + font : 0.f);
+  const std::string shown_title = Ellipsize(title, (std::max)(0.f, right - at.x - font - pad * 3.f - reserved));
+  const float title_end = at.x + font + pad * 3.f + ImGui::CalcTextSize(shown_title.c_str()).x;
   bool open = false;
   if (expand_all_sections) ImGui::SetNextItemOpen(true);
   {
     StyleScope tall;
     tall.Var(ImGuiStyleVar_FramePadding, ImVec2(pad, kPadY));
-    open = ImGui::CollapsingHeader((std::string(title) + "###" + english).c_str(),
+    open = ImGui::CollapsingHeader((shown_title + "###" + english).c_str(),
                                    ImGuiTreeNodeFlags_AllowOverlap);
+  }
+  if (shown_title != title) {
+    ItemTooltip("%s", title);
   }
   const ImVec2 lo = ImGui::GetItemRectMin();
   float hint_end = right;
   *reset = false;
   if (modified && reset_label != nullptr) {
-    const bool words = title_end + font + ImGui::CalcTextSize(reset_label).x <= right;
-    const char* shown = words ? reset_label : icons::kUndo;
+    const char* shown = shown_reset;
     hint_end -= ImGui::CalcTextSize(shown).x;
     ImGui::PushID(reset_label);
     *reset = RightLink(shown, right);
     ImGui::PopID();
-    if (!words) ItemTooltip("%s", reset_label);
+    if (!reset_words) ItemTooltip("%s", reset_label);
   }
   if (hint != nullptr) {
     const ImVec2 hint_at(title_end + font, lo.y + kPadY);

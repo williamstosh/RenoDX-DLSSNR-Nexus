@@ -97,6 +97,28 @@ SDK distributions. Shaders, UI and translations are embedded in the add-on.
    loading the add-on alone does not. Compare NR Off/On in the same scene.
    An active status is not a guarantee of every-frame success or visual quality.
 
+The development menu keeps a fixed-height live summary above **Quality**,
+**Multi-Pass**, **Diagnostics** and **Advanced** navigation. **Status & warnings**
+opens Diagnostics inside the same menu, with full causes, repair steps, resource
+observations, performance counters, logs and issue reports. Present-specific
+Depth/Motion, HUD and generated-frame policies are available on Quality when
+Present is selected; Diagnostics links back to them. Result shaping hides inactive
+sliders unless you choose to inspect their stored values.
+
+Multi-Pass shows a clickable processing chain and one pass editor at a time.
+**Pass Count includes Pass 1.** Model inheritance remains independent of appearance
+sharing. Result shaping (including limits and stability) runs after each pass.
+Quality controls Pass 1's result settings; passes 2–4 inherit those by default.
+In each pass editor, expand **Result shaping** and turn off **Inherit Pass 1 result
+settings** to use independent values. Model styling and result inheritance are
+separate. Re-enabling inheritance preserves the stored custom values. Working resolution,
+upsampling and the hook point remain shared across the chain. Requested and configuration-resolved models are distinct from the runtime
+network. Detailed diagnostics explains that actual-network readback is unavailable
+in this build. Wide panels use two columns where useful;
+narrow panels stack them. Advanced contains shortcuts/screenshots, compatibility
+fixes, language/notifications, Developer view, restore defaults and version/about.
+Existing configuration keys and reset behavior remain available.
+
 To **upgrade**, close the game, back up the current add-on/settings and replace
 only the add-on with the new release's file, following its notes. Do not leave
 old copies in another active add-on folder. To **uninstall**, close the game and
@@ -209,6 +231,11 @@ and their contributors. The
 and [historical fork](https://github.com/williamstosh/RenoDX-DLSS5-Generic)
 remain available for provenance.
 
+Thanks to **Hussain Abdullah**, author of
+[GITC-Uplift](https://github.com/ghostinthecamera/GITC-Uplift), whose published
+DLSS NR model-selection research informed NR Nexus's dual-model implementation.
+See the [reference scope and provenance](THIRD_PARTY_NOTICES.md#gitc-uplift-research-and-local-validation-references).
+
 This is an unofficial independent project, without endorsement from NVIDIA,
 RenoDX's authors or Lecram. The original [MIT license](LICENSE), copyright and
 [third-party notices](THIRD_PARTY_NOTICES.md) are preserved. The MIT license
@@ -291,6 +318,19 @@ Runtime 默认值。旧 Preset 3 保留存储，在 310.9.16 上解析为 A；�
 6. 检查版本／Runtime 状态栏及 NR 活动状态。`ENGAGED`、活动提示和诊断可帮助确认
    NR 正在工作；插件已加载不等于 NR 已生效。在同一场景对比 NR Off／On；
    活动状态不保证每帧成功或画质达标。
+
+开发版菜单采用固定高度实时摘要，以及**画质／叠层／诊断／高级**分类导航。
+点击**状态与警告**直接进入同一菜单中的诊断页，集中查看完整原因、修复建议、资源观测、
+性能计数、日志和问题报告。选择 Present 后，画质页直接提供深度／运动、HUD 和生成帧策略，
+诊断页也提供返回入口。结果调整关闭时隐藏无效滑块，仍可选择查看保存值。
+
+叠层页用可点击的处理链选择编辑层，**叠层数包含第 1 层（基础层）**。模型继承和外观共享
+相互独立。结果调整（包含限制与稳定性）在每一层 NR 后执行；画质页控制第 1 层，
+第 2–4 层默认继承。进入对应层的**结果调整**，关闭**继承第 1 层结果设置**即可独立调节，
+重新开启继承也会保留保存的自定义值。结果继承与模型风格继承分别控制；工作分辨率、上采样和介入点仍为全链共享。
+请求模型和配置解析模型保留，详细诊断明确说明当前版本不提供实际网络回读。
+宽窗口按需双列，窄窗口纵向排列。高级页包含快捷键／截图、兼容性修复、语言／通知、
+开发者视图、恢复默认和版本／关于；现有配置键与重置行为保留。
 
 **升级**时关闭游戏，备份当前插件／设置，按新版说明替换插件文件，不要在另一个生效目录
 留下旧副本。**卸载**时关闭游戏，移除该插件或恢复旧备份文件，保留无关的 ReShade、
@@ -387,6 +427,10 @@ Lecram [V8.5 RC10 公开插件源码](https://github.com/Yukikaze20170315/RenoDX
 及其贡献者的工作开发。
 [导入源码提交](https://github.com/williamstosh/RenoDX-DLSS5-Generic/commit/9bb6c0fec57ecb28c77938f3feb8155433396d93)
 及[历史 fork](https://github.com/williamstosh/RenoDX-DLSS5-Generic)保留为来源依据。
+
+感谢 [GITC-Uplift](https://github.com/ghostinthecamera/GITC-Uplift) 作者
+**Hussain Abdullah**，其公开的 DLSS NR 模型选择研究为 NR Nexus 的双模型实现提供了技术参考。
+详细来源与参考范围见[第三方声明](THIRD_PARTY_NOTICES.md#gitc-uplift-research-and-local-validation-references)。
 
 本项目是非官方独立项目，未获 NVIDIA、RenoDX 作者或 Lecram 背书。
 原始 [MIT 许可](LICENSE)、版权及[第三方声明](THIRD_PARTY_NOTICES.md)保留原文；

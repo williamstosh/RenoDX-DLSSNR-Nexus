@@ -53,21 +53,23 @@ inline constexpr ImVec4 kAccentActive = Hex(0x3E8C87);
 inline constexpr float kRadiusCard = 8.f;
 inline constexpr float kRadiusControl = 6.f;
 inline constexpr float kRadiusSmall = 4.f;
-inline constexpr float kRowGap = 8.f;
-inline constexpr float kSectionGap = 16.f;
+inline constexpr float kRowGap = 6.f;
+inline constexpr float kSectionGap = 12.f;
 inline constexpr float kCardPadding = 12.f;
 // Row geometry, in units of the font size so it follows the player's
 // ReShade font.  alpha45 gave labels 42 % of the panel, which at 4K put
 // every control in the middle of the screen; the label column is now a fixed
 // width, and never more than kLabelShare of a narrow panel.  The panel is
-// one column at most kColumnEm wide, so a wide window does not stretch a
-// slider across the screen, and a slider's value has its own column
+// split into two columns at kWideEm, and a slider's value has its own column
 // (kValueEm) instead of sitting under the knob.  A panel narrower than
 // kStackEm has no room for a label column beside a usable control - ReShade
 // docks it at ~450 px and doubles its font at 2160p - so each label goes on
 // its own line over a control as wide as the panel.
 inline constexpr float kLabelEm = 12.f;
 inline constexpr float kLabelShare = 0.42f;
+inline constexpr float kWideEm = 60.f;
+inline constexpr float kPassNodeEm = 12.f;
+// Initial undocked window width; independent of the responsive content layout.
 inline constexpr float kColumnEm = 40.f;
 inline constexpr float kValueEm = 3.5f;
 inline constexpr float kStackEm = 24.f;
@@ -180,12 +182,13 @@ inline void PushPanelTheme(StyleScope& scope) {
       .Color(ImGuiCol_CheckMark, kAccent)
       .Color(ImGuiCol_PopupBg, kBgCard)
       .Color(ImGuiCol_TextLink, kAccent)
+      .Var(ImGuiStyleVar_DisabledAlpha, 0.65f)
       .Var(ImGuiStyleVar_FrameRounding, kRadiusControl)
       .Var(ImGuiStyleVar_GrabRounding, kRadiusSmall)
       .Var(ImGuiStyleVar_ChildRounding, kRadiusCard)
       .Var(ImGuiStyleVar_PopupRounding, kRadiusControl)
       .Var(ImGuiStyleVar_ItemSpacing, ImVec2(kRowGap, kRowGap))
-      .Var(ImGuiStyleVar_FramePadding, ImVec2(8.f, 5.f));
+      .Var(ImGuiStyleVar_FramePadding, ImVec2(8.f, 4.f));
 }
 
 }  // namespace renodx::addons::dlss5::ui

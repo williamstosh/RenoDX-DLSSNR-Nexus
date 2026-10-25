@@ -227,6 +227,13 @@ int main(int argc, char** argv) {
         addon = current_global + "NRPresentSdrRestorePolicy=99\r\nNRPresentSdrRestoreConfigVersion=99\r\n"
                 "NRPresentHdrPedestalPolicy=99\r\nNRPresentHdrPedestalConfigVersion=99\r\n"
                 "NRPresentRestoreScope=0\r\nNRPresentRestoreScopeConfigVersion=1\r\n";
+      } else if (test_case.starts_with("pass-result-")) {
+        addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\nNRLookMode=1\r\nNRLookStrength=1.4\r\nNRLookHalo=0.3\r\nNRLookStabilize=1\r\nNRDetailStability=1\r\n";
+        if (test_case == "pass-result-custom") {
+          addon += "NRPass2LookFollowPass1=0\r\nNRPass2LookMode=1\r\nNRPass2LookStrength=0.4\r\nNRPass2LookHalo=0.8\r\nNRPass2LookStabilize=2\r\nNRPass2LookStabilizeMs=120\r\nNRPass2DetailStability=1\r\nNRPass3LookFollowPass1=0\r\nNRPass3LookMode=0\r\nNRPass3DetailStability=1\r\n";
+        } else if (test_case == "pass-result-invalid") {
+          addon += "NRPass2LookFollowPass1=0\r\nNRPass2LookMode=1\r\nNRPass2LookStrength=nan\r\nNRPass2LookHalo=99\r\nNRPass2LookDetailRadius=-1\r\nNRPass2LookStabilize=9\r\nNRPass2LookStabilizeMs=9999\r\nNRPass2DetailStability=9\r\n";
+        }
       } else if (test_case.starts_with("nr-model-")) {
         addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\n";
         if (test_case == "nr-model-explicit") {
@@ -307,6 +314,55 @@ int main(int argc, char** argv) {
               "production create block writes the resolved network as an unsigned NGX parameter");
       }
     }
+    if (test_case.starts_with("pass-result-")) {
+      auto result = runtime::LookSettingsSnapshots(false);
+      Check(result[0].strength == 1.4f && result[0].halo == 0.3f && result[0].stabilize == 1u,
+            "main result controls retain the existing keys");
+      if (test_case == "pass-result-default") {
+        for (uint32_t pass = 1; pass < runtime::kMaxNrPasses; ++pass) {
+          Check(runtime::pass_look_result[pass - 1].follow.load()
+                    && result[pass].strength == result[0].strength && result[pass].halo == result[0].halo
+                    && result[pass].stabilize == result[0].stabilize,
+                "old configuration applies the shared result to every pass unchanged");
+        }
+      } else if (test_case == "pass-result-custom") {
+        Check(result[1].strength == 0.4f && result[1].halo == 0.8f && result[1].stabilize == 2u
+                  && result[1].stabilize_ms == 120.f, "pass 2 resolves independent gains, limits and temporal settings");
+        Check(result[2].strength == 1.f && result[2].halo == 0.f && result[2].stabilize == 0u,
+              "pass 3 can disable result shaping independently");
+        Check(result[3].strength == result[0].strength, "pass 4 continues inheriting the main settings");
+        const renodx::addons::dlss5::look::Frame frame{.nr_width = 640, .nr_height = 360, .full_width = 640, .full_height = 360};
+        const auto first = renodx::addons::dlss5::look::MakeConstants(result[0], frame);
+        const auto second = renodx::addons::dlss5::look::MakeConstants(result[1], frame);
+        Check(first.strength == 1.4f && second.strength == 0.4f && first.halo != second.halo,
+              "GPU constant generation uses each pass result snapshot");
+        runtime::kSetPassLookFollow[0].Commit(1.f);
+        result = runtime::LookSettingsSnapshots(false);
+        Check(result[1].strength == 1.4f && runtime::pass_look_result[0].strength.load() == 0.4f,
+              "enabling inheritance preserves independent stored values");
+        runtime::kSetPassLookFollow[0].Commit(0.f);
+        runtime::PersistConfig();
+        Check(Read("NRPass2LookStrength") == "0.400000" || Read("NRPass2LookStrength") == "0.4",
+              "independent result value persists");
+        runtime::LoadConfiguration();
+        Check(runtime::LookSettingsSnapshots(false)[1].strength == 0.4f,
+              "independent result values survive a configuration reload");
+        runtime::SetDefaultsView(true);
+        Check(runtime::pass_look_result[0].follow.load(), "Built-in effect temporarily restores inherited results");
+        runtime::SetDefaultsView(false);
+        Check(!runtime::pass_look_result[0].follow.load() && runtime::LookSettingsSnapshots(false)[1].strength == 0.4f,
+              "Mine restores independent result values and inheritance");
+        runtime::ResetSettings({runtime::kPassLookResultSettings});
+        Check(runtime::pass_look_result[0].follow.load() && runtime::pass_look_result[0].strength.load() == 1.f,
+              "result reset restores inheritance and stored defaults");
+      } else {
+        Check(result[1].strength == 1.f && result[1].halo == 1.f && result[1].detail_radius == 0.25f
+                  && result[1].stabilize == 0u, "invalid result values use the established defaults");
+        Check(runtime::pass_look_result[0].stabilize_ms.load() == 250.f
+                  && runtime::pass_look_result[0].detail_stability.load() == runtime::defaults::kDetailStability,
+              "invalid temporal settings are sanitized");
+      }
+    }
     Check(reads > 0, "production load called real ReShade typed/raw boundary");
     Check(runtime::ReShadeBaseDirectory() == base_directory && base_queries > 0,
           "production raw INI base path is the controlled fixture directory");
@@ -385,7 +441,7 @@ int main(int argc, char** argv) {
         if (event.key == "ConfigVersion") Check(event.pair_present_at_global, "reset verifies restore defaults before stamp");
       }
       Check(Read("UnregisteredPersistentKnob") == "42", "reset preserves unregistered key");
-    } else if (test_case.starts_with("nr-model-")) {
+    } else if (test_case.starts_with("nr-model-") || test_case.starts_with("pass-result-")) {
       CheckPair("1");
       Check(!Configuration().inherited && Configuration().scope == scope::Scope::FINAL_PRESENT_AND_PRE_FG,
             "model selection leaves explicit restore scope unchanged");

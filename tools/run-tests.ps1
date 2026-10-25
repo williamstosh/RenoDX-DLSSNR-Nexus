@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('all','report','branding','native','sdr-policy','hdr-policy','scope','config','constants','fg-xefg','fg-native','lifecycle','bridge-motion')]
+    [ValidateSet('all','report','branding','ui','native','sdr-policy','hdr-policy','scope','config','constants','fg-xefg','fg-native','lifecycle','bridge-motion')]
     [string[]]$Suite = @('all'),
     [string]$SourceRoot = (Split-Path $PSScriptRoot -Parent),
     [string]$HostRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) '.local/renodx'),
@@ -25,7 +25,7 @@ $HostRoot = [IO.Path]::GetFullPath($HostRoot)
 $ShaderIncludeDirectory = [IO.Path]::GetFullPath($ShaderIncludeDirectory)
 $OutputDirectory = Initialize-TestOutput $OutputDirectory
 $sources = [ordered]@{
-    report='report_flow_tests'
+    report='report_flow_tests'; ui='ui_layout_tests'
     branding='branding_tests'
     native='native_contract_tests'; 'sdr-policy'='present_sdr_restore_policy_tests'
     'hdr-policy'='present_hdr_pedestal_policy_tests'; scope='present_restore_scope_tests'
@@ -34,7 +34,7 @@ $sources = [ordered]@{
     lifecycle='fg_lifecycle_tests'; 'bridge-motion'='d3d11_bridge_motion_tests'
 }
 if ($Suite -contains 'all') { $Suite = @($sources.Keys) }
-if ($BuildOnly -and @($Suite | Where-Object { $_ -in @('config','constants','lifecycle') }).Count) {
+if ($BuildOnly -and @($Suite | Where-Object { $_ -in @('config','constants','lifecycle','ui') }).Count) {
     throw '-BuildOnly requires explicitly selecting native/policy/scope/fg-xefg/fg-native/bridge-motion suites.'
 }
 if ($NativeCase.Count -and $Suite -notcontains 'fg-native') { throw '-NativeCase requires -Suite fg-native (or all).' }
@@ -48,13 +48,14 @@ $includes = @($SourceRoot, "$HostRoot/src", "$HostRoot/src/addons/dlss5",
 $libraries = @($DetoursLibrary,'uuid.lib','advapi32.lib','d3d11.lib','d3d12.lib','dxgi.lib','dxguid.lib')
 foreach ($item in $Suite) {
     $directory = Join-Path $OutputDirectory $item
-    if ($item -in @('report','config','constants','lifecycle')) {
+    if ($item -in @('report','config','constants','lifecycle','ui')) {
         if ($BuildOnly) { throw '-BuildOnly is supported for native/policy/scope/fg-xefg/fg-native/bridge-motion; select these explicitly.' }
         $entry = switch ($item) {
             report { 'run-report-tests.ps1' }
             config { 'run-present-restore-configuration-tests.ps1' }
             constants { 'run-present-hdr-runtime-constants-tests.ps1' }
             lifecycle { 'run-fg-lifecycle-tests.ps1' }
+            ui { 'run-ui-layout-tests.ps1' }
         }
         if ($item -eq 'report') {
             & (Join-Path $testRoot $entry) @parameters -OutputDirectory $directory -PythonExecutable $PythonExecutable

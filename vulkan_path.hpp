@@ -2198,7 +2198,7 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
   // when a gain is off identity or a temporal filter runs.  NR runs 1:1 on
   // Vulkan, so the transport never does.  Surfaces the look cannot have
   // leave it off for the frame; NR runs on.
-  const look::Settings look_settings = LookSettingsSnapshot(true);
+  const auto result_settings = LookSettingsSnapshots(true);
   if (edit_trace_enabled.load()) {
     static std::atomic_bool logged{false};
     if (!logged.exchange(true)) {
@@ -2207,13 +2207,16 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
           " record none (the look stage and the pass stack run)");
     }
   }
-  const bool look_bands = look::BandsWanted(look_settings);
-  const bool look_shape =
-      look_compose.handle != 0 && (look_mode.load() || look_settings.stabilize != 0)
-      && look::Dispatched(look_settings, false) && ensure(kLookOutput)
-      && (!look_bands
-          || (ensure(kBandA) && ensure(kBandB) && ensure(kBandMaxA) && ensure(kBandMaxB)))
-      && ensure(kLookScratch);
+  std::array<bool, kMaxNrPasses> result_shapes{};
+  std::array<bool, kMaxNrPasses> result_bands{};
+  for (uint32_t pass = 0; pass < passes; ++pass) {
+    result_bands[pass] = look::BandsWanted(result_settings[pass]);
+    result_shapes[pass] = look_compose.handle != 0
+        && look::Dispatched(result_settings[pass], false) && ensure(kLookOutput)
+        && (!result_bands[pass]
+            || (ensure(kBandA) && ensure(kBandB) && ensure(kBandMaxA) && ensure(kBandMaxB)))
+        && ensure(kLookScratch);
+  }
 
   // 1. The DLSS output into `original`.  Every scratch image carries its
   // tracked layout (state) across frames; `transition` moves it to what the
@@ -2452,7 +2455,11 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
   const resource_view output_view = {reinterpret_cast<uint64_t>(out.ImageView)};
   float final_transfer = 0.f;
   float final_color = 0.f;
+  bool any_look_shaped = false;
   for (uint32_t pass = 0; pass < passes; ++pass) {
+    const look::Settings& look_settings = result_settings[pass];
+    const bool look_shape = result_shapes[pass];
+    const bool look_bands = result_bands[pass];
     const Surface ref = hdr_mode != 0
                             ? (pass == 0 ? kWork0 : ((pass & 1) != 0 ? kWorkA : kWorkB))
                             : (pass == 0 ? kOriginal : ((pass & 1) != 0 ? kStack0 : kStack1));
@@ -2582,6 +2589,7 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
     bool temporal = look_shape && look_settings.stabilize != 0;
     if (!temporal) history.valid = false;
     if (look_shape) {
+      any_look_shaped = true;
       const int64_t now_ns = SteadyNowNs();
       look::Frame look_frame{
           .nr_width = width,
@@ -2775,7 +2783,7 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
     text << "Vulkan feature 18 evaluation succeeded (count=" << count << ", " << width
          << 'x' << height << ", codec " << (hdr_mode != 0 ? "v6" : "legacy") << ", "
          << passes << (passes == 1 ? " pass" : " passes")
-         << (look_shape ? ", look shaped" : "") << ')';
+         << (any_look_shaped ? ", look shaped" : "") << ')';
     Log(reshade::log::level::info, text.str());
   }
   return NrDeclineReason::kCount;

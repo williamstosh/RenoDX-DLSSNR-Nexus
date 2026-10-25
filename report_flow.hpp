@@ -1035,8 +1035,8 @@ inline void DrawIssueReport() {
         row_slug = health::kRows[i].slug;
       }
     }
-    if (ImGui::Button(ui::Tr(row_slug != nullptr ? "Send a report about these issues"
-                                                 : "I'm having issues..."))) {
+    if (ui::ActionButton(ui::Tr(row_slug != nullptr ? "Send a report about these issues"
+                                                    : "I'm having issues..."))) {
       BeginIssueReport(row_slug != nullptr ? row_slug : "button");  // i18n: skip
     }
     ui::ItemTooltip("%s", ui::Tr(ui::text::kReportPrivacy));
@@ -1065,24 +1065,24 @@ inline void DrawIssueReport() {
         ImGui::SetNextItemWidth(-FLT_MIN);
         ImGui::InputTextMultiline("##issue_steps", issue_report::typed_steps, sizeof(issue_report::typed_steps),
                                   ImVec2(-FLT_MIN, ImGui::GetTextLineHeightWithSpacing() * 3.f));
-        ImGui::Checkbox(ui::Tr(ui::text::kReportFeature), &issue_report::typed_feature);
+        ui::Checkbox(ui::Tr(ui::text::kReportFeature), &issue_report::typed_feature);
         for (size_t i = 0; i < std::size(issue_report::kTicks); ++i) {
           bool ticked = ((issue_report::typed_ticks >> i) & 1u) != 0;
           ImGui::PushID(static_cast<int>(i));
           const char* label = ui::Tr(issue_report::kTicks[i].label);
           if (i % 2 == 1) ui::SameLineIfFits(ImGui::CalcTextSize(label).x
                                              + ImGui::GetFrameHeight() * 2.f);
-          if (ImGui::Checkbox(label, &ticked)) {
+          if (ui::Checkbox(label, &ticked)) {
             issue_report::typed_ticks ^= 1u << i;
           }
           ImGui::PopID();
         }
         ImGui::TextDisabled("%s", ui::Tr(ui::text::kReportLocalSaved));
-        ImGui::Checkbox(ui::Tr(ui::text::kReportCapture), &issue_report::typed_capture);
-        if (ImGui::Button(ui::Tr(ui::text::kReportCollect))) ContinueIssueReport();
-        if (ImGui::Button(ui::Tr(ui::text::kReportWithoutDiagnostics))) ContinueIssueReport(false);
-        ImGui::SameLine();
-        if (ImGui::Button(ui::Tr("Cancel"))) CloseIssueReport();
+        ui::Checkbox(ui::Tr(ui::text::kReportCapture), &issue_report::typed_capture);
+        if (ui::ActionButton(ui::Tr(ui::text::kReportCollect))) ContinueIssueReport();
+        if (ui::ActionButton(ui::Tr(ui::text::kReportWithoutDiagnostics))) ContinueIssueReport(false);
+        ui::SameLineIfFits(ImGui::GetFontSize() * 12.f);
+        if (ui::ActionButton(ui::Tr("Cancel"))) CloseIssueReport();
         break;
       }
       case Step::kCapturing: {
@@ -1096,14 +1096,14 @@ inline void DrawIssueReport() {
                                        : issue_report::kCaptureTimeoutMs;
         progress_bar(static_cast<float>(SteadyNowNs() - issue_report::capture_started_ns.load())
                      / (static_cast<float>(timeout_ms) * 1e6f));
-        if (ImGui::Button(ui::Tr("Continue without a capture"))) issue_report::skip_capture = true;
-        ImGui::SameLine();
-        if (ImGui::Button(ui::Tr("Cancel"))) issue_report::cancel = true;
+        if (ui::ActionButton(ui::Tr("Continue without a capture"))) issue_report::skip_capture = true;
+        ui::SameLineIfFits(ImGui::GetFontSize() * 12.f);
+        if (ui::ActionButton(ui::Tr("Cancel"))) issue_report::cancel = true;
         break;
       }
       case Step::kCollecting:
         ImGui::TextUnformatted(ui::Tr("Collecting the logs..."));
-        if (ImGui::Button(ui::Tr("Cancel"))) issue_report::cancel = true;
+        if (ui::ActionButton(ui::Tr("Cancel"))) issue_report::cancel = true;
         break;
       case Step::kReview: {
         ImGui::TextUnformatted(ui::Tr("Step 3 of 3: review what is sent"));
@@ -1121,10 +1121,10 @@ inline void DrawIssueReport() {
           issue_report::Item& item = issue_report::items[i];
           ImGui::PushID(static_cast<int>(i));
           ImGui::BeginDisabled(item.required);
-          ImGui::Checkbox(ui::Tr(item.label), &item.include);
+          ui::Checkbox(ui::Tr(item.label), &item.include);
           ImGui::EndDisabled();
           ImGui::PopID();
-          ImGui::SameLine();
+          ui::SameLineIfFits(ImGui::GetFontSize() * 12.f);
           ImGui::TextDisabled("%s, %s", item.entry.c_str(), FormatBytes(item.bytes).c_str());
           if (!item.file.empty()) {
             ImGui::PushID(static_cast<int>(i));
@@ -1168,15 +1168,15 @@ inline void DrawIssueReport() {
         }
     ImGui::TextDisabled("%s", ui::Tr(ui::text::kReportPrivacy));
         if (can_upload) {
-          ImGui::Checkbox(ui::Tr(ui::text::kReportUploadConsent), &issue_report::upload_consent);
+          ui::Checkbox(ui::Tr(ui::text::kReportUploadConsent), &issue_report::upload_consent);
           ImGui::BeginDisabled(!issue_report::upload_consent);
-          send = ImGui::Button(ui::Tr("Upload & copy link"));
+          send = ui::ActionButton(ui::Tr("Upload & copy link"));
           ImGui::EndDisabled();
-          ImGui::SameLine();
+          ui::SameLineIfFits(ImGui::GetFontSize() * 12.f);
         }
-        save = ImGui::Button(ui::Tr("Save zip only"));
-        ImGui::SameLine();
-        close = ImGui::Button(ui::Tr("Cancel"));
+        save = ui::ActionButton(ui::Tr("Save zip only"));
+        ui::SameLineIfFits(ImGui::GetFontSize() * 12.f);
+        close = ui::ActionButton(ui::Tr("Cancel"));
         }
         // Out of the lock: both take it.
         if (preview) StartReportThread(ReportPreviewMain);
@@ -1186,7 +1186,7 @@ inline void DrawIssueReport() {
       }
       case Step::kPacking:
         ImGui::TextUnformatted(ui::Tr("Packing the zip..."));
-        if (ImGui::Button(ui::Tr("Cancel"))) issue_report::cancel = true;
+        if (ui::ActionButton(ui::Tr("Cancel"))) issue_report::cancel = true;
         break;
       case Step::kCleaning:
         ImGui::TextUnformatted(ui::Tr(ui::text::kReportCleaning));
@@ -1205,7 +1205,7 @@ inline void DrawIssueReport() {
         progress_bar(total == 0 ? 0.f
                                 : static_cast<float>(issue_report::progress.sent.load())
                                       / static_cast<float>(total));
-        if (ImGui::Button(ui::Tr("Cancel"))) issue_report::progress.cancel = true;
+        if (ui::ActionButton(ui::Tr("Cancel"))) issue_report::progress.cancel = true;
         break;
       }
       case Step::kDone: {
@@ -1228,8 +1228,8 @@ inline void DrawIssueReport() {
           ImGui::SetNextItemWidth(-FLT_MIN);
           ImGui::InputText("##issue_link", link.data(), link.size() + 1, ImGuiInputTextFlags_ReadOnly);
           ImGui::TextUnformatted(ui::Tr(ui::text::kReportPublicNotice));
-          if (ImGui::Button(ui::Tr("Copy again"))) ImGui::SetClipboardText(link.c_str());
-          ImGui::SameLine();
+          if (ui::ActionButton(ui::Tr("Copy again"))) ImGui::SetClipboardText(link.c_str());
+          ui::SameLineIfFits(ImGui::GetFontSize() * 12.f);
         } else {
           if (!error.empty()) {
             ImGui::TextColored(ui::tokens::kWarn, ui::Tr(ui::text::kReportFailed), error.c_str());
@@ -1238,21 +1238,21 @@ inline void DrawIssueReport() {
             ImGui::Text(ui::Tr("Saved: %s"), report::Utf8(zip.filename().wstring()).c_str());
             ImGui::TextUnformatted(ui::Tr(
                 ui::text::kReportLocalSaved));
-            if (ImGui::Button(ui::Tr("Open folder"))) StartReportThread(ShowReportZipMain);
-            ImGui::SameLine();
+            if (ui::ActionButton(ui::Tr("Open folder"))) StartReportThread(ShowReportZipMain);
+            ui::SameLineIfFits(ImGui::GetFontSize() * 12.f);
           }
         }
         ImGui::TextUnformatted(ui::Tr(ui::text::kReportPublicNotice));
         if (!public_summary.empty()) {
-          ImGui::Checkbox(ui::Tr(ui::text::kReportPublicSummaryConsent), &issue_report::public_summary_consent);
+          ui::Checkbox(ui::Tr(ui::text::kReportPublicSummaryConsent), &issue_report::public_summary_consent);
           ImGui::TextUnformatted(public_summary.c_str());
         }
         if (!link.empty()) {
-          ImGui::Checkbox(ui::Tr(ui::text::kReportPublicLinkConsent), &issue_report::public_link_consent);
+          ui::Checkbox(ui::Tr(ui::text::kReportPublicLinkConsent), &issue_report::public_link_consent);
         }
         ImGui::BeginDisabled(issue_report::worker_active.load());
-        const bool open_issue = ImGui::Button(ui::Tr(ui::text::kReportGitHub));
-        const bool plain_issue = ImGui::Button(ui::Tr(ui::text::kReportPlainIssue));
+        const bool open_issue = ui::ActionButton(ui::Tr(ui::text::kReportGitHub));
+        const bool plain_issue = ui::ActionButton(ui::Tr(ui::text::kReportPlainIssue));
         if (open_issue || plain_issue) {
           issue_report::force_issue_fallback = plain_issue;
           issue_report::step = Step::kOpeningIssue;
@@ -1266,10 +1266,10 @@ inline void DrawIssueReport() {
         if (!body.empty() && ImGui::TreeNode(ui::Tr(ui::text::kReportPreview))) {
           ImGui::InputTextMultiline("##public_markdown", body.data(), body.size() + 1,
               ImVec2(-FLT_MIN, ImGui::GetTextLineHeightWithSpacing() * 8.f), ImGuiInputTextFlags_ReadOnly);
-          if (ImGui::Button(ui::Tr("Copy again"))) ImGui::SetClipboardText(body.c_str());
+          if (ui::ActionButton(ui::Tr("Copy again"))) ImGui::SetClipboardText(body.c_str());
           ImGui::TreePop();
         }
-        if (ImGui::Button(ui::Tr("Close"))) CloseIssueReport();
+        if (ui::ActionButton(ui::Tr("Close"))) CloseIssueReport();
         ImGui::EndDisabled();
         break;
       }

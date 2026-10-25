@@ -24,6 +24,15 @@ int main() {
   std::snprintf(footer, sizeof(footer), text::kFooter, "v" NR_NEXUS_VERSION, "test-runtime", "test.exe");
   if (std::string_view(footer) != NR_NEXUS_NAME " v" NR_NEXUS_VERSION " | DLSSNR test-runtime | test.exe") return 1;
   const char* report_strings[] = {
+      text::kSettingsViewTip, text::kStatusDetails, "Advanced", text::kPassOverview,
+      "Multi-Pass", "Pass Count", text::kOpenPresentSettings, text::kAbout,
+      text::kRuntimeStatus, text::kResources, text::kDetails, text::kResultShaping,
+      text::kResultChanged, text::kPresentSettings, text::kPresentDisplay,
+      text::kGeneral, text::kStoredValues, text::kChainNote, text::kModelNote, text::kResourceNote,
+      text::kSharedResult, text::kInheritResult, text::kInheritResultTip, text::kInheritedResult,
+      text::kRequest, text::kResolved, text::kNetwork, text::kNetworkUnavailable,
+      text::kIndependentModel, text::kInheritModel, text::kInput, text::kOutput,
+      text::kConfigured, "Runtime default", "Pass 1", "Built-in effect",
       "NR model", "A (Legacy)", "B (Small FP8)", "Inherit main model",
       "Model selection recreates every pass and resets temporal history. Appearance sharing does not change the model.",
       "Automatic selects B on DLSS NR 310.9.16; other runtimes keep their default. Explicit choices are preserved.",
@@ -60,7 +69,7 @@ int main() {
         continue;
       }
       const bool model_identifier = std::string_view(english) == "A (Legacy)"
-          || std::string_view(english) == "B (Small FP8)";
+                                    || std::string_view(english) == "B (Small FP8)" || std::string_view(english) == "Multi-Pass";
       if (matches != 1 || (!model_identifier && std::string_view(translated) == english)) return 5;
       if (FormatConversions(english) != FormatConversions(translated)) return 6;
     }
