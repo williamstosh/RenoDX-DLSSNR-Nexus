@@ -4,155 +4,144 @@
 
 [English](#english) | [简体中文](#简体中文)
 
-[**Download / 下载（Pre-release）**](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases) · [**GitHub Issues / 问题反馈**](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/issues)
+[**Download / 下载**](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases) · [**User Guide / 玩家指南**](docs/USER_GUIDE.md) · [**Compatibility / 兼容性**](#compatibility-and-known-limits) · [**GitHub Issues / 问题反馈**](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/issues)
 
 ## English
 
-NR Nexus adds NVIDIA DLSS Neural Rendering (DLSSNR) image enhancement to
-compatible games. Built with [RenoDX](https://github.com/clshortfuse/renodx),
-it runs through [ReShade](https://reshade.me/)'s add-on system and provides an
-in-game control panel. The RenoDX integration is built into the add-on; it
-works with the game's existing DLSS pipeline and performs no denoising.
+NR Nexus brings NVIDIA DLSS Neural Rendering (DLSSNR) image enhancement into
+compatible games through [ReShade](https://reshade.me/), using
+[RenoDX](https://github.com/clshortfuse/renodx)'s modding utilities. Choose where
+NR runs, build a sequential chain of up to four passes, and tune each layer's
+model, appearance and output. The add-on performs no denoising.
 
 This is an independent, unofficial project developed from Lecram V8.5 RC10.
-It extends that source with NR/FG coordination, Present color-restoration
-policies, motion-sharing fallback and a privacy-aware issue-report workflow.
-Availability depends on the game, rendering path and separately supplied NR
-runtime; see the validation scope below.
+Nexus extends that source with NR/FG coordination, Present restoration
+policies, motion-sharing fallback, dual-model selection and privacy-aware
+reporting. Version 0.1.0 includes independent per-layer result editing
+and four menu themes.
 
-**Currently available as a Pre-release.** Download from
-[Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases) and read
-the selected version's notes before installing.
-
-[Features](#features) · [Install and use](#download-install-and-use) · [Compatibility](#compatibility-and-known-limits) · [Feedback](#feedback-and-privacy) · [Developer build](#building)
-
-### Features
-
-| Capability | What it does |
+| Version scope | What is available |
 | --- | --- |
-| Neural rendering | Applies NR to game images, with controls for quality, strength, processing size and precision. |
-| Per-pass NR models | With DLSS NR 310.9.16, selects A (Legacy / preset 1) or B (Small FP8 / preset 2) independently for up to four passes. |
-| Three processing positions | `Render` processes input before DLSS upscaling; `Upscaled` processes the DLSS output; `Present` processes the final image after game post-processing/HUD and before ReShade effects. |
-| NR with frame generation | Integrates native DLSS FG/MFG and XeFG routes, processing game frames before FG while retaining the chosen backend and rendering settings. |
-| SDR/HDR restoration | Independent restoration policies for SDR and HDR in diagnostics. These default to Off; selecting an NR position does not enable them automatically. |
-| D3D11 motion-sharing fallback | Converts certain motion-vector textures when they cannot be shared directly with the NR processing path. This is a resource fallback, not blanket D3D11 game support. |
-| Problem reports | Text-only feedback, optional diagnostics and screenshots, local ZIP saving and browser-based GitHub Issue drafts. |
+| **0.1.0** | This README describes the version's four-page menu, dual models, independent per-pass look/result settings and four themes. See the [release notes](docs/releases/v0.1.0.md) for validation and remaining limits. |
+| [Previous pre-release: v0.1.0-dev.3](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.1.0-dev.3) | Includes 310.9.16 A/B models and per-pass model selection; it predates the menu, independent result editor and theme updates described here. |
 
-These features are implemented; their tested and experimental scope is
-separated under [Compatibility](#compatibility-and-known-limits).
+### What makes Nexus different
 
-The NR model control keeps the existing `NRPreset` key: `0` selects B on
-310.9.16.0, `1` selects A and `2` selects B. `NRPass2Preset` through
-`NRPass4Preset` use `0` to inherit the main model, `1` for A and `2` for B,
-independently of appearance sharing. Existing explicit choices are retained.
-Other or unidentified runtimes disable B and resolve a saved B request to A;
-their automatic selection keeps the runtime default. Legacy preset 3 remains
-stored but resolves to A on 310.9.16. It is hidden from the model menu;
-an existing selection of 3 is shown as Custom without rewriting it.
-A model change recreates the chain and
-resets its history; old handles remain protected until GPU retirement and
-working image resources are reused.
-Diagnostics distinguish the preset requested at creation from a runtime-confirmed
-network. A successful API call alone does not confirm the actual network or image quality.
-These model controls are available starting with v0.1.0-dev.3; dev.2 predates them.
+| Feature | What you can use it for |
+| --- | --- |
+| **A sequential NR chain, up to four passes** | Process each layer's output in the next layer, using different models or looks in one chain. More passes cost more GPU time and do not guarantee better quality. |
+| **Independent Per-Pass Look & Result Editing** | Give each layer its own style, local tone, structure, character mask and skin steering, then shape its output: brightness, colour, shadows/midtones/highlights, detail, halo suppression and temporal stability. Combine inherited settings with saved independent looks and results. |
+| **310.9.16 dual models A/B** | Compare A (Legacy) and B (Small FP8), or configure AA, AB, BA and BB. Each additional pass chooses its own model or inherits the main choice. |
+| **Render / Upscaled / Present** | Apply NR before DLSS upscaling, to its output, or to the final game image before ReShade effects. Actual execution depends on API, resources and FG routing. |
+| **NR + native DLSS FG/MFG or XeFG** | Coordinate NR with the existing FG backend; inspect the observed path and activity rather than assuming a configured multiplier proves FG is active. |
+| **Output shaping and temporal stability** | Adjust brightness/color limits, detail, halos and temporal behavior. SDR/HDR compatibility policies remain independently configurable. |
+| **Live diagnostics and reports** | Inspect NR activity, requested/resolved models, resources and GPU time when available; prepare optional diagnostics and a reviewed GitHub Issue draft. |
+| **Multilingual interface — 15 languages** | Let Auto follow ReShade or choose a language manually. Display depends on ReShade's loaded font; the guide lists languages and explains missing-glyph fallback. |
+| **Four interface themes** | Cyber Neon, Nexus Dark, Fluent Light and Midnight OLED change the menu's appearance, independently of image processing. |
+
+Model-look controls steer what NR generates; result editing reshapes the change
+returned by each pass. Model choice, look inheritance and result inheritance are
+separate, so additional layers can follow Pass 1 or keep their own saved edits.
+Processing location, working resolution and upsampling remain shared across the
+chain, as does Independent skin. Result controls have enable and resource
+requirements.
+
+See the [User Guide](docs/USER_GUIDE.md) for values, dependencies, inheritance
+and practical examples.
+
+![Cyber Neon multi-pass chain and independent Pass 2 editor](docs/images/ui/multipass.webp)
+
+*Candidate menu, captured from the production ImGui interface with synthetic
+status. This cropped interface example is not a game-quality comparison or
+performance measurement.*
+
+![NR result editor: basic adjustments, limits, detail and temporal controls](docs/images/ui/results.webp)
+
+*Basic adjustments, brightness/colour limits, detail/halos and temporal stability
+in the same offscreen candidate UI example.*
+
+![Cyber Neon, Nexus Dark, Fluent Light and Midnight OLED](docs/images/ui/themes.webp)
+
+*Four themes of the same candidate menu; themes change the interface only.*
 
 ### Download, install and use
 
-#### Requirements
+**Requirements:** Windows x64; [ReShade with full add-on support](https://reshade.me/)
+compatible with **ReShade API 18**; a legally obtained compatible NVIDIA
+**`nvngx_dlssnr.dll`**; and a GPU/driver/rendering chain supported by that runtime.
+Dual models require the specifically recognized **310.9.16.0** runtime.
+There is no validated universal minimum GPU/driver list.
 
-- Windows x64 and a compatible game/DLSS rendering chain. D3D12 is the
-  game-tested path listed below; Vulkan and D3D11 have additional limits.
-- [ReShade with full add-on support](https://reshade.me/), compatible with
-  **ReShade API 18**. ReShade loads the `.addon64` file.
-- A legally obtained, compatible NVIDIA **`nvngx_dlssnr.dll`**, and a GPU/driver
-  combination supported by that runtime and rendering path. There is no
-  project-wide validated minimum GPU/driver list; follow the runtime's own
-  requirements and check the in-game diagnostics.
+The ZIP does not include ReShade, NVIDIA runtimes, models or vendor SDK
+distributions. UI, translations and shaders are embedded in the add-on.
 
-The package does **not** include ReShade, NVIDIA runtime DLLs, models or vendor
-SDK distributions. Shaders, UI and translations are embedded in the add-on.
+1. Download the `NR-Nexus-v<version>-<commit>-windows-x64.zip` **asset** and its
+   `.zip.sha256` from [Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases).
+   Verify the checksum. GitHub's **Source code** archives are not installers.
+2. Close the game and back up the existing add-on/settings. Move older copies
+   of this add-on outside active add-on search folders; do not load an old
+   Lecram build and Nexus together.
+3. Put **`renodx-dlss5.addon64`** beside the game EXE or in ReShade's configured
+   `AddonPath`, keeping the licenses. Put the compatible `nvngx_dlssnr.dll`
+   beside the add-on; if absent there, the add-on checks the game EXE directory.
+   Preserve unrelated DLSS/FG files, ReShade presets, configuration and saves.
+4. Open ReShade with its configured overlay key, select **NR Nexus** and enable
+   **Neural Rendering**. `Render`/`Upscaled` need compatible DLSS evaluations.
+   Ordinary `Present` can use neutral guides under Optional/Never;
+   this does not make Present independent of all game/API/resource requirements.
+   Follow the [first-use and processing-position guide](docs/USER_GUIDE.md).
+5. Check the add-on/runtime version and actual NR state. Loading alone is not
+   proof of active NR. Compare Off/On in the same scene; counters and `ENGAGED`
+   do not establish visual quality. Keep your intended FG setup and read any
+   fallback or missing-resource messages.
 
-#### Installation and first use
-
-1. Open [Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases).
-   Download the `NR-Nexus-v<version>-<commit>-windows-x64.zip` **release asset**
-   and its `.zip.sha256` checksum. GitHub's **Source code** archives are for
-   development, not installation. Compare the ZIP's SHA-256 with the sidecar.
-2. Close the game. Back up the installed add-on and settings. Move older copies
-   of this add-on out of active add-on search paths; avoid loading an old
-   Lecram build and NR Nexus together. Keep backups outside those paths.
-3. Extract **`renodx-dlss5.addon64`** beside the game executable or into
-   ReShade's configured `AddonPath`. Keep the accompanying license materials.
-   Preserve ReShade configuration, presets, saves and other DLSS/FG files.
-4. Place the compatible `nvngx_dlssnr.dll` beside the add-on. If no copy is
-   found there, the add-on checks the game EXE directory. Avoid conflicting
-   runtime copies.
-5. Start the game and enable its compatible DLSS rendering mode. Open ReShade
-   with its configured overlay key, select **NR Nexus**, and turn on
-   **Neural Rendering**. Use **Hook point** to choose `Render`, `Upscaled` or
-   `Present`; read any fallback or missing-resource messages. If using FG,
-   retain the game's intended FG setup and check the displayed backend.
-6. Check the version/runtime line and NR activity state.
-   **Neural Rendering is active** / `ENGAGED` and diagnostics help establish that NR is working;
-   loading the add-on alone does not. Compare NR Off/On in the same scene.
-   An active status is not a guarantee of every-frame success or visual quality.
-
-To **upgrade**, close the game, back up the current add-on/settings and replace
-only the add-on with the new release's file, following its notes. Do not leave
-old copies in another active add-on folder. To **uninstall**, close the game and
-remove the add-on or restore the previous backed-up file; retain unrelated
-ReShade, game and runtime files.
+To **upgrade**, close the game, back up and replace the add-on according to the
+new release's notes. To **uninstall**, close the game and remove it or restore
+the old file. Do not remove unrelated game, ReShade or runtime files.
 
 ### Compatibility and known limits
 
-The following describes evidence and implementation scope, not a universal
-game-support list. See the selected
-[Release notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)
-for version-specific results.
-
-| Environment or combination | Status and scope |
+| Path or feature | Evidence and limits |
 | --- | --- |
-| The Witcher 3, Steam/D3D12, HDR, Present, XeFG 4× | Focused dev.2 game sessions verified NR toggles, movement, visible NR effect and HUD. |
-| D3D12 `Render` / `Upscaled` / `Present` | Implemented. The focused result above does not qualify every processing position, game or FG combination. |
-| 310.9.16 dual models (dev.3) | A/B and AB/BA/BB passed synthetic GPU inference and focused Witcher 3 D3D12/Present scene checks. Main B→A switching was exercised in game. Live network-name confirmation uses a local isolated probe; the add-on reports creation requests. HDR visual quality and long sessions remain unvalidated. |
-| Native DLSS FG/MFG | Integrated with focused automated coverage. A complete in-game matrix across modes and multipliers has not been validated for this release. |
-| SDR and HDR restoration | Independent policies with focused automated coverage; the complete in-game SDR/HDR matrix has not been validated. |
-| D3D11 motion sharing | Texture fallback passed targeted hardware/WARP checks; full game compatibility remains unverified. |
-| Vulkan | Source path exists, but broad game validation is incomplete. Vulkan `Present` is not implemented and falls back to the DLSS output path. |
+| The Witcher 3, D3D12 / HDR / Present + XeFG 4× | Focused candidate sessions cover visible NR/HUD behavior, A/B and mixed chains, switching and exit/restoration. This is not a full cross-game or HDR-quality matrix. |
+| 310.9.16 A/B models | Real GPU inference covered A/B and AB/BA/BB; the published dev.3 notes describe the candidate/build distinction. No fixed performance gain is promised. |
+| Candidate menu and result editors | Production-ImGui interaction/layout tests and focused game UI checks. All four themes have offline ImGui coverage; game checks reached Nexus Dark only. Live switching through all four themes, restart persistence, controlled parameter comparisons and long sessions remain incomplete. |
+| Native DLSS FG/MFG | Integrated, with focused automated coverage; the full live mode/multiplier matrix is not validated. |
+| SDR/HDR restoration | Independent policies with focused coverage, not a complete in-game SDR/HDR matrix. |
+| D3D11 motion-sharing fallback | Targeted hardware/WARP resource checks; not blanket D3D11 game compatibility. |
+| Vulkan | A source path exists; `Present` is not implemented and falls back to DLSS output processing. Broad game validation is incomplete. |
 
-- **Known issue: XeFG highlight flicker remains unresolved** on the inherited
-  shared rendering chain.
-- With DLSS Ray Reconstruction, a `Render` request stays on the `Upscaled`
-  path. Check the actual activity/fallback message rather than the selection alone.
-- Present processing includes the game's HUD; NR may remain active in
-  menus/maps when valid guide resources are available.
-- Automated tests do not prove per-game image quality or performance.
-  ReShade's wider API support does not imply the same support here.
+- **XeFG highlight flicker remains unresolved** on the inherited shared chain.
+- With DLSS Ray Reconstruction, `Render` stays on the `Upscaled` path.
+- Present includes the game's HUD. Menus/maps can still receive NR when valid
+  resources are available. Optional/Never neutral guides are a fallback, not
+  reconstructed game motion or depth.
+- B is disabled on other/unidentified runtimes; saved B requests resolve to A
+  without rewriting the saved choice. A newer runtime number alone is not a
+  compatibility guarantee.
+- Tests, activity indicators and screenshots do not establish every-frame
+  success, image quality or universal API/game support.
+
+Use the [guide's troubleshooting steps](docs/USER_GUIDE.md) and the selected
+[Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases).
 
 ### Feedback and privacy
 
-Open a [GitHub Issue](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/issues)
-with the game/API, GPU and driver, NR Nexus version, loaded NR runtime version,
-NR position, FG backend/multiplier, SDR/HDR mode and reproduction steps.
-Diagnostics are optional.
+[Report a problem](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/issues)
+with the game/API, GPU/driver, add-on and runtime versions, NR position, models,
+pass count, FG setup, SDR/HDR mode and reproduction steps. Diagnostics are optional.
 
-In the add-on, **I'm having issues...** (or **Send a report about these issues**)
-can prepare text feedback, generate diagnostics, preview/select attachments and
-save a local ZIP. Screenshots are excluded by default. Exported text and JSON
-are automatically redacted, but **redaction cannot guarantee removal of all
-sensitive data**: unfamiliar secrets, private paths and image pixels may remain.
-Review every attachment before sharing.
+**I'm having issues...** can prepare text, preview selected diagnostics and save
+a local ZIP. Screenshots are excluded by default. Text/JSON are redacted, but
+unknown secrets, private paths or personal image content may remain: review
+attachments yourself. **Upload & copy link** needs separate consent to a
+third-party upload; anyone with the link can download it. Local saving does not
+upload, and user-saved ZIPs are retained.
 
-**Upload & copy link** requires your separate, explicit consent to a third-party
-upload. The UI displays the service and retention; anyone holding the link may
-download the archive. Local saving sends no upload request, upload failure keeps
-the ZIP, and user-saved ZIPs are not automatically deleted.
-
-**Prepare GitHub Issue** opens a browser draft; the add-on keeps no GitHub token
-and does not submit it. Including a diagnostic summary or report link needs
-separate consent. Review and submit the Issue yourself. If the form or prefill
-is incomplete, copy the full Markdown into a blank Issue. ZIP saving, uploading
-and preparing an Issue are separate actions.
+**Prepare GitHub Issue** opens a browser draft, without storing a GitHub token
+or submitting it. Including a summary or report link needs separate consent.
+Review and submit on GitHub; if prefill is incomplete, copy the full Markdown
+into a blank Issue. More detail is in the [User Guide](docs/USER_GUIDE.md).
 
 ### Building
 
@@ -164,7 +153,7 @@ and copies the SDK's FXC; downloads and SHA-256 values are in
 [host/tools.lock.json](host/tools.lock.json).
 
 ```powershell
-git clone https://github.com/williamstosh/RenoDX-DLSSNR-Nexus.git
+git clone --branch dev https://github.com/williamstosh/RenoDX-DLSSNR-Nexus.git
 cd RenoDX-DLSSNR-Nexus
 pwsh ./tools/setup-build-tools.ps1
 pwsh ./tools/setup-host.ps1
@@ -189,15 +178,13 @@ DLLs, models and game assets are obtained separately.
 
 ### Versions and releases
 
-Reviewed highlights, validation scope and known limits are kept in the [version notes](docs/releases/).
-
 [version.h](version.h) defines the independent SemVer; Git commits identify the
 source. Daily commits and Actions artifacts are not published releases.
-`dev.N` and optional `rc.N` builds are **Pre-releases**; stable builds are
-identified separately. Use
-[GitHub Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)
-for downloads and version-specific changes.
-[GitHub Actions](.github/workflows/ci.yml) builds the source; version tags
+`dev.N` and optional `rc.N` are **Pre-releases**; stable releases are separately
+identified. Use [Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)
+for downloads and changes. Future packages include this README, `USER_GUIDE.md`,
+screenshots and the existing licenses alongside the add-on; older ZIPs are not
+retrofitted. [CI](.github/workflows/ci.yml) builds the source and version tags
 trigger the [release workflow](.github/workflows/release.yml).
 
 ### Origins, thanks and license
@@ -209,134 +196,135 @@ and their contributors. The
 and [historical fork](https://github.com/williamstosh/RenoDX-DLSS5-Generic)
 remain available for provenance.
 
+Thanks to **Hussain Abdullah**, author of
+[GITC-Uplift](https://github.com/ghostinthecamera/GITC-Uplift), whose published
+DLSS NR model-selection research informed NR Nexus's dual-model implementation.
+See the [reference scope and provenance](THIRD_PARTY_NOTICES.md#gitc-uplift-research-and-local-validation-references).
+
 This is an unofficial independent project, without endorsement from NVIDIA,
 RenoDX's authors or Lecram. The original [MIT license](LICENSE), copyright and
 [third-party notices](THIRD_PARTY_NOTICES.md) are preserved. The MIT license
 does not relicense third-party SDKs, runtimes or models.
 
+Documentation organization also draws on [OptiScaler](https://github.com/optiscaler/OptiScaler),
+[Magpie Experimental](https://github.com/SAOG0721/Magpie) and
+[Veyra](https://github.com/Likely7/Veyra-NRVideo).
+
 ---
 
 ## 简体中文
 
-NR Nexus 为兼容游戏提供 NVIDIA DLSS Neural Rendering（DLSSNR）画面增强。
-项目基于 [RenoDX](https://github.com/clshortfuse/renodx) 开发，通过
-[ReShade](https://reshade.me/) 的 Add-on 系统加载，提供游戏内控制面板。
-RenoDX 集成已编入插件；NR 围绕游戏已有的 DLSS 渲染链路运行，不执行降噪。
+NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS Neural Rendering
+（DLSSNR）画面增强，基于 [RenoDX](https://github.com/clshortfuse/renodx) 的改装工具开发。
+你可以选择 NR 的处理位置，组合最多四层顺序执行的处理链，并调整各层模型、外观和结果。
+插件不执行降噪。
 
-这是基于 Lecram V8.5 RC10 开放源码发展的非官方独立项目，扩展了 NR／FG 协调、
-Present 色彩恢复策略、运动纹理共享回退，以及带隐私预览的问题反馈流程。
-可用性取决于游戏、渲染路径及另行准备的 NR Runtime，验证范围见下文。
+本项目基于 Lecram V8.5 RC10 开放源码独立发展，新增了 NR／FG 协调、Present 恢复策略、
+运动纹理共享回退、双模型选择及带隐私预览的问题反馈。0.1.0 还包含逐层独立
+结果编辑和四套菜单主题。
 
-**当前提供 Pre-release 测试版。** 请从
-[Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases) 下载，
-安装前阅读所选版本说明。
-
-[核心功能](#核心功能) · [安装与使用](#下载安装与使用) · [兼容性](#兼容性与已知限制) · [问题反馈](#问题反馈与隐私) · [开发者构建](#构建)
-
-### 核心功能
-
-| 能力 | 用途 |
+| 版本范围 | 可用范围 |
 | --- | --- |
-| 神经渲染增强 | 对游戏画面应用 NR，可调节质量、强度、处理尺寸及精度。 |
-| 逐 Pass NR 模型 | 使用 DLSS NR 310.9.16 时，最多四个 Pass 可独立选择 A（Legacy／Preset 1）或 B（Small FP8／Preset 2）。 |
-| 三种处理位置 | `Render` 在 DLSS 超分前处理输入；`Upscaled` 处理 DLSS 输出；`Present` 处理游戏后处理／HUD 之后、ReShade 效果之前的最终画面。 |
-| NR 配合帧生成 | 集成原生 DLSS FG/MFG 与 XeFG 路径，在帧生成前处理游戏帧，保留所选后端和渲染设置。 |
-| SDR/HDR 恢复 | 诊断中提供相互独立的 SDR、HDR 恢复策略，默认 Off；切换 NR 处理位置不会自动启用这些策略。 |
-| D3D11 运动纹理共享回退 | 部分运动向量纹理无法直接共享给 NR 处理路径时进行转换；这是资源回退能力，不代表全面支持 D3D11 游戏。 |
-| 问题报告 | 支持仅文字反馈、可选诊断与截图、本地 ZIP 保存及浏览器 GitHub Issue 草稿。 |
+| **0.1.0** | 本页描述此版本的四页菜单、双模型、逐层独立外观／结果设置与四套主题；验证及剩余限制见[版本说明](docs/releases/v0.1.0.md)。 |
+| [上一预发布版：v0.1.0-dev.3](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.1.0-dev.3) | 已包含 310.9.16 A/B 双模型与逐 Pass 模型选择；早于本页所述菜单、独立结果编辑器及主题更新。 |
 
-以上功能已实现；已验证及实验性范围在[兼容性](#兼容性与已知限制)中分别说明。
+### 核心特色
 
-模型设置保留现有 `NRPreset` 键：`0` 在 310.9.16.0 上选择 B，`1` 选择 A，
-`2` 选择 B。`NRPass2Preset` 至 `NRPass4Preset` 的 `0` 表示继承主模型，
-`1` 为 A、`2` 为 B，与外观参数共享相互独立。已有显式选择保留。
-其他或未识别的 Runtime 禁用 B，将已保存的 B 请求解析为 A；其自动选项继续使用
-Runtime 默认值。旧 Preset 3 保留存储，在 310.9.16 上解析为 A；菜单不显示该选项，
-已有值为 3 时显示“自定义”，不自动改写配置。
-切换模型会重建整链并重置历史，旧 Feature 按 GPU 完成证明退休，工作图像资源复用。
-诊断区分创建时请求的 Preset 与 Runtime 确认的网络；API 调用成功不代表实际模型或画质验收通过。
-这些模型控件自 v0.1.0-dev.3 起提供，dev.2 安装包不包含。
+| 能力 | 玩家用途 |
+| --- | --- |
+| **最多四层的 NR 顺序处理链** | 前一层的输出送入下一层，在一条链中组合不同模型与外观。层数越多 GPU 工作越多，不保证画质更好。 |
+| **逐层独立外观与结果编辑** | 每层分别调整风格、局部色调、结构、角色遮罩及皮肤参数，再塑造输出中的亮度、色彩、阴影／中间调／高光、细节、光晕抑制与时序稳定；自由组合继承设置与已保存的逐层独立外观和结果。 |
+| **310.9.16 A/B 双模型** | 对比 A（Legacy）和 B（Small FP8），配置 AA、AB、BA、BB；附加层可独立选模型或继承主模型。 |
+| **Render／Upscaled／Present** | 在 DLSS 超分前、DLSS 输出或 ReShade 效果前的最终游戏画面上应用 NR；实际执行取决于 API、资源和 FG 路由。 |
+| **NR 协同原生 DLSS FG/MFG 或 XeFG** | 配合已有 FG 后端运行，查看实际观测路径与活动，不把配置倍率当作 FG 已生效的证明。 |
+| **输出效果与时序稳定** | 调整亮度／颜色限制、细节、光晕和时序行为；SDR/HDR 兼容策略仍独立可配。 |
+| **实时诊断与报告** | 查看 NR 活动、请求／解析模型、资源及可用时的 GPU 时间，准备可选诊断与需用户检查提交的 Issue 草稿。 |
+| **15 种界面语言** | Auto 自动跟随 ReShade，也可手动选择。显示取决于 ReShade 已加载的字体，语言清单与缺字回退说明见指南。 |
+| **四套界面主题** | Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED 只改变菜单视觉，不影响 NR 图像处理。 |
+
+模型外观控制 NR 生成什么，结果编辑则塑造每层模型已经返回的改变量。模型选择、外观继承、
+结果继承彼此独立，附加层既可沿用第 1 层，也可保留各自保存的编辑。介入点、工作分辨率和
+上采样仍全链共享，“独立皮肤”也是全链设置；结果控件有各自的开关及资源前提。
+
+参数值、依赖、继承和配置示例见[玩家指南](docs/USER_GUIDE.md)。
+
+![Cyber Neon 多层处理链及第 2 层独立编辑器](docs/images/ui/multipass-zh.webp)
+
+*候选的生产 ImGui 菜单离屏捕获，状态为合成夹具；本图经过裁切，仅展示界面，
+不是游戏画质对比或性能测量。*
+
+![NR 结果编辑器：基础调整、限制、细节及时序控件](docs/images/ui/results-zh.webp)
+
+*同一候选菜单的离屏界面示例：基础结果调整、亮度与色彩限制、细节与光晕、时域稳定。*
+
+![Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED](docs/images/ui/themes-zh.webp)
+
+*同一候选菜单的四套主题，主题只影响界面。*
 
 ### 下载、安装与使用
 
-#### 使用前提
+**必要前提：** Windows x64；兼容 **ReShade API 18** 的
+[完整 Add-on 支持版 ReShade](https://reshade.me/)；合法取得的兼容 NVIDIA
+**`nvngx_dlssnr.dll`**；以及 Runtime 支持的显卡、驱动和渲染链路。
+双模型须使用精确识别的 **310.9.16.0**，本项目没有已验证的统一最低显卡／驱动清单。
 
-- Windows x64，以及兼容的游戏／DLSS 渲染链路。下文实机验证采用 D3D12；
-  Vulkan 与 D3D11 另有适用限制。
-- 兼容 **ReShade API 18** 的[完整 Add-on 支持版 ReShade](https://reshade.me/)，
-  由它加载 `.addon64` 插件。
-- 合法取得的兼容 NVIDIA **`nvngx_dlssnr.dll`**，以及该 Runtime 和渲染路径支持的
-  GPU／驱动组合。本项目没有已验证的统一最低显卡／驱动清单，请遵循 Runtime 自身要求，
-  并检查游戏内诊断。
+安装包不附带 ReShade、NVIDIA Runtime、模型或厂商 SDK 分发包；UI、翻译和着色器已编入插件。
 
-安装包**不包含** ReShade、NVIDIA Runtime DLL、模型或厂商 SDK 分发包；
-着色器、UI 和翻译已编入插件。
+1. 从 [Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases) 下载
+   `NR-Nexus-v<version>-<commit>-windows-x64.zip` **资产**及 `.zip.sha256` 并核对。
+   GitHub 的 **Source code** 压缩包不是安装包。
+2. 关闭游戏，备份已有插件／设置，将本插件旧副本移出所有生效的 Add-on 搜索目录，
+   避免旧 Lecram 构建和 Nexus 同时加载。
+3. 将 **`renodx-dlss5.addon64`** 放在游戏 EXE 旁或 ReShade 配置的 `AddonPath`，保留许可文件；
+   兼容的 `nvngx_dlssnr.dll` 放在插件旁，该位置没有时再查游戏 EXE 目录。
+   不覆盖无关 DLSS／FG 文件、ReShade 预设、配置或存档。
+4. 使用已配置的快捷键打开 ReShade，选择 **NR Nexus** 并开启 **Neural Rendering**。
+   `Render`／`Upscaled` 需要兼容的 DLSS 求值；普通 `Present` 路径在 Optional／Never
+   策略下可使用中性引导资源，但并不因此脱离所有游戏、API 和资源前提。
+   具体操作见[首次使用与介入点指南](docs/USER_GUIDE.md)。
+5. 核对插件／Runtime 版本及 NR 实际状态，加载不等于已生效。在同一场景对比 Off／On；
+   计数器和 `ENGAGED` 不代表画质验收。保留预期的 FG 配置，并查看回退或缺资源提示。
 
-#### 安装与首次启用
-
-1. 打开 [Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)，
-   下载 `NR-Nexus-v<version>-<commit>-windows-x64.zip` **发布资产**及其
-   `.zip.sha256` 校验文件，核对 ZIP 的 SHA-256。GitHub 自动生成的 **Source code**
-   压缩包用于开发，不是可安装插件。
-2. 关闭游戏，备份已安装插件及设置。将本插件的旧副本移出所有生效的 Add-on 搜索目录，
-   避免旧 Lecram 构建与 NR Nexus 同时加载；备份也应放在这些目录之外。
-3. 将 **`renodx-dlss5.addon64`** 放在游戏 EXE 目录或 ReShade 已配置的 `AddonPath`，
-   保留随附许可材料。不覆盖 ReShade 配置、预设、存档或其他 DLSS／FG 文件。
-4. 将兼容的 `nvngx_dlssnr.dll` 放在插件旁；该位置没有文件时，插件再查找游戏 EXE 目录。
-   避免不同位置存在冲突的 Runtime 副本。
-5. 启动游戏并启用兼容的 DLSS 渲染模式。使用 ReShade 已配置的叠加层快捷键，
-   打开 **NR Nexus**，开启 **Neural Rendering**。在 **介入点（Hook point）** 中选择
-   **渲染（Render，超分前）**、**超分后（Upscaled）**或**呈现（Present）**，
-   留意回退或资源缺失提示。使用 FG 时保留游戏预期的帧生成设置，并核对显示的后端。
-6. 检查版本／Runtime 状态栏及 NR 活动状态。`ENGAGED`、活动提示和诊断可帮助确认
-   NR 正在工作；插件已加载不等于 NR 已生效。在同一场景对比 NR Off／On；
-   活动状态不保证每帧成功或画质达标。
-
-**升级**时关闭游戏，备份当前插件／设置，按新版说明替换插件文件，不要在另一个生效目录
-留下旧副本。**卸载**时关闭游戏，移除该插件或恢复旧备份文件，保留无关的 ReShade、
-游戏和 Runtime 文件。
+**升级**时关闭游戏、备份并按新版说明替换插件。**卸载**时关闭游戏，移除或恢复旧插件，
+保留无关的游戏、ReShade 和 Runtime 文件。
 
 ### 兼容性与已知限制
 
-下表区分实际证据与实现范围，不是通用游戏支持列表。
-版本专属验证结果请查看[Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)。
-
-| 环境或组合 | 状态与范围 |
+| 路径或功能 | 证据与限制 |
 | --- | --- |
-| 巫师 3，Steam／D3D12、HDR、Present、XeFG 4× | dev.2 定向实机验证通过 NR 开关、移动、可见 NR 效果及 HUD 检查。 |
-| D3D12 `Render`／`Upscaled`／`Present` | 已实现；上述定向结果不代表所有处理位置、游戏或 FG 组合均已验收。 |
-| 310.9.16 双模型（dev.3） | A/B、AB/BA/BB 通过合成 GPU 推理及巫师3 D3D12／Present 定向场景检查；实机测试主模型 B→A 切换。实际网络名由本地隔离探针确认，插件显示创建请求；HDR 人眼画质及长时运行尚未验收。 |
-| 原生 DLSS FG/MFG | 已集成并有定向自动化覆盖；该版本尚未验证跨模式、倍率的完整实机矩阵。 |
-| SDR、HDR 恢复 | 策略相互独立并有定向自动化覆盖；尚未验证完整的游戏内 SDR/HDR 组合。 |
-| D3D11 运动纹理共享 | 纹理回退已通过定向硬件／WARP 检查，完整游戏兼容性尚未验证。 |
-| Vulkan | 源码存在相应路径，但广泛游戏验收不足；Vulkan `Present` 尚未实现，会回退到 DLSS 输出路径。 |
+| 巫师 3，D3D12／HDR／Present＋XeFG 4× | 定向候选场景覆盖可见 NR／HUD、A/B 与混合链、切换和退出恢复；不是完整跨游戏或 HDR 画质矩阵。 |
+| 310.9.16 A/B 模型 | 真实 GPU 推理覆盖 A/B、AB/BA/BB，公开 dev.3 说明区分实机候选与最终构建；不承诺固定性能提升。 |
+| 候选菜单与结果编辑器 | 生产 ImGui 交互／布局及定向实机 UI 检查。四主题均有离线 ImGui 验证，实机仅确认 Nexus Dark；全部主题实机切换、重启持久化、受控参数对比和长时验收仍未完成。 |
+| 原生 DLSS FG/MFG | 已集成并有定向自动化覆盖，完整实机模式／倍率矩阵尚未验收。 |
+| SDR/HDR 恢复 | 独立策略及定向验证，不代表完整游戏内 SDR/HDR 矩阵。 |
+| D3D11 运动纹理共享回退 | 定向硬件／WARP 资源检查，不代表全面支持 D3D11 游戏。 |
+| Vulkan | 存在源码路径，但 `Present` 尚未实现，会回退到 DLSS 输出处理，广泛游戏验收不足。 |
 
-- **已知问题：继承共享渲染链中的 XeFG 高亮瞬闪尚未解决。**
-- 使用 DLSS Ray Reconstruction 时，`Render` 请求保持在 `Upscaled` 路径；
-  请以实际活动／回退提示为准。
-- Present 处理包含游戏 HUD；菜单／地图提供有效引导资源时，NR 仍可能运行。
-- 自动化测试不证明各游戏的画质或性能；ReShade 支持更多 API，
-  不等于本插件具有相同支持范围。
+- **继承共享链路中的 XeFG 高亮瞬闪尚未解决。**
+- 使用 DLSS Ray Reconstruction 时，`Render` 保持在 `Upscaled` 路径。
+- Present 包含游戏 HUD；资源有效的菜单／地图也可能运行 NR。Optional／Never 的中性引导
+  是回退方案，不是重建出的真实游戏深度或运动。
+- 其他／未识别 Runtime 禁用 B，已保存的 B 请求执行时回退 A，不改写原选择；
+  不能仅凭版本号更高推定兼容。
+- 测试、状态提示和截图不证明每帧成功、画质或通用 API／游戏支持。
+
+排查步骤见[玩家指南](docs/USER_GUIDE.md)，版本专属结果见
+[Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)。
 
 ### 问题反馈与隐私
 
-可直接提交 [GitHub Issue](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/issues)，
-建议提供游戏／API、显卡与驱动、NR Nexus 版本、实际加载的 NR Runtime 版本、
-NR 介入点、FG 后端／倍率、SDR/HDR 模式和复现步骤；诊断包不是必需项。
+[反馈问题](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/issues)时建议提供游戏／API、
+显卡／驱动、插件和 Runtime 版本、NR 介入点、模型、层数、FG 配置、SDR/HDR 模式及复现步骤，
+诊断包不是必需项。
 
-插件中的**我遇到了问题...**（或**报告这些问题**）可准备文字反馈、生成诊断、
-预览／选择附件并保存本地 ZIP。截图默认排除。导出文本和 JSON 会自动脱敏，
-但**自动脱敏不能保证清除全部敏感信息**，未知格式密钥、私人路径和图片像素中的
-个人信息仍可能保留；分享前请逐一检查附件。
+**我遇到了问题...** 可准备文字、预览所选诊断并保存本地 ZIP，截图默认排除。
+文本／JSON 自动脱敏不能保证清除未知密钥、私人路径或图像个人信息，分享前请自行检查附件。
+**Upload & copy link** 需要单独同意向第三方上传，持有链接者均可下载；仅本地保存不上传，
+用户主动保存的 ZIP 不会自动删除。
 
-**Upload & copy link** 需要你单独、明确同意向第三方上传。界面显示服务商及保留期限，
-持有链接者均可能下载。仅本地保存不发送上传请求，上传失败保留 ZIP；
-用户主动保存的 ZIP 不会被自动删除。
-
-**准备 GitHub Issue** 只打开浏览器草稿，插件不保存 GitHub Token，也不提交 Issue。
-附带诊断摘要或报告链接分别需要同意，请在 GitHub 检查后自行提交。
-若表单或预填内容不完整，可复制完整 Markdown 到空白 Issue。
-ZIP 保存、上传及准备 Issue 是独立操作。
+**准备 GitHub Issue** 只打开浏览器草稿，不保存 GitHub Token、不自动提交。
+附带摘要或报告链接分别需要同意，请在 GitHub 检查后自行提交；预填不完整时可复制完整
+Markdown 到空白 Issue。更多说明见[玩家指南](docs/USER_GUIDE.md)。
 
 ### 构建
 
@@ -347,7 +335,7 @@ ZIP 保存、上传及准备 Issue 是独立操作。
 下载地址及 SHA-256 固定于 [host/tools.lock.json](host/tools.lock.json)。
 
 ```powershell
-git clone https://github.com/williamstosh/RenoDX-DLSSNR-Nexus.git
+git clone --branch dev https://github.com/williamstosh/RenoDX-DLSSNR-Nexus.git
 cd RenoDX-DLSSNR-Nexus
 pwsh ./tools/setup-build-tools.ps1
 pwsh ./tools/setup-host.ps1
@@ -371,14 +359,12 @@ Runtime DLL、模型和游戏资源另行获取。
 
 ### 版本与发布
 
-各版本的主要变化、验证范围与已知限制保存在[版本说明](docs/releases/)中。
-
 [version.h](version.h) 定义独立 SemVer，Git Commit 用于追溯源码。
-日常提交及 Actions artifacts 不等于已发布版本。`dev.N` 和可选的 `rc.N`
-属于 **Pre-release**，稳定版本单独标识。正式下载及版本更新详情以
-[GitHub Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases) 为准。
-[GitHub Actions](.github/workflows/ci.yml) 构建源码，
-版本 Tag 触发[发布工作流](.github/workflows/release.yml)。
+日常提交及 Actions artifacts 不等于已发布版本。`dev.N` 和可选的 `rc.N` 属于 **Pre-release**，
+稳定版本单独标识，下载及更新详情以
+[Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases) 为准。
+后续安装包会在插件及现有许可证外包含本 README、`USER_GUIDE.md` 和截图，不改写旧版 ZIP。
+[CI](.github/workflows/ci.yml) 构建源码，版本 Tag 触发[发布工作流](.github/workflows/release.yml)。
 
 ### 来源、致谢与许可证
 
@@ -388,6 +374,14 @@ Lecram [V8.5 RC10 公开插件源码](https://github.com/Yukikaze20170315/RenoDX
 [导入源码提交](https://github.com/williamstosh/RenoDX-DLSS5-Generic/commit/9bb6c0fec57ecb28c77938f3feb8155433396d93)
 及[历史 fork](https://github.com/williamstosh/RenoDX-DLSS5-Generic)保留为来源依据。
 
+感谢 [GITC-Uplift](https://github.com/ghostinthecamera/GITC-Uplift) 作者
+**Hussain Abdullah**，其公开的 DLSS NR 模型选择研究为 NR Nexus 的双模型实现提供了技术参考。
+详细来源与参考范围见[第三方声明](THIRD_PARTY_NOTICES.md#gitc-uplift-research-and-local-validation-references)。
+
 本项目是非官方独立项目，未获 NVIDIA、RenoDX 作者或 Lecram 背书。
 原始 [MIT 许可](LICENSE)、版权及[第三方声明](THIRD_PARTY_NOTICES.md)保留原文；
 MIT 许可不改变第三方 SDK、Runtime 或模型的许可条件。
+
+文档组织还参考了 [OptiScaler](https://github.com/optiscaler/OptiScaler)、
+[Magpie Experimental](https://github.com/SAOG0721/Magpie) 和
+[Veyra](https://github.com/Likely7/Veyra-NRVideo)。

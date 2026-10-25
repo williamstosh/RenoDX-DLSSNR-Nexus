@@ -66,24 +66,52 @@ function Read-PinnedFile {
 
 $taskFiles = [ordered]@{}
 $taskFiles['renodx-dlss5.addon64'] = $taskBytes
-foreach ($taskFile in @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md')) {
+foreach ($taskFile in @('LICENSE', 'THIRD_PARTY_NOTICES.md')) {
     $taskFiles[$taskFile] = [IO.File]::ReadAllBytes((Join-Path $taskRoot $taskFile))
     if ($taskFiles[$taskFile].Length -eq 0) { throw "Empty package input: $taskFile" }
 }
-# 安装说明仍来自唯一 README；包外源码链接固定到本次完整提交。
-$taskReadme = [Text.Encoding]::UTF8.GetString($taskFiles['README.md'])
-$taskReadme = [regex]::Replace($taskReadme, '(\]\()([^\s)]+)(\))', {
-    param($match)
-    $target = $match.Groups[2].Value
-    $path = ($target -split '#', 2)[0] -replace '^\./', ''
-    if ($target.StartsWith('#') -or $target -match '^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|//)' -or
-        $path -cin @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md')) {
-        return $match.Value
-    }
-    return $match.Groups[1].Value + "https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/blob/$taskCommit/" +
-        ($target -replace '^\./', '') + $match.Groups[3].Value
-})
-$taskFiles['README.md'] = [Text.Encoding]::UTF8.GetBytes($taskReadme)
+$taskDocuments = [ordered]@{ 'README.md' = 'README.md'; 'docs/USER_GUIDE.md' = 'USER_GUIDE.md' }
+$taskDocumentInputs = @{}
+foreach ($taskDocument in $taskDocuments.Keys) {
+    $taskDocumentPath = Join-Path $taskRoot $taskDocument
+    if (-not (Test-Path -LiteralPath $taskDocumentPath -PathType Leaf)) { throw "Missing package input: $taskDocument" }
+    $taskDocumentInputs[$taskDocument] = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($taskDocumentPath))
+    if ([string]::IsNullOrWhiteSpace($taskDocumentInputs[$taskDocument])) { throw "Empty package input: $taskDocument" }
+}
+$taskImageNames = @('quality', 'multipass', 'results', 'diagnostics', 'advanced', 'themes',
+    'quality-zh', 'multipass-zh', 'results-zh', 'diagnostics-zh', 'advanced-zh', 'themes-zh')
+$taskLocalPaths = [ordered]@{
+    'LICENSE' = 'LICENSE'; 'THIRD_PARTY_NOTICES.md' = 'THIRD_PARTY_NOTICES.md'
+    'README.md' = 'README.md'; 'docs/USER_GUIDE.md' = 'USER_GUIDE.md'
+}
+foreach ($taskImage in $taskImageNames) {
+    $taskSourcePath = "docs/images/ui/$taskImage.webp"
+    $taskDestination = "images/ui/$taskImage.webp"
+    $taskLocalPaths[$taskSourcePath] = $taskDestination
+    $taskFiles[$taskDestination] = [IO.File]::ReadAllBytes((Join-Path $taskRoot $taskSourcePath))
+    if ($taskFiles[$taskDestination].Length -eq 0) { throw "Empty package input: $taskSourcePath" }
+}
+# 文档来自同一源码目录，仅重定位链接；包外源码链接固定到本次完整提交。
+foreach ($taskDocument in $taskDocuments.Keys) {
+    $taskText = $taskDocumentInputs[$taskDocument]
+    $taskPackedText = [regex]::Replace($taskText, '(\]\()([^\s)]+)(\))', {
+        param($match)
+        $target = $match.Groups[2].Value
+        if ($target.StartsWith('#') -or $target -match '^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|//)') {
+            return $match.Value
+        }
+        $parts = $target -split '#', 2
+        $sourcePath = [IO.Path]::GetRelativePath($taskRoot,
+            [IO.Path]::GetFullPath((Join-Path (Split-Path (Join-Path $taskRoot $taskDocument) -Parent) $parts[0]))) -replace '\\', '/'
+        $fragment = if ($parts.Count -eq 2) { '#' + $parts[1] } else { '' }
+        if ($sourcePath -cin @($taskLocalPaths.Keys)) {
+            return $match.Groups[1].Value + $taskLocalPaths[$sourcePath] + $fragment + $match.Groups[3].Value
+        }
+        return $match.Groups[1].Value + "https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/blob/$taskCommit/" +
+            $sourcePath + $fragment + $match.Groups[3].Value
+    })
+    $taskFiles[$taskDocuments[$taskDocument]] = [Text.Encoding]::UTF8.GetBytes($taskPackedText)
+}
 Assert-PinnedRepository $taskHost $taskLock.host.commit
 $taskFiles['licenses/RenoDX/LICENSE'] = Read-PinnedFile $taskHost $taskLock.host.commit 'LICENSE'
 $taskHostNotices = foreach ($taskHeader in @(
