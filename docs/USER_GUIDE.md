@@ -2,9 +2,9 @@
 
 [English](#english) · [简体中文](#简体中文) · [README](../README.md)
 
-> **Version scope — checked 2026-10-25:** this guide describes the current `dev` interface at `1986c5b`. The latest published package is [v0.1.0-dev.3](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.1.0-dev.3), which includes dual-model and per-pass model selection. The four-page menu, independent result settings for Passes 2–4, and four interface themes are later development changes and are **not in that published package**. Matching version text alone does not establish that a package contains these changes. Check the release notes and the build you installed.
+> **Version scope — checked 2026-10-25:** this guide describes the current `dev` interface, checked against source at `cf29cd8`. The latest published package is [v0.1.0-dev.3](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.1.0-dev.3), which includes dual-model and per-pass model selection. The four-page menu, independent result settings for Passes 2–4, and four interface themes are later development changes and are **not in that published package**. Matching version text alone does not establish that a package contains these changes. Check the release notes and the build you installed.
 >
-> **版本范围——2026-10-25 核对：** 本指南描述 `dev` 的 `1986c5b` 界面。最新公开包为 [v0.1.0-dev.3](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.1.0-dev.3)，已包含双模型及逐层模型选择；四页菜单、第 2–4 层独立结果设置、四套界面主题属于后续开发改动，**尚未包含于该公开包**。版本文本相同不代表包已包含这些改动，请核对发布说明与实际安装的构建。
+> **版本范围——2026-10-25 核对：** 本指南描述当前 `dev` 界面，源码核验基线为 `cf29cd8`。最新公开包为 [v0.1.0-dev.3](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.1.0-dev.3)，已包含双模型及逐层模型选择；四页菜单、第 2–4 层独立结果设置、四套界面主题属于后续开发改动，**尚未包含于该公开包**。版本文本相同不代表包已包含这些改动，请核对发布说明与实际安装的构建。
 
 ## English
 
@@ -182,6 +182,19 @@ The default **Chained history** is On: each pass keeps its own history. Off is a
 
 For controlled comparisons on the supported dual-model runtime, try **A**, **B**, **AA**, **AB**, **BA**, **BB**. Letters are model choices in execution order: AB means A first, B second. Explicitly set each model when comparing; Inherit Main Model can otherwise change the whole sequence. Start with the same location, size and strengths, let history settle, then inspect both still detail and movement. These are examples, **not recommended winners**; extra passes can compound colour, halos and temporal artifacts as well as strengthen the effect. Each adds GPU work. The whole chain shares location, resolution and upsampling.
 
+#### Example: two passes with independent looks and results
+
+This is an editing workflow, not a best-quality preset. It requires the development UI described above and the recognized **310.9.16.0** runtime for B.
+
+1. Enable Neural Rendering, select **Mine**, and keep the processing location, working resolution and upsampling fixed. In **Multi-Pass**, set **Pass Count** to **2**.
+2. Select the **Pass 1** node and choose **A**. Try **Style: Natural**, then adjust Local tone or Model structure. Enable **Adjust NR's look** in that pass's result section and change one output control, such as **Highlights**. These are the same base values shown on Quality.
+3. Select **Pass 2**, explicitly choose **B**, and turn **Same as pass 1** and **Inherit Pass 1 result settings** off. The controls reveal Pass 2's stored independent values, initially defaults; they do not copy the current Pass 1 edits.
+4. Try **Style: Cinematic** for Pass 2 and adjust its Local tone or structure separately. Enable that pass's **Adjust NR's look**, then try **Fine detail** or **Halo suppression**, changing one control at a time. Character / skin requires that pass's Character mask; Independent skin remains global and can cap the structure sent to the model. Result effects require an available result stage, and Motion stabilization needs usable motion vectors.
+5. To share settings again, re-enable either inheritance switch independently. Turning it off later restores access to the saved independent values. **Inherit Main Model** is a separate choice; use it only if Pass 2 should also follow the main model.
+6. Let history settle, compare the same scene while still and moving, and inspect the available GPU timing under **NR cost** in Diagnostics. Compare two passes with one at the same location and size; reducing the count keeps Pass 2's saved edits. The timer covers NR work as reported there, not individual-pass cost; an unavailable reading is not zero cost.
+
+Model styling changes synthesis and resets temporal history; result edits reshape each pass's returned change live. Location, working resolution and upsampling stay shared. More control and more passes do not establish better quality or performance—keep the combination that works in the scenes you actually play.
+
 <a id="en-diagnostics"></a>
 ### Diagnostics and reports
 
@@ -236,7 +249,7 @@ Saving a local ZIP, authorizing upload to the displayed temporary hosts, includi
 | --- | --- | --- |
 | Interface theme | Fresh installation: **Cyber Neon**; Nexus Dark / Fluent Light / Midnight OLED also available | Changes NR Nexus interface colours only, saved for this game. Does not grade the game image or change NR quality. Existing configurations without a theme retain Nexus Dark. |
 | Restore default theme | Cyber Neon | Separate action from restoring picture/settings defaults. Restore all does not reset the theme preference. |
-| Language | **Auto**, or one of 15 languages | English, German, French, Spanish, Italian, Portuguese (Brazil), Russian, Bulgarian, Slovenian, Turkish, Thai, Japanese, Korean, Chinese (Simplified), Chinese (Traditional). Auto follows ReShade. Choices remain readable in English. If glyphs show as boxes, also choose the corresponding language in ReShade to load its font. |
+| Language | **Auto**, or one of 15 languages | English, German, French, Spanish, Italian, Portuguese (Brazil), Russian, Bulgarian, Slovenian, Turkish, Thai, Japanese, Korean, Chinese (Simplified), Chinese (Traditional). Auto follows ReShade's language, which follows Windows unless selected there; an unmatched language falls back to English. Choices remain readable in English. ReShade loads fonts for its own language; if the add-on detects missing glyphs, it stays in English and warns in `ReShade.log`. Select the corresponding language in ReShade too, and check any custom font override. |
 | Notifications | **On** | Controls gameplay activation/failure/health notices. Turning it off retains the overlay status and Diagnostics. |
 | HUD position X / Y | **50% / 0%**, **0–100%** each | Position of the add-on's notification HUD, not the game's HUD. |
 | Developer view | **Off** (modern view) | Switches to the classic flat layout, with technical/raw English controls. Same underlying settings; switching ends Built-in effect preview. Use the same button to return. |
@@ -523,6 +536,19 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 
 在支持的双模型运行时，可固定介入点、尺寸、强度，比较 **A、B、AA、AB、BA、BB**。字母按执行顺序排列，AB 即先 A 后 B。比较时明确设置每层模型，避免“继承主模型”随主模型一起改变序列。每次切换后等历史稳定，同时看静止细节和运动。以上仅为例子，**不保证哪组最佳**；加层可能增强效果，也会累积颜色、光晕、时序伪影并增加 GPU 工作。全链介入点、分辨率、上采样共用。
 
+#### 示例：两层独立风格与结果调整
+
+这是操作示例，不是最佳画质预设；需要上述开发版界面，B 还要求已识别的 **310.9.16.0** Runtime。
+
+1. 开启 Neural Rendering，选择**我的**，固定介入点、工作分辨率和上采样。在**叠层**页把**叠层数**设为 **2**。
+2. 选择**第 1 层**节点，明确选择 **A**。尝试**风格：自然**，再调整局部色调或模型结构；在本层结果区开启**调整 NR 的外观**，先改一项输出，例如**高光**。这些就是画质页共用的基础值。
+3. 选择**第 2 层**，明确选择 **B**，关闭**继承第 1 层外观**和**继承第 1 层结果设置**。此时显示本层保存的独立值，初始为默认，不会复制第 1 层当前的编辑。
+4. 为第 2 层尝试**风格：电影感**，分别调整它的局部色调或结构；开启本层**调整 NR 的外观**，再尝试**细节**或**暗晕抑制**，每次只改一项。角色／皮肤需要本层角色遮罩开启；独立皮肤仍全链共用，并可能限制实际发送给模型的结构值。结果效果要求处理阶段可用，运动稳定还需可用的运动矢量。
+5. 想恢复共享时，分别重新开启所需的继承开关；以后关闭仍能继续使用保存的独立值。**继承主模型**是另一项选择，只有希望第 2 层连模型也跟随主模型时才选它。
+6. 等待历史稳定，在同一场景比较静止与运动，并查看诊断中 **NR 开销**里的可用 GPU 耗时。固定介入点和尺寸，对比两层与一层；减少层数仍保留第 2 层编辑。耗时按诊断所列 NR 工作口径统计，不是逐层计时；不可用读数不代表零开销。
+
+模型风格改变生成阶段并重置时序历史，结果编辑实时塑造每层返回的改变量。介入点、工作分辨率、上采样仍共享。可调项和层数更多不代表画质或性能更好，应在实际游玩场景中比较后选择。
+
 <a id="zh-diagnostics"></a>
 ### 诊断与报告
 
@@ -577,7 +603,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 | --- | --- | --- |
 | 界面主题 | 全新安装 **Cyber Neon**；另有 Nexus Dark／Fluent Light／Midnight OLED | 只改变 NR Nexus 界面颜色，按游戏保存，不改变游戏调色或 NR 画质。已有配置缺少主题项时保留 Nexus Dark。 |
 | 恢复默认主题 | Cyber Neon | 与恢复画质／设置分开；“恢复全部默认”不会重置主题偏好。 |
-| 语言 | **Auto** 或 15 种语言 | 英、德、法、西、意、葡萄牙语（巴西）、俄、保加利亚、斯洛文尼亚、土耳其、泰、日、韩、简中、繁中。Auto 跟随 ReShade，选择名称保留英文便于找回。方框缺字时还需在 ReShade 选择对应语言以加载字体。 |
+| 语言 | **Auto** 或 15 种语言 | 英、德、法、西、意、葡萄牙语（巴西）、俄、保加利亚、斯洛文尼亚、土耳其、泰、日、韩、简中、繁中。Auto 跟随 ReShade 的语言，后者未手动选择时跟随 Windows；未匹配的语言回退英文。选择名称保留英文便于找回。ReShade 为自身语言加载字体；插件检测到缺字会保持英文并在 `ReShade.log` 警告，需同时在 ReShade 选择对应语言，并检查自定义字体覆盖。 |
 | 通知 | **开** | 控制游戏内启用／失败／健康提示；关闭仍可看覆盖层状态和诊断。 |
 | 提示 HUD 位置 X／Y | **50%／0%**；各 **0–100%** | 插件通知位置，不是游戏 HUD 位置。 |
 | 开发者视图 | **关**，默认现代视图 | 切换经典平铺布局，含英文技术／原始控件，共用同一配置；切换结束内置效果比较，同一按钮可返回。 |

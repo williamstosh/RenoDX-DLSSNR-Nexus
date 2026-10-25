@@ -30,13 +30,21 @@ and four menu themes.
 | Feature | What you can use it for |
 | --- | --- |
 | **A sequential NR chain, up to four passes** | Process each layer's output in the next layer, using different models or looks in one chain. More passes cost more GPU time and do not guarantee better quality. |
+| **Independent Per-Pass Look & Result Editing** | Give each layer its own style, local tone, structure, character mask and skin steering, then shape its output: brightness, colour, shadows/midtones/highlights, detail, halo suppression and temporal stability. Combine inherited settings with saved independent looks and results. |
 | **310.9.16 dual models A/B** | Compare A (Legacy) and B (Small FP8), or configure AA, AB, BA and BB. Each additional pass chooses its own model or inherits the main choice. |
-| **Independent appearance and result edits** | Share Pass 1 settings or keep a layer's own look and result shaping. Model selection, appearance inheritance and result inheritance are separate controls. |
 | **Render / Upscaled / Present** | Apply NR before DLSS upscaling, to its output, or to the final game image before ReShade effects. Actual execution depends on API, resources and FG routing. |
 | **NR + native DLSS FG/MFG or XeFG** | Coordinate NR with the existing FG backend; inspect the observed path and activity rather than assuming a configured multiplier proves FG is active. |
-| **Output shaping and stability** | Adjust brightness/color limits, detail, halos and temporal behavior. SDR/HDR compatibility policies remain independently configurable. |
+| **Output shaping and temporal stability** | Adjust brightness/color limits, detail, halos and temporal behavior. SDR/HDR compatibility policies remain independently configurable. |
 | **Live diagnostics and reports** | Inspect NR activity, requested/resolved models, resources and GPU time when available; prepare optional diagnostics and a reviewed GitHub Issue draft. |
+| **Multilingual interface — 15 languages** | Let Auto follow ReShade or choose a language manually. Display depends on ReShade's loaded font; the guide lists languages and explains missing-glyph fallback. |
 | **Four interface themes** | Cyber Neon, Nexus Dark, Fluent Light and Midnight OLED change the menu's appearance, independently of image processing. |
+
+Model-look controls steer what NR generates; result editing reshapes the change
+returned by each pass. Model choice, look inheritance and result inheritance are
+separate, so additional layers can follow Pass 1 or keep their own saved edits.
+Processing location, working resolution and upsampling remain shared across the
+chain, as does Independent skin. Result controls have enable and resource
+requirements.
 
 See the [User Guide](docs/USER_GUIDE.md) for values, dependencies, inheritance
 and practical examples.
@@ -46,6 +54,11 @@ and practical examples.
 *Current dev menu, captured from the production ImGui interface with synthetic
 status. This cropped interface example is not a game-quality comparison or
 performance measurement.*
+
+![NR result editor: basic adjustments, limits, detail and temporal controls](docs/images/ui/results.webp)
+
+*Basic adjustments, brightness/colour limits, detail/halos and temporal stability
+in the same offscreen dev UI example.*
 
 ![Cyber Neon, Nexus Dark, Fluent Light and Midnight OLED](docs/images/ui/themes.webp)
 
@@ -220,13 +233,18 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 | 能力 | 玩家用途 |
 | --- | --- |
 | **最多四层的 NR 顺序处理链** | 前一层的输出送入下一层，在一条链中组合不同模型与外观。层数越多 GPU 工作越多，不保证画质更好。 |
+| **逐层独立外观与结果编辑** | 每层分别调整风格、局部色调、结构、角色遮罩及皮肤参数，再塑造输出中的亮度、色彩、阴影／中间调／高光、细节、光晕抑制与时序稳定；自由组合继承设置与已保存的逐层独立外观和结果。 |
 | **310.9.16 A/B 双模型** | 对比 A（Legacy）和 B（Small FP8），配置 AA、AB、BA、BB；附加层可独立选模型或继承主模型。 |
-| **独立外观与结果编辑** | 各层可共享第 1 层设置或保留自己的外观和结果调整；模型选择、外观继承、结果继承分别控制。 |
 | **Render／Upscaled／Present** | 在 DLSS 超分前、DLSS 输出或 ReShade 效果前的最终游戏画面上应用 NR；实际执行取决于 API、资源和 FG 路由。 |
 | **NR 协同原生 DLSS FG/MFG 或 XeFG** | 配合已有 FG 后端运行，查看实际观测路径与活动，不把配置倍率当作 FG 已生效的证明。 |
-| **输出调整与稳定性** | 调整亮度／颜色限制、细节、光晕和时序行为；SDR/HDR 兼容策略仍独立可配。 |
+| **输出效果与时序稳定** | 调整亮度／颜色限制、细节、光晕和时序行为；SDR/HDR 兼容策略仍独立可配。 |
 | **实时诊断与报告** | 查看 NR 活动、请求／解析模型、资源及可用时的 GPU 时间，准备可选诊断与需用户检查提交的 Issue 草稿。 |
+| **15 种界面语言** | Auto 自动跟随 ReShade，也可手动选择。显示取决于 ReShade 已加载的字体，语言清单与缺字回退说明见指南。 |
 | **四套界面主题** | Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED 只改变菜单视觉，不影响 NR 图像处理。 |
+
+模型外观控制 NR 生成什么，结果编辑则塑造每层模型已经返回的改变量。模型选择、外观继承、
+结果继承彼此独立，附加层既可沿用第 1 层，也可保留各自保存的编辑。介入点、工作分辨率和
+上采样仍全链共享，“独立皮肤”也是全链设置；结果控件有各自的开关及资源前提。
 
 参数值、依赖、继承和配置示例见[玩家指南](docs/USER_GUIDE.md)。
 
@@ -234,6 +252,10 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 
 *当前 dev 的生产 ImGui 菜单离屏捕获，状态为合成夹具；本图经过裁切，仅展示界面，
 不是游戏画质对比或性能测量。*
+
+![NR 结果编辑器：基础调整、限制、细节及时序控件](docs/images/ui/results-zh.webp)
+
+*同一 dev 菜单的离屏界面示例：基础结果调整、亮度与色彩限制、细节与光晕、时域稳定。*
 
 ![Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED](docs/images/ui/themes-zh.webp)
 
