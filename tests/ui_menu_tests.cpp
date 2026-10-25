@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -255,6 +256,7 @@ int main() {
     runtime::ui_welcomed = true;
     runtime::ui_language_choice = 1;
     float panel_width = 1000.f;
+    float panel_height = 1100.f;
     float font_size = 18.f;
     double panel_total_ms = 0.0;
     unsigned panel_frames = 0;
@@ -266,7 +268,7 @@ int main() {
       ImGui::GetStyle().FontSizeBase = font_size;
       ImGui::NewFrame();
       ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
-      ImGui::SetNextWindowSize(ImVec2(panel_width, 1100.f));
+      ImGui::SetNextWindowSize(ImVec2(panel_width, panel_height));
       ImGui::Begin("NR Nexus menu fixture", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
       auto& context = *ImGui::GetCurrentContext();
       const ImGuiStyle style_before = ImGui::GetStyle();
@@ -388,7 +390,7 @@ int main() {
         frame(diagnostic_case);
         frame(diagnostic_case);
       }
-      Json output{{"width", panel_width}, {"height", 1100}, {"theme", ui::CurrentTheme().slug},
+      Json output{{"width", panel_width}, {"height", panel_height}, {"theme", ui::CurrentTheme().slug},
                   {"page", runtime::ui_menu_page}, {"language", runtime::ui_language_choice.load()},
                   {"font_size", font_size}, {"expanded", ui::expand_all_sections}, {"lists", Json::array()}};
       const ImDrawData* data = ImGui::GetDrawData();
@@ -934,6 +936,50 @@ int main() {
     capture("diagnostics");
     runtime::ui_menu_page = 3;
     capture("advanced");
+    if (std::getenv("NR_NEXUS_DOC_CAPTURES") != nullptr) {
+      // Documentation uses the production callback with explicitly synthetic
+      // status. Keep the extra captures opt-in rather than a daily test gate.
+      const auto documentation_capture = [&](const char* name, int page, int language, bool expanded) {
+        io.DisplaySize = ImVec2((std::max)(1800.f, panel_width), (std::max)(1300.f, panel_height));
+        runtime::ui_menu_page = page;
+        runtime::ui_language_choice = language;
+        runtime::ui_classic_layout = false;
+        io.AddMousePosEvent(-100.f, -100.f);
+        for (ImGuiWindow* window : ImGui::GetCurrentContext()->Windows) {
+          window->StateStorage.Clear();
+          window->Scroll = ImVec2(0.f, 0.f);
+        }
+        for (auto& scope : ui::fold_scopes) scope = {};
+        ui::expand_all_sections = expanded;
+        capture(name);
+      };
+      panel_width = 1400.f;
+      panel_height = 1100.f;
+      font_size = 18.f;
+      runtime::look_mode = true;
+      runtime::ui_selected_pass = 1;
+      runtime::stack_passes = 4;
+      runtime::pass_preset[0] = 1;
+      runtime::pass_preset[1] = 2;
+      runtime::pass_look_result[0].follow = false;
+      runtime::pass_look_result[0].mode = true;
+      runtime::StoreUiTheme(ui::ThemeId::CYBER_NEON);
+      documentation_capture("doc-quality", 0, 1, false);
+      documentation_capture("doc-multipass", 1, 1, false);
+      documentation_capture("doc-multipass-zh", 1, 14, false);
+      panel_height = 2100.f;
+      documentation_capture("doc-results", 0, 1, true);
+      panel_height = 1400.f;
+      documentation_capture("doc-diagnostics", 2, 1, false);
+      documentation_capture("doc-advanced", 3, 1, false);
+      panel_width = 650.f;
+      panel_height = 1000.f;
+      for (const auto& theme : ui::kThemes) {
+        runtime::StoreUiTheme(theme.id);
+        documentation_capture((std::string("doc-theme-") + theme.slug).c_str(), 0, 1, false);
+      }
+      std::puts("documentation captures: production menu, synthetic status, no game or GPU measurements");
+    }
     std::printf("production menu checks=%u failures=0; category/pass/model/reset/persistence/classic/language/size matrix passed\n", checks);
     std::printf("production menu CPU mean=%.3f ms, frames=%u; includes synthetic test hooks and language changes, excludes GPU rendering\n",
                 panel_total_ms / panel_frames, panel_frames);

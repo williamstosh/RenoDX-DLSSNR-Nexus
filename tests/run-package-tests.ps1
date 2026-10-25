@@ -33,6 +33,43 @@ function Assert-PackageRejected {
     $script:taskPassed++
 }
 
+function Read-ZipText([string]$Name) {
+    $reader = [IO.StreamReader]::new($taskZip.GetEntry($Name).Open(), [Text.UTF8Encoding]::new($false, $true))
+    try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+}
+
+function Assert-DocumentLinks([string]$Name, [string]$Text, [hashtable]$Documents, [string[]]$Paths, [bool]$Source = $false) {
+    foreach ($link in [regex]::Matches($Text, '\]\(([^\s)]+)\)')) {
+        $target = $link.Groups[1].Value
+        if ($target -match '^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|//)') { continue }
+        $parts = $target -split '#', 2
+        $path = if ($parts[0]) {
+            [IO.Path]::GetRelativePath($taskRoot, [IO.Path]::GetFullPath(
+                (Join-Path (Split-Path (Join-Path $taskRoot $Name) -Parent) $parts[0]))) -replace '\\', '/'
+        } else { $Name }
+        $exists = if ($Source) { Test-Path -LiteralPath (Join-Path $taskRoot $path) } else { $Paths -ccontains $path }
+        Assert-Test $exists "Broken relative link in ${Name}: $target"
+        if ($parts.Count -ne 2 -or -not $parts[1]) { continue }
+        Assert-Test ($Documents.ContainsKey($path)) "Unverified anchor target in ${Name}: $target"
+        $anchors = [Collections.Generic.List[string]]::new()
+        $duplicates = @{}
+        foreach ($heading in [regex]::Matches($Documents[$path], '(?m)^#{1,6}\s+(.+?)\s*#*\r?$')) {
+            $slug = $heading.Groups[1].Value.ToLowerInvariant()
+            $slug = [regex]::Replace($slug, '\[([^\]]+)\]\([^)]*\)', '$1')
+            $slug = [regex]::Replace($slug, '<[^>]+>', '')
+            $slug = [regex]::Replace($slug, '[^\p{L}\p{M}\p{N}_\-\s]', '') -replace '\s', '-'
+            $base = $slug
+            if ($duplicates.ContainsKey($base)) { $duplicates[$base]++; $slug += '-' + $duplicates[$base] }
+            else { $duplicates[$base] = 0 }
+            $anchors.Add($slug)
+        }
+        foreach ($anchor in [regex]::Matches($Documents[$path], '<(?:a|h[1-6])\b[^>]*(?:id|name)=["'']([^"'']+)["'']')) {
+            $anchors.Add($anchor.Groups[1].Value)
+        }
+        Assert-Test ($anchors -ccontains [Uri]::UnescapeDataString($parts[1])) "Broken anchor in ${Name}: $target"
+    }
+}
+
 $taskArguments = @{
     BinaryPath = $taskBinary
     HostRoot = $taskHost
@@ -45,9 +82,15 @@ Assert-Test ([IO.Path]::GetFileName($taskResult.ArchivePath) -ceq ($taskVersion.
 $taskZip = [IO.Compression.ZipFile]::OpenRead($taskResult.ArchivePath)
 try {
     $taskNames = @($taskZip.Entries | ForEach-Object FullName)
-    foreach ($taskRequired in @('renodx-dlss5.addon64', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md', 'VERSION.txt')) {
-        Assert-Test ($taskNames -ccontains $taskRequired) "Missing package entry: $taskRequired"
-    }
+    $taskExpected = @('renodx-dlss5.addon64', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md', 'USER_GUIDE.md', 'VERSION.txt',
+        'licenses/RenoDX/LICENSE', 'licenses/RenoDX/NOTICE.txt', 'licenses/Detours/LICENSE.md',
+        'licenses/ReShade/LICENSE.md', 'licenses/DearImGui/LICENSE.txt', 'licenses/nlohmann-json/LICENSE.MIT',
+        'licenses/nlohmann-json/NOTICE.txt', 'licenses/Streamline/license.txt', 'licenses/Streamline/NOTICE.txt',
+        'licenses/NVIDIA-DLSS/LICENSE.txt')
+    $taskImageNames = @('quality', 'multipass', 'results', 'diagnostics', 'advanced', 'themes', 'multipass-zh')
+    $taskExpected += @($taskImageNames | ForEach-Object { "images/ui/$_.webp" })
+    Assert-Test ($taskNames.Count -eq $taskExpected.Count -and
+        -not (Compare-Object $taskExpected $taskNames -CaseSensitive)) 'Complete ZIP whitelist mismatch.'
     $taskBinaries = @($taskNames | Where-Object { $_ -match '(?i)\.(addon64|dll|exe|pdb|lib|exp|ini|bin|onnx|safetensors)$' })
     Assert-Test ($taskBinaries.Count -eq 1 -and $taskBinaries[0] -ceq 'renodx-dlss5.addon64') 'Unexpected binary/config/model in ZIP.'
     foreach ($taskEntry in $taskZip.Entries) {
@@ -64,30 +107,55 @@ try {
         try { $taskText = $taskReader.ReadToEnd() } finally { $taskReader.Dispose() }
         Assert-Test ($taskText -ceq [IO.File]::ReadAllText((Join-Path $taskRoot $taskDocument))) "Document changed: $taskDocument"
     }
-    $taskReader = [IO.StreamReader]::new($taskZip.GetEntry('README.md').Open())
-    try { $taskReadme = $taskReader.ReadToEnd() } finally { $taskReader.Dispose() }
     $taskCommit = & git --no-optional-locks -C $taskRoot rev-parse HEAD
     if ($LASTEXITCODE -ne 0) { throw 'Cannot identify README source commit.' }
-    $taskSourceReadme = [IO.File]::ReadAllText((Join-Path $taskRoot 'README.md'))
-    $taskSourceLinks = @([regex]::Matches($taskSourceReadme, '\]\(([^\s)]+)\)'))
-    $taskPackageLinks = @([regex]::Matches($taskReadme, '\]\(([^\s)]+)\)'))
-    Assert-Test ($taskSourceLinks.Count -eq $taskPackageLinks.Count) 'README link count changed.'
-    for ($taskIndex = 0; $taskIndex -lt $taskSourceLinks.Count; $taskIndex++) {
-        $taskTarget = $taskSourceLinks[$taskIndex].Groups[1].Value
-        $taskPackedTarget = $taskPackageLinks[$taskIndex].Groups[1].Value
-        $taskPath = ($taskTarget -split '#', 2)[0] -replace '^\./', ''
-        if ($taskTarget.StartsWith('#') -or $taskTarget -match '^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|//)' -or
-            $taskPath -cin @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md')) {
-            Assert-Test ($taskPackedTarget -ceq $taskTarget) "Package-local/external link changed: $taskTarget"
-        } else {
-            $taskExpectedUrl = "https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/blob/$taskCommit/" + ($taskTarget -replace '^\./', '')
-            Assert-Test ($taskPackedTarget -ceq $taskExpectedUrl) "Source link not pinned: $taskTarget"
-        }
+    Assert-Test ((Read-ZipText 'VERSION.txt') -ceq "Version: $($taskVersion.Version)`nTag: $($taskVersion.Tag)`nSource: $taskCommit`n") 'Package source identity mismatch.'
+    $taskMapping = @{'README.md'='README.md'; 'docs/USER_GUIDE.md'='USER_GUIDE.md';
+        'LICENSE'='LICENSE'; 'THIRD_PARTY_NOTICES.md'='THIRD_PARTY_NOTICES.md'}
+    foreach ($taskImage in $taskImageNames) {
+        $taskMapping["docs/images/ui/$taskImage.webp"] = "images/ui/$taskImage.webp"
+        $taskStream = $taskZip.GetEntry("images/ui/$taskImage.webp").Open()
+        $taskMemory = [IO.MemoryStream]::new()
+        try { $taskStream.CopyTo($taskMemory); $taskImageBytes = $taskMemory.ToArray() }
+        finally { $taskStream.Dispose(); $taskMemory.Dispose() }
+        Assert-Test ([Convert]::ToBase64String($taskImageBytes) -ceq [Convert]::ToBase64String(
+            [IO.File]::ReadAllBytes((Join-Path $taskRoot "docs/images/ui/$taskImage.webp")))) "Image source mismatch: $taskImage"
     }
-    # 除链接目标外，正文必须与唯一来源完全一致。
-    $taskLinkPattern = '(?<=\]\()[^\s)]+(?=\))'
-    Assert-Test ([regex]::Replace($taskReadme, $taskLinkPattern, '<link>') -ceq
-        [regex]::Replace($taskSourceReadme, $taskLinkPattern, '<link>')) 'README prose changed during packaging.'
+    $taskSourceDocuments = @{}
+    $taskPackedDocuments = @{}
+    foreach ($taskSourceDocument in @('README.md', 'docs/USER_GUIDE.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md')) {
+        $taskSourceDocuments[$taskSourceDocument] = [IO.File]::ReadAllText(
+            (Join-Path $taskRoot $taskSourceDocument), [Text.UTF8Encoding]::new($false, $true))
+        $taskPackedDocuments[$taskMapping[$taskSourceDocument]] = Read-ZipText $taskMapping[$taskSourceDocument]
+    }
+    foreach ($taskSourceDocument in @('README.md', 'docs/USER_GUIDE.md')) {
+        $taskSourceText = $taskSourceDocuments[$taskSourceDocument]
+        $taskPackedText = $taskPackedDocuments[$taskMapping[$taskSourceDocument]]
+        Assert-Test (-not [string]::IsNullOrWhiteSpace($taskPackedText)) "Empty document: $taskSourceDocument"
+        Assert-Test ($taskSourceText -match '[\u4e00-\u9fff]' -and $taskPackedText -match '[\u4e00-\u9fff]') "Chinese UTF-8 content missing: $taskSourceDocument"
+        $taskSourceLinks = @([regex]::Matches($taskSourceText, '\]\(([^\s)]+)\)'))
+        $taskPackageLinks = @([regex]::Matches($taskPackedText, '\]\(([^\s)]+)\)'))
+        Assert-Test ($taskSourceLinks.Count -eq $taskPackageLinks.Count) "Link count changed: $taskSourceDocument"
+        for ($taskIndex = 0; $taskIndex -lt $taskSourceLinks.Count; $taskIndex++) {
+            $taskTarget = $taskSourceLinks[$taskIndex].Groups[1].Value
+            $taskExpectedTarget = $taskTarget
+            if (-not ($taskTarget.StartsWith('#') -or $taskTarget -match '^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|//)')) {
+                $taskParts = $taskTarget -split '#', 2
+                $taskPath = [IO.Path]::GetRelativePath($taskRoot, [IO.Path]::GetFullPath(
+                    (Join-Path (Split-Path (Join-Path $taskRoot $taskSourceDocument) -Parent) $taskParts[0]))) -replace '\\', '/'
+                $taskExpectedTarget = if ($taskMapping.ContainsKey($taskPath)) { $taskMapping[$taskPath] }
+                    else { "https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/blob/$taskCommit/$taskPath" }
+                if ($taskParts.Count -eq 2) { $taskExpectedTarget += '#' + $taskParts[1] }
+            }
+            Assert-Test ($taskPackageLinks[$taskIndex].Groups[1].Value -ceq $taskExpectedTarget) "Wrong packaged link: $taskTarget"
+        }
+        # 除链接目标外，文档正文必须与本次打包源码完全一致。
+        $taskLinkPattern = '(?<=\]\()[^\s)]+(?=\))'
+        Assert-Test ([regex]::Replace($taskPackedText, $taskLinkPattern, '<link>') -ceq
+            [regex]::Replace($taskSourceText, $taskLinkPattern, '<link>')) "Document source mismatch: $taskSourceDocument"
+        Assert-DocumentLinks $taskSourceDocument $taskSourceText $taskSourceDocuments @($taskMapping.Keys) $true
+        Assert-DocumentLinks $taskMapping[$taskSourceDocument] $taskPackedText $taskPackedDocuments $taskNames
+    }
     $taskReader = [IO.StreamReader]::new($taskZip.GetEntry('licenses/nlohmann-json/NOTICE.txt').Open())
     try { $taskJsonNotice = $taskReader.ReadToEnd() } finally { $taskReader.Dispose() }
     foreach ($taskCopyright in @('Niels Lohmann', 'Björn Hoehrmann', 'Florian Loitsch', 'Evan Nemerson', 'The Abseil Authors')) {
@@ -145,5 +213,27 @@ $taskDebugPath = Join-Path $taskOutput 'debug.addon64'
 $taskNegative.BinaryPath = $taskDebugPath
 Assert-PackageRejected $taskNegative 'Debug binaries cannot'
 Assert-Test (-not (Test-Path -LiteralPath $taskNegative.OutputDirectory)) 'Rejected inputs left package output.'
+
+# 复制最小源码夹具以验证文档门禁；不删除或改写生产指南。
+$taskFixture = Join-Path $taskOutput 'missing-guide-source'
+foreach ($taskDirectory in @('tools', 'host', 'docs')) {
+    [IO.Directory]::CreateDirectory((Join-Path $taskFixture $taskDirectory)) | Out-Null
+}
+foreach ($taskFile in @('tools/package.ps1', 'tools/check-version.ps1', 'host/lock.json',
+    'version.h', 'brand.h', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md')) {
+    Copy-Item -LiteralPath (Join-Path $taskRoot $taskFile) -Destination (Join-Path $taskFixture $taskFile)
+}
+[IO.File]::WriteAllText((Join-Path $taskFixture 'dlssnr.hpp'), '#include "version.h"' + "`n" + 'constexpr char kAddonVersion[] = "v" NR_NEXUS_VERSION;')
+$taskOriginalPackage = $taskPackage
+try {
+    $taskPackage = Join-Path $taskFixture 'tools/package.ps1'
+    $taskNegative.BinaryPath = $taskBinary
+    Assert-PackageRejected $taskNegative 'Missing package input: docs/USER_GUIDE.md'
+    foreach ($taskEmptyGuide in @('', " `r`n`t")) {
+        [IO.File]::WriteAllText((Join-Path $taskFixture 'docs/USER_GUIDE.md'), $taskEmptyGuide)
+        Assert-PackageRejected $taskNegative 'Empty package input: docs/USER_GUIDE.md'
+    }
+    Assert-Test (-not (Test-Path -LiteralPath $taskNegative.OutputDirectory)) 'Missing/empty guide left package output.'
+} finally { $taskPackage = $taskOriginalPackage }
 
 [pscustomobject]@{ TestsPassed = $taskPassed; ArchivePath = $taskResult.ArchivePath; OutputDirectory = $taskOutput }

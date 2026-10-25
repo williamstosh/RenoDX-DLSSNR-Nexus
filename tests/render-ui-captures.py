@@ -4,10 +4,10 @@ import json
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 
-def render(path):
+def render(path, output_directory=None, image_format='png'):
     mesh = json.loads(path.read_text(encoding='utf-8'))
     width, height = int(mesh['width']), int(mesh['height'])
     atlas = np.frombuffer(path.with_suffix('.rgba').read_bytes(), dtype=np.uint8)
@@ -47,15 +47,56 @@ def render(path):
                 rgba = (weights @ colors[triangle]) * atlas[ty, tx]
                 target = image[y0:y1, x0:x1]
                 target[mask] = rgba[:, :3] * rgba[:, 3:] + target[mask] * (1 - rgba[:, 3:])
-    output = path.with_suffix('.png')
-    Image.fromarray(np.round(image * 255).astype(np.uint8)).save(output)
+    output = (output_directory or path.parent) / (path.stem + '.' + image_format)
+    options = {'lossless': True, 'method': 6} if image_format == 'webp' else {}
+    Image.fromarray(np.round(image * 255).astype(np.uint8)).save(output, **options)
     print(output)
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog='Set NR_NEXUS_DOC_CAPTURES=1 for tools/run-tests.ps1 -Suite ui to create doc-*.json. '
+               'Render those with --pattern doc-*.json --documentation --format webp --output-directory <directory>.')
     parser.add_argument('directory', type=Path)
+    parser.add_argument('--pattern', default='*.json', help='Select mesh captures, e.g. doc-*.json')
+    parser.add_argument('--output-directory', type=Path)
+    parser.add_argument('--format', choices=('png', 'webp'), default='png')
+    parser.add_argument('--documentation', action='store_true',
+                        help='Crop the opt-in doc captures and assemble the four-theme contact sheet')
     args = parser.parse_args()
-    for path in args.directory.glob('*.json'):
-        if path.with_suffix('.rgba').exists():
-            render(path)
+    if args.documentation and (not args.output_directory or args.format != 'webp'):
+        parser.error('--documentation requires --output-directory and --format webp')
+    captures = [path for path in sorted(args.directory.glob(args.pattern))
+                if path.with_suffix('.rgba').exists()]
+    if not captures:
+        parser.error('No matching mesh/atlas pairs found')
+    if args.output_directory:
+        args.output_directory.mkdir(parents=True, exist_ok=True)
+    for path in captures:
+        render(path, args.output_directory, args.format)
+    if args.documentation:
+        # Crops select complete control groups from the production menu, with
+        # synthetic activity summaries excluded. No game image is synthesized.
+        crops = {
+            'quality': (0, 174, 1400, 1000),
+            'multipass': (0, 174, 1400, 870),
+            'multipass-zh': (0, 174, 1400, 870),
+            'results': (710, 615, 1380, 1560),
+            'diagnostics': (0, 174, 1400, 670),
+            'advanced': (0, 174, 1400, 850),
+        }
+        for name, bounds in crops.items():
+            with Image.open(args.output_directory / ('doc-' + name + '.webp')) as original:
+                original.crop(bounds).save(args.output_directory / (name + '.webp'), lossless=True, method=6)
+        themes = (('cyber_neon', 'Cyber Neon'), ('nexus_dark', 'Nexus Dark'),
+                  ('fluent_light', 'Fluent Light'), ('midnight_oled', 'Midnight OLED'))
+        sheet = Image.new('RGB', (1300, 1220), '#10141b')
+        draw = ImageDraw.Draw(sheet)
+        font = ImageFont.truetype('C:/Windows/Fonts/segoeui.ttf', 24)
+        for index, (slug, title) in enumerate(themes):
+            x, y = index % 2 * 650, index // 2 * 610
+            draw.text((x + 20, y + 5), title, font=font, fill='white')
+            with Image.open(args.output_directory / ('doc-theme-' + slug + '.webp')) as original:
+                sheet.paste(original.crop((0, 174, 650, 742)), (x, y + 42))
+        sheet.save(args.output_directory / 'themes.webp', lossless=True, method=6)
