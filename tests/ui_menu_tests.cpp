@@ -26,7 +26,17 @@ struct TextItem {
   ImGuiWindow* window;
 };
 std::vector<TextItem> rendered_text;
+std::vector<std::string> tooltip_text;
 namespace ImGui {
+inline void ObservedTextV(const char* fmt, va_list args) {
+  va_list copy;
+  va_copy(copy, args);
+  char text[4096];
+  std::vsnprintf(text, sizeof(text), fmt, copy);
+  va_end(copy);
+  TextV(fmt, args);
+  if ((GetCurrentWindow()->Flags & ImGuiWindowFlags_Tooltip) != 0) tooltip_text.emplace_back(text);
+}
 inline void ObservedTextUnformatted(const char* begin, const char* end = nullptr) {
   TextUnformatted(begin, end);
   rendered_text.push_back({.text = (end == nullptr ? std::string(begin) : std::string(begin, end)),
@@ -59,12 +69,14 @@ inline void ObservedTextWrapped(const char* fmt, ...) {
 #define Text            ObservedText
 #define TextDisabled    ObservedTextDisabled
 #define TextWrapped     ObservedTextWrapped
+#define TextV           ObservedTextV
 #undef IMGUI_VERSION_NUM
 #include "dlssnr.hpp"
 #undef TextUnformatted
 #undef Text
 #undef TextDisabled
 #undef TextWrapped
+#undef TextV
 #define IMGUI_VERSION_NUM 19250
 #include <deps/imgui/imgui_internal.h>
 
@@ -192,16 +204,23 @@ int main() {
     float font_size = 18.f;
     double panel_total_ms = 0.0;
     unsigned panel_frames = 0;
-    const auto frame = [&]() {
+    const auto frame = [&](const ui::StatusCard* diagnostic_case = nullptr) {
       items.clear();
       rendered_text.clear();
+      tooltip_text.clear();
       ImGui::GetStyle().FontSizeBase = font_size;
       ImGui::NewFrame();
       ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
       ImGui::SetNextWindowSize(ImVec2(panel_width, 1100.f));
       ImGui::Begin("NR Nexus menu fixture", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
       const auto panel_start = std::chrono::steady_clock::now();
-      runtime::OnOverlay(nullptr);
+      if (diagnostic_case != nullptr) {
+        ui::StyleScope theme;
+        ui::PushPanelTheme(theme);
+        runtime::DrawRuntimeStatus(*diagnostic_case);
+      } else {
+        runtime::OnOverlay(nullptr);
+      }
       panel_total_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - panel_start).count();
       ++panel_frames;
       ImGui::End();
@@ -256,6 +275,37 @@ int main() {
       frame();
       frame();
     };
+    const auto hover = [&](const Item& item, const char* expected, const char* excluded) {
+      ImVec2 center = item.rect.GetCenter();
+      if (center.y < item.window->InnerRect.Min.y || center.y > item.window->InnerRect.Max.y) {
+        ImGui::SetScrollY(item.window, item.window->Scroll.y + center.y - item.window->InnerRect.GetCenter().y);
+        frame();
+        frame();
+        center = items.at(item.id).rect.GetCenter();
+      }
+      for (int i = 0; i < 40; ++i) {
+        center = items.at(item.id).rect.GetCenter();
+        io.AddMousePosEvent(center.x, center.y);
+        frame();
+      }
+      if (std::ranges::find(tooltip_text, expected) == tooltip_text.end()) {
+        std::printf("Tooltip target=%s id=%08x hovered=%08x at=%.1f,%.1f expected=%s\n", item.label.c_str(), item.id,
+                    ImGui::GetCurrentContext()->HoveredId, center.x, center.y, expected);
+        const auto found = items.find(item.id);
+        if (found != items.end()) std::printf("  current_rect=%.1f,%.1f..%.1f,%.1f disabled=%d window=%s mouse=%.1f,%.1f\n",
+                                              found->second.rect.Min.x, found->second.rect.Min.y, found->second.rect.Max.x, found->second.rect.Max.y,
+                                              found->second.disabled, found->second.window->Name, io.MousePos.x, io.MousePos.y);
+        for (const auto& value : tooltip_text) std::printf("  actual=%s\n", value.c_str());
+      }
+      check(std::ranges::find(tooltip_text, expected) != tooltip_text.end(), "candidate tooltip does not describe the hovered choice");
+      if (excluded != nullptr) check(std::ranges::find(tooltip_text, excluded) == tooltip_text.end(), "candidate tooltip repeats a different choice");
+      for (ImGuiWindow* window : ImGui::GetCurrentContext()->Windows) {
+        if (window->Active && (window->Flags & ImGuiWindowFlags_Tooltip) != 0)
+          check(window->Size.x < io.DisplaySize.x * 0.7f, "candidate tooltip is wider than its viewport budget");
+      }
+      io.AddMousePosEvent(-100.f, -100.f);
+      frame();
+    };
     const auto capture = [&](const char* name) {
       // Store the actual ImGui mesh and atlas; the optional CPU renderer uses
       // these without substituting HTML controls or a second menu definition.
@@ -288,6 +338,18 @@ int main() {
       texture.write(reinterpret_cast<char*>(atlas), static_cast<std::streamsize>(atlas_width) * atlas_height * 4);
     };
 
+    frame();
+    frame();
+    const ui::StatusCard normal_card{.tone = ui::CardTone::kGood, .title = "Normal synthetic state", .body = "Normal synthetic detail"};
+    frame(&normal_card);
+    for (ImGuiWindow* window : ImGui::GetCurrentContext()->Windows) {
+      check(!window->Active || std::strstr(window->Name, "##nr_status_card") == nullptr,
+            "normal Diagnostics still duplicates the large status card");
+    }
+    const ui::StatusCard warning_card{.tone = ui::CardTone::kWarn, .title = "Synthetic fault", .body = "Synthetic fault details retained", .fix = {"Synthetic repair step"}, .fix_count = 1};
+    frame(&warning_card);
+    check(std::ranges::any_of(rendered_text, [](const TextItem& item) { return item.text == "Synthetic fault details retained"; }),
+          "diagnostic deduplication discarded fault details");
     frame();
     frame();
     for (int page = 0; page < 4; ++page) {
@@ -325,6 +387,18 @@ int main() {
     check(!runtime::ui_defaults_view && runtime::kSetIntensity.Get() == 1.3f,
           "Mine did not restore the player's values");
     runtime::kSetIntensity.Store(own_intensity);
+    const uint32_t old_hook = runtime::hook_point.load();
+    const uint32_t old_multiplier = runtime::present_fg_multiplier.load();
+    runtime::hook_point = runtime::kHookPresent;
+    runtime::present_fg_multiplier = 4;
+    runtime::native_fg_owns = true;
+    const auto native_inputs = runtime::CollectCardInputs(ComputeNrVerdict(runtime::CollectFunnelInputs()), runtime::SteadyNowNs());
+    check(native_inputs.frame_gen_multiplier == 0, "native FG owner reused a stale legacy Present multiplier");
+    runtime::native_fg_owns = false;
+    runtime::hook_point = old_hook;
+    runtime::present_fg_multiplier = old_multiplier;
+    hover(find("A"), ui::text::kModelATip, ui::text::kModelBTip);
+    hover(find("B"), ui::text::kModelBTip, ui::text::kModelATip);
 
     // Main zero means Auto; changing the UI must retain legacy stored values.
     for (const auto& [label, value] : {std::pair{"A", 1.f}, {"B", 2.f}, {"Auto", 0.f}}) {
@@ -339,6 +413,7 @@ int main() {
     frame();
     frame();
     click(find("##model"));
+    hover(find("B"), ui::text::kModelBTip, ui::text::kModelAutoTip);
     click(find("B"));
     check(runtime::kSetPreset.Get() == 2.f, "narrow model dropdown does not preserve B semantics");
     click(find("##model"));
@@ -380,6 +455,7 @@ int main() {
     click(find("collapse_all"));
 
     click(find("Balanced"));
+    hover(find("Balanced"), ui::text::kResBalancedTip, ui::text::kResQualityTip);
     check(!runtime::nr_follow_input_res.load() && std::abs(runtime::nr_resolution_scale.load() - 0.58f) < 0.001f,
           "resolution preset did not select its original parameter pair");
     click(find("Match game"));
@@ -398,6 +474,15 @@ int main() {
     click(find(ui::text::kOpenPresentSettings));
     check(runtime::ui_menu_page == 0 && !runtime::ui_open_present_settings,
           "Present shortcut did not reach the Quality group");
+    hover(find("Optional"), ui::text::kGuideOptional, ui::text::kGuideRequired);
+    hover(find("Required"), ui::text::kGuideRequired, ui::text::kGuideNever);
+    hover(find("Never"), ui::text::kGuideNever, ui::text::kGuideOptional);
+    hover(find("Present"), ui::text::kHookPresentTip, ui::text::kHookRenderTip);
+    hover(find("Natural"), ui::text::kStyleNaturalTip, ui::text::kStyleCinematicTip);
+    click(find(ui::text::kFgAdvanced));
+    hover(find("Every frame"), ui::text::kFgEveryTip, ui::text::kFgGameTip);
+    hover(find("Game frames"), ui::text::kFgGameTip, ui::text::kFgEveryTip);
+    hover(find("Stable timing"), ui::text::kFgDetectStableTip, ui::text::kFgDetectAutoTip);
     const auto has_text = [&](const char* value) {
       for (const auto& text : rendered_text) {
         if (text.text == value) return true;
@@ -431,13 +516,13 @@ int main() {
     runtime::look_mode = false;
     frame();
     click(find(ui::text::kResultBasic));
-    check(has_text("Edit strength"), "disabled result parameters cannot be inspected");
+    check(has_text(ui::text::kResultStrength), "disabled result parameters cannot be inspected");
     check(!runtime::look_mode.load(), "inspecting result groups enabled result shaping");
     click(find(ui::text::kResultTemporal));
     check(has_text("Detail stability"), "independent detail stability is missing while look is off");
     runtime::look_mode = true;
     frame();
-    check(has_text("Edit strength"), "enabling result shaping lost its parameters");
+    check(has_text(ui::text::kResultStrength), "enabling result shaping lost its parameters");
 
     click(find("Multi-Pass"));
     for (unsigned count = 1; count <= 4; ++count) {
@@ -448,7 +533,7 @@ int main() {
       for (const auto& [id, item] : items) {
         if (item.label.ends_with("###chain_pass")) ++nodes;
       }
-      check(nodes == count, "chain node count differs from Pass Count including the base pass");
+      check(nodes == (count > 1 ? count : 0), "single-pass editor or multi-pass chain has the wrong node count");
       if (count > 1) {
         click(find("Pass " + std::to_string(count)));
         check(runtime::ui_selected_pass == count - 1, "chain selects the wrong editor");
@@ -459,7 +544,6 @@ int main() {
     frame();
     click(find("Pass 2"));
     check(runtime::ui_selected_pass == 1, "pass navigation failed");
-    click(find(ui::text::kResultShaping));
     click(switch_for_label(ui::text::kInheritResult));
     check(!runtime::pass_look_result[0].follow.load(), "result inheritance switch failed");
     click(switch_for_label("Adjust NR's look"));
@@ -472,8 +556,6 @@ int main() {
     click(switch_for_label(ui::text::kInheritResult));
     check(runtime::LookSettingsSnapshots(false)[1].halo == 0.7f,
           "custom results were not restored after disabling inheritance");
-    click(find(ui::text::kResultShaping));
-
     bool model_combo = false;
     for (const auto& [id, item] : items)
       if (item.label == "##model") model_combo = true;
@@ -509,6 +591,7 @@ int main() {
     capture("model-fallback");
     if (model_combo) click(find("##model"));
     check(find("B").disabled, "unsupported model B remains editable");
+    hover(find("B"), "B requires DLSS NR 310.9.16. Unsupported selections use A; saved choices are preserved.", ui::text::kModelBTip);
     io.AddKeyEvent(ImGuiKey_Escape, true);
     frame();
     io.AddKeyEvent(ImGuiKey_Escape, false);
@@ -542,6 +625,12 @@ int main() {
     GetPrivateProfileStringA(runtime::kConfigSection, "UiMode", "missing", saved, sizeof(saved), ".\\ReShade.ini");
     check(std::string(saved) == "classic", "Developer view selection was not persisted");
 
+    const float matrix_structure = runtime::local_structure_strength.load();
+    const bool matrix_mask = runtime::use_auto_mask.load();
+    const bool matrix_skin = runtime::skin_independent.load();
+    runtime::local_structure_strength = 2.f;
+    runtime::use_auto_mask = true;
+    runtime::skin_independent = true;
     for (bool classic : {false, true}) {
       runtime::ui_classic_layout = classic;
       for (float font : {13.f, 26.f, 39.f}) {
@@ -602,6 +691,9 @@ int main() {
     check(runtime::issue_report::step.load() == runtime::issue_report::Step::kClosed,
           "report description cannot be cancelled");
     runtime::ui_language_choice = 14;
+    runtime::local_structure_strength = matrix_structure;
+    runtime::use_auto_mask = matrix_mask;
+    runtime::skin_independent = matrix_skin;
     ui::expand_all_sections = false;
     panel_width = 1400.f;
     font_size = 18.f;

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -312,6 +313,76 @@ int main(int argc, char** argv) {
         uint32_t sent = 99;
         Check(NVSDK_NGX_SUCCEED(parameters.Get("DLSSNR.Hint.Render.Preset", &sent)) && sent == selected,
               "production create block writes the resolved network as an unsigned NGX parameter");
+      }
+      if (test_case == "nr-model-default") {
+        const auto old_declaration = runtime::native_fg_declaration.load();
+        const bool old_off = runtime::native_fg_public_off.load();
+        const auto old_options_generation = runtime::native_fg_options_generation.load();
+        const auto old_options_ns = runtime::native_fg_options_changed_ns.load();
+        const auto old_history = runtime::history_reset_epoch.load();
+        runtime::native_fg_public_off = false;
+        runtime::OnNativeFgOptions(true);
+        Check(runtime::native_fg_declaration.load() == runtime::NativeFgDeclaration::kOn
+                  && runtime::native_fg_options_generation.load() == old_options_generation
+                  && runtime::history_reset_epoch.load() == old_history,
+              "first successful On declaration is observable without changing scheduling or history");
+        runtime::OnNativeFgOptions(false);
+        Check(runtime::native_fg_declaration.load() == runtime::NativeFgDeclaration::kOff
+                  && runtime::history_reset_epoch.load() == old_history,
+              "public Off remains distinct from unobserved FG and adds no reset without an owner");
+        runtime::native_fg_declaration = old_declaration;
+        runtime::native_fg_public_off = old_off;
+        runtime::native_fg_options_generation = old_options_generation;
+        runtime::native_fg_options_changed_ns = old_options_ns;
+        const float old_intensity = runtime::intensity.load();
+        const float old_structure = runtime::local_structure_strength.load();
+        const bool old_mask = runtime::use_auto_mask.load();
+        const bool old_independent = runtime::skin_independent.load();
+        const bool old_look = runtime::look_mode.load();
+        const float old_strength = runtime::look_strength.load();
+        auto slot = std::make_unique<runtime::NrFeatureSlot>();
+        slot->parameters = &parameters;
+        for (uint32_t preset : {1u, 2u}) {
+          runtime::SetNrCreateParameters(&parameters, 640, 360, 640, 360, 0, false, preset);
+          for (float value : {0.f, 0.5f, 1.f, 1.5f, 2.f}) {
+            runtime::intensity = value;
+            runtime::SetModelParameters(*slot, 0, runtime::history_reset_epoch.load(), 0, 0, false, 0);
+            float sent = -1.f;
+            Check(NVSDK_NGX_SUCCEED(parameters.Get("DLSSNR.Intensity", &sent)) && sent == value,
+                  "A/B production evaluate block sends the full 0-2 model intensity without a clamp at 1");
+          }
+        }
+        for (bool mask : {false, true}) {
+          runtime::use_auto_mask = mask;
+          for (bool independent : {false, true}) {
+            runtime::skin_independent = independent;
+            for (float value : {0.f, 1.f, 1.5f, 2.f}) {
+              runtime::local_structure_strength = value;
+              runtime::SetModelParameters(*slot, 0, runtime::history_reset_epoch.load(), 0, 0, false, 0);
+              float sent = -1.f;
+              Check(NVSDK_NGX_SUCCEED(parameters.Get("DLSSNR.LocalStructureStrength", &sent))
+                        && sent == (mask && independent ? (std::min)(value, 1.f) : value),
+                    "production structure clamp requires both the character mask and independent skin");
+            }
+          }
+        }
+        runtime::look_mode = true;
+        const renodx::addons::dlss5::look::Frame frame{.nr_width = 640, .nr_height = 360, .full_width = 640, .full_height = 360};
+        for (float value : {0.f, 0.5f, 1.f, 1.5f, 2.f}) {
+          runtime::look_strength = value;
+          const auto settings = runtime::LookSettingsSnapshot(false);
+          Check(renodx::addons::dlss5::look::MakeConstants(settings, frame).strength == value,
+                "enabled Look Stage preserves the five result-strength values in GPU constants");
+        }
+        runtime::look_mode = false;
+        Check(runtime::LookSettingsSnapshot(false).strength == 1.f && runtime::look_strength.load() == 2.f,
+              "disabled result shaping uses neutral strength and retains the saved value");
+        runtime::intensity = old_intensity;
+        runtime::local_structure_strength = old_structure;
+        runtime::use_auto_mask = old_mask;
+        runtime::skin_independent = old_independent;
+        runtime::look_mode = old_look;
+        runtime::look_strength = old_strength;
       }
     }
     if (test_case.starts_with("pass-result-")) {

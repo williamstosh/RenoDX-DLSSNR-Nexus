@@ -260,6 +260,7 @@ struct StatusCard {
   bool present_every_frame = true;
   bool present_before_fg = false;
   FgRoute observed_fg_route = FgRoute::kUnknown;
+  bool fg_declared = false;
   std::uint64_t present_gaps = 0;
   const char* gap_reason = nullptr;
 };

@@ -184,6 +184,12 @@ constexpr uint32_t kConfigVersion = 8;
 constexpr char kAddonVersion[] = "v" NR_NEXUS_VERSION;
 inline std::atomic_bool native_fg_owns{false};
 inline std::atomic_bool native_fg_public_off{false};
+// UI observation of successful public options calls, separate from the
+// scheduling flag whose initial "not Off" is not an observed On declaration.
+enum class NativeFgDeclaration : uint8_t { kUnknown,
+                                           kOff,
+                                           kOn };
+inline std::atomic<NativeFgDeclaration> native_fg_declaration{NativeFgDeclaration::kUnknown};
 // Options callbacks cannot take runtime_mutex. Consumers invalidate cached
 // application images at the next turn, retaining only compatible models.
 inline std::atomic_uint64_t native_fg_options_generation{0};
@@ -1973,6 +1979,8 @@ inline void RequestHistoryReset(
       1, std::memory_order_relaxed);
 }
 inline void OnNativeFgOptions(bool mode_enabled) noexcept {
+  native_fg_declaration.store(mode_enabled ? NativeFgDeclaration::kOn : NativeFgDeclaration::kOff,
+                              std::memory_order_relaxed);
   const bool was_off = native_fg_public_off.exchange(!mode_enabled, std::memory_order_acq_rel);
   if (was_off == !mode_enabled) return;
   native_fg_options_changed_ns.store(
@@ -18273,7 +18281,7 @@ inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
   // multiplier with its hysteresis), so the card says what its "frame
   // generation detected (4x)" log line says.
   if (const uint32_t multiplier = present_fg_multiplier.load(std::memory_order_relaxed);
-      multiplier > 1) {
+      !in.fg_submitted_frames.has_value() && multiplier > 1) {
     in.frame_gen_multiplier = multiplier;
   }
   in.present_every_frame = present_frames.load(std::memory_order_relaxed) == 0;
@@ -21096,19 +21104,30 @@ inline void SliderSetting(const ui::PanelText& text, const Setting& setting,
 // the row is too narrow for the labels).
 inline void ChoiceSetting(const ui::PanelText& text, const Setting& setting,
                           const char* label, std::span<const char* const> items,
-                          const char* tooltip) {
+                          const char* tooltip, std::span<const char* const> option_tips = {}) {
   ImGui::PushID(setting.key);
   int index = static_cast<int>(setting.Get());
   const int count = static_cast<int>(items.size());
   bool changed = false;
   if (text.modern) {
     ui::RowLabel(label, tooltip);
-    const int clicked = ui::Segmented("##value", items.data(), count, index, tooltip);
+    const int clicked = ui::Segmented("##value", items.data(), count, index, nullptr,
+                                      option_tips.empty() ? items.data() : option_tips.data());
     changed = clicked >= 0 && clicked != index;
-    if (changed) index = clicked;
+    if (changed) {
+      index = clicked;
+    }
   } else {
-    changed = ImGui::Combo(ui::ControlLabel(label).c_str(), &index, items.data(), count);
-    if (tooltip != nullptr) ui::ItemTooltip("%s", tooltip);
+    ui::ControlLabel(label);
+    if (tooltip != nullptr) {
+      ui::ItemTooltip("%s", tooltip);
+    }
+    const int clicked = ui::Segmented("##value", items.data(), count, index, nullptr,
+                                      option_tips.empty() ? items.data() : option_tips.data(), nullptr, true);
+    changed = clicked >= 0 && clicked != index;
+    if (changed) {
+      index = clicked;
+    }
   }
   if (changed) setting.Commit(static_cast<float>(index));
   if (text.modern && setting.Modified()
@@ -21156,7 +21175,7 @@ inline void DrawSectionNrCore(const ui::PanelText& text) {
     const int view = ui::Segmented(
         "##settings_view", ui::text::kSettingsViewLabels,
         static_cast<int>(std::size(ui::text::kSettingsViewLabels)),
-        ui_defaults_view ? 0 : 1, ui::text::kSettingsViewTip);
+        ui_defaults_view ? 0 : 1, nullptr, ui::text::kSettingsViewTips);
     if (view >= 0) SetDefaultsView(view == 0);
     if (ui_defaults_view) {
       ui::StyleScope note;
@@ -21171,7 +21190,7 @@ inline void DrawSectionNrCore(const ui::PanelText& text) {
   // neural pass belongs next to the enable switch, not under styling.
   ImGui::BeginDisabled(ui_defaults_view);
   SliderSetting(text, kSetIntensity, text.intensity, 0.f, 2.f, "%.2f",
-                ui::text::kIntensityTip);
+                ui::text::kModelStrengthTip);
   ImGui::EndDisabled();
 }
 
@@ -21181,10 +21200,12 @@ inline void DrawSectionNrCore(const ui::PanelText& text) {
 // change restarts its history.
 inline void DrawModelSteering(const ui::PanelText& text, uint32_t pass) {
   constexpr const char* kStyles[] = {"Default", "Natural", "Cinematic"};
+  constexpr const char* kStyleTips[] = {ui::text::kStyleDefaultTip, ui::text::kStyleNaturalTip, ui::text::kStyleCinematicTip};
   ChoiceSetting(
       text, kModelSteering[pass].style, text.Pick("NR Style", "Style"), kStyles,
       "Default = the runtime's own choice; Natural and Cinematic force that"
-      " look explicitly.");
+      " look explicitly.",
+      kStyleTips);
   SliderSetting(
       text, kModelSteering[pass].local_tone,
       text.Pick("Local Tone Intensity", "Local tone"), 0.f, 2.f, "%.2f",
@@ -21193,11 +21214,8 @@ inline void DrawModelSteering(const ui::PanelText& text, uint32_t pass) {
       " history for a moment.");
   SliderSetting(
       text, kModelSteering[pass].structure,
-      text.Pick("Structure Intensity", "Structure"), 0.f, 2.f, "%.2f",
-      "How strongly the model reworks fine structure and surface detail;"
-      " higher is a stronger change, 1 is the default.  It changes what the"
-      " model makes and restarts it; Fine detail under Limits and stability"
-      " reshapes what it made, live.");
+      text.Pick("Structure Intensity", ui::text::kModelStructure), 0.f, 2.f, "%.2f",
+      ui::text::kStructureTip);
   // Skin is read by the runtime only through the Character mask, so the
   // slider is live only with it; its stored "stock" (negative) is drawn as
   // the value it is sent as (SentSkinSteering): 1, or Structure's value
@@ -21207,8 +21225,9 @@ inline void DrawModelSteering(const ui::PanelText& text, uint32_t pass) {
   const float structure = kModelSteering[pass].structure.Get();
   if (masked && independent && structure > 1.f) {
     if (text.modern) ui::RowLabel("");
-    ImGui::TextDisabled(
-        text.Tr("sent as 1.00: higher values are ignored"));
+    ui::StyleScope note;
+    note.Color(ImGuiCol_Text, ui::tokens::kTextSecondary);
+    ImGui::TextWrapped("%s", text.Tr(ui::text::kStructureCapped));
   }
   ImGui::BeginDisabled(!masked);
   SliderSetting(
@@ -21262,6 +21281,13 @@ inline void DrawNrModelSetting(const ui::PanelText& text, const Setting& setting
   const char* tips[] = {inherit ? ui::text::kModelInheritTip : ui::text::kModelAutoTip,
                         ui::text::kModelATip, ui::text::kModelBTip};
   const bool disabled[] = {!identified, !identified, !identified || !dual_models};
+  if (!identified) {
+    for (auto& tip : tips) {
+      tip = "Model selection is unavailable until the NR runtime is identified.";
+    }
+  } else if (!dual_models) {
+    tips[2] = "B requires DLSS NR 310.9.16. Unsupported selections use A; saved choices are preserved.";
+  }
   const uint32_t selected = static_cast<uint32_t>(setting.Get());
   ImGui::PushID(setting.key);
   if (text.modern)
@@ -21298,15 +21324,15 @@ inline void DrawSectionModelStyling(const ui::PanelText& text) {
 // stability Off, the stage is absent and the image is bit-identical to a
 // build without it.  Detail stability sits above the switch: it runs with
 // the switch off, and Auto runs it by default.
-inline void DrawSectionLookResult(const ui::PanelText& text, uint32_t pass = 0) {
+inline void DrawSectionLookResult(const ui::PanelText& text, uint32_t pass = 0, bool heading = true) {
   const LookResultControls& controls = kLookResult[pass];
   const Setting* result_settings[] = {&controls.mode, &controls.strength, &controls.brighten, &controls.darken, &controls.max_brighten, &controls.max_darken, &controls.colour, &controls.hue, &controls.max_colour, &controls.shadows, &controls.midtones, &controls.highlights, &controls.tone, &controls.detail, &controls.halo, &controls.halo_bright, &controls.detail_radius, &controls.stabilize, &controls.stabilize_ms, &controls.stabilize_detail, &controls.detail_stability};
   const bool result_changed = AnyModified({result_settings});
   const bool previously_enabled = controls.mode.Get() != 0.f;
   ImGui::PushID("result_settings");
-  if (text.modern) {
+  if (text.modern && heading) {
     ui::SubCaption(result_changed ? ui::text::kResultChanged : ui::text::kResultShaping);
-    ImGui::TextWrapped("%s", ui::Tr(ui::text::kLookResult));
+    ui::ItemTooltip("%s\n%s", ui::Tr(ui::text::kLookResult), ui::Tr(ui::text::kSharedResult));
   }
   ToggleSetting(
       text, controls.mode, "Adjust NR's look",
@@ -21321,7 +21347,12 @@ inline void DrawSectionLookResult(const ui::PanelText& text, uint32_t pass = 0) 
   if (look_unavailable.load()) {
     ImGui::TextWrapped("%s", text.Tr("unavailable this session: ReShade.log says why"));
   }
-  const Setting* basic_settings[] = {&controls.strength, &controls.brighten, &controls.darken,
+  ImGui::BeginDisabled(inactive);
+  SliderSetting(
+      text, controls.strength, text.Pick("Edit strength", ui::text::kResultStrength), 0.f, 2.f, "%.2f",
+      ui::text::kResultStrengthTip);
+  ImGui::EndDisabled();
+  const Setting* basic_settings[] = {&controls.brighten, &controls.darken,
                                      &controls.colour, &controls.hue, &controls.shadows, &controls.midtones, &controls.highlights};
   const Setting* limit_settings[] = {&controls.max_brighten, &controls.max_darken, &controls.max_colour};
   const Setting* detail_settings[] = {&controls.tone, &controls.detail, &controls.detail_radius,
@@ -21332,11 +21363,6 @@ inline void DrawSectionLookResult(const ui::PanelText& text, uint32_t pass = 0) 
   if (ui::TreeNode("result_basic", text.Tr(ui::text::kResultBasic),
                    result_enabled ? ImGuiTreeNodeFlags_DefaultOpen : 0, AnyModified({basic_settings}))) {
     ImGui::BeginDisabled(inactive);
-    SliderSetting(
-        text, controls.strength, "Edit strength", 0.f, 2.f, "%.2f",
-        "Scales the whole change Neural Rendering made, in stops: 0 takes it"
-        " away, 1 keeps it, 2 doubles it.  Strength steers the model; this"
-        " reshapes its result.");
     SliderSetting(
         text, controls.brighten, "Brightening", 0.f, 2.f, "%.2f",
         "How much of the model's brightening is kept: 0 drops it, 2 doubles it.");
@@ -21418,7 +21444,8 @@ inline void DrawSectionLookResult(const ui::PanelText& text, uint32_t pass = 0) 
         " shimmers and crawls.  This averages the model's change over a few"
         " frames, following the game's motion vectors.  Auto does it when"
         " Neural Rendering runs after the upscaler, the default; Always also"
-        " before it.  Stabilize, when on, replaces it.");
+        " before it.  Stabilize, when on, replaces it.",
+        ui::text::kDetailStabilityTips);
     ImGui::EndDisabled();
     ImGui::BeginDisabled(inactive);
     constexpr const char* kStabilizeModes[] = {"Off", "Static", "Motion"};
@@ -21426,7 +21453,8 @@ inline void DrawSectionLookResult(const ui::PanelText& text, uint32_t pass = 0) 
         text, controls.stabilize, "Stabilize", kStabilizeModes,
         "Smooths the model's broad change over time.  Static suits still"
         " views; Motion follows the game's motion vectors.  Either adds a"
-        " little lag to lighting changes.");
+        " little lag to lighting changes.",
+        ui::text::kStabilizeTips);
     ImGui::BeginDisabled(controls.stabilize.Get() == 0u);
     SliderSetting(
         text, controls.stabilize_ms, "Stabilize time", 10.f, 250.f, "%.0f ms",
@@ -21492,49 +21520,87 @@ inline bool SavePresentRestoreScope(present_restore_scope::Scope scope) {
   return true;
 }
 
-// The same observation is shown beside Present settings and on Multi-Pass.
-// Its fixed viewport keeps route text changes from moving later controls.
-inline void DrawFgRoute(bool navigation = true) {
+// A stable single line carries the conclusion; full explanations are available
+// on hover and in Diagnostics. Multi-Pass normally needs only the cost reminder.
+inline void DrawFgRoute(bool stacking = false, bool detailed = false) {
   const auto route = ui_fg_route.route;
+  const bool declared = fg::xefg::OwnsStream()
+                        || native_fg_declaration.load() == NativeFgDeclaration::kOn;
   const char* message = ui::text::kFgUnknown;
+  const char* brief = declared ? ui::text::kFgDeclared : ui::text::kFgStatusUnknown;
+  bool warning = false;
   if (hook_point.load() != kHookPresent) {
     message = ui::text::kFgOtherStage;
-  } else if (present_fg_multiplier.load() <= 1) {
-    message = ui::text::kFgNoMultiplier;
   } else {
     switch (route) {
-      case ui::FgRoute::kBeforeFg:         message = ui::text::kFgBefore; break;
-      case ui::FgRoute::kEveryPresent:     message = ui::text::kFgEvery; break;
-      case ui::FgRoute::kGameFrames:       message = ui::text::kFgGame; break;
-      case ui::FgRoute::kFallbackPresent:  message = ui::text::kFgFallback; break;
-      case ui::FgRoute::kFallbackUpscaled: message = ui::text::kFgUpscaled; break;
-      case ui::FgRoute::kMixed:            message = ui::text::kFgMixed; break;
-      case ui::FgRoute::kUnknown:          break;
+      case ui::FgRoute::kBeforeFg:
+        message = ui::text::kFgBefore;
+        brief = ui_fg_route.previous.multiplier > 1 ? ui::text::kFgBeforeShort : ui::text::kFgBeforeUnknown;
+        break;
+      case ui::FgRoute::kEveryPresent:
+        message = ui::text::kFgEvery;
+        brief = ui::text::kFgEveryShort;
+        warning = true;
+        break;
+      case ui::FgRoute::kGameFrames:
+        message = ui::text::kFgGame;
+        brief = ui::text::kFgGameShort;
+        break;
+      case ui::FgRoute::kFallbackPresent:
+        message = ui::text::kFgFallback;
+        brief = ui::text::kFgFallbackShort;
+        warning = true;
+        break;
+      case ui::FgRoute::kFallbackUpscaled:
+        message = ui::text::kFgUpscaled;
+        brief = ui::text::kFgUpscaledShort;
+        warning = true;
+        break;
+      case ui::FgRoute::kMixed:
+        message = ui::text::kFgMixed;
+        brief = ui::text::kFgMixedShort;
+        warning = true;
+        break;
+      case ui::FgRoute::kUnknown: break;
+    }
+    if (vulkan_present_seen.load()) {
+      message = brief = ui::text::kHookPresentVulkan;
+      warning = true;
+    } else if (D3D11OnlySession() && !Dx11NativeRoute()) {
+      message = brief = ui::text::kHookPresentDx11Foreign;
+      warning = true;
+    } else if (present_unusable.load()) {
+      message = brief = ui::text::kHookPresentUnusable;
+      warning = true;
     }
   }
-  if (hook_point.load() == kHookPresent) {
-    if (vulkan_present_seen.load())
-      message = ui::text::kHookPresentVulkan;
-    else if (D3D11OnlySession() && !Dx11NativeRoute())
-      message = ui::text::kHookPresentDx11Foreign;
-    else if (present_unusable.load())
-      message = ui::text::kHookPresentUnusable;
+  if (stacking && !warning) {
+    brief = ui::text::kStackCost;
   }
-  const bool warning = hook_point.load() == kHookPresent
-                       && ((route != ui::FgRoute::kBeforeFg && route != ui::FgRoute::kUnknown)
-                           || message == ui::text::kHookPresentVulkan || message == ui::text::kHookPresentDx11Foreign
-                           || message == ui::text::kHookPresentUnusable);
   ImGui::PushID("fg_route");
-  if (ImGui::BeginChild("message", ImVec2(0.f, ImGui::GetTextLineHeightWithSpacing() * 4.f),
-                        ImGuiChildFlags_Borders)) {
-    ImGui::PushTextWrapPos(0.f);
-    ui::StyleScope tone;
-    tone.Color(ImGuiCol_Text, warning ? ui::tokens::kWarn : ui::tokens::kTextSecondary);
-    ImGui::TextUnformatted(ui::Tr(message));
-    ImGui::PopTextWrapPos();
+  ui::StyleScope tone;
+  tone.Color(ImGuiCol_Text, warning ? ui::tokens::kWarn : ui::tokens::kTextSecondary);
+  if (detailed) {
+    ImGui::TextWrapped("%s", ui::Tr(message));
+    if (ui_fg_route.previous.multiplier <= 1 && (declared || route == ui::FgRoute::kBeforeFg)) {
+      ImGui::TextWrapped("%s", ui::Tr(ui::text::kFgUnknownMultiplierTip));
+    }
+  } else {
+    const bool link = warning && ImGui::GetContentRegionAvail().x > ImGui::GetFontSize() * 16.f;
+    const float reserve = link ? ImGui::CalcTextSize(ui::Tr(ui::text::kDiagnostics)).x + ImGui::GetStyle().ItemSpacing.x : 0.f;
+    ImGui::TextUnformatted(ui::Ellipsize(ui::Tr(brief), ImGui::GetContentRegionAvail().x - reserve).c_str());
+    if (ui_fg_route.previous.multiplier <= 1) {
+      ui::ItemTooltip("%s\n%s", ui::Tr(message), ui::Tr(ui::text::kFgUnknownMultiplierTip));
+    } else {
+      ui::ItemTooltip("%s", ui::Tr(message));
+    }
+    if (link) {
+      ImGui::SameLine();
+      if (ImGui::TextLink(ui::Tr(ui::text::kDiagnostics))) {
+        ui_open_diagnostics = true;
+      }
+    }
   }
-  ImGui::EndChild();
-  if (navigation && ui::ActionButton(ui::Tr(ui::text::kFgDiagnostics))) ui_open_diagnostics = true;
   ImGui::PopID();
 }
 
@@ -21551,10 +21617,7 @@ inline void DrawPresentControls(const ui::PanelText& text) {
     ChoiceSetting(
         text, kSetPresentGuides, text.Pick("Present Guides", "Depth and motion"),
         kPresentGuideModes,
-        "Depth and motion for the Present hook point.  Optional: the game's"
-        " DLSS depth and motion when they match the frame, neutral ones"
-        " otherwise.  Required: no NR without them.  Never: always neutral,"
-        " for games without DLSS.");
+        ui::text::kGuideTip, ui::text::kGuideTips);
     ToggleSetting(
         text, kSetPresentUiCorrection,
         text.Pick("Present UI Correction", "Keep the HUD"),
@@ -21583,14 +21646,15 @@ inline void DrawPresentControls(const ui::PanelText& text) {
       ChoiceSetting(
           text, kSetPresentFrames, text.Pick("Present Frames", ui::text::kFgFramePolicy),
           kPresentFrameModes,
-          ui::text::kFgFramePolicyTip);
+          ui::text::kFgFramePolicyTip, ui::text::kFgPolicyTips);
       constexpr const char* kPresentFgSources[] = {"Auto", "Stable timing", "Legacy timing"};
       ChoiceSetting(
           text, kSetPresentFgSource, "Frame generation detection", kPresentFgSources,
           "Auto uses the game's declared frame generation multiplier when available."
           " Otherwise it measures a stable cadence, keeping the motion scale through"
           " hitches. Stable timing ignores declarations. Legacy timing restores the"
-          " earlier detection rule for compatibility.");
+          " earlier detection rule for compatibility.",
+          ui::text::kFgDetectionTips);
       if (text.modern) ImGui::TreePop();
     }
   }
@@ -21616,7 +21680,8 @@ inline void DrawSectionHookPoint(const ui::PanelText& text, bool present_details
       " game's own depth and motion (Ray Reconstruction keeps Upscaled: its"
       " input is still noisy).  Present: on the finished frame the game"
       " presents, after its own post-processing and HUD, before ReShade's"
-      " effects.");
+      " effects.",
+      ui::text::kHookTips);
   // A hook point this session cannot run keeps NR on the Upscaled one
   // (PreSrTakes, PresentHookServes, PresentTakesEvaluate).  Through v8.0.2
   // only Raw details and the log said so: the choice looked applied.
@@ -21723,7 +21788,8 @@ inline void DrawResolutionControls(const ui::PanelText& text) {
       " the edges it belongs to and the full-resolution detail under it, and"
       " sample the nearest SDR pixel for NR.  Edge-aware (area input)"
       " averages SDR pixels before NR; this can change NR's look.  Classic shows NR's own"
-      " lower-resolution pixels, which look blocky.");
+      " lower-resolution pixels, which look blocky.",
+      ui::text::kUpsampleTips);
   if (!text.modern) DrawResolutionObserved(text);
 }
 
@@ -21747,11 +21813,17 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
       "Runs Neural Rendering again on its own result: a stronger effect, and"
       " each extra pass costs the GPU time of one more pass.  Every pass keeps"
       " its own history (Chained history, under Fixes).");
+  char pass_tip_text[kMaxNrPasses][128];
+  const char* pass_tips[kMaxNrPasses];
+  for (uint32_t pass = 0; pass < kMaxNrPasses; ++pass) {
+    std::snprintf(pass_tip_text[pass], sizeof(pass_tip_text[pass]), text.Tr(ui::text::kPassCountTip), pass + 1);
+    pass_tips[pass] = pass_tip_text[pass];
+  }
   bool passes_changed = false;
   if (text.modern) {
     ui::RowLabel(text.stack_passes, passes_tip);
     const int clicked = ui::Segmented("##passes", kPassSegments,
-                                      static_cast<int>(kMaxNrPasses), ui_passes, passes_tip);
+                                      static_cast<int>(kMaxNrPasses), ui_passes, nullptr, pass_tips);
     passes_changed = clicked >= 0 && clicked != ui_passes;
     if (passes_changed) ui_passes = clicked;
   } else {
@@ -21772,7 +21844,7 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
     kSetStackPasses.Commit(kSetStackPasses.fallback);
   }
   if (stack_passes.load() > 1) {
-    DrawFgRoute();
+    DrawFgRoute(true);
   }
   if (!text.modern && stack_passes.load() > 1) {
     ImGui::TextDisabled(
@@ -21785,79 +21857,81 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
   if (text.modern) {
     const int count = std::clamp(static_cast<int>(stack_passes.load()), 1, static_cast<int>(kMaxNrPasses));
     ui_selected_pass = std::clamp(ui_selected_pass, 0, count - 1);
-    ui::SubCaption(ui::text::kPassOverview);
-    ImGui::TextWrapped("%s", ui::Tr(ui::text::kChainNote));
-    ImGui::Text("%s >", ui::Tr(ui::text::kInput));
-    const int columns = (std::min)(count, (std::max)(1, static_cast<int>(
-                                                            ImGui::GetContentRegionAvail().x / (ImGui::GetFontSize() * ui::tokens::kPassNodeEm))));
-    ui::StyleScope chain_spacing;
-    chain_spacing.Var(ImGuiStyleVar_CellPadding, ImVec2(ImGui::GetFontSize() * 0.7f, 3.f));
-    if (ImGui::BeginTable("##pass_chain", columns, ImGuiTableFlags_SizingStretchSame)) {
-      ImVec2 previous_end;
-      for (int pass = 0; pass < count; ++pass) {
-        ImGui::TableNextColumn();
-        ImGui::PushID(pass);
-        const auto requested = static_cast<uint32_t>((pass == 0 ? kSetPreset : kSetPassPreset[pass - 1]).Get());
-        const char* model = (requested == 0   ? (pass == 0 ? "Auto" : ui::text::kInheritModel)
-                             : requested == 1 ? "A (Legacy)"
-                             : requested == 2 ? "B (Small FP8)"
-                                              : "Custom");
-        char caption[64];
-        if (pass == 0) {
-          std::snprintf(caption, sizeof(caption), "%s", ui::Tr("Pass 1"));
-        } else {
-          std::snprintf(caption, sizeof(caption), ui::Tr("Pass %u"), static_cast<unsigned>(pass + 1));
-        }
-        const float width = ImGui::GetContentRegionAvail().x;
-        const Setting* node_settings[] = {
-            &(pass == 0 ? kSetPreset : kSetPassPreset[pass - 1]),
-            &(pass == 0 ? kSetIntensity : kSetPassIntensity[pass - 1]),
-            &(pass == 0 ? kSetTransferStrength : kSetPassTransfer[pass - 1]),
-            &(pass == 0 ? kSetColorStrength : kSetPassColor[pass - 1]),
-            &kModelSteering[pass].style, &kModelSteering[pass].local_tone,
-            &kModelSteering[pass].structure, &kModelSteering[pass].skin,
-            &kModelSteering[pass].auto_mask, &kModelSteering[pass].ui_correction};
-        const size_t result_count = std::size(kPassLookResultSettings) / (kMaxNrPasses - 1);
-        const bool modified = AnyModified({node_settings})
-                              || (pass != 0 && AnyModified({SettingGroup(kPassLookResultSettings).subspan((pass - 1) * result_count, result_count)}))
-                              || (pass != 0 && kSetPassFollow[pass - 1].Modified())
-                              || (pass == 0 && kSetSkinIndependent.Modified());
-        const std::string label = std::string(caption) + "\n"
-                                  + ui::Ellipsize(ui::Tr(model), width - ImGui::GetStyle().FramePadding.x * 2.f
-                                                                     - (modified ? ImGui::GetFontSize() : 0.f))
-                                  + (modified ? " *" : "") + "###chain_pass";
-        {
-          ui::StyleScope node;
-          node.Var(ImGuiStyleVar_FrameBorderSize, 1.f);
-          if (pass == ui_selected_pass) {
-            node.Color(ImGuiCol_Button, ui::tokens::kAccentActive)
-                .Color(ImGuiCol_Border, ui::tokens::kAccentHover);
+    if (count > 1) {
+      ui::SubCaption(ui::text::kPassOverview);
+      ImGui::TextWrapped("%s", ui::Tr(ui::text::kChainNote));
+      ImGui::Text("%s >", ui::Tr(ui::text::kInput));
+      const int columns = (std::min)(count, (std::max)(1, static_cast<int>(
+                                                              ImGui::GetContentRegionAvail().x / (ImGui::GetFontSize() * ui::tokens::kPassNodeEm))));
+      ui::StyleScope chain_spacing;
+      chain_spacing.Var(ImGuiStyleVar_CellPadding, ImVec2(ImGui::GetFontSize() * 0.7f, 3.f));
+      if (ImGui::BeginTable("##pass_chain", columns, ImGuiTableFlags_SizingStretchSame)) {
+        ImVec2 previous_end;
+        for (int pass = 0; pass < count; ++pass) {
+          ImGui::TableNextColumn();
+          ImGui::PushID(pass);
+          const auto requested = static_cast<uint32_t>((pass == 0 ? kSetPreset : kSetPassPreset[pass - 1]).Get());
+          const char* model = (requested == 0   ? (pass == 0 ? "Auto" : ui::text::kInheritModel)
+                               : requested == 1 ? "A (Legacy)"
+                               : requested == 2 ? "B (Small FP8)"
+                                                : "Custom");
+          char caption[64];
+          if (pass == 0) {
+            std::snprintf(caption, sizeof(caption), "%s", ui::Tr("Pass 1"));
+          } else {
+            std::snprintf(caption, sizeof(caption), ui::Tr("Pass %u"), static_cast<unsigned>(pass + 1));
           }
-          if (ImGui::Button(label.c_str(), ImVec2(width, ImGui::GetTextLineHeightWithSpacing() * 2.f
-                                                             + ImGui::GetStyle().FramePadding.y * 2.f))) {
-            ui_selected_pass = pass;
+          const float width = ImGui::GetContentRegionAvail().x;
+          const Setting* node_settings[] = {
+              &(pass == 0 ? kSetPreset : kSetPassPreset[pass - 1]),
+              &(pass == 0 ? kSetIntensity : kSetPassIntensity[pass - 1]),
+              &(pass == 0 ? kSetTransferStrength : kSetPassTransfer[pass - 1]),
+              &(pass == 0 ? kSetColorStrength : kSetPassColor[pass - 1]),
+              &kModelSteering[pass].style, &kModelSteering[pass].local_tone,
+              &kModelSteering[pass].structure, &kModelSteering[pass].skin,
+              &kModelSteering[pass].auto_mask, &kModelSteering[pass].ui_correction};
+          const size_t result_count = std::size(kPassLookResultSettings) / (kMaxNrPasses - 1);
+          const bool modified = AnyModified({node_settings})
+                                || (pass != 0 && AnyModified({SettingGroup(kPassLookResultSettings).subspan((pass - 1) * result_count, result_count)}))
+                                || (pass != 0 && kSetPassFollow[pass - 1].Modified())
+                                || (pass == 0 && kSetSkinIndependent.Modified());
+          const std::string label = std::string(caption) + "\n"
+                                    + ui::Ellipsize(ui::Tr(model), width - ImGui::GetStyle().FramePadding.x * 2.f
+                                                                       - (modified ? ImGui::GetFontSize() : 0.f))
+                                    + (modified ? " *" : "") + "###chain_pass";
+          {
+            ui::StyleScope node;
+            node.Var(ImGuiStyleVar_FrameBorderSize, 1.f);
+            if (pass == ui_selected_pass) {
+              node.Color(ImGuiCol_Button, ui::tokens::kAccentActive)
+                  .Color(ImGuiCol_Border, ui::tokens::kAccentHover);
+            }
+            if (ImGui::Button(label.c_str(), ImVec2(width, ImGui::GetTextLineHeightWithSpacing() * 2.f
+                                                               + ImGui::GetStyle().FramePadding.y * 2.f))) {
+              ui_selected_pass = pass;
+            }
           }
+          ui::ItemTooltip("%s\n%s: %s\n%s\n%s\n%s", caption, ui::Tr(ui::text::kRequest), ui::Tr(model),
+                          ui::Tr(requested == 0 && pass != 0 ? ui::text::kInheritModel : ui::text::kIndependentModel),
+                          ui::Tr(ui::text::kConfigured), ui::Tr(ui::text::kChainMarkTip));
+          const ImVec2 begin = ImGui::GetItemRectMin();
+          const ImVec2 end = ImGui::GetItemRectMax();
+          if (pass % columns != 0) {
+            const float y = (begin.y + end.y) * 0.5f;
+            ImGui::GetWindowDrawList()->AddLine(ImVec2(previous_end.x + 1.f, y), ImVec2(begin.x - 1.f, y),
+                                                ui::ToU32(ui::tokens::kTextSecondary));
+            const float arrow = ImGui::GetFontSize() * 0.18f;
+            ImGui::GetWindowDrawList()->AddTriangleFilled(ImVec2(begin.x - 1.f, y),
+                                                          ImVec2(begin.x - arrow * 2.f, y - arrow), ImVec2(begin.x - arrow * 2.f, y + arrow),
+                                                          ui::ToU32(ui::tokens::kTextSecondary));
+          }
+          previous_end = end;
+          ImGui::PopID();
         }
-        ui::ItemTooltip("%s\n%s: %s\n%s\n%s\n%s", caption, ui::Tr(ui::text::kRequest), ui::Tr(model),
-                        ui::Tr(requested == 0 && pass != 0 ? ui::text::kInheritModel : ui::text::kIndependentModel),
-                        ui::Tr(ui::text::kConfigured), ui::Tr(ui::text::kChainMarkTip));
-        const ImVec2 begin = ImGui::GetItemRectMin();
-        const ImVec2 end = ImGui::GetItemRectMax();
-        if (pass % columns != 0) {
-          const float y = (begin.y + end.y) * 0.5f;
-          ImGui::GetWindowDrawList()->AddLine(ImVec2(previous_end.x + 1.f, y), ImVec2(begin.x - 1.f, y),
-                                              ui::ToU32(ui::tokens::kTextSecondary));
-          const float arrow = ImGui::GetFontSize() * 0.18f;
-          ImGui::GetWindowDrawList()->AddTriangleFilled(ImVec2(begin.x - 1.f, y),
-                                                        ImVec2(begin.x - arrow * 2.f, y - arrow), ImVec2(begin.x - arrow * 2.f, y + arrow),
-                                                        ui::ToU32(ui::tokens::kTextSecondary));
-        }
-        previous_end = end;
-        ImGui::PopID();
+        ImGui::EndTable();
       }
-      ImGui::EndTable();
+      ImGui::Text("> %s", ui::Tr(ui::text::kOutput));
     }
-    ImGui::Text("> %s", ui::Tr(ui::text::kOutput));
   }
   for (uint32_t pass = (text.modern ? 0u : 1u); pass < stack_passes.load() && pass < kMaxNrPasses;
        ++pass) {
@@ -21884,8 +21958,8 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
       ImGui::TableNextColumn();
     }
     DrawNrModelSetting(text, (pass == 0 ? kSetPreset : kSetPassPreset[pass - 1]), pass != 0);
-    SliderSetting(text, (pass == 0 ? kSetIntensity : kSetPassIntensity[pass - 1]), text.Pick("Intensity", "Strength"),
-                  0.f, 2.f, "%.2f", ui::text::kIntensityTip);
+    SliderSetting(text, (pass == 0 ? kSetIntensity : kSetPassIntensity[pass - 1]), text.Pick("Intensity", ui::text::kModelStrength),
+                  0.f, 2.f, "%.2f", ui::text::kModelStrengthTip);
     // Greyed out like pass 1's (DrawSectionHdrDetails), the value still shown.
     ImGui::BeginDisabled(transfer_strength_inert.load(std::memory_order_relaxed) != 0u);
     SliderSetting(text, (pass == 0 ? kSetTransferStrength : kSetPassTransfer[pass - 1]),
@@ -21927,18 +22001,20 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
     if (editor_table) {
       ImGui::EndTable();
     }
-    if (ui::TreeNode("pass_result", text.Tr(ui::text::kResultShaping))) {
-      if (pass != 0) {
-        ToggleSetting(text, kSetPassLookFollow[pass - 1], ui::text::kInheritResult,
-                      ui::text::kInheritResultTip);
-      }
+    const size_t result_count = std::size(kPassLookResultSettings) / (kMaxNrPasses - 1);
+    const bool result_changed = pass == 0 ? AnyModified({kLookResultSettings})
+                                          : AnyModified({SettingGroup(kPassLookResultSettings).subspan((pass - 1) * result_count, result_count)});
+    ui::SubCaption(result_changed ? ui::text::kResultChanged : ui::text::kResultShaping);
+    ui::ItemTooltip("%s", text.Tr(pass == 0 ? ui::text::kSharedResult : ui::text::kInheritResultTip));
+    if (pass != 0) {
+      ToggleSetting(text, kSetPassLookFollow[pass - 1], ui::text::kInheritResult,
+                    ui::text::kInheritResultTip);
+    }
       if (pass != 0 && pass_look_result[pass - 1].follow.load()) {
         ImGui::TextWrapped("%s", text.Tr(ui::text::kInheritedResult));
       } else {
-        DrawSectionLookResult(text, pass);
+        DrawSectionLookResult(text, pass, false);
       }
-      ImGui::TreePop();
-    }
     ImGui::PopID();
   }
   ImGui::EndDisabled();
@@ -21975,17 +22051,17 @@ inline void DrawSectionCodecCombo(const ui::PanelText& text) {
       "How the game's HDR image is prepared for Neural Rendering and brought"
       " back.  Auto is right for nearly every game.";
   if (text.modern) ui::RowLabel(text.codec, kCodecTip);
-  const char* codec_items[std::size(kCodecModes)];
-  for (size_t i = 0; i < std::size(kCodecModes); ++i) codec_items[i] = text.Tr(kCodecModes[i]);
-  if (ImGui::Combo(
-          text.modern ? "##codec" : ui::ControlLabel(text.codec).c_str(),
-          &ui_codec_mode,
-          codec_items,
-          static_cast<int>(std::size(kCodecModes)))) {
+  if (!text.modern) {
+    ui::ControlLabel(text.codec);
+    ui::ItemTooltip("%s", kCodecTip);
+  }
+  const int codec_choice = ui::Segmented("##codec", kCodecModes, static_cast<int>(std::size(kCodecModes)),
+                                         ui_codec_mode, nullptr, kCodecModes, nullptr, true);
+  if (codec_choice >= 0 && codec_choice != ui_codec_mode) {
+    ui_codec_mode = codec_choice;
     kSetCodecMode.Commit(static_cast<float>(kCodecValues[ui_codec_mode]));
   }
   if (text.modern) {
-    ui::ItemTooltip("%s", ui::Tr(kCodecTip));
     if (kSetCodecMode.Modified() && ui::ResetButton("codec_reset", kCodecModes[0])) {
       kSetCodecMode.Commit(kSetCodecMode.fallback);
     }
@@ -22459,12 +22535,12 @@ inline void DrawSectionDiagnosticsRaw() {
       : (res_scale >= 0.995f
              ? "native (100%)"
              : std::to_string(static_cast<int>(res_scale * 100.f + 0.5f)) + "%");
-  // Present first, as the evaluate path decides (PresentHookServes, the
-  // log's active-path line): through v8.5.0-rc9 Present read "after".
+  // PresentHookServes also includes a native Pre-FG owner. The selected
+  // domain alone therefore cannot describe its execution timing.
   if (PresentHookServes()) {
     ImGui::TextUnformatted(
-        "Active path: Present - on the frame the game presents, after its own"
-        " post-processing and UI, before ReShade's effects.");
+        "Present domain: see the status summary for the observed NR/FG timing"
+        " (Pre-FG or final Present).");
   } else if (nr_before_upscale.load() && logged_pre_sr_rr.load()) {
     ImGui::TextUnformatted(
         "Active path: after - Render (pre-SR) is selected, but the game upscales"
@@ -23143,7 +23219,7 @@ inline void DrawDiagnostics(const NrVerdict& verdict) {
                  : "not running"));
 
   if (present_frames_seen.load(std::memory_order_relaxed) != 0) {
-    ui::RowLabel(ui::text::kFixesGuides);
+    ui::RowLabel(ui::text::kFixesGuides, ui::text::kPresentGuideCountersTip);
     const auto real = present_guides_real.load(std::memory_order_relaxed);
     const auto neutral = present_guides_neutral.load(std::memory_order_relaxed);
     ImGui::TextWrapped(ui::Tr(ui::text::kPresentRuns),
@@ -23200,7 +23276,6 @@ inline void DrawDiagnostics(const NrVerdict& verdict) {
     // slot_timeouts=, resets=, fg_flips=).
     if (const uint64_t present_seen = present_frames_seen.load(std::memory_order_relaxed);
         present_seen != 0) {
-      const uint32_t multiplier = present_fg_multiplier.load(std::memory_order_relaxed);
       const auto real = present_guides_real.load(std::memory_order_relaxed);
       const auto neutral = present_guides_neutral.load(std::memory_order_relaxed);
       const auto in_flight = present_guides_in_flight.load(std::memory_order_relaxed);
@@ -23210,10 +23285,7 @@ inline void DrawDiagnostics(const NrVerdict& verdict) {
       };
       ui::RowLabel(ui::text::kAtPresent, ui::text::kAtPresentTip);
       ImGui::BeginGroup();
-      if (multiplier <= 1) {
-        ImGui::TextWrapped(ui::Tr(ui::text::kNoFrameGen),
-                           present_cadence.load(std::memory_order_relaxed));
-      }
+      ImGui::TextWrapped(ui::Tr(ui::text::kCadenceObservation), present_cadence.load(std::memory_order_relaxed));
       ImGui::TextWrapped(ui::Tr(ui::text::kPresentStability),
                          static_cast<unsigned long long>(present_gaps.load(std::memory_order_relaxed)),
                          static_cast<unsigned long long>(
@@ -23236,7 +23308,7 @@ inline void DrawDiagnostics(const NrVerdict& verdict) {
                            static_cast<unsigned long long>(in_flight));
       }
       ImGui::EndGroup();
-      DrawFgRoute(false);
+      DrawFgRoute(false, true);
     }
   }
   if (ui::SectionHeader(ui::text::kDetails, ui::text::kDiagnosticsHint, nullptr, AnyModified({kDiagnosticsSettings}), &reset)) {
@@ -23453,16 +23525,23 @@ inline void DrawHealthIssues() {
 }
 
 inline void DrawRuntimeStatus(const ui::StatusCard& card) {
-  ui::StatusCard conclusion = card;
-  if (conclusion.action == ui::CardAction::kOpenDiagnostics) {
-    conclusion.action = ui::CardAction::kNone;
-  }
-  if (ui::DrawStatusCard(conclusion, false)) {
-    if (card.action == ui::CardAction::kTurnOn) {
+  if (card.tone == ui::CardTone::kWarn || card.tone == ui::CardTone::kBad || card.fix_count != 0) {
+    ui::StatusCard conclusion = card;
+    if (conclusion.action == ui::CardAction::kOpenDiagnostics) {
+      conclusion.action = ui::CardAction::kNone;
+    }
+    if (ui::DrawStatusCard(conclusion, false) && card.action == ui::CardAction::kTurnOn) {
       SetNrEnabledFromUi(true);
     }
-    if (card.action == ui::CardAction::kOpenDiagnostics) {
-      ui_open_diagnostics = true;
+  } else {
+    char title[256];
+    ui::FormatCardTitle(title, sizeof(title), card);
+    ImGui::TextColored(ui::ToneColor(card.tone), "%s", title);
+    if (card.tone != ui::CardTone::kGood) {
+      ImGui::TextWrapped("%s", ui::Tr(card.body));
+    }
+    if (card.action == ui::CardAction::kTurnOn && ui::ActionButton(ui::Tr("Turn on"))) {
+      SetNrEnabledFromUi(true);
     }
   }
   DrawHealthIssues();
@@ -23608,7 +23687,7 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
         const int clicked = ui::Segmented(
             "##resolution", ui::text::kResolutionLabels,
             static_cast<int>(std::size(ui::text::kResolutionLabels)), preset,
-            ui::text::kResolutionTip);
+            ui::text::kResolutionTip, ui::text::kResolutionTips);
         if (clicked >= 0 && clicked != preset) {
           const ResolutionPreset& chosen = kResolutionPresets[clicked];
           nr_follow_input_res = chosen.follow;
@@ -23639,7 +23718,6 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
         ImGui::EndDisabled();
         ImGui::TableNextColumn();
         ImGui::BeginDisabled(ui_defaults_view);
-        ImGui::TextWrapped("%s", ui::Tr(ui::text::kSharedResult));
         DrawSectionLookResult(text);
         ImGui::EndDisabled();
         ImGui::EndTable();
@@ -23722,8 +23800,10 @@ inline void DrawPanelBody(reshade::api::effect_runtime* runtime) {
                                               | static_cast<unsigned>(card.id)),
                         std::memory_order_relaxed);
   }
-  ui_fg_route.Update({.enabled = enabled.load(), .present = hook_point.load() == kHookPresent, .prefg_active = present_prefg_active.load(), .upscaled_active = present_prefg_upscaled_active.load(), .submitted_before_fg = card_inputs.fg_continuing_submission, .multiplier = present_fg_multiplier.load(), .prefg_policy = present_pre_fg.load(), .frame_policy = present_frames.load(), .prefg_frames = present_prefg_frames.load(), .prefg_evaluates = present_prefg_evaluates.load(), .fallbacks = present_prefg_fallbacks.load(), .upscaled_frames = present_prefg_upscaled.load(), .captures = present_captures.load(), .nr_successes = successful_evaluations.load() + successful_pre_sr_evaluations.load(), .fg_submitted = TotalFgSubmittedFrames()}, observed_ns);
+  ui_fg_route.Update({.enabled = enabled.load(), .present = hook_point.load() == kHookPresent, .prefg_active = present_prefg_active.load(), .upscaled_active = present_prefg_upscaled_active.load(), .submitted_before_fg = card_inputs.fg_continuing_submission, .multiplier = card_inputs.frame_gen_multiplier, .prefg_policy = present_pre_fg.load(), .frame_policy = present_frames.load(), .prefg_frames = present_prefg_frames.load(), .prefg_evaluates = present_prefg_evaluates.load(), .fallbacks = present_prefg_fallbacks.load(), .upscaled_frames = present_prefg_upscaled.load(), .captures = present_captures.load(), .nr_successes = successful_evaluations.load() + successful_pre_sr_evaluations.load(), .fg_submitted = TotalFgSubmittedFrames()}, observed_ns);
   card.observed_fg_route = ui_fg_route.route;
+  card.fg_declared = fg::xefg::OwnsStream()
+                     || native_fg_declaration.load() == NativeFgDeclaration::kOn;
   unsigned warnings = (card.tone == ui::CardTone::kWarn || card.tone == ui::CardTone::kBad ? 1u : 0u);
   const uint64_t health_mask = health_active_mask.load(std::memory_order_relaxed);
   for (size_t i = 0; i < health::kRowCount; ++i) {

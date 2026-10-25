@@ -24,6 +24,13 @@ int main() {
   std::snprintf(footer, sizeof(footer), text::kFooter, "v" NR_NEXUS_VERSION, "test-runtime", "test.exe");
   if (std::string_view(footer) != NR_NEXUS_NAME " v" NR_NEXUS_VERSION " | DLSSNR test-runtime | test.exe") return 1;
   const char* report_strings[] = {
+      text::kPresentGuideCountersTip,
+      text::kPassCountTip, text::kSettingsViewTips[0], text::kSettingsViewTips[1],
+      text::kModelStructure,
+      text::kCadenceObservation,
+      text::kOptionOff, text::kDetailAuto, text::kDetailAlways, text::kStabilizeStill, text::kStabilizeMotion, text::kUpsampleAuto, text::kUpsampleEdge, text::kUpsampleClassic, text::kUpsampleArea,
+      text::kModelStrength, text::kResultStrength, text::kModelStrengthTip, text::kResultStrengthTip, text::kStructureTip, text::kStructureCapped, text::kGuideTip, text::kGuideOptional, text::kGuideRequired, text::kGuideNever, text::kHookUpscaledTip, text::kHookRenderTip, text::kHookPresentTip, text::kResFullTip, text::kResQualityTip, text::kResBalancedTip, text::kResPerformanceTip, text::kResFollowTip, text::kStyleDefaultTip, text::kStyleNaturalTip, text::kStyleCinematicTip, text::kFgEveryTip, text::kFgGameTip, text::kFgDetectAutoTip, text::kFgDetectStableTip, text::kFgDetectLegacyTip, text::kFgStatusUnknown, text::kFgDeclared, text::kFgBeforeUnknown, text::kFgBeforeShort, text::kFgEveryShort, text::kFgGameShort, text::kFgFallbackShort, text::kFgUpscaledShort, text::kFgMixedShort, text::kStackCost, text::kFgUnknownMultiplierTip,
+      text::kResolutionLabels[1],
       text::kExpandAll, text::kCollapseAll, text::kChanged, text::kNrResolution, text::kResolutionFine, text::kProcessingLocation, text::kFgAdvanced, text::kFgFramePolicy, text::kFgFramePolicyTip, text::kResultBasic, text::kResultLimits, text::kResultDetail, text::kResultTemporal, text::kTemporalIndependent, text::kModelAutoTip, text::kModelATip, text::kModelBTip, text::kModelInheritTip, text::kChainMarkTip,
       text::kFrameGenUnconfirmed, text::kFrameGenFallback, text::kFgNoMultiplier, text::kFgUnknown, text::kFgOtherStage, text::kFgBefore, text::kFgEvery, text::kFgGame, text::kFgFallback, text::kFgUpscaled, text::kFgMixed, text::kFgDiagnostics,
       text::kSettingsViewTip, text::kStatusDetails, "Advanced", text::kPassOverview,
@@ -72,8 +79,14 @@ int main() {
       }
       const bool model_identifier = std::string_view(english) == "A (Legacy)"
                                     || std::string_view(english) == "B (Small FP8)" || std::string_view(english) == "Multi-Pass";
-      if (matches != 1 || (!model_identifier && std::string_view(translated) == english)) return 5;
-      if (FormatConversions(english) != FormatConversions(translated)) return 6;
+      if (matches != 1 || (!model_identifier && std::string_view(translated) == english)) {
+        std::fprintf(stderr, "Translation mismatch: language=%s matches=%d key=%s\n", kLanguages[language].code, matches, english);
+        return 5;
+      }
+      if (FormatConversions(english) != FormatConversions(translated)) {
+        std::fprintf(stderr, "Format mismatch: language=%s key=%s translation=%s\n", kLanguages[language].code, english, translated);
+        return 6;
+      }
     }
     std::printf("%s: %s | %s\n", kLanguages[language].code, welcome.data(), crash.data());
   }

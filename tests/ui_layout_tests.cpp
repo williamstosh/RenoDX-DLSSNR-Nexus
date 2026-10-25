@@ -40,6 +40,7 @@ int main() {
 
   {
     ui::StatusCard card;
+    card.frame_gen_multiplier = 4;
     card.present_before_fg = true;
     check(ui::FrameGenText(card) == ui::text::kFrameGenUnconfirmed,
           "a single old Pre-FG flag must not confirm the summary route");
@@ -47,6 +48,14 @@ int main() {
     check(ui::FrameGenText(card) == ui::text::kFrameGenBeforeFg, "confirmed Pre-FG summary missing");
     card.observed_fg_route = ui::FgRoute::kGameFrames;
     check(ui::FrameGenText(card) == ui::text::kFrameGenGameFrames, "summary ignores observed game-frame route");
+    card.frame_gen_multiplier = 1;
+    card.observed_fg_route = ui::FgRoute::kBeforeFg;
+    check(ui::FrameGenText(card) == ui::text::kFgBeforeUnknown, "unknown multiplier must not hide confirmed Pre-FG");
+    card.observed_fg_route = ui::FgRoute::kUnknown;
+    card.fg_declared = true;
+    check(ui::FrameGenText(card) == ui::text::kFgDeclared, "declared FG is distinct from observed activity");
+    card.fg_declared = false;
+    check(ui::FrameGenText(card) == ui::text::kFgStatusUnknown, "missing multiplier is not proof that FG is disabled");
   }
   {
     ui::FgRouteObserver observation;
@@ -56,6 +65,7 @@ int main() {
     const auto sample = [&] {
       ns += 300'000'000LL;
       input.nr_successes += 8;
+      input.prefg_evaluates += 4;
       observation.Update(input, ns);
     };
     input.prefg_frames += 4;
@@ -120,6 +130,20 @@ int main() {
     }
     check(observation.route == ui::FgRoute::kBeforeFg,
           "queue-confirmed native/XeFG handoff takes precedence over legacy Pre-FG misses");
+    input.multiplier = 1;
+    observation.Update(input, ++ns);
+    input.fg_submitted += 4;
+    sample();
+    check(observation.route == ui::FgRoute::kUnknown, "one unknown-multiplier handoff cannot confirm the route");
+    input.fg_submitted += 4;
+    sample();
+    check(observation.route == ui::FgRoute::kBeforeFg, "native Pre-FG must not depend on legacy Present multiplier");
+    input.submitted_before_fg = false;
+    for (int i = 0; i < 2; ++i) {
+      input.captures += 4;
+      sample();
+    }
+    check(observation.route == ui::FgRoute::kUnknown, "ordinary NR work without multiplier evidence is not FG activity");
     input.submitted_before_fg = false;
     input.enabled = false;
     observation.Update(input, ++ns);

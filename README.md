@@ -105,16 +105,24 @@ Depth/Motion, HUD and generated-frame policies are available on Quality when
 Present is selected; Diagnostics links back to them. Model choices use parallel
 Auto/A/B buttons, with a dropdown on narrow panels. Working-resolution presets,
 custom scale, upsampling and the last observed NR size are together on Quality.
-Present route notices require repeated runtime observations; configuration alone
-does not confirm Pre-FG. Result adjustment keeps four inspectable parameter groups
-while disabled; detail stability retains its independent behavior. Expand all /
+Candidate tooltips describe only the hovered choice. Depth/Motion is a resource
+policy: Optional prefers matching guides and permits neutral fallback; Required
+skips frames without matching guides; Never uses neutral guides, including in
+games with DLSS. Other compatibility checks still apply.
+Compact Present notices require repeated runtime observations; configuration alone
+does not confirm Pre-FG. FG activity, its multiplier and the NR route are separate;
+native FG/XeFG submissions can confirm Pre-FG while the multiplier remains unknown.
+Normal Diagnostics avoids duplicating the full status card; errors retain repair steps.
+Result adjustment keeps four inspectable parameter groups while disabled; its
+strength is directly below the switch, and detail stability remains independent. Expand all /
 Collapse all applies once to the current page, with later manual toggles preserved.
 
-Multi-Pass shows a clickable processing chain and one pass editor at a time.
+Multi-Pass shows a clickable processing chain and one pass editor at a time;
+a single pass opens directly in its shared base editor.
 **Pass Count includes Pass 1.** Model inheritance remains independent of appearance
 sharing. Result shaping (including limits and stability) runs after each pass.
 Quality controls Pass 1's result settings; passes 2–4 inherit those by default.
-In each pass editor, expand **NR result adjustment** and turn off **Inherit Pass 1 result
+Each pass editor directly shows **NR result adjustment**. Turn off **Inherit Pass 1 result
 settings** to use independent values. Model styling and result inheritance are
 separate. Re-enabling inheritance preserves the stored custom values. Working resolution,
 upsampling and the hook point remain shared across the chain. Requested and configuration-resolved models are distinct from the runtime
@@ -123,6 +131,16 @@ in this build. Wide panels use two columns where useful;
 narrow panels stack them. Advanced contains shortcuts/screenshots, compatibility
 fixes, language/notifications, Developer view, restore defaults and version/about.
 Existing configuration keys and reset behavior remain available.
+
+**Model strength** controls the value sent to the NR model (0–2, default 1).
+The add-on does not clamp it at 1; a stronger response above 1 is not confirmed
+for every model/runtime. **Result adjustment strength** scales the output edit
+in the Look Stage before limits and requires result adjustment to be enabled.
+**Model structure** steers the model rather than post-process Detail; Character
+mask plus Independent skin caps the structure sent to the model at 1 while
+preserving the saved value. These controls retain their existing ranges and defaults.
+Resolution presets affect NR working size only, not the game's DLSS mode;
+Full is not DLAA. The preset scales remain 100/67/58/50 percent or game input size.
 
 To **upgrade**, close the game, back up the current add-on/settings and replace
 only the add-on with the new release's file, following its notes. Do not leave
@@ -329,17 +347,29 @@ Runtime 默认值。旧 Preset 3 保留存储，在 310.9.16 上解析为 A；�
 性能计数、日志和问题报告。选择 Present 后，画质页直接提供深度／运动、HUD 和生成帧策略，
 诊断页也提供返回入口。模型采用自动／A／B 并列按钮，窄窗口改用下拉菜单。
 工作分辨率预设、自定义比例、上采样和上次实际 NR 尺寸集中在画质页。
-Present 路径提示要求连续运行观测，不能仅凭配置确认 Pre-FG。结果调整关闭时仍可
-展开四组参数查看禁用值，细节稳定保留独立生效规则。全部展开／收起仅对当前页
+候选项提示仅介绍悬停选项。深度／运动是资源策略：可选优先匹配游戏数据并允许中性回退；
+必需在没有匹配数据时跳过；从不始终使用中性数据，也可用于 DLSS 游戏，其他兼容性检查仍适用。
+Present 紧凑提示要求连续运行观测，不能仅凭配置确认 Pre-FG。FG 活动、倍率与 NR 路径分别确认；
+原生 FG／XeFG 提交可以确认 Pre-FG，而倍率仍未知。诊断正常时不再重复完整状态卡，异常仍保留修复建议。
+结果调整关闭时仍可展开四组参数查看禁用值；结果调整强度直接位于总开关下方，细节稳定保留独立生效规则。
+全部展开／收起仅对当前页
 执行一次，随后仍可手动调整各分组。
 
-叠层页用可点击的处理链选择编辑层，**叠层数包含第 1 层（基础层）**。模型继承和外观共享
+叠层页用可点击的处理链选择编辑层，单层时直接显示共用的基础层编辑器。
+**叠层数包含第 1 层（基础层）**。模型继承和外观共享
 相互独立。结果调整（包含限制与稳定性）在每一层 NR 后执行；画质页控制第 1 层，
-第 2–4 层默认继承。进入对应层的**NR 结果调整**，关闭**继承第 1 层结果设置**即可独立调节，
+第 2–4 层默认继承。各层直接显示 **NR 结果调整**，关闭**继承第 1 层结果设置**即可独立调节，
 重新开启继承也会保留保存的自定义值。结果继承与模型风格继承分别控制；工作分辨率、上采样和介入点仍为全链共享。
 请求模型和配置解析模型保留，详细诊断明确说明当前版本不提供实际网络回读。
 宽窗口按需双列，窄窗口纵向排列。高级页包含快捷键／截图、兼容性修复、语言／通知、
 开发者视图、恢复默认和版本／关于；现有配置键与重置行为保留。
+
+**模型强度**控制发给 NR 模型的值（0–2，默认 1），插件不在 1 处截断，但尚未确认所有
+模型／Runtime 在大于 1 时都会产生更强响应。**结果调整强度**在 Look Stage 中、限制处理之前
+缩放输出改变量，需要开启结果调整。**模型结构**控制模型生成的结构，区别于后处理“细节”；
+角色遮罩与独立肤色同时开启时，结构发送值上限为 1，保存值不变。上述范围和默认值保持原样。
+分辨率预设只影响 NR 工作尺寸，不修改游戏 DLSS 模式；完整不等于 DLAA。
+完整／质量／平衡／性能仍对应参考尺寸的 100／67／58／50 百分比，跟随游戏使用游戏输入尺寸。
 
 **升级**时关闭游戏，备份当前插件／设置，按新版说明替换插件文件，不要在另一个生效目录
 留下旧副本。**卸载**时关闭游戏，移除该插件或恢复旧备份文件，保留无关的 ReShade、

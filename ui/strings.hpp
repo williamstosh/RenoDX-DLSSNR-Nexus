@@ -71,7 +71,7 @@ inline constexpr PanelText kClassicText = {
 inline constexpr PanelText kModernText = {
     true,
     "Neural Rendering",
-    "Strength",
+    "Model strength",
     "Hook point",
     "Pass Count",
     "HDR mode",
@@ -83,6 +83,67 @@ inline constexpr PanelText kModernText = {
 
 namespace text {
 
+inline constexpr const char* kModelStructure = "Model structure";
+inline constexpr const char* kModelStrength = "Model strength";
+inline constexpr const char* kResultStrength = "Result adjustment strength";
+inline constexpr const char* kModelStrengthTip = "Controls the NR model before result adjustment. Values 0-2 are sent unchanged; 1 is the default. Response above 1 depends on the model/runtime and is unverified. Changes reset NR history.";
+inline constexpr const char* kResultStrengthTip = "Scales the NR edit after the model: 0 removes the edit, 1 keeps its scale, 2 doubles its scale before limits. Requires result adjustment. Changes apply live without restarting NR history.";
+inline constexpr const char* kStructureTip = "Controls structure synthesized by the NR model; Detail reshapes the output afterward. With Character mask and Independent skin enabled, the value sent to the model is capped at 1. Changes reset NR history.";
+inline constexpr const char* kStructureCapped = "Character mask and Independent skin cap the sent structure at 1.00; the stored value is preserved.";
+inline constexpr const char* kGuideTip = "Selects a resource policy for Present NR, not proof that depth and motion were captured. Other frame, resource and compatibility checks still apply.";
+inline constexpr const char* kGuideOptional = "Prefer matching game depth and motion; use neutral data when unavailable. Recommended for most games, including scenes without usable DLSS resources. Other checks may still skip NR.";
+inline constexpr const char* kGuideRequired = "Run Present NR only with matching depth and motion; otherwise skip this frame. Avoids neutral guides. This does not directly detect whether DLSS is enabled.";
+inline constexpr const char* kGuideNever = "Always use neutral depth and motion, ignoring captured game guides. Useful for unreliable or incompatible resources, including games with DLSS. Motion stability may be affected.";
+inline constexpr const char* kHookUpscaledTip = "Process the game output after upscaling. NR uses the existing Upscaled path and its resource contract.";
+inline constexpr const char* kHookRenderTip = "Process before upscaling, using game depth and motion at render resolution. Ray Reconstruction keeps the compatible Upscaled path.";
+inline constexpr const char* kHookPresentTip = "Process the presented image, including its HUD. Present depth/motion and FG policies apply; the observed route may differ from the selected position.";
+inline constexpr const char* kResFullTip = "NR works at 100 percent of the reference resolution. Does not select DLAA or change game DLSS settings.";
+inline constexpr const char* kResQualityTip = "NR works at 67 percent of the reference resolution. Changes NR working resolution only, not the game DLSS mode.";
+inline constexpr const char* kResBalancedTip = "NR works at 58 percent of the reference resolution. Changes NR working resolution only.";
+inline constexpr const char* kResPerformanceTip = "NR works at 50 percent of the reference resolution. Changes NR working resolution only.";
+inline constexpr const char* kResFollowTip = "Follow the game input/render resolution instead of the saved scale. Does not change game resolution or its DLSS mode.";
+inline constexpr const char* kStyleDefaultTip = "Let the NR runtime choose its default style.";
+inline constexpr const char* kStyleNaturalTip = "Request the NR model Natural style. Changes restart NR history.";
+inline constexpr const char* kStyleCinematicTip = "Request the NR model Cinematic style. Changes restart NR history.";
+inline constexpr const char* kFgEveryTip = "On the ordinary Present path, run NR on every presented frame, including generated frames. Successful Pre-FG takes precedence. This does not enable FG.";
+inline constexpr const char* kFgGameTip = "On the ordinary Present path, process only identified game frames; generated frames may look different. Successful Pre-FG takes precedence. This does not disable FG.";
+inline constexpr const char* kFgDetectAutoTip = "Use a matching declared multiplier when available; otherwise use stable cadence detection on the ordinary Present path.";
+inline constexpr const char* kFgDetectStableTip = "Use stable cadence detection on the ordinary Present path; ignore multiplier declarations.";
+inline constexpr const char* kFgDetectLegacyTip = "Use the earlier Present cadence rule for compatibility.";
+inline constexpr const char* kFgStatusUnknown = "FG activity unconfirmed";
+inline constexpr const char* kFgDeclared = "Game declares FG enabled; activity unconfirmed";
+inline constexpr const char* kFgBeforeUnknown = "Pre-FG NR observed; multiplier unknown";
+inline constexpr const char* kFgBeforeShort = "Pre-FG NR confirmed";
+inline constexpr const char* kFgEveryShort = "NR on every presented frame";
+inline constexpr const char* kFgGameShort = "NR on game frames only";
+inline constexpr const char* kFgFallbackShort = "Pre-FG fallback observed";
+inline constexpr const char* kFgUpscaledShort = "NR fallback to Upscaled";
+inline constexpr const char* kFgMixedShort = "Mixed Pre-FG and fallback";
+inline constexpr const char* kStackCost = "Additional passes increase NR GPU work.";
+inline constexpr const char* kFgUnknownMultiplierTip = "FG activity and multiplier are separate observations. Native FG/XeFG can bypass Present cadence sampling; an unknown multiplier does not mean FG is off.";
+
+inline constexpr const char* kHookTips[] = {kHookUpscaledTip, kHookRenderTip, kHookPresentTip};
+inline constexpr const char* kGuideTips[] = {kGuideOptional, kGuideRequired, kGuideNever};
+inline constexpr const char* kResolutionTips[] = {kResFullTip, kResQualityTip, kResBalancedTip, kResPerformanceTip, kResFollowTip};
+inline constexpr const char* kFgPolicyTips[] = {kFgEveryTip, kFgGameTip};
+inline constexpr const char* kFgDetectionTips[] = {kFgDetectAutoTip, kFgDetectStableTip, kFgDetectLegacyTip};
+
+inline constexpr const char* kOptionOff = "Disable this processing; keep saved parameter values.";
+inline constexpr const char* kDetailAuto = "Apply detail stability on the compatible post-upscale path, even with result adjustment off.";
+inline constexpr const char* kDetailAlways = "Request detail stability before or after upscaling. Resource and compatibility checks still apply.";
+inline constexpr const char* kStabilizeStill = "Average the NR edit over time with less following of motion. Requires result adjustment.";
+inline constexpr const char* kStabilizeMotion = "Average the NR edit while following game motion vectors. Requires result adjustment and usable motion.";
+inline constexpr const char* kUpsampleAuto = "Choose the existing automatic edge-aware edit reconstruction. Independent of result adjustment.";
+inline constexpr const char* kUpsampleEdge = "Reconstruct the NR edit using edges and full-resolution detail.";
+inline constexpr const char* kUpsampleClassic = "Use the NR lower-resolution pixels directly; they may appear blocky.";
+inline constexpr const char* kUpsampleArea = "Average input pixels before NR, then reconstruct the edit using edges. Can change the model output and resets NR history.";
+inline constexpr const char* kDetailStabilityTips[] = {kDetailAuto, kOptionOff, kDetailAlways};
+inline constexpr const char* kStabilizeTips[] = {kOptionOff, kStabilizeStill, kStabilizeMotion};
+inline constexpr const char* kUpsampleTips[] = {kUpsampleAuto, kUpsampleEdge, kUpsampleClassic, kUpsampleArea};
+inline constexpr const char* kCadenceObservation = "Present cadence: %.2f (observation only; not an FG verdict)";
+inline constexpr const char* kPassCountTip = "Runs %u NR passes in total, including Pass 1.";
+inline constexpr const char* kSettingsViewTips[] = {"Temporarily preview the built-in NR effect. Your saved settings are kept.", "Return to your saved NR settings for editing."};
+inline constexpr const char* kPresentGuideCountersTip = "These are legacy Present guide counters. Native FG/XeFG Pre-FG guide use is not included; do not treat them as whole-chain resource availability.";
 inline constexpr const char* kStatusDetails = "Status & warnings (%u)";
 inline constexpr const char* kMenuPages[] = {"Quality", "Multi-Pass", "Diagnostics", "Advanced"};
 inline constexpr const char* kPassOverview = "Pass Overview";
@@ -309,7 +370,7 @@ inline constexpr const char* kLanguageTip =
 // Performance are the working-resolution fractions of DLSS's own modes;
 // "Match game" follows the game's render resolution (NRFollowInputRes).
 inline constexpr const char* kResolutionLabels[] = {
-    "Full", "Quality", "Balanced", "Performance", "Match game"};
+    "Full", "Quality###nr_resolution_quality", "Balanced", "Performance", "Match game"};
 inline constexpr const char* kResolutionTip =
     "The resolution Neural Rendering works at.  Full is the sharpest; the"
     " lower presets cost less GPU time.  Match game follows the game's own"

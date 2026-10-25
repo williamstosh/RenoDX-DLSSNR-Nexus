@@ -50,9 +50,10 @@ struct FgRouteObserver {
                        || now.multiplier != previous.multiplier || now.prefg_policy != previous.prefg_policy
                        || now.frame_policy != previous.frame_policy || now.nr_successes < previous.nr_successes
                        || now.prefg_frames < previous.prefg_frames || now.fallbacks < previous.fallbacks
+                       || now.prefg_evaluates < previous.prefg_evaluates
                        || now.captures < previous.captures || now.upscaled_frames < previous.upscaled_frames
                        || now.fg_submitted < previous.fg_submitted;
-    if (reset || !now.enabled || !now.present || now.multiplier <= 1) {
+    if (reset || !now.enabled || !now.present) {
       route = candidate = FgRoute::kUnknown;
       streak = 0;
       previous = now;
@@ -69,13 +70,13 @@ struct FgRouteObserver {
         // Native FG/XeFG own the before-FG route. Legacy Present refusals
         // can rise while that owner submits successfully; they are not its fallback.
         observed = FgRoute::kBeforeFg;
-      } else if (now.upscaled_active && now.upscaled_frames > previous.upscaled_frames) {
+      } else if (now.multiplier > 1 && now.upscaled_active && now.upscaled_frames > previous.upscaled_frames) {
         observed = FgRoute::kFallbackUpscaled;
-      } else if (served && rejected) {
+      } else if (now.multiplier > 1 && served && rejected) {
         observed = FgRoute::kMixed;
-      } else if (served && now.prefg_active) {
+      } else if (served && now.prefg_active && now.prefg_evaluates > previous.prefg_evaluates) {
         observed = FgRoute::kBeforeFg;
-      } else if (!served && !now.prefg_active && now.captures > previous.captures) {
+      } else if (now.multiplier > 1 && !served && !now.prefg_active && now.captures > previous.captures) {
         observed = rejected                ? FgRoute::kFallbackPresent
                    : now.frame_policy == 0 ? FgRoute::kEveryPresent
                                            : FgRoute::kGameFrames;

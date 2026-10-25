@@ -38,7 +38,7 @@ namespace renodx::addons::dlss5::ui {
 inline void ItemTooltip(const char* fmt, ...) {
   if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) return;
   ImGui::BeginTooltip();
-  ImGui::PushTextWrapPos(ImGui::GetFontSize() * tokens::kTooltipEm);
+  ImGui::PushTextWrapPos((std::min)(ImGui::GetFontSize() * 28.f, ImGui::GetIO().DisplaySize.x * 0.65f));
   va_list args;
   va_start(args, fmt);
   ImGui::TextV(fmt, args);
@@ -91,6 +91,11 @@ inline const char* ActionLabel(CardAction action) {
 inline constexpr float kStripeWidth = 4.f;
 
 inline const char* FrameGenText(const StatusCard& card) {
+  if (card.frame_gen_multiplier <= 1) {
+    return card.observed_fg_route == FgRoute::kBeforeFg ? text::kFgBeforeUnknown
+           : card.fg_declared                           ? text::kFgDeclared
+                                                        : text::kFgStatusUnknown;
+  }
   switch (card.observed_fg_route) {
     case FgRoute::kBeforeFg:         return text::kFrameGenBeforeFg;
     case FgRoute::kEveryPresent:
@@ -159,7 +164,7 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count) {
     }
     line(cost, tokens::kTextSecondary);
     char path[256];
-    if (card.frame_gen_multiplier > 1) {
+    if (card.frame_gen_multiplier > 1 || card.fg_declared || card.observed_fg_route != FgRoute::kUnknown) {
       std::snprintf(path, sizeof(path), Tr(FrameGenText(card)),
                     card.frame_gen_multiplier);
     } else {
@@ -229,7 +234,7 @@ inline bool DrawStatusCard(const StatusCard& card, bool show_metrics = true) {
     char cost[256];
     const bool has_cost =
         show_metrics && FormatNrCost(cost, sizeof(cost), card.nr_gpu_ms, card.nr_present_ms, card.frame_ms, true) > 0;
-    const bool frame_gen = show_metrics && card.frame_gen_multiplier > 1;
+    const bool frame_gen = show_metrics && (card.frame_gen_multiplier > 1 || card.fg_declared || card.observed_fg_route != FgRoute::kUnknown);
     if (has_detail || (show_metrics && card.path_note != nullptr) || has_cost || frame_gen) {
       StyleScope secondary;
       secondary.FontSize(SmallFontSize()).Color(ImGuiCol_Text, kTextSecondary);
@@ -698,20 +703,22 @@ inline int Segmented(const char* id, const char* const* english, int count,
       / static_cast<float>(count);
   float widest = 0.f;
   for (int i = 0; i < count; ++i) {
-    widest = (std::max)(widest, ImGui::CalcTextSize(labels[i]).x);
+    widest = (std::max)(widest, ImGui::CalcTextSize(labels[i], nullptr, true).x);
   }
   int clicked = -1;
   if (compact_combo || widest + ImGui::GetStyle().FramePadding.x * 2.f > width) {
-    if (ImGui::BeginCombo(id, current >= 0 && current < count ? labels[current] : Tr("Custom"))) {
+    const bool open = ImGui::BeginCombo(id, current >= 0 && current < count ? labels[current] : Tr("Custom"));
+    if (open) {
       for (int i = 0; i < count; ++i) {
         ImGui::BeginDisabled(disabled != nullptr && disabled[i]);
         if (ImGui::Selectable(labels[i], i == current)) clicked = i;
         ImGui::EndDisabled();
-        if (option_tips != nullptr) ItemTooltip("%s", Tr(option_tips[i]));
+        ItemTooltip("%s", option_tips != nullptr ? Tr(option_tips[i]) : labels[i]);
       }
       ImGui::EndCombo();
+    } else if (current >= 0 && current < count) {
+      ItemTooltip("%s", option_tips != nullptr ? Tr(option_tips[current]) : labels[current]);
     }
-    if (tooltip != nullptr) ItemTooltip("%s", tooltip);
     return clicked;
   }
   ImGui::PushID(id);
@@ -736,7 +743,7 @@ inline int Segmented(const char* id, const char* const* english, int count,
     if (option_tips != nullptr)
       ItemTooltip("%s", Tr(option_tips[i]));
     else if (tooltip != nullptr)
-      ItemTooltip("%s", tooltip);
+      ItemTooltip("%s", labels[i]);
   }
   ImGui::PopID();
   return clicked;
