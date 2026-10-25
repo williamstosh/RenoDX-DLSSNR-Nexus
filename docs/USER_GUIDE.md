@@ -2,9 +2,9 @@
 
 [English](#english) · [简体中文](#简体中文) · [README](../README.md)
 
-> **Version scope — checked 2026-10-25:** this guide describes the current `dev` interface, checked against source at `cf29cd8`. The latest published package is [v0.1.0-dev.3](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.1.0-dev.3), which includes dual-model and per-pass model selection. The four-page menu, independent result settings for Passes 2–4, and four interface themes are later development changes and are **not in that published package**. Matching version text alone does not establish that a package contains these changes. Check the release notes and the build you installed.
+> **Version scope — 0.1.0:** this guide describes the complete 0.1.0 package: four-page menu, dual models, independent per-pass model styling and result settings, and four interface themes. Check the Releases page for available versioned ZIP packages. Earlier pre-release packages do not contain every feature shown here.
 >
-> **版本范围——2026-10-25 核对：** 本指南描述当前 `dev` 界面，源码核验基线为 `cf29cd8`。最新公开包为 [v0.1.0-dev.3](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.1.0-dev.3)，已包含双模型及逐层模型选择；四页菜单、第 2–4 层独立结果设置、四套界面主题属于后续开发改动，**尚未包含于该公开包**。版本文本相同不代表包已包含这些改动，请核对发布说明与实际安装的构建。
+> **版本范围——0.1.0：** 本指南对应完整 0.1.0 包，包含四页菜单、双模型、逐层独立模型风格与结果设置及四套主题。请在 Releases 页面查看可下载的版本化 ZIP，早期预发布包不含本指南展示的全部功能。
 
 ## English
 
@@ -25,7 +25,7 @@
 
 Open ReShade's overlay and select **NR Nexus**. Installation and runtime prerequisites are in the [README](../README.md). This guide starts with the add-on already installed. “Model” means the DLSS NR model; it does not select the game's DLSS Super Resolution preset or enable Frame Generation (FG).
 
-The development interface has four pages: **Quality**, **Multi-Pass**, **Diagnostics**, and **Advanced**. The summary above them reports observed status; click it to open Diagnostics. A green state means NR activity was observed, not that every frame, every resource or the image quality has been validated. Expand all / Collapse all changes the current view's sections. A changed marker or reset arrow means stored values differ from defaults, not that processing succeeded.
+The 0.1.0 interface has four pages: **Quality**, **Multi-Pass**, **Diagnostics**, and **Advanced**. The summary above them reports observed status; click it to open Diagnostics. A green state means NR activity was observed, not that every frame, every resource or the image quality has been validated. Expand all / Collapse all changes the current view's sections. A changed marker or reset arrow means stored values differ from defaults, not that processing succeeded.
 
 Defaults below are for a fresh configuration. Existing saved choices and migrations can retain different values. Settings normally save as you edit them; changing a model, pass count, location or working size may recreate features and briefly rebuild temporal history. Wait for a stable scene after a change before comparing.
 
@@ -184,7 +184,7 @@ For controlled comparisons on the supported dual-model runtime, try **A**, **B**
 
 #### Example: two passes with independent looks and results
 
-This is an editing workflow, not a best-quality preset. It requires the development UI described above and the recognized **310.9.16.0** runtime for B.
+This is an editing workflow, not a best-quality preset. It requires the 0.1.0 interface described above and the recognized **310.9.16.0** runtime for B.
 
 1. Enable Neural Rendering, select **Mine**, and keep the processing location, working resolution and upsampling fixed. In **Multi-Pass**, set **Pass Count** to **2**.
 2. Select the **Pass 1** node and choose **A**. Try **Style: Natural**, then adjust Local tone or Model structure. Enable **Adjust NR's look** in that pass's result section and change one output control, such as **Highlights**. These are the same base values shown on Quality.
@@ -379,7 +379,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 
 打开 ReShade 覆盖层，选择 **NR Nexus**。安装与运行时前提见 [README](../README.md)，本指南从已经安装插件开始，不重复安装步骤。这里的“模型”指 DLSS NR 模型，不是游戏的 DLSS 超分辨率预设，也不会开启帧生成（FG）。
 
-开发版包含**画质、叠层、诊断、高级**四页。顶部摘要反映观测状态，点击可进入诊断。绿色表示观测到了 NR 活动，不代表所有帧、资源或画质均已验证。“全部展开／全部收起”作用于当前视图；修改标记和重置箭头表示保存值偏离默认，不表示运行成功。
+0.1.0 包含**画质、叠层、诊断、高级**四页。顶部摘要反映观测状态，点击可进入诊断。绿色表示观测到了 NR 活动，不代表所有帧、资源或画质均已验证。“全部展开／全部收起”作用于当前视图；修改标记和重置箭头表示保存值偏离默认，不表示运行成功。
 
 下文默认值针对全新配置；已有保存值或迁移配置可能不同。一般编辑会即时保存。更换模型、层数、介入点或工作尺寸可能重建 Feature，并短暂重建时序历史，比较前应等待场景和历史稳定。
 
@@ -538,7 +538,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 
 #### 示例：两层独立风格与结果调整
 
-这是操作示例，不是最佳画质预设；需要上述开发版界面，B 还要求已识别的 **310.9.16.0** Runtime。
+这是操作示例，不是最佳画质预设；需要上述 0.1.0 界面，B 还要求已识别的 **310.9.16.0** Runtime。
 
 1. 开启 Neural Rendering，选择**我的**，固定介入点、工作分辨率和上采样。在**叠层**页把**叠层数**设为 **2**。
 2. 选择**第 1 层**节点，明确选择 **A**。尝试**风格：自然**，再调整局部色调或模型结构；在本层结果区开启**调整 NR 的外观**，先改一项输出，例如**高光**。这些就是画质页共用的基础值。

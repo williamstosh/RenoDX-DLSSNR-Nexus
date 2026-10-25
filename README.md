@@ -17,13 +17,13 @@ model, appearance and output. The add-on performs no denoising.
 This is an independent, unofficial project developed from Lecram V8.5 RC10.
 Nexus extends that source with NR/FG coordination, Present restoration
 policies, motion-sharing fallback, dual-model selection and privacy-aware
-reporting. The newer dev interface adds independent per-layer result editing
+reporting. Version 0.1.0 includes independent per-layer result editing
 and four menu themes.
 
-| Which build? | What is available |
+| Version scope | What is available |
 | --- | --- |
-| [Published Pre-release](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases) | `v0.1.0-dev.3` includes 310.9.16 A/B models and per-pass model selection. Read its Release Notes for the tested scope. |
-| Current `dev` source | The four-page menu, independent Pass 2–4 result settings and themes shown here are **not yet in a published ZIP**. Use a dev source build or wait for a release that lists them. |
+| **0.1.0** | This README describes the version's four-page menu, dual models, independent per-pass look/result settings and four themes. See the [release notes](docs/releases/v0.1.0.md) for validation and remaining limits. |
+| [Previous pre-release: v0.1.0-dev.3](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.1.0-dev.3) | Includes 310.9.16 A/B models and per-pass model selection; it predates the menu, independent result editor and theme updates described here. |
 
 ### What makes Nexus different
 
@@ -51,18 +51,18 @@ and practical examples.
 
 ![Cyber Neon multi-pass chain and independent Pass 2 editor](docs/images/ui/multipass.webp)
 
-*Current dev menu, captured from the production ImGui interface with synthetic
+*Candidate menu, captured from the production ImGui interface with synthetic
 status. This cropped interface example is not a game-quality comparison or
 performance measurement.*
 
 ![NR result editor: basic adjustments, limits, detail and temporal controls](docs/images/ui/results.webp)
 
 *Basic adjustments, brightness/colour limits, detail/halos and temporal stability
-in the same offscreen dev UI example.*
+in the same offscreen candidate UI example.*
 
 ![Cyber Neon, Nexus Dark, Fluent Light and Midnight OLED](docs/images/ui/themes.webp)
 
-*Four themes of the same dev menu; themes change the interface only.*
+*Four themes of the same candidate menu; themes change the interface only.*
 
 ### Download, install and use
 
@@ -105,7 +105,7 @@ the old file. Do not remove unrelated game, ReShade or runtime files.
 | --- | --- |
 | The Witcher 3, D3D12 / HDR / Present + XeFG 4× | Focused candidate sessions cover visible NR/HUD behavior, A/B and mixed chains, switching and exit/restoration. This is not a full cross-game or HDR-quality matrix. |
 | 310.9.16 A/B models | Real GPU inference covered A/B and AB/BA/BB; the published dev.3 notes describe the candidate/build distinction. No fixed performance gain is promised. |
-| Current dev menu and result editors | Production-ImGui interaction/layout tests and focused game UI checks; full four-theme game captures, controlled parameter comparisons and long sessions remain incomplete. |
+| Candidate menu and result editors | Production-ImGui interaction/layout tests and focused game UI checks. All four themes have offline ImGui coverage; game checks reached Nexus Dark only. Live switching through all four themes, restart persistence, controlled parameter comparisons and long sessions remain incomplete. |
 | Native DLSS FG/MFG | Integrated, with focused automated coverage; the full live mode/multiplier matrix is not validated. |
 | SDR/HDR restoration | Independent policies with focused coverage, not a complete in-game SDR/HDR matrix. |
 | D3D11 motion-sharing fallback | Targeted hardware/WARP resource checks; not blanket D3D11 game compatibility. |
@@ -220,13 +220,13 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 插件不执行降噪。
 
 本项目基于 Lecram V8.5 RC10 开放源码独立发展，新增了 NR／FG 协调、Present 恢复策略、
-运动纹理共享回退、双模型选择及带隐私预览的问题反馈。较新的 dev 界面还提供逐层独立
+运动纹理共享回退、双模型选择及带隐私预览的问题反馈。0.1.0 还包含逐层独立
 结果编辑和四套菜单主题。
 
-| 选择哪个版本？ | 可用范围 |
+| 版本范围 | 可用范围 |
 | --- | --- |
-| [已发布 Pre-release](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases) | `v0.1.0-dev.3` 已包含 310.9.16 A/B 双模型与逐 Pass 模型选择，验证范围以该版 Release Notes 为准。 |
-| 当前 `dev` 源码 | 本页展示的四页新菜单、Pass 2–4 独立结果设置和主题**尚未进入公开 ZIP**，可编译 dev 或等待明确列出这些功能的新版本。 |
+| **0.1.0** | 本页描述此版本的四页菜单、双模型、逐层独立外观／结果设置与四套主题；验证及剩余限制见[版本说明](docs/releases/v0.1.0.md)。 |
+| [上一预发布版：v0.1.0-dev.3](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.1.0-dev.3) | 已包含 310.9.16 A/B 双模型与逐 Pass 模型选择；早于本页所述菜单、独立结果编辑器及主题更新。 |
 
 ### 核心特色
 
@@ -250,16 +250,16 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 
 ![Cyber Neon 多层处理链及第 2 层独立编辑器](docs/images/ui/multipass-zh.webp)
 
-*当前 dev 的生产 ImGui 菜单离屏捕获，状态为合成夹具；本图经过裁切，仅展示界面，
+*候选的生产 ImGui 菜单离屏捕获，状态为合成夹具；本图经过裁切，仅展示界面，
 不是游戏画质对比或性能测量。*
 
 ![NR 结果编辑器：基础调整、限制、细节及时序控件](docs/images/ui/results-zh.webp)
 
-*同一 dev 菜单的离屏界面示例：基础结果调整、亮度与色彩限制、细节与光晕、时域稳定。*
+*同一候选菜单的离屏界面示例：基础结果调整、亮度与色彩限制、细节与光晕、时域稳定。*
 
 ![Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED](docs/images/ui/themes-zh.webp)
 
-*同一 dev 菜单的四套主题，主题只影响界面。*
+*同一候选菜单的四套主题，主题只影响界面。*
 
 ### 下载、安装与使用
 
@@ -294,7 +294,7 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 | --- | --- |
 | 巫师 3，D3D12／HDR／Present＋XeFG 4× | 定向候选场景覆盖可见 NR／HUD、A/B 与混合链、切换和退出恢复；不是完整跨游戏或 HDR 画质矩阵。 |
 | 310.9.16 A/B 模型 | 真实 GPU 推理覆盖 A/B、AB/BA/BB，公开 dev.3 说明区分实机候选与最终构建；不承诺固定性能提升。 |
-| 当前 dev 菜单与结果编辑器 | 生产 ImGui 交互／布局及定向实机 UI 检查；四主题完整实机采图、受控参数对比和长时验收仍不完整。 |
+| 候选菜单与结果编辑器 | 生产 ImGui 交互／布局及定向实机 UI 检查。四主题均有离线 ImGui 验证，实机仅确认 Nexus Dark；全部主题实机切换、重启持久化、受控参数对比和长时验收仍未完成。 |
 | 原生 DLSS FG/MFG | 已集成并有定向自动化覆盖，完整实机模式／倍率矩阵尚未验收。 |
 | SDR/HDR 恢复 | 独立策略及定向验证，不代表完整游戏内 SDR/HDR 矩阵。 |
 | D3D11 运动纹理共享回退 | 定向硬件／WARP 资源检查，不代表全面支持 D3D11 游戏。 |
