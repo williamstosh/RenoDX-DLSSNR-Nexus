@@ -15,6 +15,7 @@
 
 #include "ui/fg_route.hpp"
 #include "ui/widgets.hpp"
+#include "chain_ux_cases.hpp"
 
 namespace ui = renodx::addons::dlss5::ui;
 
@@ -40,6 +41,8 @@ int main() {
       }
     }
   };
+
+  RunChainUxCases(check);
 
   const auto luminance = [](const ImVec4& color) {
     const auto linear = [](float value) {
@@ -303,6 +306,38 @@ int main() {
                         .frame_ms = 16.7f,
                         .frame_gen_multiplier = 4,
                         .present_gaps = 999999};
+  {
+    ui::SelectLanguage(0);
+    ImGui::GetStyle().FontSizeBase = 13.f;
+    ui::StatusCard off = idle;
+    off.id = ui::CardId::kOffByUser;
+    off.body = "Turned off in settings or by the toggle hotkey.";
+    // Retained session evidence must not appear as current Off activity.
+    off.fg_submitted_frames = 12345;
+    off.nr_gpu_ms = 3.f;
+    off.nr_present_ms = 3.f;
+    off.frame_ms = 16.7f;
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
+    ImGui::SetNextWindowSize(ImVec2(450.f, 1300.f));
+    ImGui::Begin("off summary regression", nullptr, ImGuiWindowFlags_NoSavedSettings);
+    ImGui::LogToBuffer();
+    ui::DrawStatusSummary(off, 0);
+    const std::string output = ImGui::GetCurrentContext()->LogBuffer.c_str();
+    ImGui::LogFinish();
+    const size_t title = output.find(off.title);
+    check(title != std::string::npos && output.find(off.title, title + 1) == std::string::npos,
+          "Off summary displays its title exactly once");
+    check(output.find(off.body) == std::string::npos,
+          "Off reason stays in the heading tooltip instead of repeated visible rows");
+    check(output.find("12345") == std::string::npos && output.find("3.0") == std::string::npos,
+          "Off summary does not present retained NR submissions or GPU measurements as execution");
+    char action[160];
+    std::snprintf(action, sizeof(action), ui::Tr(ui::text::kStatusDetails), 0u);
+    check(output.find(action) != std::string::npos, "Off summary preserves its diagnostic action");
+    ImGui::End();
+    ImGui::Render();
+  }
   // Preserve a measured baseline: the full detail card is still auto-sized.
   float old_idle = 0.f, old_active = 0.f;
   for (int tick = 0; tick < 4; ++tick) {

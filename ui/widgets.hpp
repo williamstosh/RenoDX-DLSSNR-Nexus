@@ -24,6 +24,8 @@
 #include <cstdio>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "state_card.hpp"
 #include "strings.hpp"
@@ -119,6 +121,72 @@ inline std::string Ellipsize(const char* text, float width) {
   return shown + "...";
 }
 
+struct ProcessingChainLine {
+  std::string text;
+  ImVec2 size;
+};
+
+struct ProcessingChainNode {
+  std::vector<ProcessingChainLine> lines;
+  float content_height = 0.f;
+};
+
+// Measure the actual wrapped lines, rather than centering a multiline button's
+// widest bounding box. Use ImGui's exported measurement API for ReShade hosts.
+inline ProcessingChainNode MeasureProcessingChainNode(const std::array<std::string, 3>& text, float width) {
+  ProcessingChainNode node;
+  const float available = (std::max)(1.f, width - ImGui::GetStyle().FramePadding.x * 2.f);
+  for (const auto& section : text) {
+    size_t begin = 0;
+    do {
+      size_t end = begin;
+      size_t word_break = begin;
+      while (end < section.size() && section[end] != '\n') {
+        size_t next = end + 1;
+        while (next < section.size() && (static_cast<unsigned char>(section[next]) & 0xC0) == 0x80) {
+          ++next;
+        }
+        if (end > begin && ImGui::CalcTextSize(section.data() + begin, section.data() + next, false).x > available) {
+          if (word_break > begin) end = word_break;
+          break;
+        }
+        if (section[end] == ' ') word_break = end;
+        end = next;
+      }
+      std::string line = section.substr(begin, end - begin);
+      const ImVec2 size = ImGui::CalcTextSize(line.c_str(), nullptr, false);
+      node.lines.push_back({.text = std::move(line), .size = size});
+      node.content_height += size.y;
+      begin = end;
+      if (begin < section.size() && section[begin] == '\n') ++begin;
+      while (begin < section.size() && section[begin] == ' ') ++begin;
+    } while (begin < section.size());
+  }
+  node.content_height += ImGui::GetStyle().ItemInnerSpacing.y * (node.lines.size() - 1);
+  return node;
+}
+
+inline bool ProcessingChainButton(const ProcessingChainNode& node, ImVec2 size, bool selected) {
+  StyleScope style;
+  style.Color(ImGuiCol_Button, selected ? CurrentTheme().node_selected : CurrentTheme().bg_card)
+      .Color(ImGuiCol_Border, selected ? CurrentTheme().accent : CurrentTheme().node_border)
+      .Var(ImGuiStyleVar_FrameBorderSize, selected ? 2.f : 1.f);
+  // Keep a real button for keyboard navigation, hit testing and tooltips.
+  const bool pressed = ImGui::Button("###chain_pass", size);
+  const ImVec2 begin = ImGui::GetItemRectMin();
+  const ImVec2 end = ImGui::GetItemRectMax();
+  float y = begin.y + (size.y - node.content_height) * 0.5f;
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  draw->PushClipRect(begin, end, true);
+  for (const auto& line : node.lines) {
+    draw->AddText(ImVec2(begin.x + (size.x - line.size.x) * 0.5f, y),
+                  ImGui::GetColorU32(ImGuiCol_Text), line.text.c_str());
+    y += line.size.y + ImGui::GetStyle().ItemInnerSpacing.y;
+  }
+  draw->PopClipRect();
+  return pressed;
+}
+
 // Only this child participates in the settings layout. Full messages, actions
 // and repair steps belong to the Diagnostics page.
 inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count) {
@@ -126,7 +194,7 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count) {
   frame.FontSize(BodyFontSize())
       .Color(ImGuiCol_ChildBg, CurrentTheme().bg_card)
       .Var(ImGuiStyleVar_WindowPadding, ImVec2(tokens::kCardPadding + kStripeWidth, tokens::kCardPadding));
-  const float height = ImGui::GetTextLineHeightWithSpacing() * 4.f
+  const float height = ImGui::GetTextLineHeightWithSpacing() * 2.f
                        + ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y * 2.f;
   bool details = false;
   if (ImGui::BeginChild("##nr_status_summary", ImVec2(0.f, height),
@@ -138,7 +206,7 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count) {
         ToU32(ToneColor(card.tone)), tokens::kRadiusCard, ImDrawFlags_RoundCornersLeft);
     // A missing measurement still consumes its line. Wrapping is disabled
     // locally even when the surrounding ReShade panel enables it.
-    const auto line = [](const char* value, const ImVec4& color) {
+    const auto line = [](const char* value, const ImVec4& color, const char* explanation = nullptr) {
       StyleScope text;
       text.Color(ImGuiCol_Text, color);
       std::string single_line(value);
@@ -147,22 +215,25 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count) {
       ImGui::PushTextWrapPos(-1.f);
       ImGui::TextUnformatted(Ellipsize(single_line.c_str(), ImGui::GetContentRegionAvail().x).c_str());
       ImGui::PopTextWrapPos();
-      ItemTooltip("%s", value);
+      if (explanation != nullptr) {
+        ItemTooltip("%s\n%s", value, explanation);
+      } else {
+        ItemTooltip("%s", value);
+      }
     };
     char title[256];
     FormatCardTitle(title, sizeof(title), card);
     const std::string heading = std::string(GlyphIcon(card.glyph)) + " " + title;
-    line(heading.c_str(), ToneColor(card.tone));
+    const bool off_by_user = card.id == CardId::kOffByUser;
+    line(heading.c_str(), ToneColor(card.tone), off_by_user ? Tr(card.body) : nullptr);
     char detail[256];
     if (FormatCardDetail(detail, sizeof(detail), card) == 0) {
       std::snprintf(detail, sizeof(detail), "%s", Tr(card.body));
     }
-    line(detail, CurrentTheme().text_secondary);
     char cost[256];
     if (FormatNrCost(cost, sizeof(cost), card.nr_gpu_ms, card.nr_present_ms, card.frame_ms, true) == 0) {
       std::snprintf(cost, sizeof(cost), "%s: %s", Tr(text::kNrCost), Tr(text::kNoneYet));
     }
-    line(cost, CurrentTheme().text_secondary);
     char path[256];
     if (card.frame_gen_multiplier > 1 || card.fg_declared || card.observed_fg_route != FgRoute::kUnknown) {
       std::snprintf(path, sizeof(path), Tr(FrameGenText(card)),
@@ -170,7 +241,16 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count) {
     } else {
       std::snprintf(path, sizeof(path), "%s", Tr(card.path_note != nullptr ? card.path_note : card.body));
     }
-    line(path, CurrentTheme().text_secondary);
+    if (off_by_user) {
+      // Reserve the normal detail row so toggling NR never moves the tabs.
+      // Session counters and previous GPU samples are not current Off activity.
+      ImGui::Dummy(ImVec2(0.f, ImGui::GetTextLineHeight()));
+    } else {
+      std::string summary(detail);
+      if (summary != cost) summary += std::string(" | ") + cost;
+      if (summary != path && std::string(detail) != path) summary += std::string(" | ") + path;
+      line(summary.c_str(), CurrentTheme().text_secondary);
+    }
     char label[160];
     std::snprintf(label, sizeof(label), Tr(text::kStatusDetails), warning_count);
     {

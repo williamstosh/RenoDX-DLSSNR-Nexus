@@ -218,6 +218,7 @@ extern "C" __declspec(dllexport) void ReShadeSetConfigValue(
 }
 
 int main() {
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
   const auto profile_fixture_root = std::filesystem::current_path() / L"profile-fixture-local";
   std::filesystem::create_directories(profile_fixture_root);
   SetEnvironmentVariableW(L"LOCALAPPDATA", profile_fixture_root.c_str());
@@ -426,6 +427,8 @@ int main() {
       }
       // Clipped native buttons emit ItemAdd before their visible label info.
       for (ImGuiWindow* window : ImGui::GetCurrentContext()->Windows) {
+        if (!window->Active || window->IDStack.empty()) continue;
+        if (const auto id = window->GetID(label.c_str()); items.contains(id)) return items.at(id);
         const auto id = window->GetID((label.starts_with("##") ? label : "###" + label).c_str());
         if (items.contains(id)) return items.at(id);
       }
@@ -517,6 +520,39 @@ int main() {
 
     frame();
     frame();
+    if (std::getenv("NR_NEXUS_UX_REPRO") != nullptr) {
+      namespace profile = runtime::profile_ui;
+      const auto deadline = GetTickCount64() + 10000;
+      while (profile::Busy()) {
+        profile::Tick();
+        check(GetTickCount64() < deadline, "profile initialization timed out in UX repro");
+        Sleep(1);
+      }
+      runtime::ui_language_choice = 14;
+      runtime::ui_menu_page = 0;
+      panel_width = 650.f;
+      panel_height = 1400.f;
+      io.DisplaySize = ImVec2(panel_width, panel_height);
+      profile::active = 0;
+      profile::state.slots[0].overrides["NRIntensity"] = 0.625f;
+      frame(); frame();
+      click(find("profile_actions"));
+      click(find("restore_profile"));
+      capture("ux-restore-repro");
+      bool found = false;
+      for (const auto* window : ImGui::GetCurrentContext()->Windows) {
+        if (window->Active && (window->Flags & ImGuiWindowFlags_Popup) != 0
+            && (window->Flags & ImGuiWindowFlags_Tooltip) == 0) {
+          found = true;
+          std::printf("restore confirmation width=%.1f height=%.1f font=%.1f\n", window->Size.x, window->Size.y, font_size);
+          check(window->Size.x >= font_size * 14.f && window->Size.y < panel_height * 0.6f,
+                "restore confirmation collapses into a vertical text strip");
+        }
+      }
+      check(found, "restore confirmation was not opened");
+      ImGui::DestroyContext();
+      return 0;
+    }
     for (const auto& theme : ui::kThemes) {
       const auto previous = ui::CurrentThemeId();
       runtime::StoreUiTheme(theme.id);
@@ -629,6 +665,7 @@ int main() {
       profile::undo.available = false;
       frame(); frame();
     }
+#include "profile_ux_cases.hpp"
     const uint32_t old_hook = runtime::hook_point.load();
     const uint32_t old_multiplier = runtime::present_fg_multiplier.load();
     runtime::hook_point = runtime::kHookPresent;
@@ -767,6 +804,17 @@ int main() {
     check(has_text(ui::text::kResultStrength), "enabling result shaping lost its parameters");
 
     click(find("Multi-Pass"));
+    const auto chain_nodes = [&]() {
+      std::vector<Item> nodes;
+      for (const auto& [id, item] : items) {
+        if (item.label.ends_with("###chain_pass")) nodes.push_back(item);
+      }
+      std::sort(nodes.begin(), nodes.end(), [](const auto& left, const auto& right) {
+        if (std::abs(left.rect.Min.y - right.rect.Min.y) > 1.f) return left.rect.Min.y < right.rect.Min.y;
+        return left.rect.Min.x < right.rect.Min.x;
+      });
+      return nodes;
+    };
     for (unsigned count = 1; count <= 4; ++count) {
       runtime::stack_passes = count;
       frame();
@@ -775,16 +823,13 @@ int main() {
       for (const auto& [id, item] : items) {
         if (item.label.ends_with("###chain_pass")) {
           ++nodes;
-          check(std::count(item.label.begin(), item.label.end(), '\n') == 2,
-                "processing node must retain three stable lines");
-          check(item.label.find(ui::text::kEditing) != std::string::npos
-                    || item.label.find(ui::text::kConfigured) != std::string::npos,
-                "processing nodes must describe configuration/editor state, not inferred execution");
+          check(item.rect.GetHeight() >= ImGui::GetTextLineHeight() * 3.f,
+                "processing card reserves space for title, model and configuration state");
         }
       }
       check(nodes == count, "processing chain must include the single base pass");
       for (unsigned pass = 1; pass <= count; ++pass) {
-        click(find("Pass " + std::to_string(pass)));
+        click(chain_nodes().at(pass - 1));
         check(runtime::ui_selected_pass == pass - 1, "chain selects the wrong editor");
       }
     }
@@ -796,8 +841,8 @@ int main() {
         + "\n" + (runtime::pass_follow[2].load() ? ui::text::kStyleFollows : ui::text::kStyleIndependent)
         + "\n" + (runtime::pass_look_result[2].follow.load() ? ui::text::kResultFollows : ui::text::kResultIndependent)
         + "\n" + ui::text::kRuntimeUnconfirmed + "\n" + ui::text::kChainMarkTip;
-    hover(find("Pass 4"), chain_tip.c_str(), nullptr);
-    click(find("Pass 2"));
+    hover(chain_nodes().at(3), chain_tip.c_str(), nullptr);
+    click(chain_nodes().at(1));
     check(runtime::ui_selected_pass == 1, "pass navigation failed");
     click(switch_for_label(ui::text::kInheritResult));
     check(!runtime::pass_look_result[0].follow.load(), "result inheritance switch failed");
@@ -826,7 +871,7 @@ int main() {
           "reducing pass count cleared hidden settings or left an invalid selection");
     runtime::stack_passes = 4;
     frame();
-    click(find("Pass 2"));
+    click(chain_nodes().at(1));
     const Item model = model_combo ? find("##model") : find("B");
     bool reset_found = false;
     Item model_reset;
@@ -1125,6 +1170,7 @@ int main() {
     std::filesystem::create_directories(unicode_local);
     check(SetEnvironmentVariableW(L"LOCALAPPDATA", unicode_local.c_str()) != 0, "set isolated Unicode preset library");
     manager::mode = 1;
+    manager::save_options = manager::export_options = true;
     runtime::ui_language_choice = 1;
     panel_width = 1400.f;
     panel_height = 1600.f;
@@ -1395,6 +1441,7 @@ int main() {
     const auto show_library_import_actions = [&]() {
       manager::mode = 2;
       frame(); frame();
+      if (!manager::import_path_options) click(find("Enter file path"));
       for (ImGuiWindow* window : ImGui::GetCurrentContext()->Windows) {
         if (std::strstr(window->Name, "nr_preset_manager/##preset_content_") != nullptr) {
           ImGui::SetScrollY(window, 0.f);
@@ -1562,6 +1609,7 @@ int main() {
     std::printf("production menu checks=%u failures=0; category/pass/model/reset/persistence/classic/language/size matrix passed\n", checks);
     std::printf("production menu CPU mean=%.3f ms, frames=%u; includes synthetic test hooks and language changes, excludes GPU rendering\n",
                 panel_total_ms / panel_frames, panel_frames);
+#include "preset_ux_cases.hpp"
     ImGui::DestroyContext();
     return 0;
   } catch (const std::exception& error) {

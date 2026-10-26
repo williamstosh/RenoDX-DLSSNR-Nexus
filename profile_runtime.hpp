@@ -412,7 +412,7 @@ inline void ExecuteAction() {
           .running_after = state.last_applied, .previous_active = previous_active,
           .available = true, .configuration = true};
   Changed(true);
-  notice = "Profile applied. Runtime execution is pending confirmation.";
+  notice = (action == Action::RESTORE ? "Official defaults restored." : "Profile applied. Runtime execution is pending confirmation.");
 }
 
 inline void Request(Action action, int index = -1) {
@@ -537,78 +537,217 @@ inline void Assign(int index, const Json& settings, bool select = false) {
   notice = "Custom slot saved. Select it to apply its settings.";
 }
 
-inline void DrawQuick() {
+inline const char* SaveStatus() {
+  if (!writable) return "Profile storage unavailable";
+  if (!loaded) return "Loading profiles...";
+  if (save_failed) return "Unsaved profile changes";
+  if (Busy()) return "Saving...";
+  if (dirty) return "Unsaved profile changes";
+  return "Saved";
+}
+
+inline std::string Summary() {
+  std::string summary = Name(active);
+  if (active < 0 && loaded && writable && !dirty && !Busy()) return summary;
+  const char* status = SaveStatus();
+  if (active >= 0 && active < 3 && !dirty && !Busy() && writable && !save_failed) {
+    status = (state.slots[active].overrides.empty() ? "Official defaults" : "Modified");
+    if (notice == "Official defaults restored." && state.slots[active].overrides.empty()) status = "Official defaults restored.";
+  }
+  return summary + " · " + ui::Tr(status);
+}
+
+inline bool DrawQuick() {
   Initialize();
   ImGui::PushID("nr_profiles");
-  ImGui::TextUnformatted(ui::Tr("NR Profiles"));
-  ImGui::TextWrapped("%s · %s", ui::Tr("Official profiles"), ui::Tr("Development candidate"));
+  const float font = ImGui::GetFontSize();
+  const float gap = ImGui::GetStyle().ItemSpacing.x;
+  const float available = ImGui::GetContentRegionAvail().x;
+  const float start = ImGui::GetCursorPosX();
+  const float manage_width = (std::min)(available * 0.48f,
+      ImGui::CalcTextSize(ui::Tr("Manage profiles")).x + ImGui::GetStyle().FramePadding.x * 2.f);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted(ui::Ellipsize(ui::Tr("NR Profiles"), (std::max)(1.f, available - manage_width - gap)).c_str());
+  ImGui::SameLine(start + available - manage_width);
+  const bool manage = ui::ActionButton(ui::Tr("Manage profiles"), "open_presets");
   ImGui::BeginDisabled(!loaded || !writable || pending_action != Action::NONE);
   const char* labels[] = {"NR Lite", "NR Balanced", "NR Max"};
+  const char* tips[] = {"Development candidate", "Development candidate", "Development candidate"};
   ImGui::SetNextItemWidth(-1.f);
-  const int selected = ui::Segmented("##official_profiles", labels, 3, active < 3 ? active : -1, nullptr);
-  if (selected >= 0) Request(Action::SWITCH, selected);
-  ImGui::TextWrapped("%s", ui::Tr("My profiles"));
-  // IDs use fixed slot indices. Display names are literal UTF-8 and never
-  // participate in ImGui's ##/### label parsing or translation lookup.
-  const float width = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * 2.f) / 3.f;
-  for (int i = 3; i < 6; ++i) {
-    if (i != 3) ImGui::SameLine();
-    ImGui::PushID(i);
-    ui::StyleScope style;
-    if (active == i) {
-      style.Color(ImGuiCol_Button, ui::CurrentTheme().accent)
-          .Color(ImGuiCol_Text, ui::CurrentTheme().on_accent);
+  float widest_official = 0.f;
+  for (const auto* label : labels) widest_official = (std::max)(widest_official, ImGui::CalcTextSize(ui::Tr(label)).x);
+  int selected = -1;
+  if (widest_official + ImGui::GetStyle().FramePadding.x * 2.f > (available - 4.f) / 3.f) {
+    if (ImGui::BeginCombo("##official_profiles", ui::Tr(active >= 0 && active < 3 ? labels[active] : "Official profiles"))) {
+      for (int i = 0; i < 3; ++i) {
+        if (ImGui::Selectable(ui::Tr(labels[i]), active == i)) selected = i;
+        ui::ItemTooltip("%s", ui::Tr(tips[i]));
+      }
+      ImGui::EndCombo();
     }
-    const auto name = Name(i);
-    const auto label = name + (state.slots[i].populated ? "" : std::string(" · ") + ui::Tr("Empty slot"));
-    const auto clipped = ui::Ellipsize(label.c_str(), (std::max)(1.f, width - ImGui::GetStyle().FramePadding.x * 2.f));
-    const ImVec2 position = ImGui::GetCursorScreenPos();
-    if (ImGui::Button("##custom_slot", ImVec2(width, 0.f))) Request(Action::SWITCH, i);
-    ImGui::GetWindowDrawList()->AddText(ImVec2(position.x + ImGui::GetStyle().FramePadding.x,
-                                              position.y + ImGui::GetStyle().FramePadding.y),
-                                       ImGui::GetColorU32(ImGuiCol_Text), clipped.c_str());
-    ui::ItemTooltip("%s", label.c_str());
-    ImGui::PopID();
+  } else {
+    selected = ui::Segmented("##official_profiles", labels, 3, active < 3 ? active : -1, nullptr, tips);
+  }
+  if (selected >= 0) Request(Action::SWITCH, selected);
+  const char* short_names[] = {"Custom 1", "Custom 2", "Custom 3"};
+  int chosen_custom = -1;
+  if (available < font * 18.f) {
+    const std::string preview = ui::Tr(active >= 3 ? short_names[active - 3] : "My profiles");
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::BeginCombo("##custom_profiles", ui::Ellipsize(preview.c_str(), available - font * 3.f).c_str())) {
+      for (int i = 3; i < 6; ++i) {
+        ImGui::PushID(i);
+        const auto name = Name(i);
+        const std::string label = std::string(ui::Tr(short_names[i - 3])) + ": " + name
+            + (state.slots[i].populated ? "" : std::string(" · ") + ui::Tr("Empty slot"));
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        if (ImGui::Selectable("##custom_profile_choice", active == i, 0, ImVec2(0.f, ImGui::GetTextLineHeight()))) chosen_custom = i;
+        ImGui::GetWindowDrawList()->AddText(at, ImGui::GetColorU32(ImGuiCol_Text),
+            ui::Ellipsize(label.c_str(), ImGui::GetContentRegionAvail().x).c_str());
+        ui::ItemTooltip("%s", label.c_str());
+        ImGui::PopID();
+      }
+      ImGui::EndCombo();
+    }
+  } else {
+    const float width = (available - gap * 2.f) / 3.f;
+    for (int i = 3; i < 6; ++i) {
+      if (i != 3) ImGui::SameLine();
+      ImGui::PushID(i);
+      ui::StyleScope style;
+      if (active == i) style.Color(ImGuiCol_Button, ui::CurrentTheme().accent).Color(ImGuiCol_Text, ui::CurrentTheme().on_accent);
+      const auto name = Name(i);
+      const auto label = (available >= font * 30.f ? name : std::string(ui::Tr(short_names[i - 3])))
+          + (state.slots[i].populated ? "" : std::string(" · ") + ui::Tr("Empty slot"));
+      const auto shown = ui::Ellipsize(label.c_str(), width - ImGui::GetStyle().FramePadding.x * 2.f);
+      const ImVec2 at = ImGui::GetCursorScreenPos();
+      if (ImGui::Button("##custom_slot", ImVec2(width, 0.f))) chosen_custom = i;
+      const ImVec2 size = ImGui::GetItemRectSize();
+      const ImVec2 text = ImGui::CalcTextSize(shown.c_str());
+      ImGui::GetWindowDrawList()->AddText(ImVec2(at.x + (size.x - text.x) * 0.5f, at.y + (size.y - text.y) * 0.5f),
+                                         ImGui::GetColorU32(ImGuiCol_Text), shown.c_str());
+      ui::ItemTooltip("%s: %s\n%s", ui::Tr(short_names[i - 3]), name.c_str(), ui::Tr(state.slots[i].populated ? "Saved" : "Empty slot"));
+      ImGui::PopID();
+    }
+  }
+  static int creating = -1;
+  if (chosen_custom >= 3) {
+    if (state.slots[chosen_custom].populated) Request(Action::SWITCH, chosen_custom);
+    else {
+      creating = edit_index = chosen_custom;
+      ImGui::OpenPopup("create_custom_slot");
+    }
   }
   ImGui::EndDisabled();
-  const auto name = Name(active);
-  const char* status = (!writable ? "Profile storage unavailable" : !loaded ? "Loading profiles..." : dirty ? "Unsaved profile changes" : Busy() ? "Saving..." : "Saved");
-  ImGui::TextWrapped("%s · %s", name.c_str(), ui::Tr(status));
-  if (active >= 0 && active < 3) {
-    ImGui::TextWrapped("%s · %s", ui::Tr("Development candidate"),
-                        ui::Tr(state.slots[active].overrides.empty() ? "Official defaults" : "Modified"));
-  }
-  if (active >= 0) {
-    bool fallback = false;
-    {
-      RuntimeLock lock(runtime_mutex);
-      if (!direct_runtime_requirements.dual_models) {
-        const auto& saved = state.slots[active].snapshot;
-        for (const auto key : {"NRPreset", "NRPass2Preset", "NRPass3Preset", "NRPass4Preset"}) {
-          fallback |= saved.contains(key) && saved[key] == 2;
+  const auto popup_width = [&]() {
+    const float width = (std::max)(1.f, (std::min)(font * 27.f, ImGui::GetIO().DisplaySize.x - ui::tokens::kCardPadding * 2.f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.f), ImVec2(width, ImGui::GetIO().DisplaySize.y * 0.9f));
+  };
+  popup_width();
+  if (ImGui::BeginPopup("create_custom_slot")) {
+    ImGui::PushTextWrapPos(0.f);
+    ImGui::TextWrapped("%s", Name(creating).c_str());
+    const bool empty = creating >= 3 && creating < 6 && !state.slots[creating].populated;
+    ImGui::BeginDisabled(!empty || !loaded || !writable || pending_action != Action::NONE);
+    if (ui::ActionButton(ui::Tr("Save current settings to this slot"), "create_slot_current")) {
+      SettleSlider(true);
+      Assign(creating, Snapshot(), true);
+      ImGui::CloseCurrentPopup();
+    }
+    if (ImGui::BeginMenu(ui::Tr("Copy from official profile"))) {
+      for (int i = 0; i < 3; ++i) {
+        if (ImGui::MenuItem(ui::Tr(labels[i]))) {
+          try {
+            Assign(creating, data::Resolve(i, state.slots[i], defaults_snapshot, Validate));
+            if (!save_failed && state.slots[creating].populated) Request(Action::SWITCH, creating);
+          } catch (const std::exception& exception) {
+            notice = exception.what();
+          }
+          ImGui::CloseCurrentPopup();
         }
       }
+      ImGui::EndMenu();
     }
-    if (fallback) ImGui::TextWrapped("%s", ui::Tr("Unsupported model requests are preserved; the runtime uses the existing fallback policy."));
+    ImGui::EndDisabled();
+    if (!empty) ImGui::TextWrapped("%s", ui::Tr("This slot is no longer empty. Review it in Manage profiles."));
+    if (ui::ActionButton(ui::Tr("Cancel"), "cancel_create_slot")) ImGui::CloseCurrentPopup();
+    ImGui::PopTextWrapPos();
+    ImGui::EndPopup();
   }
-  if (!notice.empty()) ImGui::TextWrapped("%s", ui::Tr(notice.c_str()));
-  if (dirty && !Busy() && ui::ActionButton(ui::Tr("Retry saving profiles"), "retry_profiles")) Schedule(true);
-  ImGui::BeginDisabled(!undo.available || !loaded || !writable);
-  if (ui::ActionButton(ui::Tr("Undo profile action"), "undo_profile")) Request(Action::UNDO);
-  ImGui::EndDisabled();
-  if (active >= 0 && active < 3) {
-    ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Restore official defaults")).x + ImGui::GetStyle().FramePadding.x * 2.f);
-    if (ui::ActionButton(ui::Tr("Restore official defaults"), "restore_profile")) ImGui::OpenPopup("restore_profile_confirm");
-  }
-  if (ImGui::BeginPopup("restore_profile_confirm")) {
-    ImGui::TextWrapped("%s", ui::Tr("Clear only this official profile's overrides? This action can be undone."));
-    if (ui::ActionButton(ui::Tr("Restore official defaults"), "confirm_restore")) {
-      Request(Action::RESTORE, active);
+  const float actions = (std::min)(available * 0.38f,
+      ImGui::CalcTextSize(ui::Tr("Profile actions")).x + ImGui::GetStyle().FramePadding.x * 2.f);
+  ImGui::AlignTextToFramePadding();
+  const auto summary = Summary();
+  ImGui::TextUnformatted(ui::Ellipsize(summary.c_str(), (std::max)(1.f, available - actions - gap)).c_str());
+  ui::ItemTooltip("%s\n%s\n%s", summary.c_str(), ui::Tr(active >= 0 ? SaveStatus() : "Current game settings"),
+      ui::Tr("Saved settings do not confirm NR execution. See Diagnostics for runtime status."));
+  ImGui::SameLine(start + available - actions);
+  if (ui::ActionButton(ui::Tr("Profile actions"), "profile_actions")) ImGui::OpenPopup("profile_actions_menu");
+  bool restore = false;
+  popup_width();
+  if (ImGui::BeginPopup("profile_actions_menu")) {
+    ImGui::BeginDisabled(!undo.available || !loaded || !writable || pending_action != Action::NONE);
+    if (ui::ActionButton(ui::Tr("Undo profile action"), "undo_profile")) {
+      Request(Action::UNDO);
       ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    if (active >= 0 && active < 3) {
+      ImGui::BeginDisabled(state.slots[active].overrides.empty() || !writable || pending_action != Action::NONE);
+      restore = ui::ActionButton(ui::Tr("Restore official defaults"), "restore_profile");
+      ui::ItemTooltip("%s", ui::Tr(state.slots[active].overrides.empty() ? "This official profile has no personal changes." : "Restore only this official profile. Other profiles are kept."));
+      ImGui::EndDisabled();
+      if (restore) ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
   }
+  static int restoring = -1;
+  if (restore) {
+    restoring = active;
+    ImGui::OpenPopup("###restore_profile_confirm");
+  }
+  popup_width();
+  bool restore_open = true;
+  if (ImGui::BeginPopupModal((std::string(ui::Tr("Restore official defaults?")) + "###restore_profile_confirm").c_str(), &restore_open,
+                             ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+    ImGui::PushTextWrapPos(0.f);
+    ImGui::TextWrapped("%s", ui::Tr("Personal changes to this official profile will be cleared. Other profiles are kept."));
+    if (ui::ActionButton(ui::Tr("Cancel"), "cancel_restore") || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+    ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Restore")).x + ImGui::GetStyle().FramePadding.x * 2.f);
+    if (ui::ActionButton(ui::Tr("Restore"), "confirm_restore")) {
+      Request(Action::RESTORE, restoring);
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::PopTextWrapPos();
+    ImGui::EndPopup();
+  }
+  const bool important = !notice.empty() && notice != "Profile applied. Runtime execution is pending confirmation."
+      && notice != "Official defaults restored." && notice != "Custom slot saved. Select it to apply its settings."
+      && notice != "Profile action undone. Later edits were kept." && notice != "Slot cleared. Running game settings were kept.";
+  bool fallback = false;
+  if (active >= 0) {
+    RuntimeLock lock(runtime_mutex);
+    if (!direct_runtime_requirements.dual_models) {
+      const auto& saved = state.slots[active].snapshot;
+      for (const auto key : {"NRPreset", "NRPass2Preset", "NRPass3Preset", "NRPass4Preset"}) {
+        fallback |= saved.contains(key) && saved[key] == 2;
+      }
+    }
+  }
+  if (fallback) {
+    const char* message = ui::Tr("Unsupported model requests are preserved; the runtime uses the existing fallback policy.");
+    ImGui::TextUnformatted(ui::Ellipsize(message, available).c_str());
+    ui::ItemTooltip("%s", message);
+  }
+  if (important) {
+    ui::StyleScope warning;
+    warning.Color(ImGuiCol_Text, ui::CurrentTheme().warn);
+    ImGui::TextUnformatted(ui::Ellipsize(ui::Tr(notice.c_str()), available).c_str());
+    ui::ItemTooltip("%s", ui::Tr(notice.c_str()));
+  }
+  if (dirty && !Busy() && ui::ActionButton(ui::Tr("Retry saving profiles"), "retry_profiles")) Schedule(true);
   ImGui::PopID();
+  return manage;
 }
 
 inline void DrawCustomTools() {
@@ -674,7 +813,7 @@ inline void DrawCustomTools() {
   }
   ImGui::EndDisabled();
   ImGui::EndDisabled();
-  ImGui::TextWrapped("%s", ui::Tr(dirty ? "Unsaved profile changes" : Busy() ? "Saving..." : "Saved"));
+  ImGui::TextWrapped("%s", ui::Tr(SaveStatus()));
   if (!notice.empty()) ImGui::TextWrapped("%s", ui::Tr(notice.c_str()));
 }
 }  // namespace profile_ui

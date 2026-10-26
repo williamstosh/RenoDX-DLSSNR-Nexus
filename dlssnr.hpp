@@ -21147,7 +21147,7 @@ inline void ToggleSetting(const ui::PanelText& text, const Setting& setting,
   ImGui::PopID();
 }
 
-inline void DrawSectionNrCore(const ui::PanelText& text) {
+inline void DrawNrToggle(const ui::PanelText& text) {
   bool ui_enabled = enabled.load();
   if (text.modern) ui::RowLabel(text.nr_enable, ui::text::kNrEnableTip);
   if (text.modern ? ui::Switch("##nr_enable", &ui_enabled)
@@ -21161,8 +21161,9 @@ inline void DrawSectionNrCore(const ui::PanelText& text) {
 
   }
 
-  // Overall Intensity is primary (v5.3 UI policy): master strength of the
-  // neural pass belongs next to the enable switch, not under styling.
+}
+
+inline void DrawSectionNrCore(const ui::PanelText& text) {
   SliderSetting(text, kSetIntensity, text.intensity, 0.f, 2.f, "%.2f",
                 ui::text::kModelStrengthTip);
 }
@@ -21831,8 +21832,9 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
     ui_selected_pass = std::clamp(ui_selected_pass, 0, count - 1);
     {
       ui::SubCaption(ui::text::kPassOverview);
-      ImGui::TextWrapped("%s", ui::Tr(ui::text::kChainNote));
-      ImGui::Text("%s >", ui::Tr(ui::text::kInput));
+      ui::ItemTooltip("%s", ui::Tr(ui::text::kChainNote));
+      ImGui::TextUnformatted(ui::Tr(ui::text::kInput));
+      ui::ItemTooltip("%s", ui::Tr(ui::text::kChainNote));
       // A continuous row when every node fits; a vertical chain otherwise.
       // This avoids ambiguous cross-row execution arrows at intermediate widths.
       const int columns = (ImGui::GetContentRegionAvail().x >= ImGui::GetFontSize() * ui::tokens::kPassNodeEm * count ? count : 1);
@@ -21840,6 +21842,7 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
       chain_spacing.Var(ImGuiStyleVar_CellPadding, ImVec2(ImGui::GetFontSize() * 0.7f, ImGui::GetFontSize() * 0.45f));
       if (ImGui::BeginTable("##pass_chain", columns, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoClip)) {
         ImVec2 previous_end;
+        float node_height = 0.f;
         for (int pass = 0; pass < count; ++pass) {
           ImGui::TableNextColumn();
           ImGui::PushID(pass);
@@ -21855,6 +21858,29 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
             std::snprintf(caption, sizeof(caption), ui::Tr("Pass %u"), static_cast<unsigned>(pass + 1));
           }
           const float width = ImGui::GetContentRegionAvail().x;
+          if (pass == 0) {
+            // Every card reserves the tallest localized model/title/status
+            // combination in this chain, including its modification marker.
+            for (int measure_pass = 0; measure_pass < count; ++measure_pass) {
+              const auto model_request = static_cast<uint32_t>(
+                  (measure_pass == 0 ? kSetPreset : kSetPassPreset[measure_pass - 1]).Get());
+              const char* model_name = (model_request == 0 ? (measure_pass == 0 ? "Auto" : ui::text::kInheritModel)
+                                        : model_request == 1 ? "A (Legacy)"
+                                        : model_request == 2 ? "B (Small FP8)" : "Custom");
+              char title[64];
+              if (measure_pass == 0) {
+                std::snprintf(title, sizeof(title), "%s", ui::Tr("Pass 1"));
+              } else {
+                std::snprintf(title, sizeof(title), ui::Tr("Pass %u"), static_cast<unsigned>(measure_pass + 1));
+              }
+              for (const char* status : {ui::text::kEditing, ui::text::kConfigured}) {
+                const auto measured = ui::MeasureProcessingChainNode(
+                    {title, std::string(ui::Tr(model_name)) + " *", ui::Tr(status)}, width);
+                node_height = (std::max)(node_height, measured.content_height);
+              }
+            }
+            node_height += ImGui::GetStyle().FramePadding.y * 2.f;
+          }
           const Setting* node_settings[] = {
               &(pass == 0 ? kSetPreset : kSetPassPreset[pass - 1]),
               &(pass == 0 ? kSetIntensity : kSetPassIntensity[pass - 1]),
@@ -21868,26 +21894,11 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
                                 || (pass != 0 && AnyModified({SettingGroup(kPassLookResultSettings).subspan((pass - 1) * result_count, result_count)}))
                                 || (pass != 0 && kSetPassFollow[pass - 1].Modified())
                                 || (pass == 0 && (kSetSkinIndependent.Modified() || AnyModified({kLookResultSettings})));
-          const std::string label = std::string(caption) + "\n"
-                                    + ui::Ellipsize(ui::Tr(model), width - ImGui::GetStyle().FramePadding.x * 2.f
-                                                                       - (modified ? ImGui::GetFontSize() : 0.f))
-                                    + (modified ? " *" : "") + "\n"
-                                    + ui::Ellipsize(ui::Tr(pass == ui_selected_pass ? ui::text::kEditing : ui::text::kConfigured),
-                                                    width - ImGui::GetStyle().FramePadding.x * 2.f)
-                                    + "###chain_pass";
-          {
-            ui::StyleScope node;
-            node.Color(ImGuiCol_Button, ui::CurrentTheme().bg_card)
-                .Color(ImGuiCol_Border, ui::CurrentTheme().node_border)
-                .Var(ImGuiStyleVar_FrameBorderSize, pass == ui_selected_pass ? 2.f : 1.f);
-            if (pass == ui_selected_pass) {
-              node.Color(ImGuiCol_Button, ui::CurrentTheme().node_selected)
-                  .Color(ImGuiCol_Border, ui::CurrentTheme().accent);
-            }
-            if (ImGui::Button(label.c_str(), ImVec2(width, ImGui::GetTextLineHeightWithSpacing() * 3.f
-                                                               + ImGui::GetStyle().FramePadding.y * 2.f))) {
-              ui_selected_pass = pass;
-            }
+          const auto node = ui::MeasureProcessingChainNode(
+              {caption, std::string(ui::Tr(model)) + (modified ? " *" : ""),
+               ui::Tr(pass == ui_selected_pass ? ui::text::kEditing : ui::text::kConfigured)}, width);
+          if (ui::ProcessingChainButton(node, ImVec2(width, node_height), pass == ui_selected_pass)) {
+            ui_selected_pass = pass;
           }
           ui::ItemTooltip("%s\n%s: %s\n%s\n%s\n%s\n%s\n%s", caption, ui::Tr(ui::text::kRequest), ui::Tr(model),
                           ui::Tr(requested == 0 && pass != 0 ? ui::text::kInheritModel : ui::text::kIndependentModel),
@@ -21918,7 +21929,8 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
         }
         ImGui::EndTable();
       }
-      ImGui::Text("> %s", ui::Tr(ui::text::kOutput));
+      ImGui::TextUnformatted(ui::Tr(ui::text::kOutput));
+      ui::ItemTooltip("%s", ui::Tr(ui::text::kChainNote));
     }
   }
   for (uint32_t pass = (text.modern ? 0u : 1u); pass < stack_passes.load() && pass < kMaxNrPasses;
@@ -23623,6 +23635,7 @@ inline void DrawAbout() {
 // Developer view retains its flat settings and raw diagnostic controls.
 inline void DrawClassicLayout(reshade::api::effect_runtime* runtime, const ui::StatusCard& card) {
   const ui::PanelText& text = ui::kClassicText;
+  DrawNrToggle(text);
   preset_ui::DrawEntry();
   // The hook point above every section: which insertion point the sections
   // steer is the first thing this view answers.
@@ -23703,6 +23716,7 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
     }
     bool reset = false;
     if (ui_menu_page == 0) {
+      DrawNrToggle(text);
       preset_ui::DrawEntry();
       ui::StyleScope columns_style;
       columns_style.Var(ImGuiStyleVar_CellPadding, ImVec2(ui::tokens::kCardPadding, 2.f));

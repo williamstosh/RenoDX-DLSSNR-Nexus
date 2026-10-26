@@ -250,6 +250,30 @@ int main() {
       "Unsaved profile changes",
       "Use current game settings",
   };
+  // Includes ternary labels, dynamic SaveStatus/Summary notices and popup copy.
+  const char* profile_ux_strings[] = {
+      "Manage profiles",
+      "Profile library",
+      "Save current profile",
+      "Import profile",
+      "Back to profile library",
+      "More options",
+      "Enter file path",
+      "Export file",
+      "Paste share text",
+      "Official defaults restored.",
+      "Save current settings to this slot",
+      "Copy from official profile",
+      "This slot is no longer empty. Review it in Manage profiles.",
+      "Profile actions",
+      "Saved settings do not confirm NR execution. See Diagnostics for runtime status.",
+      "This official profile has no personal changes.",
+      "Restore only this official profile. Other profiles are kept.",
+      "Restore official defaults?",
+      "Personal changes to this official profile will be cleared. Other profiles are kept.",
+      "Cancel",
+      "Restore",
+  };
   for (int language = 0; language < kLanguageCount; ++language) {
     SelectLanguage(language);
     const std::string_view welcome = Tr(text::kWelcomeTitle);
@@ -304,6 +328,41 @@ int main() {
       if (language != 0 && std::string_view(Tr(english)) == english) {
         std::fprintf(stderr, "Untranslated profile text: language=%s key=%s\n", kLanguages[language].code, english);
         return 7;
+      }
+    }
+    for (const char* english : profile_ux_strings) {
+      if (!check_preset_translation(english)) return 7;
+      if (language != 0 && std::string_view(Tr(english)) == english) {
+        std::fprintf(stderr, "Untranslated profile UX text: language=%s key=%s\n", kLanguages[language].code, english);
+        return 7;
+      }
+    }
+    const std::string_view code = kLanguages[language].code;
+    if (code == "zh-Hans" || code == "zh-Hant") {
+      const bool simplified = code == "zh-Hans";
+      const struct {
+        const char* english;
+        const char* simplified;
+        const char* traditional;
+      } terms[] = {
+          {"Manage profiles", "管理方案", "管理方案"},
+          {"Profile library", "方案库", "方案庫"},
+          {"Preset library", "方案库", "方案庫"},
+          {"Save current profile", "保存方案", "儲存方案"},
+          {"Import profile", "导入方案", "匯入方案"},
+          {"My profiles", "我的方案", "我的方案"},
+          {"My presets", "我的方案", "我的方案"},
+          {"Custom slots", "我的方案", "我的方案"},
+          {"Preset", "方案", "方案"},
+          {"NR Lite", "轻量", "輕量"},
+          {"NR Balanced", "均衡", "均衡"},
+          {"NR Max", "极致", "極致"},
+      };
+      for (const auto& term : terms) {
+        if (std::string_view(Tr(term.english)) != (simplified ? term.simplified : term.traditional)) {
+          std::fprintf(stderr, "Profile terminology mismatch: language=%s key=%s\n", kLanguages[language].code, term.english);
+          return 7;
+        }
       }
     }
     for (const auto& rule : renodx::addons::dlss5::presets::FieldRules()) {

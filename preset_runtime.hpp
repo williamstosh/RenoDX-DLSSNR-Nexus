@@ -546,11 +546,36 @@ inline bool have_preview = false;
 inline bool compatibility = false;
 inline bool confirm_full = false;
 inline int mode = 0;
-inline int scope_choice = 0;
+inline int scope_choice = 1;
 inline int group_choice = 0;
 inline bool overwrite = false;
 inline bool confirm_delete = false;
 inline bool show_kept = false;
+inline bool save_options = false;
+inline bool export_options = false;
+inline bool import_path_options = false;
+inline bool reset_scroll = false;
+struct ManagerGeometry {
+  bool valid = false;
+  bool was_open = false;
+  ImVec2 size_em = ImVec2(43.f, 30.f);
+  ImVec2 relative_position = ImVec2(0.5f, 0.5f);
+  ImVec2 display = ImVec2(0.f, 0.f);
+  float font_size = 0.f;
+  float compact_height_em = 0.f;
+  bool task_resize = false;
+  ImVec2 full_size_em = ImVec2(43.f, 30.f);
+  ImVec2 last_size = ImVec2(0.f, 0.f);
+};
+inline ManagerGeometry manager_geometry;
+
+inline void Navigate(int next) {
+  mode = next;
+  notice.clear();
+  confirm_delete = false;
+  overwrite = false;
+  reset_scroll = true;
+}
 inline char name[129] = {};
 inline char author[129] = {};
 inline char description[2049] = {};
@@ -725,6 +750,10 @@ inline void Pump() {
   }
   if (worker.job == Job::REFRESH) {
     files = std::move(worker.files);
+    if (std::find(files.begin(), files.end(), selected) == files.end()) {
+      selected.clear();
+      confirm_delete = false;
+    }
   } else if (worker.job == Job::CHOOSE_EXPORT || worker.job == Job::CHOOSE_FOLDER) {
     auto destination = worker.destination;
     if (worker.job == Job::CHOOSE_FOLDER) {
@@ -751,8 +780,7 @@ inline void Pump() {
     compatibility = confirm_full = false;
     show_kept = false;
     rows = Preview(preview, compatibility);
-    mode = 2;
-    notice.clear();
+    Navigate(2);
   } else {
     notice = "Preset file saved.";
     if (worker.job == Job::EXPORT) {
@@ -765,7 +793,13 @@ inline void Pump() {
       active_name = worker.document.metadata.value("name", "");
       active_settings = worker.document.settings;
     }
-    if (worker.job != Job::EXPORT) files = std::move(worker.files);
+    if (worker.job != Job::EXPORT) {
+      files = std::move(worker.files);
+      if (std::find(files.begin(), files.end(), selected) == files.end()) {
+        selected.clear();
+        confirm_delete = false;
+      }
+    }
   }
   if (*path == '\0' && !library_path.empty()) {
     std::filesystem::path filename;
@@ -835,15 +869,80 @@ inline void DrawManager() {
     profile_ui::share_request.reset();
     const auto value = export_document->metadata.value("name", "");
     std::memcpy(name, value.c_str(), (std::min)(sizeof(name), value.size() + 1));
-    mode = 1;
+    Navigate(1);
     scope_choice = 1;
-    notice.clear();
   }
-  const std::string title = std::string(ui::Tr("Presets")) + "###nr_preset_manager";
-  ImGui::SetNextWindowSize(ImVec2((std::min)(ImGui::GetIO().DisplaySize.x * 0.94f, ImGui::GetFontSize() * 43.f),
-                                  (std::min)(ImGui::GetIO().DisplaySize.y * 0.90f, ImGui::GetFontSize() * 39.f)),
-                           ImGuiCond_Appearing);
-  if (!ImGui::BeginPopupModal(title.c_str(), nullptr)) {
+  if (!ImGui::IsPopupOpen("###nr_preset_manager")) {
+    manager_geometry.was_open = false;
+    return;
+  }
+  const auto display = ImGui::GetIO().DisplaySize;
+  const float em = (std::max)(ImGui::GetFontSize(), 1.f);
+  const float margin = (std::min)(em, (std::min)(display.x, display.y) * 0.02f);
+  const ImVec2 maximum((std::max)(1.f, display.x - margin * 2.f),
+                       (std::max)(1.f, display.y - margin * 2.f));
+  ImGui::SetNextWindowSizeConstraints(ImVec2((std::min)(em * 22.f, maximum.x),
+                                            (std::min)(em * (mode == 2 && !have_preview ? 12.f : 18.f), maximum.y)), maximum);
+  const bool environment_changed = display.x != manager_geometry.display.x
+      || display.y != manager_geometry.display.y || em != manager_geometry.font_size;
+  const float compact_height = (mode == 2 && !have_preview ? 14.f
+      : mode == 1 && !save_options && !export_options ? 20.f : 0.f);
+  if (compact_height != manager_geometry.compact_height_em) {
+    if (compact_height != 0.f) {
+      if (manager_geometry.compact_height_em == 0.f) manager_geometry.full_size_em = manager_geometry.size_em;
+      manager_geometry.size_em.y = compact_height;
+    } else {
+      manager_geometry.size_em = manager_geometry.full_size_em;
+    }
+    manager_geometry.compact_height_em = compact_height;
+    manager_geometry.task_resize = true;
+  }
+  if (!manager_geometry.was_open || environment_changed || manager_geometry.task_resize) {
+    const ImVec2 size((std::min)(manager_geometry.size_em.x * em, maximum.x),
+                      (std::min)(manager_geometry.size_em.y * em, maximum.y));
+    const ImGuiCond condition = (manager_geometry.valid ? ImGuiCond_Always : ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(size, condition);
+    ImGui::SetNextWindowPos(ImVec2(margin + (maximum.x - size.x) * manager_geometry.relative_position.x,
+                                  margin + (maximum.y - size.y) * manager_geometry.relative_position.y), condition);
+  }
+  const std::string title = std::string(ui::Tr("Profile library")) + "###nr_preset_manager";
+  bool open = true;
+  if (!ImGui::BeginPopupModal(title.c_str(), &open, ImGuiWindowFlags_NoSavedSettings)) {
+    manager_geometry.was_open = false;
+    if (!open) {
+      Navigate(0);
+    }
+    return;
+  }
+  // Modal navigation owns Escape only while neither an ImGui editor nor the
+  // native assisted editor is using it. A nested popup owns its own dismissal.
+  if (!unicode_input::Busy() && !ui::text_input::pending.result
+      && !ImGui::IsAnyItemActive() && !ImGui::GetIO().WantTextInput
+      && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
+      && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+    open = false;
+  }
+  const auto size = ImGui::GetWindowSize();
+  const auto position = ImGui::GetWindowPos();
+  manager_geometry.size_em = ImVec2(size.x / em, size.y / em);
+  if (manager_geometry.compact_height_em != 0.f && !environment_changed && !manager_geometry.task_resize
+      && manager_geometry.was_open && (std::abs(size.x - manager_geometry.last_size.x) > 1.f
+                                       || std::abs(size.y - manager_geometry.last_size.y) > 1.f)) {
+    manager_geometry.full_size_em = manager_geometry.size_em;
+  }
+  manager_geometry.last_size = size;
+  manager_geometry.task_resize = false;
+  manager_geometry.relative_position = ImVec2(
+      std::clamp((position.x - margin) / (std::max)(1.f, maximum.x - size.x), 0.f, 1.f),
+      std::clamp((position.y - margin) / (std::max)(1.f, maximum.y - size.y), 0.f, 1.f));
+  manager_geometry.display = display;
+  manager_geometry.font_size = em;
+  manager_geometry.valid = true;
+  manager_geometry.was_open = open;
+  if (!open) {
+    Navigate(0);
+    ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
     return;
   }
   ImGui::PushTextWrapPos(0.f);
@@ -853,19 +952,34 @@ inline void DrawManager() {
     busy = worker.busy;
   }
   ImGui::BeginDisabled(busy);
-  const char* modes[] = {"My presets", "Save and share", "Import preset"};
-  ImGui::SetNextItemWidth(-1.f);
-  const int chosen = ui::Segmented("##preset_modes", modes, 3, mode, nullptr);
-  if (chosen >= 0) {
-    mode = chosen;
-    notice.clear();
-    confirm_delete = false;
+  if (mode != 0) {
+    if (ui::ActionButton(ui::Tr("Back to profile library"), "preset_home")) {
+      Navigate(0);
+    }
+    ImGui::TextUnformatted(ui::Tr(mode == 1 ? "Save current profile" : "Import profile"));
   }
-  const float footer = ImGui::GetFontSize() * 5.5f;
+  const float footer = (busy || !notice.empty() ? ImGui::GetFontSize() * 3.5f : 0.f);
   if (ImGui::BeginChild("##preset_content", ImVec2(0.f, -footer), ImGuiChildFlags_None,
                         ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
+    if (reset_scroll) {
+      ImGui::SetScrollY(0.f);
+      reset_scroll = false;
+    }
     ui::text_input::Hint();
     if (mode == 0) {
+      ImGui::TextWrapped("%s: %s", ui::Tr("Current"), profile_ui::Summary().c_str());
+      if (ui::ActionButton(ui::Tr("Save current profile"), "preset_save_task")) {
+        export_document.reset();
+        Navigate(1);
+      }
+      ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Import profile")).x + ImGui::GetStyle().FramePadding.x * 2.f);
+      if (ui::ActionButton(ui::Tr("Import profile"), "preset_import_task")) {
+        Navigate(2);
+      }
+      if (!undo.empty() && ui::ActionButton(ui::Tr("Undo last import"), "undo_preset")) {
+        std::string error;
+        if (!Undo(&error)) notice = error;
+      }
       if (ui::TreeNode("custom_slot_tools", ui::Tr("Custom slots"), 0, false)) {
         profile_ui::DrawCustomTools();
         ImGui::TreePop();
@@ -887,7 +1001,11 @@ inline void DrawManager() {
           ImGui::PushID(label.c_str());
           const ImVec2 at = ImGui::GetCursorScreenPos();
           if (ImGui::Selectable("##preset_file", selected == file, 0, ImVec2(0.f, ImGui::GetTextLineHeight()))) {
-            selected = file;
+            if (selected != file) {
+              selected = file;
+              confirm_delete = false;
+              notice.clear();
+            }
           }
           ImGui::GetWindowDrawList()->AddText(at, ImGui::GetColorU32(ImGuiCol_Text),
                                               ui::Ellipsize(label.c_str(), ImGui::GetContentRegionAvail().x).c_str());
@@ -896,40 +1014,36 @@ inline void DrawManager() {
         }
         ImGui::EndListBox();
       }
-      ImGui::BeginDisabled(selected.empty());
-      if (ui::ActionButton(ui::Tr("Preview selected preset"), "preview_selected")) {
-        Start(Job::READ, selected);
+      if (!selected.empty()) {
+        const auto selected_bytes = selected.filename().u8string();
+        ImGui::TextWrapped("%s", reinterpret_cast<const char*>(selected_bytes.c_str()));
+        if (ui::ActionButton(ui::Tr("Preview selected preset"), "preview_selected")) {
+          Start(Job::READ, selected);
+        }
+        ImGui::SetNextItemWidth(-1.f);
+        ui::text_input::DrawLabeled(ui::Tr("Preset name"), name, sizeof(name));
+        ImGui::BeginDisabled(*name == '\0');
+        if (ui::ActionButton(ui::Tr("Rename preset"), "rename_preset")) {
+          Start(Job::RENAME, selected, {}, name);
+        }
+        ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Duplicate preset")).x + ImGui::GetStyle().FramePadding.x * 2.f);
+        if (ui::ActionButton(ui::Tr("Duplicate preset"), "duplicate_preset")) {
+          Start(Job::COPY, selected, {}, name);
+        }
+        ImGui::EndDisabled();
+        ui::Checkbox(ui::Tr("Confirm deletion of selected file"), &confirm_delete);
+        ImGui::BeginDisabled(!confirm_delete);
+        if (ui::ActionButton(ui::Tr("Delete preset"), "delete_preset")) {
+          Start(Job::REMOVE, selected);
+          confirm_delete = false;
+        }
+        ImGui::EndDisabled();
       }
-      ImGui::SetNextItemWidth(-1.f);
-      ui::text_input::DrawLabeled(ui::Tr("Preset name"), name, sizeof(name));
-      ImGui::BeginDisabled(*name == '\0');
-      if (ui::ActionButton(ui::Tr("Rename preset"), "rename_preset")) {
-        Start(Job::RENAME, selected, {}, name);
-      }
-      ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Duplicate preset")).x + ImGui::GetStyle().FramePadding.x * 2.f);
-      if (ui::ActionButton(ui::Tr("Duplicate preset"), "duplicate_preset")) {
-        Start(Job::COPY, selected, {}, name);
-      }
-      ImGui::EndDisabled();
-      ui::Checkbox(ui::Tr("Confirm deletion of selected file"), &confirm_delete);
-      ImGui::BeginDisabled(!confirm_delete);
-      if (ui::ActionButton(ui::Tr("Delete preset"), "delete_preset")) {
-        Start(Job::REMOVE, selected);
-        confirm_delete = false;
-      }
-      ImGui::EndDisabled();
-      ImGui::EndDisabled();
       ImGui::Separator();
     }
     if (mode == 2) {
       if (ui::ActionButton(ui::Tr("Choose preset file"), "choose_import")) Start(Job::CHOOSE_IMPORT);
-      ImGui::TextWrapped("%s", ui::Tr("Import a file by its full path. Opening it only prepares a preview."));
-      ImGui::SetNextItemWidth(-1.f);
-      ui::text_input::DrawLabeled(ui::Tr("File path"), path, sizeof(path));
-      if (ui::ActionButton(ui::Tr("Read preset file"), "read_preset")) {
-        Start(Job::READ, std::filesystem::u8path(path));
-      }
-      if (ui::ActionButton(ui::Tr("Read clipboard text"), "paste_preset")) {
+      if (ui::ActionButton(ui::Tr("Paste share text"), "paste_preset")) {
         std::string text;
         if (OpenClipboard(nullptr)) {
           if (HANDLE handle = GetClipboardData(CF_UNICODETEXT)) {
@@ -956,62 +1070,79 @@ inline void DrawManager() {
           Start(Job::PARSE, {}, {}, text);
         }
       }
+      ui::Checkbox(ui::Tr("Enter file path"), &import_path_options);
+      if (import_path_options) {
+        ImGui::TextWrapped("%s", ui::Tr("Import a file by its full path. Opening it only prepares a preview."));
+        ImGui::SetNextItemWidth(-1.f);
+        ui::text_input::DrawLabeled(ui::Tr("File path"), path, sizeof(path));
+        if (ui::ActionButton(ui::Tr("Read preset file"), "read_preset")) {
+          Start(Job::READ, std::filesystem::u8path(path));
+        }
+      }
     } else if (mode == 1) {
       ImGui::TextWrapped("%s", ui::Tr(export_document ? "Exporting the saved custom slot snapshot." : "Exporting current game settings."));
       if (export_document && ui::ActionButton(ui::Tr("Use current game settings"), "export_current")) export_document.reset();
-      if (!library_path.empty()) {
-        const auto bytes = library_path.u8string();
-        const std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-        ImGui::TextWrapped("%s: %s", ui::Tr("Preset library"), text.c_str());
-      }
-      if (ui::ActionButton(ui::Tr("Open preset folder"), "open_preset_folder")) Start(Job::OPEN_FOLDER);
       ui::text_input::DrawLabeled(ui::Tr("Preset name"), name, sizeof(name));
-      const char* scopes[] = {"Quality preset", "Quality + Multi-Pass", "Full configuration backup"};
-      if (ImGui::BeginCombo(ui::ControlLabel(ui::Tr("Export scope")).c_str(), ui::Tr(scopes[scope_choice]))) {
-        for (int i = 0; i < 3; ++i) {
-          ImGui::BeginDisabled(export_document.has_value() && i == 2);
-          if (ImGui::Selectable(ui::Tr(scopes[i]), i == scope_choice)) {
-            scope_choice = i;
+      ui::Checkbox(ui::Tr("More options"), &save_options);
+      if (save_options) {
+        const char* scopes[] = {"Quality preset", "Quality + Multi-Pass", "Full configuration backup"};
+        if (ImGui::BeginCombo(ui::ControlLabel(ui::Tr("Export scope")).c_str(), ui::Tr(scopes[scope_choice]))) {
+          for (int i = 0; i < 3; ++i) {
+            ImGui::BeginDisabled(export_document.has_value() && i == 2);
+            if (ImGui::Selectable(ui::Tr(scopes[i]), i == scope_choice)) {
+              scope_choice = i;
+            }
+            ImGui::EndDisabled();
           }
-          ImGui::EndDisabled();
+          ImGui::EndCombo();
         }
-        ImGui::EndCombo();
+        if (scope_choice == 2) {
+          ImGui::TextColored(ui::CurrentTheme().warn, "%s", ui::Tr("Full backups are not guaranteed to work across games."));
+        }
+        ui::text_input::DrawLabeled(ui::Tr("Author (optional)"), author, sizeof(author));
+        ui::text_input::DrawLabeled(ui::Tr("Source game (optional)"), source_game, sizeof(source_game));
+        ui::text_input::Draw("##preset_description", description, sizeof(description), true,
+                             ImVec2(-1.f, ImGui::GetFontSize() * 3.f), ui::Tr("Description (optional)"));
       }
-      if (scope_choice == 2) {
-        ImGui::TextColored(ui::CurrentTheme().warn, "%s", ui::Tr("Full backups are not guaranteed to work across games."));
-      }
-      ui::text_input::DrawLabeled(ui::Tr("Author (optional)"), author, sizeof(author));
-      ui::text_input::DrawLabeled(ui::Tr("Source game (optional)"), source_game, sizeof(source_game));
-      ui::text_input::Draw("##preset_description", description, sizeof(description), true,
-                           ImVec2(-1.f, ImGui::GetFontSize() * 3.f), ui::Tr("Description (optional)"));
       const auto scope = static_cast<presets::Scope>(scope_choice);
       const Json metadata = {{"name", name}, {"author", author}, {"description", description}, {"source_game", source_game}, {"created_with", NR_NEXUS_NAME " " NR_NEXUS_VERSION}};
       ImGui::BeginDisabled(*name == '\0');
-      if (ui::ActionButton(ui::Tr("Preview export fields"), "preview_export")) {
+      if (save_options && ui::ActionButton(ui::Tr("Preview export fields"), "preview_export")) {
         export_rows = Preview(ExportSnapshot(scope, metadata), true);
         export_rows.erase(std::remove_if(export_rows.begin(), export_rows.end(), [](const auto& row) { return std::string_view(row.status) == "Kept (not in preset)"; }), export_rows.end());
         export_scope = scope_choice;
         show_kept = true;
       }
-      ui::Checkbox(ui::Tr("Replace an existing file with this name"), &overwrite);
       if (ui::ActionButton(ui::Tr("Save preset to library"), "save_preset")) {
         Start(Job::SAVE, {}, {}, {}, ExportSnapshot(scope, metadata));
       }
-      if (ui::ActionButton(ui::Tr("Choose export file"), "choose_export")) {
-        std::filesystem::path filename;
-        std::string error;
-        if (presets::MakeFilename(name, &filename, &error)) Start(Job::CHOOSE_EXPORT, filename);
-        else notice = error;
+      ui::Checkbox(ui::Tr("Export file"), &export_options);
+      if (save_options || export_options || overwrite) {
+        ui::Checkbox(ui::Tr("Replace an existing file with this name"), &overwrite);
       }
-      ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Browse folder")).x + ImGui::GetStyle().FramePadding.x * 2.f);
-      if (ui::ActionButton(ui::Tr("Browse folder"), "choose_folder")) Start(Job::CHOOSE_FOLDER);
-      ImGui::SetNextItemWidth(-1.f);
-      ui::text_input::DrawLabeled(ui::Tr("Export file path"), path, sizeof(path));
-      ImGui::BeginDisabled(*path == '\0');
-      if (ui::ActionButton(ui::Tr("Export preset file"), "export_preset")) {
-        Start(Job::EXPORT, {}, std::filesystem::u8path(path), {}, ExportSnapshot(scope, metadata));
+      if (export_options) {
+        if (!library_path.empty()) {
+          const auto bytes = library_path.u8string();
+          const std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+          ImGui::TextWrapped("%s: %s", ui::Tr("Preset library"), text.c_str());
+        }
+        if (ui::ActionButton(ui::Tr("Open preset folder"), "open_preset_folder")) Start(Job::OPEN_FOLDER);
+        if (ui::ActionButton(ui::Tr("Choose export file"), "choose_export")) {
+          std::filesystem::path filename;
+          std::string error;
+          if (presets::MakeFilename(name, &filename, &error)) Start(Job::CHOOSE_EXPORT, filename);
+          else notice = error;
+        }
+        ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Browse folder")).x + ImGui::GetStyle().FramePadding.x * 2.f);
+        if (ui::ActionButton(ui::Tr("Browse folder"), "choose_folder")) Start(Job::CHOOSE_FOLDER);
+        ImGui::SetNextItemWidth(-1.f);
+        ui::text_input::DrawLabeled(ui::Tr("Export file path"), path, sizeof(path));
+        ImGui::BeginDisabled(*path == '\0');
+        if (ui::ActionButton(ui::Tr("Export preset file"), "export_preset")) {
+          Start(Job::EXPORT, {}, std::filesystem::u8path(path), {}, ExportSnapshot(scope, metadata));
+        }
+        ImGui::EndDisabled();
       }
-      ImGui::EndDisabled();
       if (ui::ActionButton(ui::Tr("Copy share text"), "copy_preset")) {
         try {
           notice = (CopyReportText(presets::Serialize(ExportSnapshot(scope, metadata)))
@@ -1022,7 +1153,7 @@ inline void DrawManager() {
         }
       }
       ImGui::EndDisabled();
-      if (export_scope == scope_choice && !export_rows.empty()) {
+      if (save_options && export_scope == scope_choice && !export_rows.empty()) {
         DrawRows(export_rows);
       }
     }
@@ -1075,7 +1206,8 @@ inline void DrawManager() {
         profile_ui::confirm_replace = false;
       }
       ui::Checkbox(ui::Tr("Confirm replacing or clearing this slot"), &profile_ui::confirm_replace);
-      ImGui::BeginDisabled(!profile_ui::loaded || !profile_ui::writable
+      ImGui::BeginDisabled((preview.scope == presets::Scope::FULL && !confirm_full)
+                           || !profile_ui::loaded || !profile_ui::writable
                            || (profile_ui::state.slots[profile_ui::edit_index].populated && !profile_ui::confirm_replace));
       if (ui::ActionButton(ui::Tr("Assign NR fields to custom slot"), "import_to_slot")) {
         auto settings = (profile_ui::state.slots[profile_ui::edit_index].populated
@@ -1095,7 +1227,7 @@ inline void DrawManager() {
       if (ui::ActionButton(ui::Tr("Cancel import"), "cancel_import")) {
         have_preview = false;
         rows.clear();
-        mode = 0;
+        Navigate(0);
       }
     } else if (mode == 2) {
       ImGui::TextWrapped("%s", ui::Tr("Select a local preset, read a file or paste share text to preview changes."));
@@ -1103,16 +1235,15 @@ inline void DrawManager() {
   }
   ImGui::EndChild();
   ImGui::EndDisabled();
-  if (ImGui::BeginChild("##preset_notice", ImVec2(0.f, ImGui::GetFontSize() * 3.f))) {
-    if (busy) {
-      ImGui::TextDisabled("%s", ui::Tr("Working..."));
-    } else if (!notice.empty()) {
-      ImGui::TextWrapped("%s", ui::Tr(notice.c_str()));
+  if (busy || !notice.empty()) {
+    if (ImGui::BeginChild("##preset_notice", ImVec2(0.f, ImGui::GetFontSize() * 3.f))) {
+      if (busy) {
+        ImGui::TextDisabled("%s", ui::Tr("Working..."));
+      } else if (!notice.empty()) {
+        ImGui::TextWrapped("%s", ui::Tr(notice.c_str()));
+      }
     }
-  }
-  ImGui::EndChild();
-  if (ui::ActionButton(ui::Tr("Close"), "close_presets")) {
-    ImGui::CloseCurrentPopup();
+    ImGui::EndChild();
   }
   ImGui::PopTextWrapPos();
   ImGui::EndPopup();
@@ -1120,25 +1251,33 @@ inline void DrawManager() {
 
 inline void DrawEntry(bool multipass = false, bool management_only = false) {
   ImGui::PushID("presets");
-  if (!multipass && !management_only) profile_ui::DrawQuick();
+  bool open = false;
+  if (!multipass && !management_only) {
+    open = profile_ui::DrawQuick();
+  }
   if (multipass && profile_ui::active >= 0) {
     ImGui::TextWrapped("%s: %s", ui::Tr("NR Profiles"), profile_ui::Name(profile_ui::active).c_str());
   }
-  if (!multipass && ui::ActionButton(ui::Tr("Presets"), "open_presets")) {
-    notice.clear();
+  if (!multipass && management_only) {
+    open = ui::ActionButton(ui::Tr("Manage profiles"), "open_presets");
+  }
+  if (open) {
+    Navigate(0);
     Start(Job::REFRESH);
     ImGui::OpenPopup("###nr_preset_manager");
   }
   if (!multipass) {
-    ImGui::BeginDisabled(undo.empty());
-    ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Undo last import")).x + ImGui::GetStyle().FramePadding.x * 2.f);
-    if (ui::ActionButton(ui::Tr("Undo last import"), "undo_preset")) {
-      std::string error;
-      if (!Undo(&error)) {
-        notice = error;
+    if (management_only) {
+      ImGui::BeginDisabled(undo.empty());
+      ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Undo last import")).x + ImGui::GetStyle().FramePadding.x * 2.f);
+      if (ui::ActionButton(ui::Tr("Undo last import"), "undo_preset")) {
+        std::string error;
+        if (!Undo(&error)) {
+          notice = error;
+        }
       }
+      ImGui::EndDisabled();
     }
-    ImGui::EndDisabled();
     DrawManager();
   }
   ImGui::PopID();

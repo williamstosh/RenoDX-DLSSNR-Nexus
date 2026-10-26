@@ -4,7 +4,7 @@
 
 > **Version scope — 0.2.0-dev.3 source / 0.1.0 release:** this guide describes the complete 0.1.0 package: four-page menu, dual models, independent per-pass model styling and result settings, and four interface themes. Check the Releases page for available versioned ZIP packages. The NR Profiles, preset and assisted-input sections describe the current 0.2.0-dev.3 development source and are not included in the published 0.1.0 package. Earlier pre-release packages do not contain every feature shown here.
 >
-> **版本范围——0.2.0-dev.3 源码／0.1.0 正式版：** 本指南对应完整 0.1.0 包，包含四页菜单、双模型、逐层独立模型风格与结果设置及四套主题。请在 Releases 页面查看可下载的版本化 ZIP，NR Profiles、预设与辅助输入章节对应当前 0.2.0-dev.3 开发源码，未包含于已发布 0.1.0 包；早期预发布包也不含本指南展示的全部功能。
+> **版本范围——0.2.0-dev.3 源码／0.1.0 正式版：** 本指南对应完整 0.1.0 包，包含四页菜单、双模型、逐层独立模型风格与结果设置及四套主题。请在 Releases 页面查看可下载的版本化 ZIP，NR 快速方案、方案库与辅助输入章节对应当前 0.2.0-dev.3 开发源码，未包含于已发布 0.1.0 包；早期预发布包也不含本指南展示的全部功能。
 
 ## English
 
@@ -14,7 +14,7 @@
 - [Quality: model, location and resolution](#en-quality)
 - [Result adjustment and stability](#en-results)
 - [Multi-Pass](#en-multipass)
-- [NR Profiles and presets (development)](#en-presets)
+- [NR Profiles and profile library (development)](#en-presets)
 - [Diagnostics and reports](#en-diagnostics)
 - [Advanced, screenshots and themes](#en-advanced)
 - [Seven practical scenarios](#en-scenarios)
@@ -40,6 +40,8 @@ Defaults below are for a fresh configuration. Existing saved choices and migrati
 *Quality — NR enable, model, shared working resolution and processing location.*
 
 #### Enable and compare
+
+In the current development source, the **Neural Rendering** master switch comes first on Quality, above NR Profiles. Start there for an Off/On comparison, then choose or edit a profile. The profile summary reports saved settings and personal changes; use Diagnostics to confirm actual NR execution.
 
 | Control | Default / options | What it does and when to use it |
 | --- | --- | --- |
@@ -194,13 +196,13 @@ This is an editing workflow, not a best-quality preset. It requires the 0.1.0 in
 Model styling changes synthesis and resets temporal history; result edits reshape each pass's returned change live. Location, working resolution and upsampling stay shared. More control and more passes do not establish better quality or performance—keep the combination that works in the scenes you actually play.
 
 <a id="en-presets"></a>
-### NR Profiles and presets (development)
+### NR Profiles and profile library (development)
 
-This section describes the current development pre-release. The published **0.1.0 package contains neither six Slots nor preset management**. Release/Debug builds and focused automated checks passed; the official combinations below have not been validated for in-game image quality or performance.
+This section describes the current **0.2.0-dev.3 development source**, including the task-based profile library. The published **0.1.0 package contains neither six Slots nor preset management**. These instructions describe the interface and do not establish in-game image-quality or performance validation for the official combinations below.
 
 #### Six Slots for this game
 
-**NR Profiles** on Quality offers three official Slots and three custom Slots. First upgrade keeps the game's current configuration: no official profile is automatically applied. Selecting a populated Slot applies its managed NR settings; selecting an empty custom Slot opens its editing target and leaves the running configuration intact.
+**NR Profiles** on Quality offers three official profiles and three custom profiles, with **Manage profiles** beside the heading. First upgrade keeps the game's current configuration: no official profile is automatically applied. Selecting a populated profile applies its managed NR settings. Selecting an empty custom profile opens a creation popup in place: **Save current settings to this slot** captures the current settings and selects that profile; **Copy from official profile** creates it from the chosen official profile and then selects/applies it. **Cancel** leaves current settings unchanged. If the target is no longer empty, review it in Manage profiles instead of overwriting it from the creation popup.
 
 | Official development candidate | Location | Passes / requested models | Working size |
 | --- | --- | --- | --- |
@@ -214,26 +216,27 @@ Each official Slot keeps its own **overrides**. Editing one does not change anot
 
 If the target configuration applies but saving its Slot state then fails, the applied game settings remain in place and the Slot is shown as unsaved. Resolve the storage error and retry, or use Undo; this is not an atomic disk/GPU transaction.
 
-**Undo profile action** reverses the last profile operation; configuration undo keeps fields edited afterwards and may detach the selected association. **Restore official defaults** clears only the current official Slot's overrides and can be undone. It does not reset all six Slots or the game's compatibility settings. Slot changes never automatically overwrite shared preset-library files.
+Open **Profile actions** beside the compact status line for **Undo profile action** and, when an official profile is selected, **Restore official defaults**. Undo reverses the last profile operation; configuration undo keeps fields edited afterwards and may detach the selected association. Restore is unavailable when that official profile has no personal changes. Otherwise it opens a confirmation window: **Restore** clears only that profile's personal overrides; **Cancel**, the title-bar X or Esc dismisses the confirmation. Restoration can be undone and does not reset the other profiles or the game's compatibility settings. Profile edits never automatically overwrite shared library files. Hover the summary for status details; **Saved** confirms storage, not NR execution.
 
-In **Presets → My presets → Custom slots**, select Custom 1–3 to capture current settings or copy an official profile with its overrides. Copying stores data without applying it. Confirm replacement/clearing when that Slot is populated. Rename changes only display text, never its fixed identity or settings; duplicate names remain separate Slots. Clear empties that Slot and leaves running game settings intact. **Save or share this slot** opens Save and share using its saved snapshot; it does not immediately create a file. An enabled-layer export scope can omit saved values of disabled passes.
+In **Manage profiles → Profile library**, expand **Custom slots** (closed by default) to manage Custom 1–3. Capture current settings or copy an official profile with its overrides. Unlike creation from the quick selector, copying here stores data without applying it; select the custom profile separately to apply it. Confirm replacement/clearing when that profile is populated. Rename changes only display text, never its fixed identity or settings; duplicate names remain separate profiles. Clear empties that profile and leaves running game settings intact. **Save or share this slot** opens the save task using its saved snapshot; it does not immediately create a file. An enabled-layer export scope can omit saved values of disabled passes.
 
 Slots are private to this game's profile identity, under `%LOCALAPPDATA%\NR Nexus\Profiles\<32hex-id>\slots.json`. On restart, association is restored only when current settings match the last applied snapshot; settings are never automatically overwritten. External configuration reloads that change settings detach the association without replacing official overrides. Moving the installation or copying an INI with a different executable-path owner forks the Slot data to a new identity and keeps current settings. Automatic merging across stores/installations is not supported.
 
 Corrupt/future profile files and read-only configuration are protected rather than overwritten. Force-closing the process may lose the last pending Slot save. ReShade's normal game-setting persistence remains independent; Slot files, configuration and GPU execution are not one atomic transaction.
 
-#### Shared preset manager
+#### Profile library: home, save and import
 
-Open **Presets** on Quality or Advanced. Its three pages are **My presets**, **Save and share**, and **Import preset**. The library refreshes when the manager opens and after library saves, renames, duplicates or deletions; **Refresh library** refreshes it again. The default shared library is `%LOCALAPPDATA%\NR Nexus\Presets\`; Save and share shows the resolved path and **Open preset folder** opens it. It is separate from this game's six Slots.
+Open **Manage profiles** on Quality or Advanced. **Profile library** opens on one home page with the current-profile summary, **Save current profile**, **Import profile**, the folded custom-profile tools and a searchable library list. Select a file before preview, rename, duplicate and deletion controls appear; deletion requires explicit confirmation and affects only the library file. The library refreshes on open and after library saves, renames, duplicates or deletions; **Refresh library** refreshes it again. The default shared library is `%LOCALAPPDATA%\NR Nexus\Presets\`, separate from this game's six profiles. Expand **Export file** in the save task to see the resolved library path and **Open preset folder**.
 
-1. **My presets:** search/select a library file and choose **Preview selected preset**. Rename, duplicate and confirmed deletion affect library files, not running settings or Slot identities.
-2. **Save and share:** enter a name, optional author/description/source game, and choose Quality, Quality + Multi-Pass, or Full configuration backup. **Preview export fields** shows the data. The source is current game settings unless you came from a saved custom Slot; **Use current game settings** switches back. Saved Slot exports use Quality scopes; switch back to current game settings for a Full backup. **Save preset to library** saves explicitly; **Copy share text** copies JSON. **Choose export file** or **Browse folder** only fills the export destination. Review it, then explicitly press **Export preset file** to write. Existing files require permission to replace; choosing a destination alone does not write.
-3. **Import preset:** use **Choose preset file**, enter a full local path and **Read preset file**, or **Read clipboard text**. Reading only prepares a preview. Review grouped differences, kept/unsupported/skipped fields and **Show unchanged fields**. Compatibility settings start excluded; full backups require scope confirmation. If settings changed, review the refreshed preview before **Confirm and apply preset**. **Cancel import** leaves settings alone.
-4. **Assign NR fields to custom slot** is an alternative to applying an import. Choose Custom 1–3 and confirm replacement if populated. It merges eligible valid NR fields into the saved Slot (or current settings for an empty Slot), preserving missing fields, without applying it. HDR, depth/motion, FG policies and interface preferences are not assigned. Select that Slot separately to apply it.
+1. **Save current profile:** initially only the name field is shown; a fresh form uses **Quality + Multi-Pass**. **More options** exposes scope, optional author/description/source game and **Preview export fields**. The source is current game settings unless you came from a saved custom profile; **Use current game settings** switches back. Saved profile exports use Quality scopes; switch back to current game settings for a Full backup. **Save preset to library**, **Export file** and **Copy share text** remain visible. Saving writes the library file; copying puts JSON on the clipboard. Expand Export file for the destination, **Choose export file**, **Browse folder** and the explicit **Export preset file** action. Choosing a destination alone does not write. Replacement permission must be enabled to overwrite an existing file; once enabled, its checkbox remains visible even when options are collapsed.
+2. **Import profile:** start with **Choose preset file** or **Paste share text**; expand **Enter file path** only if you need a full local path and **Read preset file**. Reading only prepares a preview. Differences, apply and custom-profile assignment controls appear after a successful read. Review grouped differences, kept/unsupported/skipped fields and **Show unchanged fields**. Compatibility settings start excluded; full backups require scope confirmation. If settings changed, review the refreshed preview before **Confirm and apply preset**. **Cancel import** discards the pending preview without applying settings.
+3. **Assign NR fields to custom slot** is an alternative to applying an import. Choose Custom 1–3 and confirm replacement if populated; a Full backup also requires scope confirmation. It merges eligible valid NR fields into the saved profile (or current settings for an empty profile), preserving missing fields, without applying it. HDR, depth/motion, FG policies and interface preferences are not assigned. Select that profile separately to apply it.
+
+**Back to profile library** returns to home. The title-bar **X**, or **Esc** while the manager is focused and no text editor is active, closes the manager; reopening starts at home. Draft input, library selection, expanded options and a pending import preview are retained during the same session; closing does not save or apply them. Text fields, nested popups and the native assisted-input editor handle their own Esc first. Move or resize the manager by its title bar and resize grip. Size and position are remembered for the running session and constrained to the available display/font size. Simple save and unread import tasks use a compact window. Opening More options or export options, loading a preview, or returning home restores editing space while retaining user-adjusted dimensions. This geometry is not saved across game restarts.
 
 Quality includes the base model/appearance/results plus four common controls: processing location, follow input, resolution scale and upsampling. It excludes HDR, motion/depth, FG policies and interface preferences; model UI correction is an image setting. Quality + Multi-Pass adds enabled layers and their models, styling/results and inheritance. Full backup also includes inactive layers and allowed compatibility/general fields, but **does not guarantee cross-game compatibility**. Startup hook policies require a game restart. There are no independent per-layer stages/resolutions. Old schema-1 presets missing the four newly classified Quality fields keep current values.
 
-**Undo last import** restores only fields still equal to imported values, preserving later edits. Library files require explicit saving; Slot autosave is separate. Configuration writes are checked before runtime publication, and failed application attempts to restore prior saved values. This does not guarantee a disk/GPU transaction or recovery from a process crash.
+**Undo last import** is available on the Profile library home when there is an import to undo, or beside Manage profiles on Advanced. It restores only fields still equal to imported values, preserving later edits. It is separate from Undo profile action. Library files require explicit saving; profile autosave is separate. Configuration writes are checked before runtime publication, and failed application attempts to restore prior saved values. This does not guarantee a disk/GPU transaction or recovery from a process crash.
 
 Edit the preset name, author, source game, description, search and file paths directly in the overlay's standard ImGui input fields. The description field supports multiple lines. Editing a field does not save a preset: use the normal save/export action afterwards. If direct IME input is garbled, click the keyboard-icon button beside the field title (hover for **Assisted input: Open the compatibility text editor for Chinese and other text.**), or right-click an editable preset field, custom Slot name or report text field and choose **Assisted input...**. Both open the same separate Windows Unicode editor, with its own input-method candidate window. The keyboard graphic in the section hint is static and not clickable; use the button or context menu. Select **Apply** to return the text to that field, then use the normal save/rename/export action. **Cancel** leaves the field unchanged; a result is discarded if its original text changed while editing. Candidate-selection keys follow your IME's behavior. Enter in a single-line field does not apply the text; use the Apply button. Escape first cancels an active composition and otherwise cancels the editor. This optional input path does not modify ReShade's handling of the original inline fields. Native-window focus and fullscreen behavior depend on the game and require validation in the target environment. This editor is present in the unreleased 0.2.0-dev.3 source; the published 0.2.0-dev.2 pre-release does not include it.
 
@@ -415,7 +418,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 - [结果调整与稳定性](#zh-results)
 - [叠层](#zh-multipass)
 - [诊断与报告](#zh-diagnostics)
-- [NR Profiles 与预设（开发中）](#zh-presets)
+- [NR 快速方案与方案库（开发中）](#zh-presets)
 - [高级、截图与主题](#zh-advanced)
 - [七个实用场景](#zh-scenarios)
 - [状态→原因→操作](#zh-status)
@@ -440,6 +443,8 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 *画质页：NR 开关、效果比较、模型、共用工作尺寸与介入点。*
 
 #### 开关与比较
+
+当前开发源码把 **Neural Rendering 主开关**放在画质页最前方、NR 快速方案之前。比较关／开时先用主开关，再选择或编辑方案。方案摘要表示保存状态和个人修改，是否实际执行 NR 请到“诊断”查看。
 
 | 控件 | 默认／选项 | 用途与条件 |
 | --- | --- | --- |
@@ -594,46 +599,47 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 模型风格改变生成阶段并重置时序历史，结果编辑实时塑造每层返回的改变量。介入点、工作分辨率、上采样仍共享。可调项和层数更多不代表画质或性能更好，应在实际游玩场景中比较后选择。
 
 <a id="zh-presets"></a>
-### NR 快速方案与预设（开发中）
+### NR 快速方案与方案库（开发中）
 
-本节对应当前开发预发布。已发布的 **0.1.0 包不包含六 Slot 或预设管理**。Release／Debug 构建及受影响自动化检查已通过，下列官方组合尚未完成实机画质或性能验证。
+本节对应当前 **0.2.0-dev.3 开发源码**，包括按任务展开的方案库。已发布的 **0.1.0 包不包含六个方案或方案库管理**。以下说明界面操作，不代表下列官方组合已通过实机画质或性能验收。
 
-#### 当前游戏的六个 Slot
+#### 当前游戏的六个方案
 
-画质页的 **NR 快速方案（NR Profiles）** 提供三个官方 Slot 和三个自定义 Slot。首次升级保留当前游戏配置，不自动套用官方组合。选择已有内容的 Slot 才应用其管理的 NR 设置；点击空自定义 Slot 只定位编辑目标，运行配置保持不变。
+画质页的 **NR 快速方案（NR Profiles）** 提供三个官方方案和三个自定义方案，标题旁为“管理方案”。首次升级保留当前游戏配置，不自动套用官方组合。选择已有内容的方案会应用其管理的 NR 设置。点击尚未创建的自定义方案会就地打开创建弹窗：“将当前设置保存为此方案”捕获当前设置并选中该方案；“从官方方案复制”按所选官方方案创建，然后选中并应用。“取消”保留当前设置。若目标已不再为空，请到“管理方案”检查，创建弹窗不会直接覆盖它。
 
 | 官方开发候选 | 介入点 | 层数／请求模型 | 工作尺寸 |
 | --- | --- | --- | --- |
-| **NR Lite** | Render | 1／B | 跟随输入；保存比例为 1.0，不再叠加一次降比例 |
-| **NR Balanced** | Upscaled | 1／A | 跟随输入；保存比例为 1.0 |
-| **NR Max** | Present | 2／先 A 后 B | 关闭跟随输入，比例 1.0，即参考尺寸的 100% |
+| **轻量（NR Lite）** | Render | 1／B | 跟随输入；保存比例为 1.0，不再叠加一次降比例 |
+| **均衡（NR Balanced）** | Upscaled | 1／A | 跟随输入；保存比例为 1.0 |
+| **极致（NR Max）** | Present | 2／先 A 后 B | 关闭跟随输入，比例 1.0，即参考尺寸的 100% |
 
 其余管理字段继承实际注册默认值。这些组合用于开始调整，不代表画质排名；模型、API 和资源门槛仍有效，不支持的 Present 请求会被拒绝。Ray Reconstruction 下 Render 沿用既有 Upscaled 行为；A/B 请求与运行时回退仍分别处理。
 
-每个官方 Slot 保存自己的**独立覆盖值（overrides）**，修改一个不改另一个；将字段调回模板值会移除该字段的覆盖。自定义 Slot 保存快照，包含未启用层的保存值。普通编辑约 **500ms 防抖后自动保存**；切换先等待待保存 Slot 数据成功，**保存失败不继续切换**。根据错误排查后使用重试；revision 冲突需停止并发编辑、重启重载，不自动合并。
+每个官方方案保存自己的**独立覆盖值（overrides）**，修改一个不改另一个；将字段调回模板值会移除该字段的覆盖。自定义方案保存快照，包含未启用层的保存值。普通编辑约 **500ms 防抖后自动保存**；切换先等待待保存方案数据成功，**保存失败不继续切换**。根据错误排查后使用重试；revision 冲突需停止并发编辑、重启重载，不自动合并。
 
-若目标配置已应用，但随后保存目标 Slot 状态失败，当前运行设置会保留，槽位显示为未保存。解决存储错误后重试，或使用撤销；这不是磁盘／GPU 原子事务。
+若目标配置已应用，但随后保存目标方案状态失败，当前运行设置会保留，方案显示为未保存。解决存储错误后重试，或使用撤销；这不是磁盘／GPU 原子事务。
 
-“撤销配置方案操作”（Undo profile action）撤销上一次 Slot 操作；配置撤销保留后续编辑，必要时解除选中关联。“恢复官方默认值”只清除当前官方 Slot 的覆盖值，可撤销恢复；不会重置全部六 Slot 或游戏兼容项。Slot 编辑不自动覆盖共享库中的预设文件。
+紧凑状态行旁的“方案操作”提供“撤销方案操作”；选中官方方案时还提供“恢复官方默认设置”。撤销回退上一次方案操作，配置撤销保留后续编辑，必要时解除选中关联。官方方案没有个人修改时，恢复不可用；有修改时先弹出确认窗，点“恢复”才清除该方案的个人覆盖值，“取消”、标题栏 X 或 Esc 均可关闭确认。恢复可以撤销，不重置其他方案或游戏兼容项，也不自动覆盖共享库文件。悬停摘要可查看状态详情；“已保存”表示存储状态，不证明 NR 实际执行。
 
-在**预设 → 我的预设（My presets）→ 自定义 Slot** 中，选择 Custom 1–3 后保存当前设置，或复制含独立覆盖的官方方案。复制仅存储，不应用；覆盖已有 Slot／清空前须确认。重命名只改显示文字，不改变固定身份或设置，重名也不合并。清空后 Slot 为空，运行配置保留。“保存或分享此 Slot”使用已保存快照打开保存与分享，不立即生成文件；仅导出启用层的范围可能省略快照中停用层的保存值。
+进入**管理方案 → 方案库**，展开默认关闭的“我的方案”，即可管理自定义 1–3，保存当前设置或复制含独立覆盖的官方方案。与快速选择区的就地创建不同，这里的复制仅存储，之后另选该方案才应用；替换已有内容或清空前须确认。重命名只改显示文字，不改变固定身份或设置，重名也不合并。清空后方案为空，运行配置保留。“保存或分享此方案”使用已保存快照打开保存任务，不立即生成文件；仅导出启用层的范围可能省略快照中停用层的保存值。
 
-Slot 按当前游戏身份保存在 `%LOCALAPPDATA%\NR Nexus\Profiles\<32hex-id>\slots.json`。重启只在当前配置与上次应用快照一致时恢复选中关联，绝不自动覆盖当前设置。外部重载使配置变化时解除关联，不将其写为官方覆盖。迁移安装位置或复制 INI 后，若 EXE 路径对应的 owner 不符，会把 Slot 数据复制到新身份并保留当前设置；不支持自动合并不同商店／安装版本。
+方案按当前游戏身份保存在 `%LOCALAPPDATA%\NR Nexus\Profiles\<32hex-id>\slots.json`。重启只在当前配置与上次应用快照一致时恢复选中关联，绝不自动覆盖当前设置。外部重载使配置变化时解除关联，不将其写为官方覆盖。迁移安装位置或复制 INI 后，若 EXE 路径对应的 owner 不符，会把方案数据复制到新身份并保留当前设置；不支持自动合并不同商店／安装版本。
 
-损坏／未来格式文件和只读配置受保护，不会直接覆盖。强退可能丢失最后尚未完成的 Slot 保存；ReShade 正常游戏设置的持久化语义仍独立，Slot 文件、配置和 GPU 执行不是一个原子事务。
+损坏／未来格式文件和只读配置受保护，不会直接覆盖。强退可能丢失最后尚未完成的方案保存；ReShade 正常游戏设置的持久化语义仍独立，方案文件、配置和 GPU 执行不是一个原子事务。
 
-#### 共享预设管理
+#### 方案库：主页、保存与导入
 
-在画质或高级页打开**预设**，管理器分为**我的预设（My presets）／保存与分享（Save and share）／导入预设（Import preset）**三页。打开及库内保存／重命名／复制／删除后自动刷新，也可点“刷新本地库”。默认共享库为 `%LOCALAPPDATA%\NR Nexus\Presets\`；保存与分享显示实际解析路径，“打开预设文件夹”打开该目录。共享库与当前游戏六 Slot 分开保存。
+在画质或高级页打开**管理方案**，进入单一的**方案库**主页：当前方案摘要、“保存方案”“导入方案”、折叠的“我的方案”管理区及可搜索的库列表。选中文件后才显示预览、重命名、复制及删除操作；删除须显式确认，且只影响库内文件。打开及库内保存／重命名／复制／删除后自动刷新，也可点“刷新方案库”。默认共享库为 `%LOCALAPPDATA%\NR Nexus\Presets\`，与当前游戏的六个方案分开保存。在保存任务中展开“导出文件”，可查看实际库路径并使用“打开方案文件夹”。
 
-1. **我的预设：** 搜索并选择库内文件，预览所选预设。重命名、复制、确认删除仅影响库内文件，不影响运行设置或 Slot 身份。
-2. **保存与分享：** 填名称及选填作者／描述／来源游戏，选择画质、画质＋叠层或完整备份，并可预览导出字段。通常来源为当前游戏配置；从自定义 Slot 分享时来源为其已保存快照，可点“使用当前游戏设置”切回。Slot 快照只导出画质范围，完整备份须切回当前游戏设置。“保存预设到本地库”显式保存，“复制分享文本”复制 JSON。“选择导出文件”或“浏览文件夹”只填入目标，检查后还须主动点“导出预设文件”才写入；替换已有文件须允许覆盖，选路径不会立即导出。
-3. **导入预设：** 选择文件、填写本地完整路径后读取文件，或读取剪贴板文本，均只准备预览。按组检查变化、保留值、不支持及跳过字段，可显示未改变字段。兼容项默认排除，完整备份需确认范围。当前设置变化后须检查刷新预览，再确认应用；取消不改变配置。
-4. **将 NR 字段分配到自定义 Slot：** 这是直接应用导入的另一种选择。选 Custom 1–3，已有内容时确认替换；将合格 NR 字段合入该 Slot 快照，空 Slot 则以当前设置为基础，缺失字段保留，不立即应用。不分配 HDR、深度／运动、FG 策略或界面偏好，之后另选该 Slot 才应用。
+1. **保存方案：** 初始只显示名称输入，首次使用默认“画质＋叠层”。展开“更多选项”再修改范围、选填作者／描述／来源游戏或“预览导出字段”。通常来源为当前游戏配置；从自定义方案分享时来源为其已保存快照，可点“使用当前游戏设置”切回。快照导出使用画质范围，完整备份须切回当前游戏设置。“保存方案到方案库”“导出文件”“复制分享文本”始终可见，保存会写入库文件，复制会把 JSON 放入剪贴板。展开“导出文件”后可指定路径、“选择导出文件”或“浏览文件夹”，最后主动点“导出方案文件”才写入。选路径不会立即导出；覆盖已有文件前须勾选替换许可；勾选后确认项始终可见，收起选项也不会隐藏。
+2. **导入方案：** 初始选择“选择方案文件”或“粘贴分享文本”；需要手输本地完整路径时再展开“输入文件路径”，然后“读取方案文件”。读取仅准备预览，成功后才出现差异、应用及自定义方案存入操作。按组检查变化、保留值、不支持及跳过字段，可显示未改变字段。兼容项默认排除，完整备份需确认范围。当前设置变化后须检查刷新预览，再“确认并应用方案”；“取消导入”丢弃待应用预览，不应用设置。
+3. **将 NR 设置存入自定义方案：** 这是直接应用导入的另一种选择。选自定义 1–3，已有内容时确认替换，完整备份还须确认范围。将合格 NR 字段合入该方案快照，空方案则以当前设置为基础，缺失字段保留，不立即应用。不存入 HDR、深度／运动、FG 策略或界面偏好，之后另选该方案才应用。
+
+“返回方案库”回到主页。标题栏 **X**，或管理窗口获得焦点且没有正在编辑的输入框时按 **Esc**，均可关闭管理器；再次打开从主页开始。同会话保留输入草稿、库内选择、展开选项和待应用的导入预览，关闭不会保存或应用它们。输入框、内部弹窗及原生辅助输入窗优先处理自己的 Esc。可拖动标题栏移动、拖动缩放角调整尺寸；尺寸与位置在当前运行会话中记忆，并按可用显示区域和字体大小约束。简洁保存与尚未读取文件的导入任务使用紧凑窗口。展开“更多选项”或导出选项、读取出预览或返回主页时恢复编辑空间，并保留用户调整的尺寸；此窗口几何不跨游戏重启保存。
 
 画质范围包含基础模型／外观／结果，以及介入点、跟随输入、共同分辨率比例和上采样四个控件；不包含 HDR、运动／深度、FG 策略或界面偏好，模型 UI correction 属图像设置。画质＋叠层增加启用层的模型、外观／结果及继承。完整备份还含停用层及允许的兼容／通用字段，但**不保证跨游戏兼容**；启动期 Hook 策略需重启游戏。没有逐层独立介入点或分辨率。旧 schema 1 文件缺少新增归入画质的四字段时保留当前值。
 
-“撤销上次导入”只恢复仍等于导入值的字段，保留之后的编辑。共享库文件仍须显式保存，与 Slot 自动保存分开。配置写入先核验再提交运行时参数，应用失败尝试恢复原保存值；不保证磁盘／GPU 事务或进程崩溃恢复。
+有可撤销的导入时，方案库主页会显示“撤销上次导入”，也可从高级页“管理方案”旁操作。它只恢复仍等于导入值的字段，保留之后的编辑，与“撤销方案操作”分开。共享库文件仍须显式保存，与方案自动保存分开。配置写入先核验再提交运行时参数，应用失败尝试恢复原保存值；不保证磁盘／GPU 事务或进程崩溃恢复。
 
 预设名称、作者、来源游戏、描述、搜索和文件路径均在叠加层的标准 ImGui 输入框中原位编辑，描述支持多行。编辑输入框只更新表单，之后仍需主动保存／导出预设。若原位 IME 输入乱码，可点击字段标题旁的键盘图标按钮（悬停可查看“辅助输入：打开兼容文本编辑窗口，输入中文等文字。”），或右键可编辑的预设字段、自定义 Slot 名称或报告文字输入框并选择 **辅助输入…**。两者打开同一个独立的 Windows Unicode 编辑窗及输入法候选窗。区域提示中的键盘图形仅作说明，不能点击；请使用标题旁按钮或右键菜单。点“应用”将文字带回原字段，再按原流程保存／重命名／导出；点“取消”放弃编辑，编辑期间原字段已变化时丢弃返回结果。候选选择按输入法自身规则处理；单行框按 Enter 不会应用文字，写回须点“应用”。Escape 优先取消正在进行的组合，没有组合时取消编辑窗。此可选输入路径不修改 ReShade 对原位输入框的消息处理。原生窗口焦点及全屏行为仍须在目标游戏环境中验证。该编辑窗位于尚未发布的 0.2.0-dev.3 源码中，已发布的 0.2.0-dev.2 预发布不包含此功能。
 
