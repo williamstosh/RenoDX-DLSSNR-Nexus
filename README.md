@@ -22,6 +22,7 @@ and four menu themes.
 
 | Version scope | What is available |
 | --- | --- |
+| **0.2.0-dev.1 source** | Adds local presets on top of 0.1.0; not yet a published package. See the [milestone notes](docs/releases/v0.2.0-dev.1.md). |
 | **0.1.0** | This README describes the version's four-page menu, dual models, independent per-pass look/result settings and four themes. See the [release notes](docs/releases/v0.1.0.md) for validation and remaining limits. |
 | [Previous pre-release: v0.1.0-dev.3](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.1.0-dev.3) | Includes 310.9.16 A/B models and per-pass model selection; it predates the menu, independent result editor and theme updates described here. |
 
@@ -226,6 +227,7 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 
 | 版本范围 | 可用范围 |
 | --- | --- |
+| **0.2.0-dev.1 源码** | 在 0.1.0 基础上新增本地预设，尚未发布安装包；见[里程碑说明](docs/releases/v0.2.0-dev.1.md)。 |
 | **0.1.0** | 本页描述此版本的四页菜单、双模型、逐层独立外观／结果设置与四套主题；验证及剩余限制见[版本说明](docs/releases/v0.1.0.md)。 |
 | [上一预发布版：v0.1.0-dev.3](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.1.0-dev.3) | 已包含 310.9.16 A/B 双模型与逐 Pass 模型选择；早于本页所述菜单、独立结果编辑器及主题更新。 |
 

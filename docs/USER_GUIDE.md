@@ -2,9 +2,9 @@
 
 [English](#english) · [简体中文](#简体中文) · [README](../README.md)
 
-> **Version scope — 0.1.0:** this guide describes the complete 0.1.0 package: four-page menu, dual models, independent per-pass model styling and result settings, and four interface themes. Check the Releases page for available versioned ZIP packages. Earlier pre-release packages do not contain every feature shown here.
+> **Version scope — 0.2.0-dev.1 source / 0.1.0 release:** this guide describes the complete 0.1.0 package: four-page menu, dual models, independent per-pass model styling and result settings, and four interface themes. Check the Releases page for available versioned ZIP packages. The preset sections describe 0.2.0-dev.1 development source and are not included in the published 0.1.0 package. Earlier pre-release packages do not contain every feature shown here.
 >
-> **版本范围——0.1.0：** 本指南对应完整 0.1.0 包，包含四页菜单、双模型、逐层独立模型风格与结果设置及四套主题。请在 Releases 页面查看可下载的版本化 ZIP，早期预发布包不含本指南展示的全部功能。
+> **版本范围——0.2.0-dev.1 源码／0.1.0 正式版：** 本指南对应完整 0.1.0 包，包含四页菜单、双模型、逐层独立模型风格与结果设置及四套主题。请在 Releases 页面查看可下载的版本化 ZIP，预设章节对应 0.2.0-dev.1 开发源码，未包含于已发布 0.1.0 包；早期预发布包也不含本指南展示的全部功能。
 
 ## English
 
