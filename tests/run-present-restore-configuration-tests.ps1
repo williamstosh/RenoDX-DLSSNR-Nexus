@@ -55,6 +55,9 @@ try {
         (Join-Path $addonDirectory 'screenshot.hpp'),
         (Join-Path $addonDirectory 'd3d11_bridge.hpp'),
         (Join-Path $addonDirectory 'codec_gain.hpp'),
+        (Join-Path $addonDirectory 'preset_store.hpp'),
+        (Join-Path $addonDirectory 'preset_fields.hpp'),
+        (Join-Path $addonDirectory 'preset_runtime.hpp'),
         (Join-Path $ShaderIncludeDirectory 'embed/shaders.h'))
     $hashes = @{}
     foreach ($inputPath in $inputs) {
@@ -126,7 +129,7 @@ try {
         'fail-sdr', 'fail-hdr', 'fail-bypass', 'fail-sdr-version', 'fail-hdr-version',
         'pre8-malformed-sdr-version', 'pre8-future-sdr-version', 'pre8-fail-sdr-bypass', 'v8-legacy-key', 'reset',
         'nr-model-default', 'nr-model-explicit', 'nr-model-invalid', 'nr-model-legacy',
-        'pass-result-default', 'pass-result-custom', 'pass-result-invalid')
+        'pass-result-default', 'pass-result-custom', 'pass-result-invalid', 'presets')
     $totalChecks = 0
     $totalFailures = 0
     $failedCases = @()
@@ -168,6 +171,15 @@ try {
             throw "PENDING: input changed during runtime checks: $inputPath; results invalidated."
         }
     }
+    $inventoryPath = Join-Path $outputDirectory 'presets/preset-field-inventory.json'
+    $inventory = Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json
+    if (-not $inventory.fields.Count) { throw 'Preset field inventory is empty.' }
+    foreach ($field in $inventory.fields) {
+        foreach ($name in @('key', 'type', 'default', 'range', 'category', 'pass', 'effect', 'environment')) {
+            if ($field.PSObject.Properties.Name -notcontains $name) { throw "Missing inventory field: $name" }
+        }
+    }
+    Add-RunLine "preset_field_inventory=$inventoryPath fields=$($inventory.fields.Count)"
     Add-RunLine "check_summary=$totalChecks checks, $totalFailures failures"
     if ($failedCases.Count -gt 0 -or $totalFailures -gt 0) {
         throw "Actual configuration checks failed: $($failedCases -join ', '); $totalFailures assertion failures."

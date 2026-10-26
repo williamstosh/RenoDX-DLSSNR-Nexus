@@ -113,6 +113,8 @@
 #include "report_upload.hpp"
 
 #include <nlohmann/json.hpp>
+#include "preset_store.hpp"
+#include "preset_fields.hpp"
 
 #pragma comment(lib, "bcrypt.lib")
 #pragma comment(lib, "shell32.lib")
@@ -20163,6 +20165,11 @@ struct Setting {
       }
       present_sdr_restore_config_version.store(present_sdr_restore::CONFIG_VERSION, std::memory_order_relaxed);
     }
+    StoreLocked(value);
+    ++present_restore_configuration.epoch;
+  }
+  // Caller owns the configuration lock; preset batches publish one epoch.
+  void StoreLocked(float value) const {
     if (f != nullptr) {
       f->store(value);
     } else if (u != nullptr) {
@@ -20170,7 +20177,6 @@ struct Setting {
     } else {
       b->store(value != 0.f);
     }
-    ++present_restore_configuration.epoch;
   }
   // Always to the global config file, as PersistConfig explains.
   void Persist() const {
@@ -23434,6 +23440,7 @@ static_assert(std::size(kResolutionPresets) == std::size(ui::text::kResolutionLa
 // i18n: end
 // The issue report (rc11): BeginIssueReport and the panel's steps.
 #include "report_flow.hpp"
+#include "preset_runtime.hpp"
 
 // ---- Faster (rc11): NR's cheaper settings, one click each ------------------
 // A player measured 57 fps with another NR add-on and 38 with this one, and
@@ -23660,6 +23667,7 @@ inline void DrawAbout() {
 // Developer view retains its flat settings and raw diagnostic controls.
 inline void DrawClassicLayout(reshade::api::effect_runtime* runtime, const ui::StatusCard& card) {
   const ui::PanelText& text = ui::kClassicText;
+  preset_ui::DrawEntry();
   // The hook point above every section: which insertion point the sections
   // steer is the first thing this view answers.
   DrawSectionHookPoint(text);
@@ -23738,6 +23746,7 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
     }
     bool reset = false;
     if (ui_menu_page == 0) {
+      preset_ui::DrawEntry();
       ui::StyleScope columns_style;
       columns_style.Var(ImGuiStyleVar_CellPadding, ImVec2(ui::tokens::kCardPadding, 2.f));
       const int columns = (ImGui::GetContentRegionAvail().x >= ImGui::GetFontSize() * ui::tokens::kWideEm ? 2 : 1);
@@ -23799,6 +23808,7 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
         ImGui::EndTable();
       }
     } else if (ui_menu_page == 1) {
+      preset_ui::DrawEntry(true);
       if (ui::SectionCaption(ui::text::kMenuPages[1], ui::text::kResetPerformance,
                              !ui_defaults_view && AnyModified({kPerformanceSettings, kStackingSettings, kPassLookResultSettings}))) {
         ResetSettings({kPerformanceSettings, kStackingSettings, kPassLookResultSettings});
@@ -23815,6 +23825,7 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
       DrawDiagnostics(verdict);
       DrawIssueReport();
     } else {
+      preset_ui::DrawEntry();
       char hotkeys[128];
       std::snprintf(hotkeys, sizeof(hotkeys), ui::Tr(ui::text::kHotkeysHint),
                     VirtualKeyName(toggle_hotkey.load()).c_str(),
@@ -24231,6 +24242,10 @@ inline float SanitizeFloatKey(
     float lo,
     float hi,
     const char* key) {
+  if (const auto* rule = presets::FindRule(key); rule != nullptr && std::isfinite(rule->minimum)) {
+    lo = static_cast<float>(rule->minimum);
+    hi = static_cast<float>(rule->maximum);
+  }
   if (std::isfinite(value)) {
     const float clamped = std::clamp(value, lo, hi);
     if (clamped != value) {
@@ -24253,6 +24268,10 @@ inline uint32_t SanitizeEnumKey(
     uint32_t min_value,
     uint32_t max_value,
     const char* key) {
+  if (const auto* rule = presets::FindRule(key); rule != nullptr && std::isfinite(rule->minimum)) {
+    min_value = static_cast<uint32_t>(rule->minimum);
+    max_value = static_cast<uint32_t>(rule->maximum);
+  }
   if (value >= min_value && value <= max_value) return value;
   NoteIniIssue(key, std::to_string(value) + " (using " + std::to_string(fallback) + ")");
   if (!config_value_rejected_logged.exchange(true)) {

@@ -14,6 +14,7 @@
 - [Quality: model, location and resolution](#en-quality)
 - [Result adjustment and stability](#en-results)
 - [Multi-Pass](#en-multipass)
+- [Presets (development)](#en-presets)
 - [Diagnostics and reports](#en-diagnostics)
 - [Advanced, screenshots and themes](#en-advanced)
 - [Seven practical scenarios](#en-scenarios)
@@ -195,6 +196,24 @@ This is an editing workflow, not a best-quality preset. It requires the 0.1.0 in
 
 Model styling changes synthesis and resets temporal history; result edits reshape each pass's returned change live. Location, working resolution and upsampling stay shared. More control and more passes do not establish better quality or performance—keep the combination that works in the scenes you actually play.
 
+<a id="en-presets"></a>
+### Presets (development)
+
+This section describes the development source after 0.1.0. The published 0.1.0 package does not include preset management.
+
+Open **Presets** on Quality or Advanced. The four main pages stay the same. Multi-Pass displays the current preset snapshot; changes to game settings do not overwrite its file.
+
+1. In **Save and share**, enter a name and choose **Quality preset**, **Quality + Multi-Pass**, or **Full configuration backup**. Optional author, description and source game are entered by you. **Preview export fields** shows what will be included. Exports always use **My settings**, including during a Built-in effects preview.
+2. **Save preset to library** writes to `%LOCALAPPDATA%\NR Nexus\Presets\`, shared by games using the same Windows account. **Export preset file** writes a `.nrnexus.json` file at the absolute local path you enter. **Copy share text** copies JSON. Existing files require explicit replacement; use another name to keep both.
+3. In **Local library**, select a file and choose **Preview selected preset**, enter a full local file path and choose **Read preset file**, or choose **Read clipboard text**. Reading never applies settings. Refresh and search the list as needed; rename, duplicate and confirmed deletion affect only library files.
+4. Review **Import preview**. Group filtering and **Show unchanged fields** let you inspect changes, kept values, unsupported keys and skipped fields. Game compatibility settings start excluded. A full backup also requires confirmation of its displayed scope. Review again if game settings changed while the preview was open, then choose **Confirm and apply preset**. **Cancel import** leaves game settings alone.
+
+Quality presets contain the base model and appearance. Quality + Multi-Pass adds the enabled layers, their requested models and independent/inherited styling and results. Full backups also include inactive layers, hotkeys, interface preferences and supported game-specific configuration. **Full backups are not guaranteed to work across games.** Hook policies that apply at startup are saved for the next game launch; other compatibility fields retain the existing API, HDR and resource gates. A/B requests stay intact even when the current runtime must fall back. There are no independent per-layer hook stages or resolutions.
+
+An **Unsaved preset changes** indicator means current settings differ from the session's saved/applied snapshot. Save explicitly to update a library file. **Undo last import** restores fields still equal to the imported values and keeps later edits. The displayed snapshot name is session-only; the game's actual parameters persist through ReShade's normal configuration mechanism. Writes are verified in ReShade's configuration cache before runtime publication. A failed write attempts to restore previous saved values; a process crash or later disk-flush/GPU failure is outside that guarantee.
+
+Only allowed NR Nexus settings and the optional metadata are exported. No logs, paths, screenshots, saves, report upload settings or other add-ons' sections are included. File operations are local; presets never upload or execute content. Imports have size, depth, duplicate-key, type and range checks. Use an ordinary local directory: network paths, reparse points and hard-linked preset files are rejected. A library access error leaves the current game settings intact. Third-party tools can use the [format reference](PRESET_FORMAT.md).
+
 <a id="en-diagnostics"></a>
 ### Diagnostics and reports
 
@@ -369,6 +388,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 - [结果调整与稳定性](#zh-results)
 - [叠层](#zh-multipass)
 - [诊断与报告](#zh-diagnostics)
+- [预设（开发中）](#zh-presets)
 - [高级、截图与主题](#zh-advanced)
 - [七个实用场景](#zh-scenarios)
 - [状态→原因→操作](#zh-status)
@@ -548,6 +568,24 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 6. 等待历史稳定，在同一场景比较静止与运动，并查看诊断中 **NR 开销**里的可用 GPU 耗时。固定介入点和尺寸，对比两层与一层；减少层数仍保留第 2 层编辑。耗时按诊断所列 NR 工作口径统计，不是逐层计时；不可用读数不代表零开销。
 
 模型风格改变生成阶段并重置时序历史，结果编辑实时塑造每层返回的改变量。介入点、工作分辨率、上采样仍共享。可调项和层数更多不代表画质或性能更好，应在实际游玩场景中比较后选择。
+
+<a id="zh-presets"></a>
+### 预设（开发中）
+
+本节对应 0.1.0 之后的开发源码。已发布的 0.1.0 安装包尚不包含预设管理。
+
+在画质或高级页打开“预设”，仍保留原四个主选项卡。叠层页显示当前预设快照；修改游戏参数不会自动覆盖预设文件。
+
+1. 在“保存与分享”输入名称，选择“画质预设”“画质＋叠层”或“完整配置备份”。作者、说明和来源游戏由你选填。“预览导出字段”显示包含内容。导出始终读取“我的设置”，预览内置效果时也不会误导出临时值。
+2. “保存预设到本地库”写入 `%LOCALAPPDATA%\NR Nexus\Presets\`，同一 Windows 账户的不同游戏共用该库。“导出预设文件”写入你填写的本地绝对路径，文件扩展名为 `.nrnexus.json`；“复制分享文本”复制 JSON。同名文件需要明确允许替换，也可改名保留两份。
+3. 在“本地预设库”选中文件后预览，输入完整本地路径后“读取预设文件”，或“读取剪贴板文本”。读取仅准备预览。列表支持刷新、搜索、重命名、复制和确认删除；这些操作只影响库内文件。
+4. 检查“导入预览”。可按组筛选，并显示未改变字段，核对变化、保留值、不支持及跳过字段。游戏兼容性设置默认排除；完整备份还需确认所示范围。预览后若游戏设置有变化，需重新检查，再“确认并应用预设”。“取消导入”不改变游戏配置。
+
+画质预设包含基础模型与外观；画质＋叠层增加启用层的模型请求、独立／继承风格及结果设置。完整备份还包含停用层、快捷键、界面偏好及已支持的游戏专属配置。**完整备份不保证跨游戏兼容。** 启动时生效的 Hook 策略保存后需重启游戏；其他兼容项沿用现有 API、HDR 与资源门槛。即使 Runtime 需要回退，A/B 请求仍原样保留。预设不提供逐层独立介入点或分辨率。
+
+“预设有未保存修改”表示当前值偏离本次会话保存／应用的快照，需主动保存才能更新文件。“撤销上次导入”仅恢复仍等于导入值的字段，保留之后的手动修改。快照名称仅在本次会话显示，实际参数通过原有 ReShade 配置机制持久化。写入先在 ReShade 配置缓存中核验，再提交运行时参数；写入失败会尝试恢复原值。进程崩溃、之后的磁盘落盘失败或 GPU 故障不属于该恢复保证。
+
+仅导出允许清单中的 NR Nexus 设置及选填元数据，不包含日志、路径、截图、存档、报告上传设置或其他 Add-on 配置节。全部文件操作在本机执行，预设不会上传或执行内容。导入检查大小、深度、重复键、类型与范围。请选择普通本地目录，网络路径、重解析点及硬链接文件会被拒绝。本地库访问失败不改变游戏设置。第三方工具可参考[格式说明](PRESET_FORMAT.md)。
 
 <a id="zh-diagnostics"></a>
 ### 诊断与报告

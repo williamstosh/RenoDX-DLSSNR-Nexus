@@ -261,6 +261,7 @@ int main() {
     double panel_total_ms = 0.0;
     unsigned panel_frames = 0;
     bool clipped_callback = false;
+    bool preset_fixture = false;
     const auto frame = [&](const ui::StatusCard* diagnostic_case = nullptr) {
       items.clear();
       rendered_text.clear();
@@ -281,7 +282,20 @@ int main() {
         ImGui::PushClipRect(ImVec2(-10.f, -10.f), ImVec2(-1.f, -1.f), true);
       }
       const auto panel_start = std::chrono::steady_clock::now();
-      if (diagnostic_case != nullptr) {
+      if (preset_fixture) {
+        runtime::RefreshUiLanguage();
+        ui::SetTheme(runtime::ui_theme_choice.load());
+        ui::StyleScope theme;
+        ui::PushPanelTheme(theme);
+        ImGui::OpenPopup("###nr_preset_manager");
+        if (auto* popup = ImGui::FindWindowByName("###nr_preset_manager")) {
+          const ImVec2 size((std::min)(panel_width * 0.94f, font_size * 43.f),
+                            (std::min)(panel_height * 0.90f, font_size * 39.f));
+          ImGui::SetWindowSize(popup, size);
+          ImGui::SetWindowPos(popup, ImVec2((panel_width - size.x) * 0.5f, (panel_height - size.y) * 0.5f));
+        }
+        runtime::preset_ui::DrawManager();
+      } else if (diagnostic_case != nullptr) {
         ui::StyleScope theme;
         ui::PushPanelTheme(theme);
         runtime::DrawRuntimeStatus(*diagnostic_case);
@@ -303,8 +317,12 @@ int main() {
       ImGui::Render();
       check(ui::style_depth == 0, "production menu leaks a style scope");
       for (ImGuiWindow* window : ImGui::GetCurrentContext()->Windows) {
+        // Native multiline editors own an internal text scroller. The outer
+        // input's item bounds, rather than that private cursor, define layout.
+        if (std::strstr(window->Name, "##preset_description_") != nullptr) continue;
         if (window->Active && (window->Flags & ImGuiWindowFlags_ChildWindow) != 0
-            && std::strstr(window->Name, "NR Nexus menu fixture") != nullptr) {
+            && (std::strstr(window->Name, "NR Nexus menu fixture") != nullptr
+                || std::strstr(window->Name, "nr_preset_manager") != nullptr)) {
           const float overflow = window->DC.CursorMaxPos.x - (window->Pos.x + window->Size.x - window->WindowPadding.x - window->ScrollbarSizes.x);
           if (overflow > 1.f) {
             std::printf("overflow: window=%s width=%.0f font=%.0f page=%d classic=%d scroll_x=%.1f\n",
@@ -985,6 +1003,62 @@ int main() {
       }
       std::puts("documentation captures: production menu, synthetic status, no game or GPU measurements");
     }
+    // The preset modal is the production implementation. No personal library
+    // or clipboard is read: seed only synthetic worker results and documents.
+    preset_fixture = true;
+    namespace presets = renodx::addons::dlss5::presets;
+    namespace manager = runtime::preset_ui;
+    runtime::ui_classic_layout = false;
+    runtime::SetDefaultsView(false);
+    manager::files = {L"Cinematic A+B.nrnexus.json", L"Long cinematic neural rendering sample name.nrnexus.json"};
+    manager::selected = manager::files.front();
+    manager::preview = {.metadata = {{"name", "Cinematic A+B"}, {"description", "Independent models and result settings"}},
+                        .scope = presets::Scope::QUALITY_MULTIPASS,
+                        .settings = {{"NRPreset", 1}, {"NRPasses", 2}, {"NRPass2Preset", 2},
+                                     {"NRIntensity", 1.25}, {"NRPass2FollowPass1", false},
+                                     {"NRPass2LookFollowPass1", false}, {"NRPass2LookColour", 0.75},
+                                     {"FutureSetting", true}}};
+    manager::have_preview = true;
+    manager::rows = manager::Preview(manager::preview, false);
+    std::strcpy(manager::name, "Cinematic A+B");
+    std::strcpy(manager::author, "Example");
+    std::strcpy(manager::description, "Independent models and result settings");
+    for (const auto& theme : ui::kThemes) {
+      runtime::ui_theme_choice = theme.id;
+      for (const int language : {1, 14}) {
+        runtime::ui_language_choice = language;
+        for (int view = 0; view < 3; ++view) {
+          manager::mode = view;
+          panel_width = 1100.f;
+          panel_height = 1250.f;
+          io.DisplaySize = ImVec2(panel_width, panel_height);
+          font_size = 18.f;
+          capture((std::string("presets-") + theme.slug + "-" + (language == 14 ? "zh-" : "en-") + std::to_string(view)).c_str());
+          check(ImGui::GetCurrentContext()->OpenPopupStack.Size == 1, "preset manager did not open as a modal");
+        }
+      }
+    }
+    for (int language = 1; language <= ui::kLanguageCount; ++language) {
+      runtime::ui_language_choice = language;
+      panel_width = 450.f;
+      panel_height = 1300.f;
+      io.DisplaySize = ImVec2(panel_width, panel_height);
+      font_size = 24.f;
+      for (int view = 0; view < 3; ++view) {
+        manager::mode = view;
+        frame(); frame(); frame();
+      }
+    }
+    runtime::ui_language_choice = 14;
+    manager::mode = 2;
+    capture("presets-narrow-zh");
+    panel_width = 3840.f;
+    panel_height = 2160.f;
+    io.DisplaySize = ImVec2(panel_width, panel_height);
+    font_size = 32.f;
+    frame(); frame();
+    capture("presets-4k-zh");
+    std::printf("preset modal: 4 themes, 15 languages, library/export/preview, narrow/4K captures; synthetic environment\n");
     std::printf("production menu checks=%u failures=0; category/pass/model/reset/persistence/classic/language/size matrix passed\n", checks);
     std::printf("production menu CPU mean=%.3f ms, frames=%u; includes synthetic test hooks and language changes, excludes GPU rendering\n",
                 panel_total_ms / panel_frames, panel_frames);

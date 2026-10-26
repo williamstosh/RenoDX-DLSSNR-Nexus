@@ -38,6 +38,7 @@ and four menu themes.
 | **Live diagnostics and reports** | Inspect NR activity, requested/resolved models, resources and GPU time when available; prepare optional diagnostics and a reviewed GitHub Issue draft. |
 | **Multilingual interface — 15 languages** | Let Auto follow ReShade or choose a language manually. Display depends on ReShade's loaded font; the guide lists languages and explains missing-glyph fallback. |
 | **Four interface themes** | Cyber Neon, Nexus Dark, Fluent Light and Midnight OLED change the menu's appearance, independently of image processing. |
+| **Local, shareable presets (development)** | Save quality or multi-pass looks to a shared local library, exchange JSON files or clipboard text, review differences, and apply or undo an import. Full backups require extra confirmation. See the [preset guide](docs/USER_GUIDE.md#en-presets); this feature is newer than the 0.1.0 release. |
 
 Model-look controls steer what NR generates; result editing reshapes the change
 returned by each pass. Model choice, look inheritance and result inheritance are
@@ -241,6 +242,7 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 | **实时诊断与报告** | 查看 NR 活动、请求／解析模型、资源及可用时的 GPU 时间，准备可选诊断与需用户检查提交的 Issue 草稿。 |
 | **15 种界面语言** | Auto 自动跟随 ReShade，也可手动选择。显示取决于 ReShade 已加载的字体，语言清单与缺字回退说明见指南。 |
 | **四套界面主题** | Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED 只改变菜单视觉，不影响 NR 图像处理。 |
+| **本地共享预设（开发中）** | 将画质或叠层设置保存到共享本地库，通过 JSON 文件或剪贴板分享，预览差异后应用，并可撤销上次导入。完整备份需要额外确认。操作见[预设指南](docs/USER_GUIDE.md#zh-presets)；此功能晚于 0.1.0 正式版。 |
 
 模型外观控制 NR 生成什么，结果编辑则塑造每层模型已经返回的改变量。模型选择、外观继承、
 结果继承彼此独立，附加层既可沿用第 1 层，也可保留各自保存的编辑。介入点、工作分辨率和
