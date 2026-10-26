@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import tempfile
+import sys
 import unittest
 from unittest import mock
 from PIL import Image, ImageDraw
@@ -16,6 +17,16 @@ class ExitTests(unittest.TestCase):
         self.out = Path(self.temp.name)
         self.session = runner.Session(dict(executable=str(self.out / 'game.exe'), logs=[]), self.out)
         self.session.window = dict(pid=123, created=1, hwnd=456, path='game.exe')
+
+    def test_manual_menu_checks_module_without_automated_ui(self):
+        self.session.cfg.update(manual_ime_session=True, capture_hold_seconds=900)
+        with (mock.patch.object(self.session, 'main_menu', side_effect=AssertionError('No automatic UI')),
+              mock.patch.object(self.session, 'check_mod') as check_mod,
+              mock.patch.object(self.session, 'capture_hold') as capture_hold):
+            self.session.menu()
+        check_mod.assert_called_once_with()
+        capture_hold.assert_called_once_with()
+        self.assertEqual(self.session.ui_state, 'manual_menu')
 
     def test_shutdown_scene_uses_exit_focus_validation_without_full_ocr_gate(self):
         self.session.ui_state = 'scene'
@@ -110,15 +121,28 @@ class ExitTests(unittest.TestCase):
                 self.session.calibrate()
         key.assert_not_called()
 
-    def test_capture_hold_argument_range_and_smoke_only(self):
-        for value in ('-1', '1', '9', '121', 'not-an-integer'):
+    def test_capture_hold_argument_range_and_supported_scenarios(self):
+        for value in ('-1', '1', '9', '901', 'not-an-integer'):
             with self.subTest(value=value), self.assertRaises(runner.argparse.ArgumentTypeError):
                 runner.parse_capture_hold_seconds(value)
         self.assertEqual(runner.parse_capture_hold_seconds('0'), 0)
         self.assertEqual(runner.parse_capture_hold_seconds('10'), 10)
         self.assertEqual(runner.parse_capture_hold_seconds('120'), 120)
-        with self.assertRaisesRegex(ValueError, 'only supported for the smoke'):
-            runner.validate_capture_hold_scenario('menu', 10)
+        self.assertEqual(runner.parse_capture_hold_seconds('900'), 900)
+        runner.validate_capture_hold_scenario('menu', 900)
+        with self.assertRaisesRegex(ValueError, 'only supported for smoke or menu'):
+            runner.validate_capture_hold_scenario('calibrate', 10)
+
+    def test_menu_hold_verifies_loaded_addon_without_loading_a_save(self):
+        with mock.patch.object(self.session, 'main_menu') as main_menu, \
+                mock.patch.object(self.session, 'check_mod') as check_mod, \
+                mock.patch.object(self.session, 'capture_hold') as hold, \
+                mock.patch.object(self.session, 'load_save', side_effect=AssertionError('IME needs no save')):
+            self.session.cfg['capture_hold_seconds'] = 900
+            self.session.menu()
+        main_menu.assert_called_once()
+        check_mod.assert_called_once()
+        hold.assert_called_once()
 
     def test_capture_hold_requires_strict_matching_pid_completion_signal(self):
         self.session.cfg.update(scenario='smoke', capture_hold_seconds=10)
@@ -176,6 +200,38 @@ class ExitTests(unittest.TestCase):
         capture.assert_not_called()
         close.assert_not_called()
         self.assertEqual(self.session.status['safe_exit'], 'menu_exit_pending_log_and_crash_check')
+
+    def test_manual_ime_deadline_keeps_waiting_until_matching_completion(self):
+        self.session.cfg.update(scenario='menu', capture_hold_seconds=10, manual_ime_session=True)
+        with mock.patch.object(runner.desktop, 'same_process', return_value=True), \
+                mock.patch.object(runner, 'capture_complete', side_effect=[False, False, True]), \
+                mock.patch.object(runner.time, 'monotonic', side_effect=[0, 10, 11]), \
+                mock.patch.object(runner.time, 'sleep'), \
+                mock.patch.object(self.session, 'key', side_effect=AssertionError('No automatic input')):
+            self.session.capture_hold()
+        self.assertTrue((self.out / 'manual-intervention-required.json').exists())
+        self.assertEqual(self.session.status['capture_hold'], 'completed_by_signal')
+
+    def test_manual_ime_shutdown_waits_for_user_without_game_input_or_termination(self):
+        self.session.cfg['manual_ime_session'] = True
+        self.session.status['capture_hold'] = 'completed_by_signal'
+        with mock.patch.object(runner.desktop, 'same_process', side_effect=[True, False]), \
+                mock.patch.object(runner.time, 'sleep'), \
+                mock.patch.object(self.session, 'wait_exit') as wait_exit, \
+                mock.patch.object(self.session, 'key', side_effect=AssertionError('No automatic input')), \
+                mock.patch.object(runner.desktop, 'terminate', side_effect=AssertionError('No force quit')):
+            self.session.shutdown()
+        wait_exit.assert_called_once_with(timeout=0)
+        self.assertTrue(json.loads((self.out / 'manual-exit-ready.json').read_text())['requested'])
+
+    def test_manual_ime_recovery_holds_protection_instead_of_terminating_game(self):
+        self.session.cfg['manual_ime_session'] = True
+        with mock.patch.object(runner.desktop, 'same_process', side_effect=[True, True, False]), \
+                mock.patch.object(runner, 'freeze_logs'), \
+                mock.patch.object(runner.time, 'sleep'), \
+                mock.patch.object(runner.desktop, 'terminate', side_effect=AssertionError('No force quit')):
+            self.assertTrue(runner.recover_owned(self.session.cfg, self.out, self.session.window))
+        self.assertTrue((self.out / 'intervention-required.json').exists())
 
     def test_unrequested_exit_is_not_success(self):
         with mock.patch.object(runner.desktop, 'same_process', return_value=False):
@@ -270,6 +326,18 @@ class ExitTests(unittest.TestCase):
         result = json.loads((self.out / 'result.json').read_text(encoding='utf-8'))
         self.assertEqual(result['result'], 'failed')
         self.assertIn('log inaccessible', result['diagnostic_error'])
+
+    def test_frozen_worker_imports_all_runtime_dependencies(self):
+        (self.out / 'saves').mkdir()
+        cfg = self.session.cfg | dict(profile=str(self.out), save_dir='saves')
+        with mock.patch('guard.ProtectedFiles', side_effect=RuntimeError('synthetic stop before launch')):
+            runner.run_attempt(cfg, self.out / 'attempt')
+        source = self.out / 'attempt/source'
+        manifest = json.loads((self.out / 'attempt/source-manifest.json').read_text(encoding='utf-8'))
+        self.assertIn('normal_process.py', [item['name'] for item in manifest['files']])
+        result = runner.subprocess.run([sys.executable, '-B', '-c', 'import runner'], cwd=source,
+                                       capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_transient_failure_retries_at_most_twice_and_keeps_attempt_records(self):
         cfg = dict(executable='game.exe', scenario='smoke')

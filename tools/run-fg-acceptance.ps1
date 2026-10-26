@@ -6,7 +6,7 @@ param(
     [string]$TargetPath = (Join-Path (Split-Path $PSScriptRoot -Parent) '.local/game-test/witcher3-steam.json'),
     [string]$OutputRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) 'artifacts/game-tests'),
     [ValidateSet('smoke','menu')][string]$Scenario = 'smoke',
-    [ValidateRange(0,120)][int]$CaptureHoldSeconds = 90,
+    [ValidateRange(0,900)][int]$CaptureHoldSeconds = 90,
     [switch]$GpuTimers,
     [switch]$SdrGameOutput,
     [switch]$StartNrDisabled,
@@ -19,10 +19,14 @@ param(
     [ValidateRange(-1,2)][int]$NrPass2Preset = -1,
     [ValidateRange(0,4)][int]$NrPasses = 0,
     [switch]$InstallOnly,
+    [switch]$ManualImeSession,
     [switch]$RestoreInstallation,
     [switch]$AddonAbsentControl
 )
 $ErrorActionPreference = 'Stop'
+if ($ManualImeSession -and ($Scenario -ne 'menu' -or $CaptureHoldSeconds -eq 0 -or $InstallOnly -or -not $RestoreInstallation)) {
+    throw '-ManualImeSession requires menu, a nonzero hold and -RestoreInstallation; installation-only is not supported.'
+}
 if ($AddonAbsentControl -and $InstallOnly) { throw 'An absent-add-on control cannot be retained without a test' }
 if (($NrRuntimePath -or $NrPreset -ge 0 -or $NrPass2Preset -ge 0 -or $NrPasses -gt 0) -and
     (-not $RestoreInstallation -or $InstallOnly)) {
@@ -43,6 +47,9 @@ if (-not (@('tmp','artifacts') | Where-Object { $OutputRoot.StartsWith((Join-Pat
     throw 'Acceptance output must remain below repository tmp/ or artifacts/.'
 }
 if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) { throw 'Provide -Python containing Pillow.' }
+. (Join-Path $PSScriptRoot 'game-test/normal-context.ps1')
+$taskContextExitCode = Invoke-NormalGameTestContext -EntryScript $PSCommandPath -Parameters $PSBoundParameters -Python $Python
+if ($null -ne $taskContextExitCode) { exit $taskContextExitCode }
 if (-not (Test-Path -LiteralPath $TargetPath -PathType Leaf)) { throw 'Missing local target configuration.' }
 $taskTarget = Get-Content -LiteralPath $TargetPath -Raw | ConvertFrom-Json
 $taskPerformanceTarget = [double]$taskTarget.performance_target_fps
@@ -116,6 +123,7 @@ $taskReceipt = [ordered]@{
     temporary_game_hud_visible=[bool]$ShowGameHud
     temporary_overlay_key=$(if ($IsolateOverlayKey) { 'F7' } else { $null })
     install_only=[bool]$InstallOnly
+    manual_ime_session=[bool]$ManualImeSession
     candidate_retained=$false; test_changes_restored=$false
     isolated_addons=@()
 }
@@ -241,7 +249,7 @@ try {
     if ($InstallOnly) {
         $taskReceipt.test_exit_code = 0
     } else {
-        & (Join-Path $PSScriptRoot 'run-game-test.ps1') -Python $Python -TargetPath $TargetPath -OutputRoot $OutputRoot -Scenario $Scenario -CaptureHoldSeconds $CaptureHoldSeconds -Retries 0 -AddonAbsentControl:$AddonAbsentControl
+        & (Join-Path $PSScriptRoot 'run-game-test.ps1') -Python $Python -TargetPath $TargetPath -OutputRoot $OutputRoot -Scenario $Scenario -CaptureHoldSeconds $CaptureHoldSeconds -Retries 0 -AddonAbsentControl:$AddonAbsentControl -ManualImeSession:$ManualImeSession
         $taskReceipt.test_exit_code = $LASTEXITCODE
     }
 } finally {
