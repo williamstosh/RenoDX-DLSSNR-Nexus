@@ -1857,6 +1857,12 @@ inline constexpr Translation kEs[] = {
     {"This profile requires a newer template version.", "Este perfil requiere una versión más reciente de la plantilla."},
     {"Private game profile identity", "Identificador privado de perfil del juego"},
     {"Profiles", "Perfiles"},
+    {"Assisted input...", "Entrada asistida…"},
+    {"For Chinese and other text, click %s beside the field.", "Para chino y otros textos, haz clic en %s junto al campo."},
+    {"Assisted input: Open the compatibility text editor for Chinese and other text.", "Entrada asistida: abre el editor de texto compatible para chino y otros textos."},
+    {"Text is invalid or exceeds the UTF-8 byte limit.", "El texto no es válido o supera el límite de bytes UTF-8."},
+    {"Unicode input failed or the original text changed. Please try again.", "La entrada Unicode falló o el texto original cambió. Inténtalo de nuevo."},
+    {"Apply", "Aplicar"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

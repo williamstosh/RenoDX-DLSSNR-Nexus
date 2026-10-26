@@ -864,12 +864,13 @@ inline void DrawManager() {
   const float footer = ImGui::GetFontSize() * 5.5f;
   if (ImGui::BeginChild("##preset_content", ImVec2(0.f, -footer), ImGuiChildFlags_None,
                         ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
+    ui::text_input::Hint();
     if (mode == 0) {
       if (ui::TreeNode("custom_slot_tools", ui::Tr("Custom slots"), 0, false)) {
         profile_ui::DrawCustomTools();
         ImGui::TreePop();
       }
-      ImGui::InputText(ui::ControlLabel(ui::Tr("Search presets")).c_str(), search, sizeof(search));
+      ui::text_input::DrawLabeled(ui::Tr("Search presets"), search, sizeof(search));
       if (ui::ActionButton(ui::Tr("Refresh library"), "refresh_presets")) {
         Start(Job::REFRESH);
       }
@@ -900,7 +901,7 @@ inline void DrawManager() {
         Start(Job::READ, selected);
       }
       ImGui::SetNextItemWidth(-1.f);
-      ImGui::InputText(ui::ControlLabel(ui::Tr("Preset name")).c_str(), name, sizeof(name));
+      ui::text_input::DrawLabeled(ui::Tr("Preset name"), name, sizeof(name));
       ImGui::BeginDisabled(*name == '\0');
       if (ui::ActionButton(ui::Tr("Rename preset"), "rename_preset")) {
         Start(Job::RENAME, selected, {}, name);
@@ -924,7 +925,7 @@ inline void DrawManager() {
       if (ui::ActionButton(ui::Tr("Choose preset file"), "choose_import")) Start(Job::CHOOSE_IMPORT);
       ImGui::TextWrapped("%s", ui::Tr("Import a file by its full path. Opening it only prepares a preview."));
       ImGui::SetNextItemWidth(-1.f);
-      ImGui::InputText(ui::ControlLabel(ui::Tr("File path")).c_str(), path, sizeof(path));
+      ui::text_input::DrawLabeled(ui::Tr("File path"), path, sizeof(path));
       if (ui::ActionButton(ui::Tr("Read preset file"), "read_preset")) {
         Start(Job::READ, std::filesystem::u8path(path));
       }
@@ -964,7 +965,7 @@ inline void DrawManager() {
         ImGui::TextWrapped("%s: %s", ui::Tr("Preset library"), text.c_str());
       }
       if (ui::ActionButton(ui::Tr("Open preset folder"), "open_preset_folder")) Start(Job::OPEN_FOLDER);
-      ImGui::InputText(ui::ControlLabel(ui::Tr("Preset name")).c_str(), name, sizeof(name));
+      ui::text_input::DrawLabeled(ui::Tr("Preset name"), name, sizeof(name));
       const char* scopes[] = {"Quality preset", "Quality + Multi-Pass", "Full configuration backup"};
       if (ImGui::BeginCombo(ui::ControlLabel(ui::Tr("Export scope")).c_str(), ui::Tr(scopes[scope_choice]))) {
         for (int i = 0; i < 3; ++i) {
@@ -979,10 +980,10 @@ inline void DrawManager() {
       if (scope_choice == 2) {
         ImGui::TextColored(ui::CurrentTheme().warn, "%s", ui::Tr("Full backups are not guaranteed to work across games."));
       }
-      ImGui::InputText(ui::ControlLabel(ui::Tr("Author (optional)")).c_str(), author, sizeof(author));
-      ImGui::InputText(ui::ControlLabel(ui::Tr("Source game (optional)")).c_str(), source_game, sizeof(source_game));
-      ImGui::TextWrapped("%s", ui::Tr("Description (optional)"));
-      ImGui::InputTextMultiline("##preset_description", description, sizeof(description), ImVec2(-1.f, ImGui::GetFontSize() * 3.f));
+      ui::text_input::DrawLabeled(ui::Tr("Author (optional)"), author, sizeof(author));
+      ui::text_input::DrawLabeled(ui::Tr("Source game (optional)"), source_game, sizeof(source_game));
+      ui::text_input::Draw("##preset_description", description, sizeof(description), true,
+                           ImVec2(-1.f, ImGui::GetFontSize() * 3.f), ui::Tr("Description (optional)"));
       const auto scope = static_cast<presets::Scope>(scope_choice);
       const Json metadata = {{"name", name}, {"author", author}, {"description", description}, {"source_game", source_game}, {"created_with", NR_NEXUS_NAME " " NR_NEXUS_VERSION}};
       ImGui::BeginDisabled(*name == '\0');
@@ -1005,7 +1006,7 @@ inline void DrawManager() {
       ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Browse folder")).x + ImGui::GetStyle().FramePadding.x * 2.f);
       if (ui::ActionButton(ui::Tr("Browse folder"), "choose_folder")) Start(Job::CHOOSE_FOLDER);
       ImGui::SetNextItemWidth(-1.f);
-      ImGui::InputText(ui::ControlLabel(ui::Tr("Export file path")).c_str(), path, sizeof(path));
+      ui::text_input::DrawLabeled(ui::Tr("Export file path"), path, sizeof(path));
       ImGui::BeginDisabled(*path == '\0');
       if (ui::ActionButton(ui::Tr("Export preset file"), "export_preset")) {
         Start(Job::EXPORT, {}, std::filesystem::u8path(path), {}, ExportSnapshot(scope, metadata));

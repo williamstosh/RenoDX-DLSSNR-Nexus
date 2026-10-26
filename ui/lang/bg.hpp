@@ -1857,6 +1857,12 @@ inline constexpr Translation kBg[] = {
     {"This profile requires a newer template version.", "Този профил изисква по-нова версия на шаблона."},
     {"Private game profile identity", "Частен идентификатор на профила на играта"},
     {"Profiles", "Профили"},
+    {"Assisted input...", "Помощно въвеждане…"},
+    {"For Chinese and other text, click %s beside the field.", "За китайски и друг текст щракнете върху %s до полето."},
+    {"Assisted input: Open the compatibility text editor for Chinese and other text.", "Помощно въвеждане: Отваря съвместим текстов редактор за китайски и друг текст."},
+    {"Text is invalid or exceeds the UTF-8 byte limit.", "Текстът е невалиден или надвишава ограничението за UTF-8 байтове."},
+    {"Unicode input failed or the original text changed. Please try again.", "Въвеждането чрез Unicode не бе успешно или първоначалният текст е променен. Опитайте отново."},
+    {"Apply", "Приложи"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

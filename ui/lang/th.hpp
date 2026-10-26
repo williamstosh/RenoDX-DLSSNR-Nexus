@@ -1857,6 +1857,12 @@ inline constexpr Translation kTh[] = {
     {"This profile requires a newer template version.", "โปรไฟล์นี้ต้องใช้เทมเพลตเวอร์ชันใหม่กว่า"},
     {"Private game profile identity", "ตัวระบุโปรไฟล์เกมส่วนตัว"},
     {"Profiles", "โปรไฟล์"},
+    {"Assisted input...", "ตัวช่วยป้อนข้อความ…"},
+    {"For Chinese and other text, click %s beside the field.", "หากต้องการป้อนภาษาจีนและข้อความอื่น ๆ ให้คลิก %s ข้างช่องกรอก"},
+    {"Assisted input: Open the compatibility text editor for Chinese and other text.", "ตัวช่วยป้อนข้อความ: เปิดตัวแก้ไขข้อความที่รองรับสำหรับป้อนภาษาจีนและข้อความอื่น ๆ"},
+    {"Text is invalid or exceeds the UTF-8 byte limit.", "ข้อความไม่ถูกต้องหรือเกินขีดจำกัดไบต์ UTF-8"},
+    {"Unicode input failed or the original text changed. Please try again.", "ป้อนข้อมูล Unicode ไม่สำเร็จหรือข้อความเดิมมีการเปลี่ยนแปลง โปรดลองอีกครั้ง"},
+    {"Apply", "นำไปใช้"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

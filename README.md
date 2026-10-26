@@ -41,6 +41,7 @@ and four menu themes.
 | **Four interface themes** | Cyber Neon, Nexus Dark, Fluent Light and Midnight OLED change the menu's appearance, independently of image processing. |
 | **Six NR Profile Slots (development)** | Three official development candidates plus three custom Slots for each game. Keep independent overrides, capture/rename/clear custom snapshots, undo profile actions or restore one official Slot. Slot edits save automatically; first upgrade keeps current game settings and a failed save blocks switching. |
 | **Local, shareable presets (development)** | My presets / Save and share / Import preset manage a shared local library. Preview imports, assign NR fields to a custom Slot, or explicitly save/share JSON and clipboard text. Full backups require extra confirmation; choosing an export destination alone does not write. See the [profile and preset guide](docs/USER_GUIDE.md#en-presets). |
+| **Assisted input (unreleased)** | When inline IME input is garbled, click the keyboard-icon button beside a field title (hover for “Assisted input: Open the compatibility text editor for Chinese and other text.”), or right-click an editable preset field, Slot name or report text field and choose **Assisted input...**. Both open the same optional native Windows Unicode editor. The icon in the section hint is static and not clickable. **Apply** returns text to the form; **Cancel** discards it, and saving remains explicit. This does not change inline input; native-window behavior still requires validation in the target game. See the [guide](docs/USER_GUIDE.md#en-presets). |
 
 Slots and preset management are available in the current development pre-release;
 the **0.1.0 stable package does not include them**. Official Lite (Render, 1 pass, B,
@@ -258,6 +259,7 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 | **四套界面主题** | Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED 只改变菜单视觉，不影响 NR 图像处理。 |
 | **六个 NR Profile Slot（开发中）** | 每游戏三个官方开发候选及三个自定义 Slot，独立保留覆盖值，可捕获／重命名／清空自定义快照、撤销 Slot 操作或恢复当前官方默认值。编辑自动保存，首次升级保留当前配置，保存失败不切换。 |
 | **本地共享预设（开发中）** | 我的预设／保存与分享／导入预设管理共享本地库，可预览导入、将 NR 字段分配到自定义 Slot，或显式保存／分享 JSON 与剪贴板文本。完整备份另行确认，选导出路径不会立即写入。操作见[方案与预设指南](docs/USER_GUIDE.md#zh-presets)。 |
+| **辅助输入（尚未发布）** | 原位 IME 输入异常时，点击字段标题旁的键盘图标按钮（悬停可查看“辅助输入：打开兼容文本编辑窗口，输入中文等文字。”），或右键可编辑的预设字段、Slot 名称或报告文字并选“辅助输入…”，打开同一个可选的 Windows 原生 Unicode 编辑窗。区域提示中的键盘图形仅作说明，不能点击。“应用”将文字带回表单，“取消”丢弃编辑；保存仍需主动执行。此功能不改变原位输入，原生窗口表现仍需在目标游戏中验证。见[指南](docs/USER_GUIDE.md#zh-presets)。 |
 
 Slot 和预设管理仅在当前开发预发布中提供，**0.1.0 稳定包不包含这些功能**。官方 Lite 为
 Render／1 层／B／跟随输入，Balanced 为 Upscaled／1 层／A／跟随输入，Max 为

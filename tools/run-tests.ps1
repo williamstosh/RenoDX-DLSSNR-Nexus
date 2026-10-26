@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('all','report','branding','ui','presets','native','sdr-policy','hdr-policy','scope','config','constants','fg-xefg','fg-native','lifecycle','bridge-motion')]
+    [ValidateSet('all','report','branding','ui','presets','unicode-input','native','sdr-policy','hdr-policy','scope','config','constants','fg-xefg','fg-native','lifecycle','bridge-motion')]
     [string[]]$Suite = @('all'),
     [string]$SourceRoot = (Split-Path $PSScriptRoot -Parent),
     [string]$HostRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) '.local/renodx'),
@@ -27,6 +27,7 @@ $OutputDirectory = Initialize-TestOutput $OutputDirectory
 $sources = [ordered]@{
     report='report_flow_tests'; ui='ui_layout_tests'
     presets='preset_store_tests'
+    'unicode-input'='unicode_input_tests'
     branding='branding_tests'
     native='native_contract_tests'; 'sdr-policy'='present_sdr_restore_policy_tests'
     'hdr-policy'='present_hdr_pedestal_policy_tests'; scope='present_restore_scope_tests'
@@ -49,6 +50,11 @@ $includes = @($SourceRoot, "$HostRoot/src", "$HostRoot/src/addons/dlss5",
 $libraries = @($DetoursLibrary,'uuid.lib','advapi32.lib','d3d11.lib','d3d12.lib','dxgi.lib','dxguid.lib')
 foreach ($item in $Suite) {
     $directory = Join-Path $OutputDirectory $item
+    if ($item -eq 'unicode-input') {
+        if ($BuildOnly) { throw '-BuildOnly is not supported for unicode-input.' }
+        & (Join-Path $testRoot 'run-unicode-input-tests.ps1') -SourceRoot $SourceRoot -OutputDirectory $directory -VcVars64 $VcVars64
+        continue
+    }
     if ($item -eq 'presets') {
         & (Join-Path $testRoot 'run-preset-store-tests.ps1') -SourceRoot $SourceRoot -HostRoot $HostRoot -OutputDirectory $directory -VcVars64 $VcVars64
         & (Join-Path $testRoot 'run-profile-store-tests.ps1') -SourceRoot $SourceRoot -HostRoot $HostRoot -OutputDirectory (Join-Path $OutputDirectory 'profiles') -VcVars64 $VcVars64

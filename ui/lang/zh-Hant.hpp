@@ -1857,6 +1857,12 @@ inline constexpr Translation kZhHant[] = {
     {"This profile requires a newer template version.", "此設定檔需要更新版本的範本。"},
     {"Private game profile identity", "私人遊戲設定檔識別碼"},
     {"Profiles", "設定檔"},
+    {"Assisted input...", "輔助輸入…"},
+    {"For Chinese and other text, click %s beside the field.", "輸入中文等文字時，請點擊欄位旁的 %s。"},
+    {"Assisted input: Open the compatibility text editor for Chinese and other text.", "輔助輸入：開啟相容文字編輯視窗，輸入中文等文字。"},
+    {"Text is invalid or exceeds the UTF-8 byte limit.", "文字無效或超過 UTF-8 位元組上限。"},
+    {"Unicode input failed or the original text changed. Please try again.", "Unicode 輸入失敗，或原始文字已變更。請再試一次。"},
+    {"Apply", "套用"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

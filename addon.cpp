@@ -18,6 +18,10 @@
 
 #include "lastgasp.hpp"
 
+#if defined(NR_NEXUS_IME_DIAGNOSTICS)
+#include "tests/ime_trace.hpp"
+#endif
+
 extern "C" __declspec(dllexport) constexpr const char* NAME = NR_NEXUS_ADDON_NAME;
 extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION = NR_NEXUS_DESCRIPTION;
 
@@ -37,6 +41,15 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
   }
 
   renodx::addons::dlss5::Use(reason, module, reserved);
+
+#if defined(NR_NEXUS_IME_DIAGNOSTICS)
+  if (reason == DLL_PROCESS_ATTACH) {
+    reshade::register_overlay(NR_NEXUS_NAME " IME diagnostics", nr_ime_trace::Draw);
+  } else if (reason == DLL_PROCESS_DETACH) {
+    nr_ime_trace::Stop();
+    reshade::unregister_overlay(NR_NEXUS_NAME " IME diagnostics", nr_ime_trace::Draw);
+  }
+#endif
 
   if (reason == DLL_PROCESS_DETACH) {
     reshade::unregister_addon(module);

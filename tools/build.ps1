@@ -3,7 +3,8 @@ param(
     [string]$RenodxRoot = (Join-Path $PSScriptRoot '../.local/renodx'),
     [Parameter(Mandatory)][string]$ToolRoot,
     [string]$BuildDirectory,
-    [ValidateSet('Debug', 'Release', 'RelWithDebInfo')][string]$Configuration = 'Release'
+    [ValidateSet('Debug', 'Release', 'RelWithDebInfo')][string]$Configuration = 'Release',
+    [switch]$ImeDiagnostics
 )
 
 $ErrorActionPreference = 'Stop'
@@ -64,6 +65,7 @@ $taskArguments = @(
     ('-DDXC_BIN=' + (Join-Path $taskTools 'dxc.exe')),
     ('-DSLANGC_BIN=' + (Join-Path $taskTools 'slangc.exe')),
     '-DRENODX_BUILD_TESTS=OFF',
+    ('-DNR_NEXUS_IME_DIAGNOSTICS=' + $(if ($ImeDiagnostics) { 'ON' } else { 'OFF' })),
     '-DCMAKE_SYSTEM_VERSION=10.0.26100.0',
     '-DCMAKE_CXX_FLAGS=/DWIN32 /D_WINDOWS /W3 /GR /EHsc /utf-8',
     '-DCMAKE_MODULE_LINKER_FLAGS=/DELAYLOAD:winhttp.dll'

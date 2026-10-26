@@ -99,11 +99,25 @@ inline void ObservedTextDisabled(const char* fmt, ...) {
 inline void ObservedTextWrapped(const char* fmt, ...) {
   va_list args;
   va_start(args, fmt);
+  va_list copy;
+  va_copy(copy, args);
+  char text[4096];
+  std::vsnprintf(text, sizeof(text), fmt, copy);
+  va_end(copy);
   TextWrappedV(fmt, args);
   va_end(args);
-  rendered_text.push_back({.text = fmt, .rect = ImRect(GetItemRectMin(), GetItemRectMax()), .window = GetCurrentWindow()});
+  rendered_text.push_back({.text = text, .rect = ImRect(GetItemRectMin(), GetItemRectMax()), .window = GetCurrentWindow()});
 }
 }  // namespace ImGui
+namespace native_window_fixture {
+inline BOOL WINAPI Show(HWND window, int command) {
+  return ShowWindow(window, GetDlgItem(window, 1001) != nullptr ? SW_HIDE : command);
+}
+inline BOOL WINAPI Foreground(HWND window) {
+  if (GetDlgItem(window, 1001) != nullptr) return TRUE;
+  return SetForegroundWindow(window);
+}
+}  // namespace native_window_fixture
 #define TextUnformatted ObservedTextUnformatted
 #define Text            ObservedText
 #define TextDisabled    ObservedTextDisabled
@@ -114,8 +128,12 @@ inline void ObservedTextWrapped(const char* fmt, ...) {
 #define GetClipboardData clipboard_fixture::Get
 #define EmptyClipboard clipboard_fixture::Empty
 #define SetClipboardData clipboard_fixture::Set
+#define ShowWindow native_window_fixture::Show
+#define SetForegroundWindow native_window_fixture::Foreground
 #undef IMGUI_VERSION_NUM
 #include "dlssnr.hpp"
+#undef ShowWindow
+#undef SetForegroundWindow
 #undef OpenClipboard
 #undef CloseClipboard
 #undef GetClipboardData
@@ -408,7 +426,7 @@ int main() {
       }
       // Clipped native buttons emit ItemAdd before their visible label info.
       for (ImGuiWindow* window : ImGui::GetCurrentContext()->Windows) {
-        const auto id = window->GetID(("###" + label).c_str());
+        const auto id = window->GetID((label.starts_with("##") ? label : "###" + label).c_str());
         if (items.contains(id)) return items.at(id);
       }
       throw std::runtime_error("menu item missing: " + label);
@@ -1140,6 +1158,81 @@ int main() {
       manager::Pump();
       check(manager::worker.error.empty(), "preset Unicode worker failed");
     };
+    const auto assisted_entry = [&](const char* label, char* buffer, bool context_menu) {
+      namespace native = renodx::addons::dlss5::unicode_input;
+      const auto original = std::string(buffer);
+      frame(); frame();
+      const auto field = find(label);
+      if (context_menu) {
+        click(field);
+        const ImVec2 center = items.at(field.id).rect.GetCenter();
+        io.AddMousePosEvent(center.x, center.y);
+        io.AddMouseButtonEvent(1, true); frame();
+        io.AddMouseButtonEvent(1, false); frame(); frame();
+        click(find("Assisted input..."));
+      } else {
+        const auto button = ImHashStr("###assisted_input", 0, field.id);
+        check(items.contains(button), "each input has a unique associated assistance button");
+        click(Item(items.at(button)));
+      }
+      check(native::Busy(), "button and context menu start the existing native worker");
+      check(ui::text_input::pending.field == field.id, "both entry points retain the original field ID");
+      HWND editor = nullptr;
+      DWORD thread = 0;
+      {
+        std::shared_lock lock(native::internal::state.mutex);
+        thread = GetThreadId(native::internal::state.worker);
+      }
+      for (int attempt = 0; attempt < 1000; ++attempt) {
+        EnumThreadWindows(thread, [](HWND window, LPARAM out) -> BOOL {
+          if (GetDlgItem(window, 1001) == nullptr) return TRUE;
+          *reinterpret_cast<HWND*>(out) = window;
+          return FALSE;
+        }, reinterpret_cast<LPARAM>(&editor));
+        HWND edit = (editor == nullptr ? nullptr : GetDlgItem(editor, native::internal::TEXT_ID));
+        if (edit != nullptr && SendMessageW(edit, EM_GETLIMITTEXT, 0, 0) == native::internal::MAX_EDIT_UNITS) break;
+        editor = nullptr;
+        Sleep(1);
+      }
+      check(editor != nullptr && IsWindowUnicode(editor) && !IsWindowVisible(editor),
+            "entry uses the real Unicode editor while the test keeps it hidden");
+      const std::string value = "辅助中文 English123";
+      check(SetWindowTextW(GetDlgItem(editor, native::internal::TEXT_ID), L"辅助中文 English123"),
+            "set only synthetic native editor text");
+      SendMessageW(editor, WM_COMMAND, context_menu ? IDCANCEL : native::internal::APPLY_ID, 0);
+      for (int attempt = 0; attempt < 1000 && native::Busy(); ++attempt) { frame(); Sleep(1); }
+      frame(); frame();
+      check(!native::Busy(), "assisted editor result is consumed without leaving a worker");
+      check(std::string(buffer) == (context_menu ? original : value),
+            "button Apply returns text and context-menu Cancel preserves the original");
+    };
+    frame(); frame();
+    const auto form_window = find("##Preset name").window;
+    const auto hint_before = std::find_if(rendered_text.begin(), rendered_text.end(), [&](const auto& text) {
+      return text.window == form_window;
+    });
+    check(hint_before != rendered_text.end() && std::next(hint_before) != rendered_text.end(), "top instruction exposes its noninteractive text/icon row");
+    const auto& hint_after = *std::next(hint_before);
+    click({.rect = ImRect(ImVec2(hint_before->rect.Max.x, hint_before->rect.Min.y),
+                          ImVec2(hint_after.rect.Min.x, hint_after.rect.Max.y)), .window = form_window});
+    check(!renodx::addons::dlss5::unicode_input::Busy() && ui::text_input::pending.field == 0,
+          "clicking the explanatory keyboard graphic never starts an editor");
+    const auto icon_id = ImHashStr("###assisted_input", 0, find("##Preset name").id);
+    hover(Item(items.at(icon_id)), "Assisted input: Open the compatibility text editor for Chinese and other text.", nullptr);
+    capture("assisted-keyboard-idle-en", nullptr, false);
+    const ImVec2 icon_center = items.at(icon_id).rect.GetCenter();
+    io.AddMousePosEvent(icon_center.x, icon_center.y);
+    for (int attempt = 0; attempt < 40; ++attempt) frame();
+    capture("assisted-keyboard-hover-en", nullptr, false);
+    io.AddMousePosEvent(-100.f, -100.f);
+    frame();
+    for (const auto& [label, buffer] : {std::pair{"##Preset name", manager::name},
+                                      std::pair{"##Author (optional)", manager::author},
+                                      std::pair{"##Source game (optional)", manager::source_game},
+                                      std::pair{"##preset_description", manager::description}}) {
+      assisted_entry(label, buffer, false);
+      assisted_entry(label, buffer, true);
+    }
     input_text("##Preset name", "电影画质_日本語_한국어_é", manager::name);
     input_text("##Author (optional)", "作者_Élodie_日本", manager::author);
     input_text("##Source game (optional)", "巫师3_Witcher_日本語", manager::source_game);
@@ -1197,6 +1290,56 @@ int main() {
     const std::string ansi_mojibake(manager::name);
     replace_name_from_utf16(message_probe_unicode);
     check(std::string(manager::name) == "中文", "Unicode captured before ANSI conversion must preserve inline input");
+    replace_name_from_utf16(L"中文电影_日本語_한국어_é");
+    // Exercise the real native worker -> production widget return path. Keep
+    // test windows hidden, and never touch the user's clipboard or IME state.
+    const auto accept_native_text = [&](const char* value, bool change_original) {
+      namespace native = renodx::addons::dlss5::unicode_input;
+      namespace input = renodx::addons::dlss5::ui::text_input;
+      const auto item = find("##Preset name");
+      const auto field = item.window->GetID("##Preset name");
+      input::pending = {.field = field, .context = reinterpret_cast<std::uintptr_t>(&io),
+                        .initial = manager::name};
+      const std::string title = "NR Nexus hidden input integration " + std::to_string(GetCurrentProcessId());
+      check(native::internal::StartEditor({.field = field, .value = manager::name, .title = title,
+                .label = "Synthetic name", .apply_label = "Apply", .cancel_label = "Cancel",
+                .invalid_label = "Invalid", .max_bytes = sizeof(manager::name) - 1}, false),
+            "start hidden Unicode editor from production input transaction");
+      frame();  // Retire ImGui's active edit state while native editing is busy.
+      std::wstring wide_title;
+      check(native::internal::Utf8ToWide(title, &wide_title), "native integration title conversion");
+      HWND editor = nullptr;
+      for (int attempt = 0; attempt < 1000; ++attempt) {
+        editor = FindWindowW(nullptr, wide_title.c_str());
+        // FindWindow can see the dialog before WM_INITDIALOG has finished.
+        // The production text limit is set after its initial text/subclass.
+        HWND edit = (editor == nullptr ? nullptr : GetDlgItem(editor, native::internal::TEXT_ID));
+        if (edit != nullptr && SendMessageW(edit, EM_GETLIMITTEXT, 0, 0) == native::internal::MAX_EDIT_UNITS) break;
+        editor = nullptr;
+        Sleep(1);
+      }
+      check(editor != nullptr, "hidden editor created on its worker thread");
+      if (editor != nullptr) {
+        std::wstring wide_value;
+        check(native::internal::Utf8ToWide(value, &wide_value), "native integration value conversion");
+        check(SetDlgItemTextW(editor, native::internal::TEXT_ID, wide_value.c_str()) != FALSE,
+              "set synthetic native text");
+        if (change_original) std::strcpy(manager::name, "changed meanwhile");
+        SendMessageW(editor, WM_COMMAND, native::internal::APPLY_ID, 0);
+      }
+      for (int attempt = 0; attempt < 1000 && native::Busy(); ++attempt) Sleep(1);
+      check(!native::Busy(), "native worker completed before polling its result");
+      frame(); frame();
+      check(std::string(manager::name) == (change_original ? "changed meanwhile" : value),
+            "native return must update its field once and preserve intervening edits");
+      check(input::pending.field == 0, "native widget transaction consumed exactly once");
+      click(find("##Preset name"));
+      frame();
+      check(std::string(manager::name) == (change_original ? "changed meanwhile" : value),
+            "refocusing inline input must not revive its previous ImGui edit state");
+    };
+    accept_native_text("中文测试", false);
+    accept_native_text("你好世界", true);
     replace_name_from_utf16(L"中文电影_日本語_한국어_é");
     const Json unicode_metadata{{"name", manager::name}, {"author", manager::author},
                                 {"description", manager::description}, {"source_game", manager::source_game},
@@ -1308,6 +1451,61 @@ int main() {
     std::strcpy(manager::description, "Independent models and result settings");
     runtime::profile_ui::state.slots[3].name = "A long custom profile name with literal ## and ### markers";
     ui::expand_all_sections = true;
+    unsigned assisted_layout_cases = 0;
+    const auto check_assisted_layout = [&]() {
+      for (const char* title : {"Preset name", "Author (optional)", "Source game (optional)", "Description (optional)"}) {
+        const std::string label = (std::string(title) == "Description (optional)"
+                                      ? "##preset_description" : std::string("##") + ui::Tr(title));
+        const auto field = find(label);
+        const auto id = ImHashStr("###assisted_input", 0, field.id);
+        check(items.contains(id), "localized assistance button stays associated with its field");
+        const auto& button = items.at(id);
+        check(button.window == field.window, "header button remains in the field's form");
+        check(button.rect.Min.x >= field.rect.Min.x - 1.f && button.rect.Max.x <= field.rect.Max.x + 2.f,
+              "assistance button fits inside the field width");
+        const auto heading = std::find_if(rendered_text.begin(), rendered_text.end(), [&](const auto& text) {
+          return text.window == button.window && std::fabs(text.rect.Min.y - button.rect.Min.y) <= 0.5f
+                 && text.rect.Max.x <= button.rect.Min.x;
+        });
+        check(heading != rendered_text.end() && button.rect.Min.x - heading->rect.Max.x <= font_size * 0.5f + 1.f,
+              "keyboard button stays immediately beside the title");
+        check(button.rect.GetWidth() <= font_size * 1.3f + 0.5f, "assistance entry keeps compact icon dimensions");
+        // Vertically clipped buttons have bounds but no ItemInfo label.
+        check(button.label.empty() || button.label == "###assisted_input", "assistance button has no visible label text");
+        check(button.rect.Max.y <= field.rect.Min.y && field.rect.Min.y - button.rect.Min.y <= button.rect.GetHeight() * 1.5f + 2.f,
+              "assistance button shares the title row without adding a second row");
+        check(button.rect.GetHeight() <= font_size + 0.5f, "assistance button uses a compact single text row");
+      }
+      const std::string hint = ui::Tr("For Chinese and other text, click %s beside the field.");
+      const auto marker = hint.find("%s");
+      check(marker != std::string::npos && hint.find("%s", marker + 2) == std::string::npos,
+            "each translated single-line hint has one graphical icon placeholder");
+      const auto form = find(std::string("##") + ui::Tr("Preset name")).window;
+      unsigned count = 0;
+      auto before = rendered_text.end();
+      for (auto text = rendered_text.begin(); text != rendered_text.end() && std::next(text) != rendered_text.end(); ++text) {
+        const auto& next = *std::next(text);
+        if (text->window == form && next.window == form
+            && std::fabs(text->rect.Min.y - next.rect.Min.y) <= 0.5f
+            && std::fabs(next.rect.Min.x - text->rect.Max.x - font_size * 1.25f) <= 1.f) {
+          ++count;
+          before = text;
+        }
+      }
+      check(count == 1, "the editing area shows the assistance hint exactly once");
+      check(before != rendered_text.end() && std::next(before) != rendered_text.end(), "single-line hint has text on both sides of its static icon");
+      const auto& after = *std::next(before);
+      std::string before_text = before->text;
+      std::string after_text = after.text;
+      if (before_text.ends_with("...")) before_text.resize(before_text.size() - 3);
+      if (after_text.ends_with("...")) after_text.resize(after_text.size() - 3);
+      check(hint.substr(0, marker).starts_with(before_text) && hint.substr(marker + 2).starts_with(after_text),
+            "hint preserves localized sentence order around the graphical placeholder");
+      check(std::fabs(before->rect.Min.y - after.rect.Min.y) <= 0.5f, "hint remains on one line at every tested width and language");
+      check(std::fabs(after.rect.Min.x - before->rect.Max.x - font_size * 1.25f) <= 1.f,
+            "hint reserves the same keyboard geometry width as the field button");
+      ++assisted_layout_cases;
+    };
     for (const auto& theme : ui::kThemes) {
       runtime::ui_theme_choice = theme.id;
       for (const int language : {1, 14}) {
@@ -1319,6 +1517,7 @@ int main() {
           io.DisplaySize = ImVec2(panel_width, panel_height);
           font_size = 18.f;
           capture((std::string("presets-") + theme.slug + "-" + (language == 14 ? "zh-" : "en-") + std::to_string(view)).c_str());
+          if (view == 1) check_assisted_layout();
           check(ImGui::GetCurrentContext()->OpenPopupStack.Size == 1, "preset manager did not open as a modal");
         }
       }
@@ -1332,8 +1531,23 @@ int main() {
       for (int view = 0; view < 3; ++view) {
         manager::mode = view;
         frame(); frame(); frame();
+        if (view == 1) check_assisted_layout();
       }
     }
+    panel_width = 320.f;
+    font_size = 32.f;
+    io.DisplaySize = ImVec2(panel_width, panel_height);
+    manager::mode = 1;
+    for (int language = 1; language <= ui::kLanguageCount; ++language) {
+      runtime::ui_language_choice = language;
+      frame(); frame(); frame();
+      check_assisted_layout();
+    }
+    runtime::ui_language_choice = 14;
+    capture("assisted-presets-narrow-zh");
+    panel_width = 450.f;
+    font_size = 24.f;
+    io.DisplaySize = ImVec2(panel_width, panel_height);
     runtime::ui_language_choice = 14;
     manager::mode = 2;
     capture("presets-narrow-zh");
@@ -1344,6 +1558,7 @@ int main() {
     frame(); frame();
     capture("presets-4k-zh");
     std::printf("preset modal: 4 themes, 15 languages, library/export/preview, narrow/4K captures; synthetic environment\n");
+    std::printf("assisted input: eight real hidden entry/Apply/Cancel flows; %u localized header layout cases passed\n", assisted_layout_cases);
     std::printf("production menu checks=%u failures=0; category/pass/model/reset/persistence/classic/language/size matrix passed\n", checks);
     std::printf("production menu CPU mean=%.3f ms, frames=%u; includes synthetic test hooks and language changes, excludes GPU rendering\n",
                 panel_total_ms / panel_frames, panel_frames);

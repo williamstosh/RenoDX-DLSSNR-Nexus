@@ -1056,15 +1056,14 @@ inline void DrawIssueReport() {
     };
     switch (at) {
       case Step::kDescribe: {
-        ImGui::TextUnformatted(ui::Tr("Step 1 of 3: what went wrong?"));
+        ui::text_input::Hint();
         ImGui::SetNextItemWidth(-FLT_MIN);
-        ImGui::InputTextWithHint("##issue_description",
-                                 ui::Tr("One line: what you saw, and where in the game (optional)"),
-                                 issue_report::typed, sizeof(issue_report::typed));
-        ImGui::TextUnformatted(ui::Tr(ui::text::kReportSteps));
+        ui::text_input::Draw("##issue_description", issue_report::typed, sizeof(issue_report::typed),
+                             false, ImVec2(), ui::Tr("Step 1 of 3: what went wrong?"),
+                             ui::Tr("One line: what you saw, and where in the game (optional)"));
         ImGui::SetNextItemWidth(-FLT_MIN);
-        ImGui::InputTextMultiline("##issue_steps", issue_report::typed_steps, sizeof(issue_report::typed_steps),
-                                  ImVec2(-FLT_MIN, ImGui::GetTextLineHeightWithSpacing() * 3.f));
+        ui::text_input::Draw("##issue_steps", issue_report::typed_steps, sizeof(issue_report::typed_steps), true,
+                             ImVec2(-FLT_MIN, ImGui::GetTextLineHeightWithSpacing() * 3.f), ui::Tr(ui::text::kReportSteps));
         ui::Checkbox(ui::Tr(ui::text::kReportFeature), &issue_report::typed_feature);
         for (size_t i = 0; i < std::size(issue_report::kTicks); ++i) {
           bool ticked = ((issue_report::typed_ticks >> i) & 1u) != 0;

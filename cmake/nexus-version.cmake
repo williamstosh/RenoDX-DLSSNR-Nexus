@@ -22,6 +22,10 @@ function(nr_nexus_apply_version)
   list(FILTER nexus_sources EXCLUDE REGEX "[/\\\\]resource[.]rc$")
   set_property(TARGET dlss5 PROPERTY SOURCES "${nexus_sources}")
   target_sources(dlss5 PRIVATE "${nexus_root}/cmake/nexus-version.rc")
+  option(NR_NEXUS_IME_DIAGNOSTICS "Enable the synthetic, opt-in IME research overlay" OFF)
+  if(NR_NEXUS_IME_DIAGNOSTICS)
+    target_compile_definitions(dlss5 PRIVATE NR_NEXUS_IME_DIAGNOSTICS)
+  endif()
   target_compile_definitions(dlss5 PRIVATE
     "VER_FILEVERSION=${nexus_major},${nexus_minor},${nexus_patch},0"
     "VER_FILEVERSION_STR=\"${nexus_version}\\0\""

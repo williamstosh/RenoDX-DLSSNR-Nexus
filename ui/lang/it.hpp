@@ -1857,6 +1857,12 @@ inline constexpr Translation kIt[] = {
     {"This profile requires a newer template version.", "Questo profilo richiede una versione più recente del modello."},
     {"Private game profile identity", "Identificativo privato del profilo di gioco"},
     {"Profiles", "Profili"},
+    {"Assisted input...", "Inserimento assistito…"},
+    {"For Chinese and other text, click %s beside the field.", "Per il cinese e gli altri testi, fai clic su %s accanto al campo."},
+    {"Assisted input: Open the compatibility text editor for Chinese and other text.", "Inserimento assistito: apre l’editor di testo compatibile per il cinese e gli altri testi."},
+    {"Text is invalid or exceeds the UTF-8 byte limit.", "Il testo non è valido o supera il limite di byte UTF-8."},
+    {"Unicode input failed or the original text changed. Please try again.", "L’inserimento Unicode non è riuscito o il testo originale è cambiato. Riprova."},
+    {"Apply", "Applica"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

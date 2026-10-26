@@ -626,7 +626,9 @@ inline void DrawCustomTools() {
   ImGui::TextWrapped("%s: %s", ui::Tr("Custom slot"), Name(edit_index).c_str());
   if (!state.slots[edit_index].populated) ImGui::TextWrapped("%s", ui::Tr("Empty slot"));
   ImGui::SetNextItemWidth(-1.f);
-  ImGui::InputText(ui::ControlLabel(ui::Tr("Slot display name")).c_str(), rename, sizeof(rename));
+  ImGui::PushID(edit_index);
+  ui::text_input::DrawLabeled(ui::Tr("Slot display name"), rename, sizeof(rename));
+  ImGui::PopID();
   if (ui::ActionButton(ui::Tr("Rename slot"), "rename_slot")) {
     const auto before = state;
     state.slots[edit_index].name = rename;

@@ -1857,6 +1857,12 @@ inline constexpr Translation kJa[] = {
     {"This profile requires a newer template version.", "このプロファイルには、より新しいバージョンのテンプレートが必要です。"},
     {"Private game profile identity", "ゲームプロファイルの非公開識別子"},
     {"Profiles", "プロファイル"},
+    {"Assisted input...", "入力補助…"},
+    {"For Chinese and other text, click %s beside the field.", "中国語などの文字を入力するには、フィールド横の %s をクリックしてください。"},
+    {"Assisted input: Open the compatibility text editor for Chinese and other text.", "入力補助：中国語などの文字を入力できる互換テキストエディターを開きます。"},
+    {"Text is invalid or exceeds the UTF-8 byte limit.", "テキストが無効か、UTF-8 のバイト数上限を超えています。"},
+    {"Unicode input failed or the original text changed. Please try again.", "Unicode 入力に失敗したか、元のテキストが変更されています。もう一度お試しください。"},
+    {"Apply", "適用"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

@@ -1857,6 +1857,12 @@ inline constexpr Translation kTr[] = {
     {"This profile requires a newer template version.", "Bu profil daha yeni bir şablon sürümü gerektiriyor."},
     {"Private game profile identity", "Özel oyun profili kimliği"},
     {"Profiles", "Profiller"},
+    {"Assisted input...", "Yardımcı giriş…"},
+    {"For Chinese and other text, click %s beside the field.", "Çince ve diğer metinler için alanın yanındaki %s simgesine tıklayın."},
+    {"Assisted input: Open the compatibility text editor for Chinese and other text.", "Yardımcı giriş: Çince ve diğer metinler için uyumlu metin düzenleyiciyi açar."},
+    {"Text is invalid or exceeds the UTF-8 byte limit.", "Metin geçersiz veya UTF-8 bayt sınırını aşıyor."},
+    {"Unicode input failed or the original text changed. Please try again.", "Unicode girişi başarısız oldu veya özgün metin değişti. Lütfen yeniden deneyin."},
+    {"Apply", "Uygula"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

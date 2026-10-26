@@ -1857,6 +1857,12 @@ inline constexpr Translation kKo[] = {
     {"This profile requires a newer template version.", "이 프로필에는 더 최신 버전의 템플릿이 필요합니다."},
     {"Private game profile identity", "비공개 게임 프로필 식별자"},
     {"Profiles", "프로필"},
+    {"Assisted input...", "보조 입력…"},
+    {"For Chinese and other text, click %s beside the field.", "중국어 등 다른 문자를 입력하려면 필드 옆의 %s를 클릭하세요."},
+    {"Assisted input: Open the compatibility text editor for Chinese and other text.", "보조 입력: 중국어 등 다른 문자를 입력할 수 있는 호환 텍스트 편집기를 엽니다."},
+    {"Text is invalid or exceeds the UTF-8 byte limit.", "텍스트가 유효하지 않거나 UTF-8 바이트 제한을 초과했습니다."},
+    {"Unicode input failed or the original text changed. Please try again.", "Unicode 입력에 실패했거나 원래 텍스트가 변경되었습니다. 다시 시도하세요."},
+    {"Apply", "적용"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

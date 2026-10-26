@@ -1866,6 +1866,12 @@ inline constexpr Translation kZhHans[] = {
     {"This profile requires a newer template version.", "此配置档需要更新版本的模板。"},
     {"Private game profile identity", "私有游戏配置标识"},
     {"Profiles", "配置档"},
+    {"Assisted input...", "辅助输入…"},
+    {"For Chinese and other text, click %s beside the field.", "输入中文等文字，请点击字段旁的 %s。"},
+    {"Assisted input: Open the compatibility text editor for Chinese and other text.", "辅助输入：打开兼容文本编辑窗口，输入中文等文字。"},
+    {"Text is invalid or exceeds the UTF-8 byte limit.", "文本无效或超过 UTF-8 字节上限。"},
+    {"Unicode input failed or the original text changed. Please try again.", "Unicode 输入失败，或原文本已改变。请重试。"},
+    {"Apply", "应用"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

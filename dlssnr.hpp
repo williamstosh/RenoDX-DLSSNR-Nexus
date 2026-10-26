@@ -99,6 +99,7 @@
 #include "ui/state_card.hpp"
 #include "ui/strings.hpp"
 #include "ui/widgets.hpp"
+#include "ui/text_input.hpp"
 #include "submission_tracker.hpp"
 #include "fg_xefg.hpp"
 #include "fg_native_options.hpp"
