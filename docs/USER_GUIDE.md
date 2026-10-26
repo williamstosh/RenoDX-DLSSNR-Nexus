@@ -2,9 +2,9 @@
 
 [English](#english) · [简体中文](#简体中文) · [README](../README.md)
 
-> **Version scope — 0.2.0-dev.1 source / 0.1.0 release:** this guide describes the complete 0.1.0 package: four-page menu, dual models, independent per-pass model styling and result settings, and four interface themes. Check the Releases page for available versioned ZIP packages. The preset sections describe 0.2.0-dev.1 development source and are not included in the published 0.1.0 package. Earlier pre-release packages do not contain every feature shown here.
+> **Version scope — 0.2.0-dev.2 pre-release / 0.1.0 release:** this guide describes the complete 0.1.0 package: four-page menu, dual models, independent per-pass model styling and result settings, and four interface themes. Check the Releases page for available versioned ZIP packages. The NR Profiles and preset sections describe the current 0.2.0-dev.2 development pre-release and are not included in the published 0.1.0 package. Earlier pre-release packages do not contain every feature shown here.
 >
-> **版本范围——0.2.0-dev.1 源码／0.1.0 正式版：** 本指南对应完整 0.1.0 包，包含四页菜单、双模型、逐层独立模型风格与结果设置及四套主题。请在 Releases 页面查看可下载的版本化 ZIP，预设章节对应 0.2.0-dev.1 开发源码，未包含于已发布 0.1.0 包；早期预发布包也不含本指南展示的全部功能。
+> **版本范围——0.2.0-dev.2 预发布／0.1.0 正式版：** 本指南对应完整 0.1.0 包，包含四页菜单、双模型、逐层独立模型风格与结果设置及四套主题。请在 Releases 页面查看可下载的版本化 ZIP，NR Profiles 与预设章节对应当前 0.2.0-dev.2 开发预发布，未包含于已发布 0.1.0 包；早期预发布包也不含本指南展示的全部功能。
 
 ## English
 
@@ -14,7 +14,7 @@
 - [Quality: model, location and resolution](#en-quality)
 - [Result adjustment and stability](#en-results)
 - [Multi-Pass](#en-multipass)
-- [Presets (development)](#en-presets)
+- [NR Profiles and presets (development)](#en-presets)
 - [Diagnostics and reports](#en-diagnostics)
 - [Advanced, screenshots and themes](#en-advanced)
 - [Seven practical scenarios](#en-scenarios)
@@ -37,17 +37,14 @@ Defaults below are for a fresh configuration. Existing saved choices and migrati
 
 ![Quality page](images/ui/quality.webp)
 
-*Quality — NR enable, effect comparison, model, shared working resolution and processing location.*
+*Quality — NR enable, model, shared working resolution and processing location.*
 
 #### Enable and compare
 
 | Control | Default / options | What it does and when to use it |
 | --- | --- | --- |
 | Neural Rendering | On; Off / On | Turns NR on or off. Default toggle key: **F6**. Use this for an NR-off comparison; setting a strength to zero is a different operation. |
-| Effect: Built-in effect / Mine | Mine during normal use | Built-in effect temporarily uses stock model strength, model styling, result and Multi-Pass values. Your saved values are retained; select Mine to restore and edit them. This is not a factory reset. |
 | Model strength | **1.00**, range **0–2** | Sent to the model before result adjustment. Changes reset NR history. The response above 1 depends on the model/runtime and is unverified; 2 is not a promised “double quality” setting. |
-
-Built-in effect preserves the game's working resolution, hook point, compatibility settings and hotkeys. Its comparison controls are disabled and settings are not saved while that view is active. NR enable remains available. Returning to Mine restores your previous appearance and pass configuration; switching to Developer view also ends this preview.
 
 #### Model selection
 
@@ -187,7 +184,7 @@ For controlled comparisons on the supported dual-model runtime, try **A**, **B**
 
 This is an editing workflow, not a best-quality preset. It requires the 0.1.0 interface described above and the recognized **310.9.16.0** runtime for B.
 
-1. Enable Neural Rendering, select **Mine**, and keep the processing location, working resolution and upsampling fixed. In **Multi-Pass**, set **Pass Count** to **2**.
+1. Enable Neural Rendering and keep the processing location, working resolution and upsampling fixed. In **Multi-Pass**, set **Pass Count** to **2**.
 2. Select the **Pass 1** node and choose **A**. Try **Style: Natural**, then adjust Local tone or Model structure. Enable **Adjust NR's look** in that pass's result section and change one output control, such as **Highlights**. These are the same base values shown on Quality.
 3. Select **Pass 2**, explicitly choose **B**, and turn **Same as pass 1** and **Inherit Pass 1 result settings** off. The controls reveal Pass 2's stored independent values, initially defaults; they do not copy the current Pass 1 edits.
 4. Try **Style: Cinematic** for Pass 2 and adjust its Local tone or structure separately. Enable that pass's **Adjust NR's look**, then try **Fine detail** or **Halo suppression**, changing one control at a time. Character / skin requires that pass's Character mask; Independent skin remains global and can cap the structure sent to the model. Result effects require an available result stage, and Motion stabilization needs usable motion vectors.
@@ -197,20 +194,50 @@ This is an editing workflow, not a best-quality preset. It requires the 0.1.0 in
 Model styling changes synthesis and resets temporal history; result edits reshape each pass's returned change live. Location, working resolution and upsampling stay shared. More control and more passes do not establish better quality or performance—keep the combination that works in the scenes you actually play.
 
 <a id="en-presets"></a>
-### Presets (development)
+### NR Profiles and presets (development)
 
-This section describes the development source after 0.1.0. The published 0.1.0 package does not include preset management.
+This section describes the current development pre-release. The published **0.1.0 package contains neither six Slots nor preset management**. Release/Debug builds and focused automated checks passed; the official combinations below have not been validated for in-game image quality or performance.
 
-Open **Presets** on Quality or Advanced. The four main pages stay the same. Multi-Pass displays the current preset snapshot; changes to game settings do not overwrite its file.
+#### Six Slots for this game
 
-1. In **Save and share**, enter a name and choose **Quality preset**, **Quality + Multi-Pass**, or **Full configuration backup**. Optional author, description and source game are entered by you. **Preview export fields** shows what will be included. Exports always use **My settings**, including during a Built-in effects preview.
-2. **Save preset to library** writes to `%LOCALAPPDATA%\NR Nexus\Presets\`, shared by games using the same Windows account. **Export preset file** writes a `.nrnexus.json` file at the absolute local path you enter. **Copy share text** copies JSON. Existing files require explicit replacement; use another name to keep both.
-3. In **Local library**, select a file and choose **Preview selected preset**, enter a full local file path and choose **Read preset file**, or choose **Read clipboard text**. Reading never applies settings. Refresh and search the list as needed; rename, duplicate and confirmed deletion affect only library files.
-4. Review **Import preview**. Group filtering and **Show unchanged fields** let you inspect changes, kept values, unsupported keys and skipped fields. Game compatibility settings start excluded. A full backup also requires confirmation of its displayed scope. Review again if game settings changed while the preview was open, then choose **Confirm and apply preset**. **Cancel import** leaves game settings alone.
+**NR Profiles** on Quality offers three official Slots and three custom Slots. First upgrade keeps the game's current configuration: no official profile is automatically applied. Selecting a populated Slot applies its managed NR settings; selecting an empty custom Slot opens its editing target and leaves the running configuration intact.
 
-Quality presets contain the base model and appearance. Quality + Multi-Pass adds the enabled layers, their requested models and independent/inherited styling and results. Full backups also include inactive layers, hotkeys, interface preferences and supported game-specific configuration. **Full backups are not guaranteed to work across games.** Hook policies that apply at startup are saved for the next game launch; other compatibility fields retain the existing API, HDR and resource gates. A/B requests stay intact even when the current runtime must fall back. There are no independent per-layer hook stages or resolutions.
+| Official development candidate | Location | Passes / requested models | Working size |
+| --- | --- | --- | --- |
+| **NR Lite** | Render | 1 / B | Follow input; stored scale 1.0, without an additional scale reduction |
+| **NR Balanced** | Upscaled | 1 / A | Follow input; stored scale 1.0 |
+| **NR Max** | Present | 2 / A then B | Follow input off; scale 1.0 (100% of the reference size) |
 
-An **Unsaved preset changes** indicator means current settings differ from the session's saved/applied snapshot. Save explicitly to update a library file. **Undo last import** restores fields still equal to the imported values and keeps later edits. The displayed snapshot name is session-only; the game's actual parameters persist through ReShade's normal configuration mechanism. Writes are verified in ReShade's configuration cache before runtime publication. A failed write attempts to restore previous saved values; a process crash or later disk-flush/GPU failure is outside that guarantee.
+Other managed values inherit actual registered defaults. These are starting candidates, not quality rankings. Runtime model, API and resource gates still apply; unsupported Present requests are rejected. Render with Ray Reconstruction retains its existing Upscaled behavior. A/B requests and runtime fallback remain distinct.
+
+Each official Slot keeps its own **overrides**. Editing one does not change another; returning a field to that template's value removes its override. Custom Slots retain snapshots, including values saved for disabled passes. Ordinary edits are automatically saved after about **500ms** of debounce. A switch waits for pending Slot data to save; **saving failure prevents the switch**. Read the error and use Retry after resolving it. A revision conflict requires stopping concurrent edits and restarting to reload; there is no automatic merge.
+
+If the target configuration applies but saving its Slot state then fails, the applied game settings remain in place and the Slot is shown as unsaved. Resolve the storage error and retry, or use Undo; this is not an atomic disk/GPU transaction.
+
+**Undo profile action** reverses the last profile operation; configuration undo keeps fields edited afterwards and may detach the selected association. **Restore official defaults** clears only the current official Slot's overrides and can be undone. It does not reset all six Slots or the game's compatibility settings. Slot changes never automatically overwrite shared preset-library files.
+
+In **Presets → My presets → Custom slots**, select Custom 1–3 to capture current settings or copy an official profile with its overrides. Copying stores data without applying it. Confirm replacement/clearing when that Slot is populated. Rename changes only display text, never its fixed identity or settings; duplicate names remain separate Slots. Clear empties that Slot and leaves running game settings intact. **Save or share this slot** opens Save and share using its saved snapshot; it does not immediately create a file. An enabled-layer export scope can omit saved values of disabled passes.
+
+Slots are private to this game's profile identity, under `%LOCALAPPDATA%\NR Nexus\Profiles\<32hex-id>\slots.json`. On restart, association is restored only when current settings match the last applied snapshot; settings are never automatically overwritten. External configuration reloads that change settings detach the association without replacing official overrides. Moving the installation or copying an INI with a different executable-path owner forks the Slot data to a new identity and keeps current settings. Automatic merging across stores/installations is not supported.
+
+Corrupt/future profile files and read-only configuration are protected rather than overwritten. Force-closing the process may lose the last pending Slot save. ReShade's normal game-setting persistence remains independent; Slot files, configuration and GPU execution are not one atomic transaction.
+
+#### Shared preset manager
+
+Open **Presets** on Quality or Advanced. Its three pages are **My presets**, **Save and share**, and **Import preset**. The library refreshes when the manager opens and after library saves, renames, duplicates or deletions; **Refresh library** refreshes it again. The default shared library is `%LOCALAPPDATA%\NR Nexus\Presets\`; Save and share shows the resolved path and **Open preset folder** opens it. It is separate from this game's six Slots.
+
+1. **My presets:** search/select a library file and choose **Preview selected preset**. Rename, duplicate and confirmed deletion affect library files, not running settings or Slot identities.
+2. **Save and share:** enter a name, optional author/description/source game, and choose Quality, Quality + Multi-Pass, or Full configuration backup. **Preview export fields** shows the data. The source is current game settings unless you came from a saved custom Slot; **Use current game settings** switches back. Saved Slot exports use Quality scopes; switch back to current game settings for a Full backup. **Save preset to library** saves explicitly; **Copy share text** copies JSON. **Choose export file** or **Browse folder** only fills the export destination. Review it, then explicitly press **Export preset file** to write. Existing files require permission to replace; choosing a destination alone does not write.
+3. **Import preset:** use **Choose preset file**, enter a full local path and **Read preset file**, or **Read clipboard text**. Reading only prepares a preview. Review grouped differences, kept/unsupported/skipped fields and **Show unchanged fields**. Compatibility settings start excluded; full backups require scope confirmation. If settings changed, review the refreshed preview before **Confirm and apply preset**. **Cancel import** leaves settings alone.
+4. **Assign NR fields to custom slot** is an alternative to applying an import. Choose Custom 1–3 and confirm replacement if populated. It merges eligible valid NR fields into the saved Slot (or current settings for an empty Slot), preserving missing fields, without applying it. HDR, depth/motion, FG policies and interface preferences are not assigned. Select that Slot separately to apply it.
+
+Quality includes the base model/appearance/results plus four common controls: processing location, follow input, resolution scale and upsampling. It excludes HDR, motion/depth, FG policies and interface preferences; model UI correction is an image setting. Quality + Multi-Pass adds enabled layers and their models, styling/results and inheritance. Full backup also includes inactive layers and allowed compatibility/general fields, but **does not guarantee cross-game compatibility**. Startup hook policies require a game restart. There are no independent per-layer stages/resolutions. Old schema-1 presets missing the four newly classified Quality fields keep current values.
+
+**Undo last import** restores only fields still equal to imported values, preserving later edits. Library files require explicit saving; Slot autosave is separate. Configuration writes are checked before runtime publication, and failed application attempts to restore prior saved values. This does not guarantee a disk/GPU transaction or recovery from a process crash.
+
+Edit the preset name, author, source game, description, search and file paths directly in the overlay's standard ImGui input fields. The description field supports multiple lines. Editing a field does not save a preset: use the normal save/export action afterwards. Actual IME input depends on ReShade's input host and still requires verification with the user's input method.
+
+Names and descriptions use UTF-8; the name, author and source-game limits are 128 bytes each, and the description limit is 2048 bytes, so Chinese text reaches the limit sooner than ASCII. Input fields are limited by their UTF-8 buffer capacities. If correctly stored text displays as boxes or replacement glyphs in the overlay, check ReShade's language and font override. Correct UTF-8 data does not need re-encoding or a Windows system code-page change. JSON can preserve supplementary characters such as emoji; entering and displaying them in the overlay still depends on the host's input handling and ImGui/font combination.
 
 Only allowed NR Nexus settings and the optional metadata are exported. No logs, paths, screenshots, saves, report upload settings or other add-ons' sections are included. File operations are local; presets never upload or execute content. Imports have size, depth, duplicate-key, type and range checks. Use an ordinary local directory: network paths, reparse points and hard-linked preset files are rejected. A library access error leaves the current game settings intact. Third-party tools can use the [format reference](PRESET_FORMAT.md).
 
@@ -271,7 +298,7 @@ Saving a local ZIP, authorizing upload to the displayed temporary hosts, includi
 | Language | **Auto**, or one of 15 languages | English, German, French, Spanish, Italian, Portuguese (Brazil), Russian, Bulgarian, Slovenian, Turkish, Thai, Japanese, Korean, Chinese (Simplified), Chinese (Traditional). Auto follows ReShade's language, which follows Windows unless selected there; an unmatched language falls back to English. Choices remain readable in English. ReShade loads fonts for its own language; if the add-on detects missing glyphs, it stays in English and warns in `ReShade.log`. Select the corresponding language in ReShade too, and check any custom font override. |
 | Notifications | **On** | Controls gameplay activation/failure/health notices. Turning it off retains the overlay status and Diagnostics. |
 | HUD position X / Y | **50% / 0%**, **0–100%** each | Position of the add-on's notification HUD, not the game's HUD. |
-| Developer view | **Off** (modern view) | Switches to the classic flat layout, with technical/raw English controls. Same underlying settings; switching ends Built-in effect preview. Use the same button to return. |
+| Developer view | **Off** (modern view) | Switches to the classic flat layout, with technical/raw English controls. Same underlying settings. Use the same button to return. |
 | Restore all defaults | Two-step Restore / Cancel | Resets the covered settings, including strengths, codec, resolution, passes, hotkeys, language, layout and notification position; recreates NR features. Theme has its own reset. Attach-time hook support configuration is not reset. |
 | Version & about | Readout | Shows the add-on version, loaded NR runtime version and game executable name. Runtime and add-on versions are independent. |
 
@@ -344,7 +371,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 <a id="en-scenarios"></a>
 ### Seven practical scenarios
 
-1. **First installation and activity check.** Follow the README prerequisites, DLL locations and installation steps. Open NR Nexus, use one pass and Auto, then check the loaded runtime and actual NR state in Diagnostics. Compare F6 Off/On in the same scene; compare Built-in effect/Mine separately, returning to Mine before editing.
+1. **First installation and activity check.** Follow the README prerequisites, DLL locations and installation steps. Open NR Nexus, use one pass and Auto, then check the loaded runtime and actual NR state in Diagnostics. Compare F6 Off/On in the same scene; in development source, choose an NR Profile explicitly only when ready to replace its managed settings.
 2. **Choose a location in a DLSS game.** Start with Upscaled. Compare Render when its compatible DLSS input is available; Ray Reconstruction can keep it on Upscaled. Choose Present for the finished-frame look, then inspect the actual route and guide policy. Hold model, pass count and working size constant while comparing.
 3. **Compare A/B and pass order.** On the recognized dual-model runtime, test A, B, AA, AB, BA and BB with matching location, size and strengths. Explicitly select each pass model and check both inheritance switches before editing. Allow history to settle, then inspect faces, foliage, highlights and movement; no sequence is guaranteed best.
 4. **Confirm NR with FG.** Keep the game's intended native FG or XeFG setup. Read FG activity, observed multiplier and NR route separately. Look for recent Pre-FG submissions and a consistent route; an unknown multiplier is not FG Off. If Present/Upscaled fallback or mixed execution is reported, read its reason before assessing cost or generated-frame consistency.
@@ -370,7 +397,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 | Required guides, skipped frames | No matching usable depth/motion for those frames | Use Optional if neutral fallback is acceptable, or correct the resource/integration issue. |
 | Pre-FG fallback / mixed route | Recent executions used more than one route | Inspect fallback reason and Present policy before comparing cost and frame consistency. |
 | FG multiplier unknown | Reliable multiplier observation unavailable | Keep it unknown; inspect activity/submissions separately. Do not label FG off. |
-| Result sliders greyed out | Result switch Off, inheritance On, Built-in effect active, or stage unavailable | Return to Mine, enable shaping/disable that pass's inheritance as appropriate, or inspect the unavailable reason. |
+| Result sliders greyed out | Result switch Off, inheritance On, or stage unavailable | Enable shaping/disable that pass's inheritance as appropriate, or inspect the unavailable reason. |
 | Skin slider inactive / structure not increasing | Mask Off, or sent Structure capped by Independent skin | Check mask/independence and tooltip; stored values can differ from sent values. |
 | HDR transfer inactive | SDR source or relative-HDR Auto has nothing to remove | Read the tooltip; use result adjustments for appearance rather than forcing a mismatched HDR path. |
 | No GPU time / none yet | No valid measurement, disabled meter, or unsupported timestamps | Enable the relevant timer and observe compatible activity; do not substitute zero. |
@@ -388,7 +415,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 - [结果调整与稳定性](#zh-results)
 - [叠层](#zh-multipass)
 - [诊断与报告](#zh-diagnostics)
-- [预设（开发中）](#zh-presets)
+- [NR Profiles 与预设（开发中）](#zh-presets)
 - [高级、截图与主题](#zh-advanced)
 - [七个实用场景](#zh-scenarios)
 - [状态→原因→操作](#zh-status)
@@ -417,10 +444,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 | 控件 | 默认／选项 | 用途与条件 |
 | --- | --- | --- |
 | Neural Rendering | **开**；关／开 | 开关 NR，默认快捷键 **F6**。比较 NR 开关请用此项；强度归零是另一种操作。 |
-| 效果：内置效果／我的 | 正常使用为**我的** | 内置效果临时使用原始模型强度、模型风格、结果与叠层值；保存值保留，选择“我的”恢复并继续编辑。不是恢复出厂设置。 |
 | 模型强度 | **1.00**，**0–2** | 在结果调整之前传给模型；改动重置 NR 历史。大于 1 的响应依赖模型／运行时，尚未验证；2 不代表保证“双倍画质”。 |
-
-“内置效果”保留适配游戏的工作尺寸、介入点、兼容性设置和快捷键。比较期间相关编辑控件禁用，设置不保存，但仍可开关 NR。返回“我的”恢复自己的外观与叠层配置；切换到开发者视图也会结束临时比较。
 
 #### 模型选择
 
@@ -560,7 +584,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 
 这是操作示例，不是最佳画质预设；需要上述 0.1.0 界面，B 还要求已识别的 **310.9.16.0** Runtime。
 
-1. 开启 Neural Rendering，选择**我的**，固定介入点、工作分辨率和上采样。在**叠层**页把**叠层数**设为 **2**。
+1. 开启 Neural Rendering，固定介入点、工作分辨率和上采样。在**叠层**页把**叠层数**设为 **2**。
 2. 选择**第 1 层**节点，明确选择 **A**。尝试**风格：自然**，再调整局部色调或模型结构；在本层结果区开启**调整 NR 的外观**，先改一项输出，例如**高光**。这些就是画质页共用的基础值。
 3. 选择**第 2 层**，明确选择 **B**，关闭**继承第 1 层外观**和**继承第 1 层结果设置**。此时显示本层保存的独立值，初始为默认，不会复制第 1 层当前的编辑。
 4. 为第 2 层尝试**风格：电影感**，分别调整它的局部色调或结构；开启本层**调整 NR 的外观**，再尝试**细节**或**暗晕抑制**，每次只改一项。角色／皮肤需要本层角色遮罩开启；独立皮肤仍全链共用，并可能限制实际发送给模型的结构值。结果效果要求处理阶段可用，运动稳定还需可用的运动矢量。
@@ -570,20 +594,50 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 模型风格改变生成阶段并重置时序历史，结果编辑实时塑造每层返回的改变量。介入点、工作分辨率、上采样仍共享。可调项和层数更多不代表画质或性能更好，应在实际游玩场景中比较后选择。
 
 <a id="zh-presets"></a>
-### 预设（开发中）
+### NR 快速方案与预设（开发中）
 
-本节对应 0.1.0 之后的开发源码。已发布的 0.1.0 安装包尚不包含预设管理。
+本节对应当前开发预发布。已发布的 **0.1.0 包不包含六 Slot 或预设管理**。Release／Debug 构建及受影响自动化检查已通过，下列官方组合尚未完成实机画质或性能验证。
 
-在画质或高级页打开“预设”，仍保留原四个主选项卡。叠层页显示当前预设快照；修改游戏参数不会自动覆盖预设文件。
+#### 当前游戏的六个 Slot
 
-1. 在“保存与分享”输入名称，选择“画质预设”“画质＋叠层”或“完整配置备份”。作者、说明和来源游戏由你选填。“预览导出字段”显示包含内容。导出始终读取“我的设置”，预览内置效果时也不会误导出临时值。
-2. “保存预设到本地库”写入 `%LOCALAPPDATA%\NR Nexus\Presets\`，同一 Windows 账户的不同游戏共用该库。“导出预设文件”写入你填写的本地绝对路径，文件扩展名为 `.nrnexus.json`；“复制分享文本”复制 JSON。同名文件需要明确允许替换，也可改名保留两份。
-3. 在“本地预设库”选中文件后预览，输入完整本地路径后“读取预设文件”，或“读取剪贴板文本”。读取仅准备预览。列表支持刷新、搜索、重命名、复制和确认删除；这些操作只影响库内文件。
-4. 检查“导入预览”。可按组筛选，并显示未改变字段，核对变化、保留值、不支持及跳过字段。游戏兼容性设置默认排除；完整备份还需确认所示范围。预览后若游戏设置有变化，需重新检查，再“确认并应用预设”。“取消导入”不改变游戏配置。
+画质页的 **NR 快速方案（NR Profiles）** 提供三个官方 Slot 和三个自定义 Slot。首次升级保留当前游戏配置，不自动套用官方组合。选择已有内容的 Slot 才应用其管理的 NR 设置；点击空自定义 Slot 只定位编辑目标，运行配置保持不变。
 
-画质预设包含基础模型与外观；画质＋叠层增加启用层的模型请求、独立／继承风格及结果设置。完整备份还包含停用层、快捷键、界面偏好及已支持的游戏专属配置。**完整备份不保证跨游戏兼容。** 启动时生效的 Hook 策略保存后需重启游戏；其他兼容项沿用现有 API、HDR 与资源门槛。即使 Runtime 需要回退，A/B 请求仍原样保留。预设不提供逐层独立介入点或分辨率。
+| 官方开发候选 | 介入点 | 层数／请求模型 | 工作尺寸 |
+| --- | --- | --- | --- |
+| **NR Lite** | Render | 1／B | 跟随输入；保存比例为 1.0，不再叠加一次降比例 |
+| **NR Balanced** | Upscaled | 1／A | 跟随输入；保存比例为 1.0 |
+| **NR Max** | Present | 2／先 A 后 B | 关闭跟随输入，比例 1.0，即参考尺寸的 100% |
 
-“预设有未保存修改”表示当前值偏离本次会话保存／应用的快照，需主动保存才能更新文件。“撤销上次导入”仅恢复仍等于导入值的字段，保留之后的手动修改。快照名称仅在本次会话显示，实际参数通过原有 ReShade 配置机制持久化。写入先在 ReShade 配置缓存中核验，再提交运行时参数；写入失败会尝试恢复原值。进程崩溃、之后的磁盘落盘失败或 GPU 故障不属于该恢复保证。
+其余管理字段继承实际注册默认值。这些组合用于开始调整，不代表画质排名；模型、API 和资源门槛仍有效，不支持的 Present 请求会被拒绝。Ray Reconstruction 下 Render 沿用既有 Upscaled 行为；A/B 请求与运行时回退仍分别处理。
+
+每个官方 Slot 保存自己的**独立覆盖值（overrides）**，修改一个不改另一个；将字段调回模板值会移除该字段的覆盖。自定义 Slot 保存快照，包含未启用层的保存值。普通编辑约 **500ms 防抖后自动保存**；切换先等待待保存 Slot 数据成功，**保存失败不继续切换**。根据错误排查后使用重试；revision 冲突需停止并发编辑、重启重载，不自动合并。
+
+若目标配置已应用，但随后保存目标 Slot 状态失败，当前运行设置会保留，槽位显示为未保存。解决存储错误后重试，或使用撤销；这不是磁盘／GPU 原子事务。
+
+“撤销配置方案操作”（Undo profile action）撤销上一次 Slot 操作；配置撤销保留后续编辑，必要时解除选中关联。“恢复官方默认值”只清除当前官方 Slot 的覆盖值，可撤销恢复；不会重置全部六 Slot 或游戏兼容项。Slot 编辑不自动覆盖共享库中的预设文件。
+
+在**预设 → 我的预设（My presets）→ 自定义 Slot** 中，选择 Custom 1–3 后保存当前设置，或复制含独立覆盖的官方方案。复制仅存储，不应用；覆盖已有 Slot／清空前须确认。重命名只改显示文字，不改变固定身份或设置，重名也不合并。清空后 Slot 为空，运行配置保留。“保存或分享此 Slot”使用已保存快照打开保存与分享，不立即生成文件；仅导出启用层的范围可能省略快照中停用层的保存值。
+
+Slot 按当前游戏身份保存在 `%LOCALAPPDATA%\NR Nexus\Profiles\<32hex-id>\slots.json`。重启只在当前配置与上次应用快照一致时恢复选中关联，绝不自动覆盖当前设置。外部重载使配置变化时解除关联，不将其写为官方覆盖。迁移安装位置或复制 INI 后，若 EXE 路径对应的 owner 不符，会把 Slot 数据复制到新身份并保留当前设置；不支持自动合并不同商店／安装版本。
+
+损坏／未来格式文件和只读配置受保护，不会直接覆盖。强退可能丢失最后尚未完成的 Slot 保存；ReShade 正常游戏设置的持久化语义仍独立，Slot 文件、配置和 GPU 执行不是一个原子事务。
+
+#### 共享预设管理
+
+在画质或高级页打开**预设**，管理器分为**我的预设（My presets）／保存与分享（Save and share）／导入预设（Import preset）**三页。打开及库内保存／重命名／复制／删除后自动刷新，也可点“刷新本地库”。默认共享库为 `%LOCALAPPDATA%\NR Nexus\Presets\`；保存与分享显示实际解析路径，“打开预设文件夹”打开该目录。共享库与当前游戏六 Slot 分开保存。
+
+1. **我的预设：** 搜索并选择库内文件，预览所选预设。重命名、复制、确认删除仅影响库内文件，不影响运行设置或 Slot 身份。
+2. **保存与分享：** 填名称及选填作者／描述／来源游戏，选择画质、画质＋叠层或完整备份，并可预览导出字段。通常来源为当前游戏配置；从自定义 Slot 分享时来源为其已保存快照，可点“使用当前游戏设置”切回。Slot 快照只导出画质范围，完整备份须切回当前游戏设置。“保存预设到本地库”显式保存，“复制分享文本”复制 JSON。“选择导出文件”或“浏览文件夹”只填入目标，检查后还须主动点“导出预设文件”才写入；替换已有文件须允许覆盖，选路径不会立即导出。
+3. **导入预设：** 选择文件、填写本地完整路径后读取文件，或读取剪贴板文本，均只准备预览。按组检查变化、保留值、不支持及跳过字段，可显示未改变字段。兼容项默认排除，完整备份需确认范围。当前设置变化后须检查刷新预览，再确认应用；取消不改变配置。
+4. **将 NR 字段分配到自定义 Slot：** 这是直接应用导入的另一种选择。选 Custom 1–3，已有内容时确认替换；将合格 NR 字段合入该 Slot 快照，空 Slot 则以当前设置为基础，缺失字段保留，不立即应用。不分配 HDR、深度／运动、FG 策略或界面偏好，之后另选该 Slot 才应用。
+
+画质范围包含基础模型／外观／结果，以及介入点、跟随输入、共同分辨率比例和上采样四个控件；不包含 HDR、运动／深度、FG 策略或界面偏好，模型 UI correction 属图像设置。画质＋叠层增加启用层的模型、外观／结果及继承。完整备份还含停用层及允许的兼容／通用字段，但**不保证跨游戏兼容**；启动期 Hook 策略需重启游戏。没有逐层独立介入点或分辨率。旧 schema 1 文件缺少新增归入画质的四字段时保留当前值。
+
+“撤销上次导入”只恢复仍等于导入值的字段，保留之后的编辑。共享库文件仍须显式保存，与 Slot 自动保存分开。配置写入先核验再提交运行时参数，应用失败尝试恢复原保存值；不保证磁盘／GPU 事务或进程崩溃恢复。
+
+预设名称、作者、来源游戏、描述、搜索和文件路径均在叠加层的标准 ImGui 输入框中原位编辑，描述支持多行。编辑输入框只更新表单，之后仍需主动保存／导出预设。实际 IME 输入取决于 ReShade 输入宿主，仍需使用用户的真实输入法验证。
+
+名称和描述使用 UTF-8；名称、作者、来源游戏分别最多 128 字节，描述最多 2048 字节，中文会比 ASCII 更早达到上限。输入框受各自 UTF-8 缓冲区容量限制。若已正确保存的文字在叠加层中显示为方框或替代字形，请检查 ReShade 自身语言和字体覆盖设置。正确的 UTF-8 数据无需重新编码或改变 Windows 系统代码页。JSON 可保留 emoji 等补充平面字符，其叠加层输入和显示仍受宿主输入处理及 ImGui／字体限制。
 
 仅导出允许清单中的 NR Nexus 设置及选填元数据，不包含日志、路径、截图、存档、报告上传设置或其他 Add-on 配置节。全部文件操作在本机执行，预设不会上传或执行内容。导入检查大小、深度、重复键、类型与范围。请选择普通本地目录，网络路径、重解析点及硬链接文件会被拒绝。本地库访问失败不改变游戏设置。第三方工具可参考[格式说明](PRESET_FORMAT.md)。
 
@@ -644,7 +698,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 | 语言 | **Auto** 或 15 种语言 | 英、德、法、西、意、葡萄牙语（巴西）、俄、保加利亚、斯洛文尼亚、土耳其、泰、日、韩、简中、繁中。Auto 跟随 ReShade 的语言，后者未手动选择时跟随 Windows；未匹配的语言回退英文。选择名称保留英文便于找回。ReShade 为自身语言加载字体；插件检测到缺字会保持英文并在 `ReShade.log` 警告，需同时在 ReShade 选择对应语言，并检查自定义字体覆盖。 |
 | 通知 | **开** | 控制游戏内启用／失败／健康提示；关闭仍可看覆盖层状态和诊断。 |
 | 提示 HUD 位置 X／Y | **50%／0%**；各 **0–100%** | 插件通知位置，不是游戏 HUD 位置。 |
-| 开发者视图 | **关**，默认现代视图 | 切换经典平铺布局，含英文技术／原始控件，共用同一配置；切换结束内置效果比较，同一按钮可返回。 |
+| 开发者视图 | **关**，默认现代视图 | 切换经典平铺布局，含英文技术／原始控件，共用同一配置，同一按钮可返回。 |
 | 恢复全部默认 | 两步恢复／取消 | 重置覆盖的强度、编解码、尺寸、叠层、快捷键、语言、布局、提示位置等并重建 Feature；主题另行恢复，加载时的 Hook 支持配置不重置。 |
 | 版本与关于 | 只读 | 显示插件版本、已加载 NR 运行时版本、游戏可执行文件名；插件与运行时版本独立。 |
 
@@ -717,7 +771,7 @@ Pre-FG service ROI、单个 HDR 样本、120 次 HDR Present、单个 P0 样本�
 <a id="zh-scenarios"></a>
 ### 七个实用场景
 
-1. **首次安装并确认活动。** 按 README 核对前提、DLL 位置和安装步骤，打开 NR Nexus，先用一层和 Auto；在诊断中确认加载的 Runtime 与 NR 实际状态。同场景 F6 比较 Off／On，再单独比较内置效果／我的，编辑前返回我的。
+1. **首次安装并确认活动。** 按 README 核对前提、DLL 位置和安装步骤，打开 NR Nexus，先用一层和 Auto；在诊断中确认加载的 Runtime 与 NR 实际状态。同场景 F6 比较 Off／On；开发源码中，准备好替换管理字段后再明确选择 NR Profile。
 2. **在 DLSS 游戏中选择介入点。** 先从 Upscaled 开始，兼容 DLSS 输入可用时比较 Render；Ray Reconstruction 可能使它保留 Upscaled 路径。希望处理最终画面时选择 Present，再检查实际路径和资源策略。比较期间固定模型、层数和工作尺寸。
 3. **比较 A/B 与叠层顺序。** 在已识别的双模型 Runtime 上，以相同介入点、尺寸和强度测试 A、B、AA、AB、BA、BB；明确指定各层模型，编辑前核对两项继承开关。每次等待历史稳定，再检查人脸、植被、高光及运动，不预设最佳组合。
 4. **确认 NR 与 FG 协同。** 保持游戏预期的原生 FG 或 XeFG 配置，分别读取 FG 活动、实际倍率和 NR 路径，观察近期 Pre-FG 提交及稳定路径；倍率未知不等于 FG 关闭。若显示 Present／Upscaled 回退或混合执行，先查原因再判断成本和生成帧一致性。
@@ -743,7 +797,7 @@ Pre-FG service ROI、单个 HDR 样本、120 次 HDR Present、单个 P0 样本�
 | 必需引导但跳过 | 当前帧无匹配可用深度／运动 | 可接受中性则改可选，否则修复资源／集成问题。 |
 | Pre-FG 回退／混合 | 近期实际经过多个路径 | 先查回退原因和 Present 策略再比较成本／一致性。 |
 | FG 倍率未知 | 暂无可靠倍率观测 | 保留未知，单独查看活动与提交，不标为 FG 关。 |
-| 结果控件灰色 | 结果关、继承开、内置效果或处理不可用 | 返回我的、按需开结果／关本层继承，或查看不可用原因。 |
+| 结果控件灰色 | 结果关、继承开或处理不可用 | 按需开结果／关本层继承，或查看不可用原因。 |
 | 皮肤不可调／结构不再增加 | 遮罩关，或独立皮肤限制实际结构 | 看遮罩／独立开关与提示，保存值可能不同于传入值。 |
 | HDR 传递禁用 | SDR 或相对 HDR Auto 无可去除量 | 查看提示；用结果调整外观，不强制不匹配 HDR 路径。 |
 | 暂无 GPU 时间 | 未有效测量、计量关或时间戳不支持 | 开相关计时并观察兼容活动，不代填零。 |

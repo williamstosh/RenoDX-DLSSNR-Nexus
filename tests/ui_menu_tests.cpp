@@ -31,6 +31,41 @@ struct TextItem {
 };
 std::vector<TextItem> rendered_text;
 std::vector<std::string> tooltip_text;
+// Test-local Windows message probe: Unicode hooks see WM_CHAR before an ANSI
+// retrieval converts it. No hook is installed in the add-on or other threads.
+HWND message_probe_window = nullptr;
+std::wstring message_probe_unicode;
+LRESULT CALLBACK ObserveUnicodeMessage(int code, WPARAM removed, LPARAM value) {
+  if (code >= 0 && removed == PM_REMOVE) {
+    const auto* message = reinterpret_cast<const MSG*>(value);
+    if (message->hwnd == message_probe_window && message->message == WM_CHAR) {
+      message_probe_unicode += static_cast<wchar_t>(message->wParam);
+    }
+  }
+  return CallNextHookEx(nullptr, code, removed, value);
+}
+LRESULT CALLBACK MessageProbeProcedure(HWND window, UINT message, WPARAM value, LPARAM data) {
+  if (message == WM_CHAR) return 0;
+  return DefWindowProcA(window, message, value, data);
+}
+// Substitute only the OS clipboard, retaining the production CF_UNICODETEXT
+// allocation/conversion paths. Tests never read or replace the user's clipboard.
+namespace clipboard_fixture {
+HGLOBAL contents = nullptr;
+BOOL WINAPI Open(HWND) { return TRUE; }
+BOOL WINAPI Close() { return TRUE; }
+HANDLE WINAPI Get(UINT format) { return format == CF_UNICODETEXT ? contents : nullptr; }
+BOOL WINAPI Empty() {
+  if (contents != nullptr) GlobalFree(contents);
+  contents = nullptr;
+  return TRUE;
+}
+HANDLE WINAPI Set(UINT format, HANDLE memory) {
+  if (format != CF_UNICODETEXT) return nullptr;
+  contents = memory;
+  return memory;
+}
+}  // namespace clipboard_fixture
 namespace ImGui {
 inline void ObservedTextV(const char* fmt, va_list args) {
   va_list copy;
@@ -74,8 +109,18 @@ inline void ObservedTextWrapped(const char* fmt, ...) {
 #define TextDisabled    ObservedTextDisabled
 #define TextWrapped     ObservedTextWrapped
 #define TextV           ObservedTextV
+#define OpenClipboard clipboard_fixture::Open
+#define CloseClipboard clipboard_fixture::Close
+#define GetClipboardData clipboard_fixture::Get
+#define EmptyClipboard clipboard_fixture::Empty
+#define SetClipboardData clipboard_fixture::Set
 #undef IMGUI_VERSION_NUM
 #include "dlssnr.hpp"
+#undef OpenClipboard
+#undef CloseClipboard
+#undef GetClipboardData
+#undef EmptyClipboard
+#undef SetClipboardData
 #undef TextUnformatted
 #undef Text
 #undef TextDisabled
@@ -155,6 +200,9 @@ extern "C" __declspec(dllexport) void ReShadeSetConfigValue(
 }
 
 int main() {
+  const auto profile_fixture_root = std::filesystem::current_path() / L"profile-fixture-local";
+  std::filesystem::create_directories(profile_fixture_root);
+  SetEnvironmentVariableW(L"LOCALAPPDATA", profile_fixture_root.c_str());
   try {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -173,6 +221,7 @@ int main() {
       }
     }
     ranges_builder.AddText("\xef\x80\x8c\xef\x81\xb1\xef\x80\x8d\xef\x84\x8c\xef\x83\xa2");
+    ranges_builder.AddText("中文电影画质_日本語_한국어_é_作者_Élodie_日本_巫师3_Witcher_中文描述，混合 café／한글／e\xcc\x81");
     ImVector<ImWchar> ranges;
     ranges_builder.BuildRanges(&ranges);
     const char* font_path = "C:/Windows/Fonts/msyh.ttc";
@@ -190,6 +239,7 @@ int main() {
         io.Fonts->AddFontFromFileTTF(path, 18.f, &fallback, ranges.Data);
       }
     }
+    ImFont* latin_only_font = io.Fonts->AddFontDefault();
     unsigned char* atlas;
     int atlas_width, atlas_height;
     io.Fonts->GetTexDataAsRGBA32(&atlas, &atlas_width, &atlas_height);
@@ -262,6 +312,7 @@ int main() {
     unsigned panel_frames = 0;
     bool clipped_callback = false;
     bool preset_fixture = false;
+    bool preset_latin_font = false;
     const auto frame = [&](const ui::StatusCard* diagnostic_case = nullptr) {
       items.clear();
       rendered_text.clear();
@@ -283,6 +334,7 @@ int main() {
       }
       const auto panel_start = std::chrono::steady_clock::now();
       if (preset_fixture) {
+        if (preset_latin_font) ImGui::PushFont(latin_only_font, font_size);
         runtime::RefreshUiLanguage();
         ui::SetTheme(runtime::ui_theme_choice.load());
         ui::StyleScope theme;
@@ -295,6 +347,7 @@ int main() {
           ImGui::SetWindowPos(popup, ImVec2((panel_width - size.x) * 0.5f, (panel_height - size.y) * 0.5f));
         }
         runtime::preset_ui::DrawManager();
+        if (preset_latin_font) ImGui::PopFont();
       } else if (diagnostic_case != nullptr) {
         ui::StyleScope theme;
         ui::PushPanelTheme(theme);
@@ -328,10 +381,13 @@ int main() {
             std::printf("overflow: window=%s width=%.0f font=%.0f page=%d classic=%d scroll_x=%.1f\n",
                         window->Name, panel_width, font_size, runtime::ui_menu_page,
                         runtime::ui_classic_layout.load(), overflow);
+            std::printf("  cursor_max=%.1f pos=%.1f size=%.1f padding=%.1f scrollbar=%.1f available=%.1f\n",
+                        window->DC.CursorMaxPos.x, window->Pos.x, window->Size.x, window->WindowPadding.x,
+                        window->ScrollbarSizes.x, window->WorkRect.GetWidth());
             for (const auto& [id, item] : items) {
               if (item.window == window && item.rect.Max.x > window->InnerRect.Max.x) {
-                std::printf("  item=%s rect_max_x=%.1f right=%.1f language=%d\n", item.label.c_str(),
-                            item.rect.Max.x, window->InnerRect.Max.x, runtime::ui_language_choice.load());
+                std::printf("  item=%s rect_min_x=%.1f rect_max_x=%.1f right=%.1f language=%d\n", item.label.c_str(),
+                            item.rect.Min.x, item.rect.Max.x, window->InnerRect.Max.x, runtime::ui_language_choice.load());
               }
             }
             for (const TextItem& text : rendered_text) {
@@ -349,6 +405,11 @@ int main() {
         if (item.label == label || item.label.starts_with(label + "\n") || item.label.starts_with(label + " (") || item.label.ends_with("###" + label)) {
           return item;
         }
+      }
+      // Clipped native buttons emit ItemAdd before their visible label info.
+      for (ImGuiWindow* window : ImGui::GetCurrentContext()->Windows) {
+        const auto id = window->GetID(("###" + label).c_str());
+        if (items.contains(id)) return items.at(id);
       }
       throw std::runtime_error("menu item missing: " + label);
     };
@@ -511,15 +572,45 @@ int main() {
     runtime::StoreUiTheme(ui::ThemeId::FLUENT_LIGHT);
     frame();
     runtime::kSetIntensity.Store(1.3f);
-    click(find("Built-in effect"));
-    check(runtime::ui_defaults_view && runtime::kSetIntensity.Get() == runtime::kSetIntensity.fallback,
-          "Built-in effect did not temporarily select stock values");
-    click(find("Mine"));
-    check(!runtime::ui_defaults_view && runtime::kSetIntensity.Get() == 1.3f,
-          "Mine did not restore the player's values");
-    check(runtime::ui_theme_choice.load() == ui::ThemeId::FLUENT_LIGHT,
-          "quality preset comparison changed the selected theme");
+    check(std::none_of(rendered_text.begin(), rendered_text.end(), [](const auto& item) {
+      return item.text == "Built-in effect" || item.text == "Mine";
+    }), "legacy temporary effect switch remains visible");
     runtime::kSetIntensity.Store(own_intensity);
+    {
+      namespace profile = runtime::profile_ui;
+      const auto original = profile::Snapshot();
+      const auto deadline = GetTickCount64() + 10000;
+      const auto settle_profiles = [&]() {
+        while (profile::Busy() || profile::dirty || profile::pending_action != profile::Action::NONE) {
+          profile::Tick();
+          check(GetTickCount64() < deadline, "profile UI worker did not settle");
+          check(!profile::save_failed, "profile UI save failed");
+          Sleep(1);
+        }
+        frame(); frame();
+      };
+      settle_profiles();
+      check(profile::loaded && profile::active == -1, "first profile UI load changed game association");
+      click(find("NR Lite"));
+      settle_profiles();
+      check(profile::active == 0, "official profile button did not select the fixed Lite slot");
+      runtime::kSetIntensity.Commit(0.625f);
+      profile::Observe();
+      profile::Schedule(true);
+      settle_profiles();
+      click(find("NR Balanced"));
+      settle_profiles();
+      click(find("NR Lite"));
+      settle_profiles();
+      check(profile::Snapshot()["NRIntensity"] == 0.625f, "official quick buttons lost autosaved override");
+      profile::active = -1;
+      profile::state.selected.clear();
+      std::string error;
+      check(profile::ApplySnapshot(original, &error), "restore game fixture after profile UI test");
+      profile::observed_snapshot = original;
+      profile::undo.available = false;
+      frame(); frame();
+    }
     const uint32_t old_hook = runtime::hook_point.load();
     const uint32_t old_multiplier = runtime::present_fg_multiplier.load();
     runtime::hook_point = runtime::kHookPresent;
@@ -955,6 +1046,7 @@ int main() {
     runtime::ui_menu_page = 3;
     capture("advanced");
     if (std::getenv("NR_NEXUS_DOC_CAPTURES") != nullptr) {
+      runtime::profile_ui::notice.clear();
       // Documentation uses the production callback with explicitly synthetic
       // status. Keep the extra captures opt-in rather than a daily test gate.
       const auto documentation_capture = [&](const char* name, int page, int language, bool expanded) {
@@ -1008,8 +1100,199 @@ int main() {
     preset_fixture = true;
     namespace presets = renodx::addons::dlss5::presets;
     namespace manager = runtime::preset_ui;
+    // Trace the production input -> snapshot -> worker -> file -> scan ->
+    // reload flow with exact UTF-8 bytes, independently of rendered glyphs.
+    const auto unicode_root = std::filesystem::current_path() / L"unicode-runtime";
+    const auto unicode_local = unicode_root / L"中文用户资料";
+    std::filesystem::create_directories(unicode_local);
+    check(SetEnvironmentVariableW(L"LOCALAPPDATA", unicode_local.c_str()) != 0, "set isolated Unicode preset library");
+    manager::mode = 1;
+    runtime::ui_language_choice = 1;
+    panel_width = 1400.f;
+    panel_height = 1600.f;
+    io.DisplaySize = ImVec2(panel_width, panel_height);
+    font_size = 18.f;
+    const auto input_text = [&](const char* label, const char* text, const char* buffer) {
+      frame(); frame();
+      click(find(label));
+      io.AddKeyEvent(ImGuiMod_Ctrl, true);
+      io.AddKeyEvent(ImGuiKey_A, true);
+      frame();
+      io.AddKeyEvent(ImGuiKey_A, false);
+      io.AddKeyEvent(ImGuiMod_Ctrl, false);
+      frame();
+      io.AddInputCharactersUTF8(text);
+      frame(); frame();
+      check(std::string(buffer) == text, "ImGui text input changed Unicode bytes");
+    };
+    const auto finish_job = [&]() {
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      for (;;) {
+        bool busy;
+        {
+          std::shared_lock lock(manager::worker.mutex);
+          busy = manager::worker.busy;
+        }
+        if (!busy) break;
+        check(std::chrono::steady_clock::now() < deadline, "preset Unicode worker timed out");
+        Sleep(1);
+      }
+      manager::Pump();
+      check(manager::worker.error.empty(), "preset Unicode worker failed");
+    };
+    input_text("##Preset name", "电影画质_日本語_한국어_é", manager::name);
+    input_text("##Author (optional)", "作者_Élodie_日本", manager::author);
+    input_text("##Source game (optional)", "巫师3_Witcher_日本語", manager::source_game);
+    input_text("##preset_description", "中文描述，混合 café／한글／e\xcc\x81", manager::description);
+    // ReShade feeds WM_CHAR through AddInputCharacterUTF16. Exercise that
+    // boundary too, rather than relying only on the UTF-8 injection helper.
+    click(find("##Preset name"));
+    io.AddKeyEvent(ImGuiMod_Ctrl, true);
+    io.AddKeyEvent(ImGuiKey_A, true);
+    frame();
+    io.AddKeyEvent(ImGuiKey_A, false);
+    io.AddKeyEvent(ImGuiMod_Ctrl, false);
+    frame();
+    for (const wchar_t character : std::wstring_view(L"中文电影_日本語_한국어_é")) io.AddInputCharacterUTF16(character);
+    frame(); frame();
+    check(std::string(manager::name) == "中文电影_日本語_한국어_é", "ReShade UTF-16 input boundary changed Chinese bytes");
+    WNDCLASSA message_probe_class{};
+    message_probe_class.lpfnWndProc = MessageProbeProcedure;
+    message_probe_class.hInstance = GetModuleHandleW(nullptr);
+    message_probe_class.lpszClassName = "NR-Nexus-Unicode-Input-Test";
+    check(RegisterClassA(&message_probe_class) != 0, "register isolated ANSI input window");
+    message_probe_window = CreateWindowExA(0, message_probe_class.lpszClassName, "Unicode fixture", 0,
+                                          0, 0, 100, 100, nullptr, nullptr, message_probe_class.hInstance, nullptr);
+    check(message_probe_window != nullptr && !IsWindowUnicode(message_probe_window), "create hidden ANSI input window");
+    const auto message_hook = SetWindowsHookExW(WH_GETMESSAGE, ObserveUnicodeMessage, nullptr, GetCurrentThreadId());
+    check(message_hook != nullptr, "install current-test-thread Unicode message observer");
+    std::wstring ansi_message_units;
+    for (const wchar_t unit : std::wstring_view(L"中文")) {
+      check(PostMessageW(message_probe_window, WM_CHAR, unit, 1) != FALSE, "post Unicode character to ANSI window");
+    }
+    MSG message{};
+    while (PeekMessageA(&message, message_probe_window, 0, 0, PM_REMOVE)) {
+      if (message.message == WM_CHAR) ansi_message_units += static_cast<wchar_t>(message.wParam);
+    }
+    check(message_probe_unicode == L"中文" && ansi_message_units != message_probe_unicode,
+          "Windows ANSI retrieval must reproduce loss before ReShade's UTF-16 cast");
+    check(UnhookWindowsHookEx(message_hook) != FALSE, "remove test Unicode message observer");
+    check(DestroyWindow(message_probe_window) != FALSE, "destroy hidden message probe");
+    message_probe_window = nullptr;
+    check(UnregisterClassA(message_probe_class.lpszClassName, message_probe_class.hInstance) != FALSE,
+          "unregister message probe class");
+    const auto replace_name_from_utf16 = [&](std::wstring_view value) {
+      click(find("##Preset name"));
+      io.AddKeyEvent(ImGuiMod_Ctrl, true);
+      io.AddKeyEvent(ImGuiKey_A, true);
+      frame();
+      io.AddKeyEvent(ImGuiKey_A, false);
+      io.AddKeyEvent(ImGuiMod_Ctrl, false);
+      frame();
+      for (const wchar_t unit : value) io.AddInputCharacterUTF16(unit);
+      frame(); frame();
+    };
+    replace_name_from_utf16(ansi_message_units);
+    check(std::string(manager::name) != "中文", "ANSI bytes interpreted as UTF-16 must reproduce visible mojibake");
+    const std::string ansi_mojibake(manager::name);
+    replace_name_from_utf16(message_probe_unicode);
+    check(std::string(manager::name) == "中文", "Unicode captured before ANSI conversion must preserve inline input");
+    replace_name_from_utf16(L"中文电影_日本語_한국어_é");
+    const Json unicode_metadata{{"name", manager::name}, {"author", manager::author},
+                                {"description", manager::description}, {"source_game", manager::source_game},
+                                {"created_with", NR_NEXUS_NAME " " NR_NEXUS_VERSION}};
+    const auto unicode_document = manager::Capture(presets::Scope::QUALITY, unicode_metadata);
+    check(unicode_document.metadata == unicode_metadata, "preset capture changed UTF-8 metadata");
+    presets::Document unicode_parsed;
+    std::string unicode_error;
+    const auto unicode_json = presets::Serialize(unicode_document);
+    check(presets::Parse(unicode_json, &unicode_parsed, &unicode_error) && unicode_parsed.metadata == unicode_metadata,
+          "preset JSON Unicode round trip changed metadata");
+    check(runtime::CopyReportText(unicode_json), "Unicode share text clipboard conversion failed");
+    check(clipboard_fixture::contents != nullptr, "Unicode share text did not reach CF_UNICODETEXT");
+    const auto* unicode_clipboard = static_cast<const wchar_t*>(GlobalLock(clipboard_fixture::contents));
+    check(unicode_clipboard != nullptr, "Unicode clipboard could not be inspected");
+    const int unicode_clipboard_bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, unicode_clipboard, -1, nullptr, 0, nullptr, nullptr);
+    std::string unicode_clipboard_json(unicode_clipboard_bytes, '\0');
+    check(WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, unicode_clipboard, -1, unicode_clipboard_json.data(), unicode_clipboard_bytes, nullptr, nullptr)
+              == unicode_clipboard_bytes, "share text UTF-16 encoding is invalid");
+    GlobalUnlock(clipboard_fixture::contents);
+    unicode_clipboard_json.pop_back();
+    check(presets::Parse(unicode_clipboard_json, &unicode_parsed, &unicode_error) && unicode_parsed.metadata == unicode_metadata,
+          "share clipboard changed Unicode metadata");
+    click(find("save_preset"));
+    finish_job();
+    check(manager::active_name == unicode_metadata["name"].get<std::string>(), "saved active name changed Unicode bytes");
+    manager::Start(manager::Job::REFRESH);
+    finish_job();
+    check(manager::files.size() == 1 && manager::files[0].native() == L"中文电影_日本語_한국어_é.nrnexus.json",
+          "Unicode filename changed between save and scan");
+    const auto unicode_filename = manager::files[0].u8string();
+    check(std::string(reinterpret_cast<const char*>(unicode_filename.data()), unicode_filename.size())
+              == unicode_metadata["name"].get<std::string>() + ".nrnexus.json", "library label changed Unicode bytes");
+    manager::Start(manager::Job::READ, manager::files[0]);
+    finish_job();
+    check(manager::preview.metadata == unicode_metadata, "reload changed Unicode metadata");
+    manager::mode = 1;
+    const auto unicode_export_directory = unicode_root / L"中文导出路径_日本語";
+    std::filesystem::create_directory(unicode_export_directory);
+    const auto unicode_export_path = unicode_export_directory / L"混合_é_한글.nrnexus.json";
+    const auto unicode_path_bytes = unicode_export_path.u8string();
+    const std::string unicode_path_text(reinterpret_cast<const char*>(unicode_path_bytes.data()), unicode_path_bytes.size());
+    frame(); frame();
+    for (ImGuiWindow* window : ImGui::GetCurrentContext()->Windows) {
+      if (std::strstr(window->Name, "nr_preset_manager/##preset_content_") != nullptr) ImGui::SetScrollY(window, window->ScrollMax.y);
+    }
+    frame(); frame();
+    input_text("##Export file path", unicode_path_text.c_str(), manager::path);
+    click(find("export_preset"));
+    finish_job();
+    check(presets::ReadFile(unicode_export_path, &unicode_parsed, &unicode_error) && unicode_parsed.metadata == unicode_metadata,
+          "Unicode export path input or worker changed the filename/metadata");
+    const auto show_library_import_actions = [&]() {
+      manager::mode = 2;
+      frame(); frame();
+      for (ImGuiWindow* window : ImGui::GetCurrentContext()->Windows) {
+        if (std::strstr(window->Name, "nr_preset_manager/##preset_content_") != nullptr) {
+          ImGui::SetScrollY(window, 0.f);
+        }
+      }
+      frame(); frame();
+    };
+    show_library_import_actions();
+    click(find("read_preset"));
+    finish_job();
+    check(manager::preview.metadata == unicode_metadata, "explicit Unicode path import changed metadata");
+    show_library_import_actions();
+    click(find("paste_preset"));
+    finish_job();
+    check(manager::preview.metadata == unicode_metadata, "native clipboard import changed Unicode metadata");
+    clipboard_fixture::Empty();
+    check(io.Fonts->Fonts[0]->IsGlyphInFont(0x4E2D) && !latin_only_font->IsGlyphInFont(0x4E2D),
+          "font fixture must distinguish Chinese coverage from missing-glyph display");
+    manager::mode = 2;
+    frame(); frame();
+    for (ImGuiWindow* window : ImGui::GetCurrentContext()->Windows) {
+      if (std::strstr(window->Name, "nr_preset_manager/##preset_content_") != nullptr) ImGui::SetScrollY(window, 0.f);
+    }
+    capture("unicode-covered-font");
+    preset_latin_font = true;
+    capture("unicode-missing-font");
+    check(manager::preview.metadata == unicode_metadata, "font fallback must not rewrite preset data");
+    preset_latin_font = false;
+    std::ofstream("unicode-stages.json", std::ios::binary)
+        << Json{{"input", unicode_metadata}, {"json", unicode_parsed.metadata}, {"reloaded", manager::preview.metadata},
+                {"filename", std::string(reinterpret_cast<const char*>(unicode_filename.data()), unicode_filename.size())},
+                {"covered_font_has_chinese", true}, {"latin_font_has_chinese", false},
+                {"ansi_retrieval_as_utf16", ansi_mojibake}, {"windows_ansi_codepage", GetACP()},
+                {"real_os_ime_composition", "not-tested"},
+                {"imgui_codepoint_max", IM_UNICODE_CODEPOINT_MAX}}.dump(2);
+    manager::files.clear();
+    manager::active_name.clear();
+    manager::active_settings.clear();
+    manager::name[0] = manager::author[0] = manager::description[0] = manager::source_game[0] = '\0';
+    std::puts("Unicode production trace passed: ImGui input, metadata, JSON, save, scan, UTF-8 label, reload");
     runtime::ui_classic_layout = false;
-    runtime::SetDefaultsView(false);
     manager::files = {L"Cinematic A+B.nrnexus.json", L"Long cinematic neural rendering sample name.nrnexus.json"};
     manager::selected = manager::files.front();
     manager::preview = {.metadata = {{"name", "Cinematic A+B"}, {"description", "Independent models and result settings"}},
@@ -1023,6 +1306,8 @@ int main() {
     std::strcpy(manager::name, "Cinematic A+B");
     std::strcpy(manager::author, "Example");
     std::strcpy(manager::description, "Independent models and result settings");
+    runtime::profile_ui::state.slots[3].name = "A long custom profile name with literal ## and ### markers";
+    ui::expand_all_sections = true;
     for (const auto& theme : ui::kThemes) {
       runtime::ui_theme_choice = theme.id;
       for (const int language : {1, 14}) {

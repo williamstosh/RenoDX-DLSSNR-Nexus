@@ -51,6 +51,8 @@ foreach ($item in $Suite) {
     $directory = Join-Path $OutputDirectory $item
     if ($item -eq 'presets') {
         & (Join-Path $testRoot 'run-preset-store-tests.ps1') -SourceRoot $SourceRoot -HostRoot $HostRoot -OutputDirectory $directory -VcVars64 $VcVars64
+        & (Join-Path $testRoot 'run-profile-store-tests.ps1') -SourceRoot $SourceRoot -HostRoot $HostRoot -OutputDirectory (Join-Path $OutputDirectory 'profiles') -VcVars64 $VcVars64
+        & (Join-Path $testRoot 'run-preset-dialog-tests.ps1') -OutputDirectory (Join-Path $OutputDirectory 'preset-dialog') -VcVars64 $VcVars64
         continue
     }
     if ($item -in @('report','config','constants','lifecycle','ui')) {

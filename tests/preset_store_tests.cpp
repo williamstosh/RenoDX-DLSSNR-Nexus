@@ -5,6 +5,7 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <cstdint>
@@ -17,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #ifndef PRESET_STORE_TEST_MODULE
@@ -117,6 +119,173 @@ void Reject(std::string_view text) {
   Require(!presets::Parse(text, &output, &error), "Malicious/invalid preset was accepted.");
   Require(!error.empty(), "Parse failure must explain its cause.");
   Require(presets::Serialize(output) == before, "Parse failure changed existing settings.");
+}
+
+std::string U8(std::u8string_view text) {
+  return {reinterpret_cast<const char*>(text.data()), text.size()};
+}
+
+std::vector<std::pair<presets::Document, fs::path>> UnicodeSamples() {
+  auto chinese = Sample();
+  chinese.metadata = {{"name", U8(u8"中文画质预设")}, {"author", U8(u8"合成测试作者")},
+                      {"description", U8(u8"仅用于存储测试的中文描述，保留原始字符。")},
+                      {"source_game", U8(u8"合成中文游戏")}, {"created_with", "0.2.0-dev.1"},
+                      {"tags", {U8(u8"画质"), U8(u8"测试")}}};
+  chinese.settings["future-unicode"] = U8(u8"未知字符串值");
+  auto mixed = Sample();
+  mixed.metadata = {{"name", U8(u8"画质-日本語-한국어-café-e\u0301-😀")},
+                    {"author", U8(u8"作者-日本人-한국인-Renée-e\u0301-🎮")},
+                    {"description", U8(u8"中文𠮷 / 日本語 / 한국어 / café / cafe\u0301 / 👩\u200d💻\n第二行，字节不归一化。")},
+                    {"source_game", U8(u8"合成游戏-日本語-한국어-été-e\u0301-🎮")},
+                    {"created_with", "0.2.0-dev.1"}, {"tags", {U8(u8"中日韓"), U8(u8"café-e\u0301-😀")}}};
+  mixed.settings["future-unicode"] = U8(u8"未知-日本語-한국어-café-e\u0301-😀");
+  mixed.settings[U8(u8"未知设置键-🎮")] = U8(u8"保留字符串-é-e\u0301");
+  return {{chinese, L"中文画质预设.nrnexus.json"}, {mixed, L"画质-日本語-한국어-café-e\u0301-😀.nrnexus.json"}};
+}
+
+void RequireDocumentFile(const fs::path& path, const presets::Document& expected) {
+  const auto text = presets::Serialize(expected);
+  const auto context = U8(path.filename().u8string());
+  Require(Bytes(path) == text, "Disk JSON preserves exact UTF-8 bytes: " + context);
+  presets::Document parsed = Sample();
+  std::string error;
+  const bool read = presets::ReadFile(path, &parsed, &error);
+  Require(read && error.empty(), "Read Unicode document: " + context + " " + error);
+  for (const auto& [key, value] : expected.metadata.items()) {
+    Require(parsed.metadata.contains(key) && parsed.metadata[key] == value,
+            "Metadata bytes/codepoints preserved: " + key + " " + context);
+  }
+  Require(parsed.metadata == expected.metadata && parsed.settings == expected.settings && parsed.scope == expected.scope,
+          "All metadata and unknown settings survive storage: " + context);
+  Require(presets::Serialize(parsed) == text, "Re-read/re-serialize preserves JSON bytes: " + context);
+  const auto root = Json::parse(text);
+  Require(root["schema_version"] == 1 && root["format"] == "nr-nexus-preset", "Unicode storage remains schema v1.");
+}
+
+void UnicodeFileTests(const fs::path& directory) {
+  const auto local = directory / L"中文根" / L"本地数据";
+  Require(SetEnvironmentVariableW(L"LOCALAPPDATA", local.c_str()) != 0, "Set isolated wide Unicode LOCALAPPDATA.");
+  fs::path library;
+  std::string error;
+  Require(presets::LibraryPath(&library, &error) && library == local / L"NR Nexus" / L"Presets",
+          "Create Chinese multilevel library: " + error);
+  const auto external = directory / L"导出目录" / L"日本語-한국어-café-e\u0301-😀";
+  fs::create_directories(external);
+  std::vector<fs::path> expected_files;
+  for (const auto& [document, expected_filename] : UnicodeSamples()) {
+    fs::path filename;
+    Require(presets::MakeFilename(document.metadata["name"].get_ref<const std::string&>(), &filename, &error)
+                && filename == expected_filename, "UTF-8 name generates exact wide Unicode filename.");
+    const auto target = library / filename;
+    const bool saved = presets::WriteFile(target, document, false, &error);
+    Require(saved && error.empty(), "Save Unicode metadata/path: " + error);
+    expected_files.push_back(filename);
+    std::sort(expected_files.begin(), expected_files.end());
+    std::vector<fs::path> files;
+    Require(presets::List(&files, &error) && files == expected_files, "Scan returns exact Unicode filenames.");
+    RequireDocumentFile(target, document);
+    auto changed = document;
+    changed.metadata["description"] = U8(u8"显式覆盖后的描述-日本語-한국어-é-e\u0301-😀");
+    Require(!presets::WriteFile(target, changed, false, &error) && !error.empty(), "Unicode conflict rejects implicit overwrite.");
+    RequireDocumentFile(target, document);
+    Require(presets::WriteFile(target, changed, true, &error), "Explicit Unicode overwrite: " + error);
+    RequireDocumentFile(target, changed);
+    Require(presets::WriteFile(target, document, true, &error), "Restore original Unicode document: " + error);
+
+    presets::Document parsed;
+    Require(presets::ReadFile(target, &parsed, &error), "Read Unicode source for export: " + error);
+    const auto exported = external / filename;
+    Require(presets::WriteFile(exported, parsed, false, &error), "Export to Unicode multilevel path: " + error);
+    RequireDocumentFile(exported, document);
+    Require(presets::ReadFile(exported, &parsed, &error), "Import from Unicode multilevel path: " + error);
+    const fs::path imported_filename(L"导入-" + filename.native());
+    Require(presets::WriteFile(library / imported_filename, parsed, false, &error), "Store imported Unicode copy: " + error);
+    RequireDocumentFile(library / imported_filename, document);
+
+    // Rename/copy is composed from the store API, without runtime or UI state.
+    Require(presets::ReadFile(library / imported_filename, &parsed, &error), "Read imported copy for rename.");
+    parsed.metadata["name"] = document.metadata["name"].get<std::string>() + U8(u8"-重命名");
+    Require(presets::MakeFilename(parsed.metadata["name"].get_ref<const std::string&>(), &filename, &error), "Generate renamed Unicode filename.");
+    Require(filename == fs::path(expected_filename.stem().stem().native() + L"-重命名.nrnexus.json"),
+            "Rename preserves Unicode filename codepoints.");
+    Require(presets::WriteFile(library / filename, parsed, false, &error), "Write renamed Unicode copy: " + error);
+    Require(presets::Delete(imported_filename, &error) && !fs::exists(library / imported_filename), "Remove only old imported filename.");
+    RequireDocumentFile(library / filename, parsed);
+    RequireDocumentFile(target, document);
+    expected_files.push_back(filename);
+  }
+
+  const auto [document, filename] = UnicodeSamples().back();
+  const auto target = library / filename;
+  const auto original = presets::Serialize(document);
+  const auto invalid_file = external / L"拒绝输入.json";
+  const auto invalid_output = library / L"无效输出.nrnexus.json";
+  for (const auto& invalid : std::vector<std::string>{std::string(1, '\xff'), "\x80", "\xc0\xaf", "\xf0\x9f", "\xed\xa0\x80", "\xf4\x90\x80\x80"}) {
+    for (const auto field : {"name", "author", "description", "source_game", "future-unicode"}) {
+      auto altered = document;
+      auto& fields = (std::string_view(field) == "future-unicode" ? altered.settings : altered.metadata);
+      const auto value = fields[field].get<std::string>();
+      fields[field] = invalid;
+      Require(!presets::WriteFile(target, altered, true, &error) && !error.empty() && Bytes(target) == original,
+              "Invalid UTF-8 write preserves existing Unicode file.");
+      Require(!presets::WriteFile(invalid_output, altered, false, &error) && !error.empty() && !fs::exists(invalid_output),
+              "Invalid UTF-8 cannot publish a new file.");
+      auto text = original;
+      // Match the complete quoted value so corruption cannot hit a key or another field.
+      const auto position = text.find(Json(value).dump());
+      Require(position != std::string::npos, "Locate Unicode input bytes for corruption.");
+      text.replace(position + 1, 3, invalid);
+      Put(invalid_file, text);
+      auto output = document;
+      Require(!presets::ReadFile(invalid_file, &output, &error) && !error.empty()
+                  && presets::Serialize(output) == original && Bytes(target) == original,
+              "Invalid UTF-8 import preserves document and stored bytes.");
+    }
+  }
+  for (const auto field : {"format", "scope", "root-field", "metadata-field"}) {
+    auto root = Json::parse(original);
+    if (std::string_view(field) == "metadata-field") {
+      root["metadata"][U8(u8"未知字段")] = U8(u8"未知字符串");
+    } else if (std::string_view(field) == "root-field") {
+      root[U8(u8"未知字段")] = U8(u8"未知字符串");
+    } else {
+      root[field] = U8(u8"未知字符串-日本語-한국어-😀");
+    }
+    Put(invalid_file, root.dump());
+    auto output = document;
+    Require(!presets::ReadFile(invalid_file, &output, &error) && !error.empty()
+                && presets::Serialize(output) == original && Bytes(target) == original,
+            "Unknown schema strings/fields reject without changing Unicode output.");
+  }
+  std::sort(expected_files.begin(), expected_files.end());
+  std::vector<fs::path> files;
+  Require(presets::List(&files, &error) && files == expected_files, "Unicode failures leave library entries unchanged.");
+  for (const auto& entry : fs::directory_iterator(library)) {
+    Require(entry.path().extension() != L".tmp", "Unicode writes leave no orphan temporary files.");
+  }
+}
+
+void UnicodeRestartTests(const fs::path& directory) {
+  const auto local = directory / L"中文根" / L"本地数据";
+  Require(fs::is_directory(local / L"NR Nexus" / L"Presets"), "Restart requires an existing Unicode library.");
+  Require(SetEnvironmentVariableW(L"LOCALAPPDATA", local.c_str()) != 0, "Restart selects isolated wide Unicode root.");
+  fs::path library;
+  std::string error;
+  Require(presets::LibraryPath(&library, &error) && library == local / L"NR Nexus" / L"Presets", "Fresh process resolves same Unicode library.");
+  std::vector<fs::path> expected_files;
+  for (const auto& [document, filename] : UnicodeSamples()) {
+    RequireDocumentFile(library / filename, document);
+    RequireDocumentFile(directory / L"导出目录" / L"日本語-한국어-café-e\u0301-😀" / filename, document);
+    expected_files.push_back(filename);
+    auto renamed = document;
+    renamed.metadata["name"] = document.metadata["name"].get<std::string>() + U8(u8"-重命名");
+    const fs::path renamed_filename(filename.stem().stem().native() + L"-重命名.nrnexus.json");
+    RequireDocumentFile(library / renamed_filename, renamed);
+    expected_files.push_back(renamed_filename);
+  }
+  std::sort(expected_files.begin(), expected_files.end());
+  std::vector<fs::path> files;
+  Require(presets::List(&files, &error) && files == expected_files, "Fresh process scans exact Unicode filenames without cached state.");
 }
 
 void CodecTests() {
@@ -482,11 +651,20 @@ void FileTests(const fs::path& directory, const fs::path& module) {
 int wmain(int argc, wchar_t** argv) {
   try {
     Require(argc == 3, "Pass fixture directory and independent module path.");
+    if (std::wstring_view(argv[1]) == L"--unicode-restart") {
+      const fs::path directory(argv[2]);
+      Require(directory.is_absolute() && fs::is_directory(directory), "Restart uses an existing isolated absolute fixture directory.");
+      UnicodeRestartTests(directory);
+      std::cout << "Preset Unicode restart: " << checks << " checks passed; process_id=" << GetCurrentProcessId() << '\n';
+      return 0;
+    }
     const fs::path directory(argv[1]);
     Require(directory.is_absolute() && fs::is_directory(directory), "Use an existing isolated absolute fixture directory.");
     CodecTests();
     FileTests(directory, fs::path(argv[2]));
-    std::cout << "Preset codec/store: " << checks << " checks passed; EXE/DLL sharing and reparse rejection passed.\n";
+    UnicodeFileTests(directory);
+    std::cout << "Preset codec/store: " << checks << " checks passed; EXE/DLL sharing, reparse rejection and Unicode storage passed; process_id="
+              << GetCurrentProcessId() << '\n';
     return 0;
   } catch (const std::exception& exception) {
     std::cerr << "Preset test failed after " << checks << " checks: " << exception.what() << '\n';

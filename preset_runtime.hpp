@@ -49,17 +49,6 @@ inline const Setting* FindSetting(std::string_view key) {
 inline Json ReadSetting(std::string_view key) {
   if (const auto* setting = FindSetting(key)) {
     float value = setting->Get();
-    if (ui_defaults_view) {
-      size_t index = 0;
-      for (const auto& group : kLookCompare) {
-        for (const auto* saved : group) {
-          if (saved == setting) {
-            value = ui_defaults_saved[index];
-          }
-          ++index;
-        }
-      }
-    }
     if (setting->b != nullptr) {
       return value != 0.f;
     }
@@ -245,6 +234,9 @@ inline std::vector<Difference> Preview(const presets::Document& document, bool c
       row.status = "Skipped (outside scope)";
     } else if (!ValidateValue(*rule, value)) {
       row.status = "Invalid value";
+    } else if (key == "NRHookPoint" && value == kHookPresent
+               && (vulkan_present_seen.load() || (D3D11OnlySession() && !Dx11NativeRoute()) || present_unusable.load())) {
+      row.status = "Unsupported";
     } else if (rule->category == presets::FieldRule::Category::COMPATIBILITY && !compatibility) {
       row.status = "Skipped (compatibility)";
     } else if (row.before != row.after || inherited_scope) {
@@ -284,10 +276,6 @@ inline std::string notice;
 // publishing any runtime values; this is not a disk/GPU atomic transaction.
 inline bool Apply(const presets::Document& document, bool compatibility, bool remember, std::string* error,
                   bool restore_missing = false, const ScopeSnapshot* restore_scope = nullptr) {
-  if (ui_defaults_view) {
-    *error = "Return to My settings before applying a preset.";
-    return false;
-  }
   SettleSlider(true);
   auto differences = Preview(document, compatibility);
   if (restore_missing) {
@@ -484,6 +472,7 @@ inline bool Apply(const presets::Document& document, bool compatibility, bool re
     }
   }
   notice = (restart ? "Preset applied. Restart the game for hook policy changes." : "Preset applied.");
+  if (!changes.empty()) profile_commit_epoch.fetch_add(1, std::memory_order_relaxed);
   return true;
 }
 
@@ -514,6 +503,11 @@ inline bool Undo(std::string* error) {
   return true;
 }
 
+}  // namespace preset_ui
+
+#include "profile_runtime.hpp"
+
+namespace preset_ui {
 enum class Job { REFRESH,
                  READ,
                  SAVE,
@@ -521,7 +515,11 @@ enum class Job { REFRESH,
                  COPY,
                  RENAME,
                  REMOVE,
-                 PARSE };
+                 PARSE,
+                 CHOOSE_IMPORT,
+                 CHOOSE_EXPORT,
+                 CHOOSE_FOLDER,
+                 OPEN_FOLDER };
 struct Worker {
   std::shared_mutex mutex;
   bool busy = false;
@@ -534,6 +532,8 @@ struct Worker {
   std::string error;
   presets::Document document;
   std::vector<std::filesystem::path> files;
+  std::filesystem::path library;
+  bool cancelled = false;
 };
 inline Worker worker;
 inline std::vector<std::filesystem::path> files;
@@ -557,6 +557,22 @@ inline char description[2049] = {};
 inline char source_game[129] = {};
 inline char path[1024] = {};
 inline char search[129] = {};
+inline std::filesystem::path library_path;
+inline std::optional<presets::Document> export_document;
+
+inline presets::Document ExportSnapshot(presets::Scope scope, const Json& metadata) {
+  if (!export_document) return Capture(scope, metadata);
+  auto document = *export_document;
+  document.metadata = metadata;
+  document.scope = scope;
+  const unsigned passes = document.settings.value("NRPasses", 1u);
+  for (auto item = document.settings.begin(); item != document.settings.end();) {
+    const auto* rule = presets::FindRule(item.key());
+    if (rule == nullptr || !InScope(*rule, scope, passes)) item = document.settings.erase(item);
+    else ++item;
+  }
+  return document;
+}
 
 inline DWORD WINAPI WorkerMain(LPVOID module) {
   {
@@ -576,17 +592,37 @@ inline DWORD WINAPI WorkerMain(LPVOID module) {
     }
     std::string error;
     std::vector<std::filesystem::path> entries;
+    std::filesystem::path library;
+    bool cancelled = false;
     try {
       if (job == Job::REFRESH) {
-        presets::List(&entries, &error);
-      } else if (job == Job::READ) {
+        if (presets::LibraryPath(&library, &error)) presets::List(&entries, &error);
+      } else if (job == Job::CHOOSE_EXPORT || job == Job::CHOOSE_FOLDER || job == Job::OPEN_FOLDER) {
+        if (presets::LibraryPath(&library, &error)) {
+          if (job == Job::OPEN_FOLDER) {
+            presets::dialogs::OpenFolder(library, &error);
+          } else {
+            const auto result = presets::dialogs::Choose(job == Job::CHOOSE_EXPORT ? presets::dialogs::Kind::SAVE_FILE : presets::dialogs::Kind::FOLDER,
+                                                         library, from.filename());
+            to = result.path;
+            cancelled = result.cancelled;
+            error = result.error;
+          }
+        }
+      } else if (job == Job::READ || job == Job::CHOOSE_IMPORT) {
+        if (job == Job::CHOOSE_IMPORT && presets::LibraryPath(&library, &error)) {
+          const auto result = presets::dialogs::Choose(presets::dialogs::Kind::OPEN_FILE, library);
+          from = result.path;
+          cancelled = result.cancelled;
+          error = result.error;
+        }
         if (from.is_relative()) {
           std::filesystem::path library;
           if (presets::LibraryPath(&library, &error)) {
             from = library / from;
           }
         }
-        if (error.empty()) {
+        if (error.empty() && !cancelled) {
           presets::ReadFile(from, &document, &error);
         }
       } else if (job == Job::PARSE) {
@@ -620,6 +656,9 @@ inline DWORD WINAPI WorkerMain(LPVOID module) {
           }
         }
       }
+      if (error.empty() && (job == Job::SAVE || job == Job::COPY || job == Job::RENAME || job == Job::REMOVE)) {
+        if (presets::LibraryPath(&library, &error)) presets::List(&entries, &error);
+      }
     } catch (...) {
       error = "Preset operation failed. Check the file and directory permissions.";
     }
@@ -628,6 +667,9 @@ inline DWORD WINAPI WorkerMain(LPVOID module) {
       worker.error = std::move(error);
       worker.document = std::move(document);
       worker.files = std::move(entries);
+      worker.library = std::move(library);
+      worker.destination = std::move(to);
+      worker.cancelled = cancelled;
       worker.ready = true;
       worker.busy = false;
     }
@@ -648,6 +690,8 @@ inline void Start(Job job, const std::filesystem::path& from = {}, const std::fi
   worker.document = document;
   worker.overwrite = overwrite;
   worker.error.clear();
+  worker.cancelled = false;
+  notice.clear();
   HMODULE module = nullptr;
   if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
                           reinterpret_cast<LPCWSTR>(WorkerMain), &module)) {
@@ -670,13 +714,38 @@ inline void Pump() {
     return;
   }
   worker.ready = false;
+  if (!worker.library.empty()) library_path = worker.library;
+  if (worker.cancelled) {
+    notice = "Preset operation cancelled.";
+    return;
+  }
   if (!worker.error.empty()) {
     notice = worker.error;
     return;
   }
   if (worker.job == Job::REFRESH) {
     files = std::move(worker.files);
-  } else if (worker.job == Job::READ || worker.job == Job::PARSE) {
+  } else if (worker.job == Job::CHOOSE_EXPORT || worker.job == Job::CHOOSE_FOLDER) {
+    auto destination = worker.destination;
+    if (worker.job == Job::CHOOSE_FOLDER) {
+      std::filesystem::path filename;
+      std::string error;
+      if (!presets::MakeFilename(name, &filename, &error)) {
+        notice = error;
+        return;
+      }
+      destination /= filename;
+    }
+    const auto text = destination.u8string();
+    if (text.size() >= sizeof(path)) {
+      notice = "The selected path is too long for this input field.";
+      return;
+    }
+    std::memcpy(path, text.c_str(), text.size() + 1);
+    notice = "Export destination selected. Confirm export to write the file.";
+  } else if (worker.job == Job::OPEN_FOLDER) {
+    notice = "Preset folder opened.";
+  } else if (worker.job == Job::READ || worker.job == Job::PARSE || worker.job == Job::CHOOSE_IMPORT) {
     preview = std::move(worker.document);
     have_preview = true;
     compatibility = confirm_full = false;
@@ -685,7 +754,7 @@ inline void Pump() {
     mode = 2;
     notice.clear();
   } else {
-    notice = "Preset file saved. Refresh the library to see changes.";
+    notice = "Preset file saved.";
     if (worker.job == Job::EXPORT) {
       notice = "Preset file exported.";
     }
@@ -695,6 +764,15 @@ inline void Pump() {
     if (worker.job == Job::SAVE) {
       active_name = worker.document.metadata.value("name", "");
       active_settings = worker.document.settings;
+    }
+    if (worker.job != Job::EXPORT) files = std::move(worker.files);
+  }
+  if (*path == '\0' && !library_path.empty()) {
+    std::filesystem::path filename;
+    std::string error;
+    if (presets::MakeFilename(name, &filename, &error)) {
+      const auto text = (library_path / filename).u8string();
+      if (text.size() < sizeof(path)) std::memcpy(path, text.c_str(), text.size() + 1);
     }
   }
 }
@@ -751,6 +829,16 @@ inline void DrawRows(const std::vector<Difference>& differences) {
 
 inline void DrawManager() {
   Pump();
+  profile_ui::Initialize();
+  if (profile_ui::share_request) {
+    export_document = std::move(profile_ui::share_request);
+    profile_ui::share_request.reset();
+    const auto value = export_document->metadata.value("name", "");
+    std::memcpy(name, value.c_str(), (std::min)(sizeof(name), value.size() + 1));
+    mode = 1;
+    scope_choice = 1;
+    notice.clear();
+  }
   const std::string title = std::string(ui::Tr("Presets")) + "###nr_preset_manager";
   ImGui::SetNextWindowSize(ImVec2((std::min)(ImGui::GetIO().DisplaySize.x * 0.94f, ImGui::GetFontSize() * 43.f),
                                   (std::min)(ImGui::GetIO().DisplaySize.y * 0.90f, ImGui::GetFontSize() * 39.f)),
@@ -765,15 +853,22 @@ inline void DrawManager() {
     busy = worker.busy;
   }
   ImGui::BeginDisabled(busy);
-  const char* modes[] = {"Local library", "Save and share", "Import preview"};
+  const char* modes[] = {"My presets", "Save and share", "Import preset"};
   ImGui::SetNextItemWidth(-1.f);
   const int chosen = ui::Segmented("##preset_modes", modes, 3, mode, nullptr);
   if (chosen >= 0) {
     mode = chosen;
+    notice.clear();
+    confirm_delete = false;
   }
   const float footer = ImGui::GetFontSize() * 5.5f;
-  if (ImGui::BeginChild("##preset_content", ImVec2(0.f, -footer))) {
+  if (ImGui::BeginChild("##preset_content", ImVec2(0.f, -footer), ImGuiChildFlags_None,
+                        ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
     if (mode == 0) {
+      if (ui::TreeNode("custom_slot_tools", ui::Tr("Custom slots"), 0, false)) {
+        profile_ui::DrawCustomTools();
+        ImGui::TreePop();
+      }
       ImGui::InputText(ui::ControlLabel(ui::Tr("Search presets")).c_str(), search, sizeof(search));
       if (ui::ActionButton(ui::Tr("Refresh library"), "refresh_presets")) {
         Start(Job::REFRESH);
@@ -824,6 +919,9 @@ inline void DrawManager() {
       ImGui::EndDisabled();
       ImGui::EndDisabled();
       ImGui::Separator();
+    }
+    if (mode == 2) {
+      if (ui::ActionButton(ui::Tr("Choose preset file"), "choose_import")) Start(Job::CHOOSE_IMPORT);
       ImGui::TextWrapped("%s", ui::Tr("Import a file by its full path. Opening it only prepares a preview."));
       ImGui::SetNextItemWidth(-1.f);
       ImGui::InputText(ui::ControlLabel(ui::Tr("File path")).c_str(), path, sizeof(path));
@@ -858,14 +956,23 @@ inline void DrawManager() {
         }
       }
     } else if (mode == 1) {
-      ImGui::TextWrapped("%s", ui::Tr("Exports use My settings, including while Built-in effects is previewed."));
+      ImGui::TextWrapped("%s", ui::Tr(export_document ? "Exporting the saved custom slot snapshot." : "Exporting current game settings."));
+      if (export_document && ui::ActionButton(ui::Tr("Use current game settings"), "export_current")) export_document.reset();
+      if (!library_path.empty()) {
+        const auto bytes = library_path.u8string();
+        const std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        ImGui::TextWrapped("%s: %s", ui::Tr("Preset library"), text.c_str());
+      }
+      if (ui::ActionButton(ui::Tr("Open preset folder"), "open_preset_folder")) Start(Job::OPEN_FOLDER);
       ImGui::InputText(ui::ControlLabel(ui::Tr("Preset name")).c_str(), name, sizeof(name));
       const char* scopes[] = {"Quality preset", "Quality + Multi-Pass", "Full configuration backup"};
       if (ImGui::BeginCombo(ui::ControlLabel(ui::Tr("Export scope")).c_str(), ui::Tr(scopes[scope_choice]))) {
         for (int i = 0; i < 3; ++i) {
+          ImGui::BeginDisabled(export_document.has_value() && i == 2);
           if (ImGui::Selectable(ui::Tr(scopes[i]), i == scope_choice)) {
             scope_choice = i;
           }
+          ImGui::EndDisabled();
         }
         ImGui::EndCombo();
       }
@@ -880,25 +987,33 @@ inline void DrawManager() {
       const Json metadata = {{"name", name}, {"author", author}, {"description", description}, {"source_game", source_game}, {"created_with", NR_NEXUS_NAME " " NR_NEXUS_VERSION}};
       ImGui::BeginDisabled(*name == '\0');
       if (ui::ActionButton(ui::Tr("Preview export fields"), "preview_export")) {
-        export_rows = Preview(Capture(scope, metadata), true);
+        export_rows = Preview(ExportSnapshot(scope, metadata), true);
         export_rows.erase(std::remove_if(export_rows.begin(), export_rows.end(), [](const auto& row) { return std::string_view(row.status) == "Kept (not in preset)"; }), export_rows.end());
         export_scope = scope_choice;
         show_kept = true;
       }
       ui::Checkbox(ui::Tr("Replace an existing file with this name"), &overwrite);
       if (ui::ActionButton(ui::Tr("Save preset to library"), "save_preset")) {
-        Start(Job::SAVE, {}, {}, {}, Capture(scope, metadata));
+        Start(Job::SAVE, {}, {}, {}, ExportSnapshot(scope, metadata));
       }
+      if (ui::ActionButton(ui::Tr("Choose export file"), "choose_export")) {
+        std::filesystem::path filename;
+        std::string error;
+        if (presets::MakeFilename(name, &filename, &error)) Start(Job::CHOOSE_EXPORT, filename);
+        else notice = error;
+      }
+      ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Browse folder")).x + ImGui::GetStyle().FramePadding.x * 2.f);
+      if (ui::ActionButton(ui::Tr("Browse folder"), "choose_folder")) Start(Job::CHOOSE_FOLDER);
       ImGui::SetNextItemWidth(-1.f);
       ImGui::InputText(ui::ControlLabel(ui::Tr("Export file path")).c_str(), path, sizeof(path));
       ImGui::BeginDisabled(*path == '\0');
       if (ui::ActionButton(ui::Tr("Export preset file"), "export_preset")) {
-        Start(Job::EXPORT, {}, std::filesystem::u8path(path), {}, Capture(scope, metadata));
+        Start(Job::EXPORT, {}, std::filesystem::u8path(path), {}, ExportSnapshot(scope, metadata));
       }
       ImGui::EndDisabled();
       if (ui::ActionButton(ui::Tr("Copy share text"), "copy_preset")) {
         try {
-          notice = (CopyReportText(presets::Serialize(Capture(scope, metadata)))
+          notice = (CopyReportText(presets::Serialize(ExportSnapshot(scope, metadata)))
                         ? "Preset JSON copied to clipboard."
                         : "Clipboard is empty, unavailable or exceeds the preset size limit.");
         } catch (...) {
@@ -909,7 +1024,8 @@ inline void DrawManager() {
       if (export_scope == scope_choice && !export_rows.empty()) {
         DrawRows(export_rows);
       }
-    } else if (have_preview) {
+    }
+    if (mode == 2 && have_preview) {
       ImGui::TextWrapped("%s", preview.metadata.value("name", "").c_str());
       ImGui::TextWrapped("%s", preview.metadata.value("description", "").c_str());
       if (preview.metadata.contains("source_game")) {
@@ -950,13 +1066,37 @@ inline void DrawManager() {
         rows = Preview(preview, compatibility);
       }
       ImGui::EndDisabled();
+      const char* target_labels[] = {"Custom 1", "Custom 2", "Custom 3"};
+      ImGui::SetNextItemWidth(-1.f);
+      const int target = ui::Segmented("##import_slot_target", target_labels, 3, profile_ui::edit_index - 3, nullptr);
+      if (target >= 0) {
+        profile_ui::edit_index = target + 3;
+        profile_ui::confirm_replace = false;
+      }
+      ui::Checkbox(ui::Tr("Confirm replacing or clearing this slot"), &profile_ui::confirm_replace);
+      ImGui::BeginDisabled(!profile_ui::loaded || !profile_ui::writable
+                           || (profile_ui::state.slots[profile_ui::edit_index].populated && !profile_ui::confirm_replace));
+      if (ui::ActionButton(ui::Tr("Assign NR fields to custom slot"), "import_to_slot")) {
+        auto settings = (profile_ui::state.slots[profile_ui::edit_index].populated
+                             ? profile_ui::state.slots[profile_ui::edit_index].snapshot : profile_ui::Snapshot());
+        const auto differences = Preview(preview, false);
+        bool invalid = false;
+        for (const auto& row : differences) {
+          invalid |= profile_ui::Managed(row.key) && std::string_view(row.status) == "Invalid value";
+          if (profile_ui::Managed(row.key) && (row.apply || std::string_view(row.status) == "Unchanged")) settings[row.key] = row.after;
+        }
+        if (invalid) profile_ui::notice = "Profile contains unsupported settings. Current settings were kept.";
+        else profile_ui::Assign(profile_ui::edit_index, settings);
+        notice = profile_ui::notice;
+      }
+      ImGui::EndDisabled();
       ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Cancel import")).x + ImGui::GetStyle().FramePadding.x * 2.f);
       if (ui::ActionButton(ui::Tr("Cancel import"), "cancel_import")) {
         have_preview = false;
         rows.clear();
         mode = 0;
       }
-    } else {
+    } else if (mode == 2) {
       ImGui::TextWrapped("%s", ui::Tr("Select a local preset, read a file or paste share text to preview changes."));
     }
   }
@@ -977,15 +1117,14 @@ inline void DrawManager() {
   ImGui::EndPopup();
 }
 
-inline void DrawEntry(bool multipass = false) {
+inline void DrawEntry(bool multipass = false, bool management_only = false) {
   ImGui::PushID("presets");
-  const std::string summary = std::string(ui::Tr("Preset")) + ": " + (active_name.empty() ? ui::Tr("Current game settings") : active_name.c_str());
-  ImGui::TextUnformatted(ui::Ellipsize(summary.c_str(), ImGui::GetContentRegionAvail().x).c_str());
-  ui::ItemTooltip("%s", summary.c_str());
-  const bool dirty = !active_name.empty() && Dirty();
-  ImGui::TextColored(dirty ? ui::CurrentTheme().warn : ui::CurrentTheme().text_secondary,
-                     "%s", ui::Tr(dirty ? "Unsaved preset changes" : "Game settings and the shared library are independent."));
+  if (!multipass && !management_only) profile_ui::DrawQuick();
+  if (multipass && profile_ui::active >= 0) {
+    ImGui::TextWrapped("%s: %s", ui::Tr("NR Profiles"), profile_ui::Name(profile_ui::active).c_str());
+  }
   if (!multipass && ui::ActionButton(ui::Tr("Presets"), "open_presets")) {
+    notice.clear();
     Start(Job::REFRESH);
     ImGui::OpenPopup("###nr_preset_manager");
   }

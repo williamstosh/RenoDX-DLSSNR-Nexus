@@ -115,6 +115,9 @@
 #include <nlohmann/json.hpp>
 #include "preset_store.hpp"
 #include "preset_fields.hpp"
+#include "profile_store.hpp"
+#include "profile_templates.hpp"
+#include "preset_dialog.hpp"
 
 #pragma comment(lib, "bcrypt.lib")
 #pragma comment(lib, "shell32.lib")
@@ -18385,10 +18388,12 @@ inline void MaybeEmitStatusCard(const NrVerdict& verdict, int64_t now_ns) {
 
 // ReShade does not tell an add-on about an open it asked for itself; the
 // capture lane sets hud_overlay_open by hand for that reason.
+inline void (*flush_profile_storage)() = nullptr;
 inline bool OnReshadeOpenOverlay(reshade::api::effect_runtime* /*runtime*/,
                                  bool open,
                                  reshade::api::input_source /*source*/) {
   hud_overlay_open.store(open, std::memory_order_relaxed);
+  if (!open && flush_profile_storage != nullptr) flush_profile_storage();
   return false;
 }
 
@@ -20113,13 +20118,15 @@ inline std::atomic_bool ui_welcomed{false};
 // ---- settings (alpha46) ------------------------------------------------------
 // One user setting as the panel sees it: its config key, its value, its
 // built-in default and what a change must restart.  The controls, the
-// per-row reset buttons, the section resets, the Defaults view, Restore all
+// per-row reset buttons, the section resets, profiles, Restore all
 // and PersistConfig all go through it, so a key is paired with its value and
 // its default once.  Every Setting sits in exactly one of the lists in
 // kSettingSections, which is what Restore all and PersistConfig walk; gate
 // step 2g (tools/field/check_ui_reachability.py) holds that, and that every
 // key LoadConfiguration reads has a control in both layouts.
 enum class SettingEffect : uint8_t { kNone, kHostHistory, kHistory, kRecreate };
+inline std::atomic_uint64_t profile_commit_epoch{0};
+inline std::atomic_uint64_t profile_reload_epoch{0};
 
 inline void ApplySettingEffect(SettingEffect effect) {
   if (effect == SettingEffect::kRecreate) {
@@ -20155,7 +20162,7 @@ struct Setting {
   bool Modified() const {
     return std::abs(Get() - fallback) > 1e-4f * (std::max)(1.f, std::abs(fallback));
   }
-  // The value alone: no config write, no restart (the Defaults view).
+  // The value alone; the committing control owns persistence and side effects.
   void Store(float value) const {
     std::unique_lock config_lock(present_restore_configuration.mutex);
     if (u == &present_sdr_restore_policy) {
@@ -20192,6 +20199,10 @@ struct Setting {
       reshade::set_config_value(nullptr, kConfigSection, key, u->load());
     } else {
       reshade::set_config_value(nullptr, kConfigSection, key, b->load());
+    }
+    if (const auto* rule = presets::FindRule(key); rule != nullptr
+        && (rule->category == presets::FieldRule::QUALITY || rule->category == presets::FieldRule::MULTIPASS)) {
+      profile_commit_epoch.fetch_add(1, std::memory_order_relaxed);
     }
   }
   // A player's change: the value, its config write and its restart.
@@ -20824,42 +20835,6 @@ inline void ResetSettings(std::initializer_list<SettingGroup> groups) {
   ApplySettingEffect(effect);
 }
 
-// The Defaults view (alpha46, owner request): the look runs at its built-in
-// values so the player can compare in game, while their own values wait in
-// ui_defaults_saved.  The look is Strength, the Look section and stacking;
-// resolution, pre-SR, hotkeys and the Fixes stay the player's, because they
-// fit the game and the GPU rather than style the image.  Session-only:
-// nothing is written to the config while it is on, the modern layout greys
-// its controls, and Restore all or a switch to the classic layout ends it.
-inline constexpr SettingGroup kLookCompare[] = {
-    kStrengthSettings, kLookSettings, kLookResultSettings, kPassLookResultSettings, kStackingSettings};
-inline bool ui_defaults_view = false;
-inline float ui_defaults_saved[std::size(kStrengthSettings) + std::size(kLookSettings)
-                               + std::size(kLookResultSettings) + std::size(kPassLookResultSettings)
-                               + std::size(kStackingSettings)] = {};
-
-inline void SetDefaultsView(bool on) {
-  if (on == ui_defaults_view) return;
-  SettingEffect effect = SettingEffect::kNone;
-  size_t index = 0;
-  for (const SettingGroup& group : kLookCompare) {
-    for (const Setting* setting : group) {
-      if (on) ui_defaults_saved[index] = setting->Get();
-      const float target = on ? setting->fallback : ui_defaults_saved[index];
-      ++index;
-      if (setting->Get() == target) continue;
-      setting->Store(target);
-      effect = (std::max)(effect, setting->effect);
-    }
-  }
-  ui_defaults_view = on;
-  ApplySettingEffect(effect);
-  Log(reshade::log::level::info,
-      on ? "Defaults view on: the look runs at the built-in values; the player's"
-           " values are kept and nothing is saved"
-         : "Defaults view off: the player's values are back");
-}
-
 // Persists every user setting under kConfigSection with its CURRENT runtime
 // value (runtime == nullptr writes the global ReShade.ini, which is what the
 // attach-time LoadConfiguration reads).  Used by the config breaker and by
@@ -20972,13 +20947,12 @@ inline void PersistConfig(bool persist_present_restore = true) {
 // persisted, with NR feature/workset state recreated so the new settings
 // start from clean temporal state.  EnableHooks is deliberately untouched -
 // it is a per-game support knob that applies at attach, not a user setting.
-// It also ends the Defaults view: its values are the defaults now.
+// Profile association observes the committed values like any other user edit.
 inline void ResetToDefaults(reshade::api::effect_runtime* runtime) {
   if (!ApplyPresentRestoreDefaults()) {
     Log(reshade::log::level::warning, "Restore defaults could not be saved; settings were not reset");
     return;
   }
-  ui_defaults_view = false;
   for (const SettingGroup& section : kSettingSections) {
     for (const Setting* setting : section) setting->Store(setting->fallback);
   }
@@ -21014,7 +20988,6 @@ inline std::atomic_uint64_t ui_panel_ns{0};
 inline std::atomic_int ui_panel_resets{0};
 // RENODX_NR_TEST_UI_VIEW=defaults: after the first capture the Defaults
 // view goes on and every card is captured again (the tuned lane).
-inline bool ui_capture_defaults_view = false;
 
 // Set by the card's "Open Diagnostics" button; consumed by that section.
 inline bool ui_open_diagnostics = false;
@@ -21181,31 +21154,16 @@ inline void DrawSectionNrCore(const ui::PanelText& text) {
     SetNrEnabledFromUi(ui_enabled);
   }
   if (text.modern) {
-    // The hotkey beside what it toggles, then the Defaults view, which
-    // decides what every row below it shows.
+    // Keep the hotkey beside the switch it controls.
     ImGui::SameLine();
     ImGui::TextDisabled("%s", VirtualKeyName(toggle_hotkey.load()).c_str());
-    ui::RowLabel(ui::text::kSettingsView, ui::text::kSettingsViewTip);
-    const int view = ui::Segmented(
-        "##settings_view", ui::text::kSettingsViewLabels,
-        static_cast<int>(std::size(ui::text::kSettingsViewLabels)),
-        ui_defaults_view ? 0 : 1, nullptr, ui::text::kSettingsViewTips);
-    if (view >= 0) SetDefaultsView(view == 0);
-    if (ui_defaults_view) {
-      ui::StyleScope note;
-      note.FontSize(ui::SmallFontSize()).Color(ImGuiCol_Text, ui::CurrentTheme().accent);
-      ImGui::PushTextWrapPos(0.f);
-      ImGui::TextUnformatted(ui::Tr(ui::text::kDefaultsViewNote));
-      ImGui::PopTextWrapPos();
-    }
+
   }
 
   // Overall Intensity is primary (v5.3 UI policy): master strength of the
   // neural pass belongs next to the enable switch, not under styling.
-  ImGui::BeginDisabled(ui_defaults_view);
   SliderSetting(text, kSetIntensity, text.intensity, 0.f, 2.f, "%.2f",
                 ui::text::kModelStrengthTip);
-  ImGui::EndDisabled();
 }
 
 // The model's steering rows of one stack pass (PLAN_NR_LOOK_V71.md 3 G):
@@ -21810,7 +21768,6 @@ inline void DrawResolutionControls(const ui::PanelText& text) {
 inline void DrawSectionStackingResolution(const ui::PanelText& text) {
   // Pass 1 uses the global settings. Navigation only selects an editor;
   // reducing the active pass count leaves every stored pass setting intact.
-  ImGui::BeginDisabled(ui_defaults_view);
   // ImGui::Combo's current item is a 0-based index into the labels while
   // stack_passes is the 1-based pass count the labels name; convert in both
   // directions or the preview shows the label one row below the real state
@@ -22047,7 +22004,6 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
       }
     ImGui::PopID();
   }
-  ImGui::EndDisabled();
 
   if (!text.modern) {
     DrawResolutionControls(text);
@@ -22943,7 +22899,7 @@ inline void DrawSectionHotkeys(const ui::PanelText& text) {
 
 // Developer view: the classic layout, persisted as UiMode.  Drawn at the
 // foot of both layouts, so either can reach the other.  The classic layout
-// has no Defaults view, so a switch ends it and the player's values return.
+// shares the same profile state and settings as the modern layout.
 inline void DrawSectionLayoutToggle() {
   bool classic = ui_classic_layout.load();
   {
@@ -22956,7 +22912,6 @@ inline void DrawSectionLayoutToggle() {
     }
     if (ui::ActionButton(ui::Tr(ui::text::kDeveloperView), "developer_view")) {
       classic = !classic;
-      SetDefaultsView(false);
       ui_classic_layout = classic;
       reshade::set_config_value(
           nullptr, kConfigSection, "UiMode", classic ? "classic" : "modern");
@@ -23739,7 +23694,8 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
     ++scope.epoch;
     scope.target = expand;
   }
-  if (ImGui::BeginChild("##nr_settings", ImVec2(0.f, 0.f))) {
+  if (ImGui::BeginChild("##nr_settings", ImVec2(0.f, 0.f), ImGuiChildFlags_None,
+                        ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
     ImGui::PushTextWrapPos(0.f);
     if (jump_to_diagnostics) {
       ImGui::SetScrollY(0.f);
@@ -23753,9 +23709,7 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
       if (ImGui::BeginTable("##quality_columns", columns, ImGuiTableFlags_SizingStretchSame)) {
         ImGui::TableNextColumn();
         DrawSectionNrCore(text);
-        ImGui::BeginDisabled(ui_defaults_view);
         DrawNrModelSetting(text, kSetPreset, false);
-        ImGui::EndDisabled();
         ui::SectionCaption(ui::text::kNrResolution, nullptr, false);
         const bool follow = nr_follow_input_res.load();
         const float scale = nr_resolution_scale.load();
@@ -23795,22 +23749,18 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
         DrawSectionHookPoint(text);
         ImGui::TableNextColumn();
         if (ui::SectionCaption(ui::text::kLook, ui::text::kResetLook,
-                               !ui_defaults_view && AnyModified({kLookSettings, kLookResultSettings}))) {
+                               AnyModified({kLookSettings, kLookResultSettings}))) {
           ResetSettings({kLookSettings, kLookResultSettings});
         }
-        ImGui::BeginDisabled(ui_defaults_view);
         DrawModelSteering(text, 0);
-        ImGui::EndDisabled();
         ImGui::TableNextColumn();
-        ImGui::BeginDisabled(ui_defaults_view);
         DrawSectionLookResult(text);
-        ImGui::EndDisabled();
         ImGui::EndTable();
       }
     } else if (ui_menu_page == 1) {
       preset_ui::DrawEntry(true);
       if (ui::SectionCaption(ui::text::kMenuPages[1], ui::text::kResetPerformance,
-                             !ui_defaults_view && AnyModified({kPerformanceSettings, kStackingSettings, kPassLookResultSettings}))) {
+                             AnyModified({kPerformanceSettings, kStackingSettings, kPassLookResultSettings}))) {
         ResetSettings({kPerformanceSettings, kStackingSettings, kPassLookResultSettings});
       }
       DrawSectionStackingResolution(text);
@@ -23825,7 +23775,7 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
       DrawDiagnostics(verdict);
       DrawIssueReport();
     } else {
-      preset_ui::DrawEntry();
+      preset_ui::DrawEntry(false, true);
       char hotkeys[128];
       std::snprintf(hotkeys, sizeof(hotkeys), ui::Tr(ui::text::kHotkeysHint),
                     VirtualKeyName(toggle_hotkey.load()).c_str(),
@@ -23959,6 +23909,7 @@ inline void OnOverlay(reshade::api::effect_runtime* runtime) {
     ImGui::EndChild();
   }
   SettleSlider(false);
+  profile_ui::Tick();
   if (!ui_capture_dir.empty()) {
     ui_panel_draws.fetch_add(1, std::memory_order_relaxed);
     ui_panel_ns.fetch_add(static_cast<uint64_t>(SteadyNowNs() - started),
@@ -23990,8 +23941,7 @@ inline void OnOverlay(reshade::api::effect_runtime* runtime) {
 // resets counts the reset buttons that frame drew: one per visible row
 // whose setting differs from its default, so a lane that stages changed
 // settings can tell the rows were read and drawn.  view names whether the
-// Defaults view was on (RENODX_NR_TEST_UI_VIEW=defaults turns it on after
-// the first capture, and every card is captured again as ui-<card>-defaults).
+// Captures use the current game configuration; profile changes remain explicit.
 // RENODX_NR_TEST_UI_EXPAND=1 opens every modern section, so the controls a
 // player reaches only by expanding one are drawn - and counted - too.
 // Unset, which is every shipped session, none of this is registered.
@@ -24010,9 +23960,7 @@ inline bool InitUiCapture() {
   std::filesystem::create_directories(dir, error);
   ui_capture_dir = dir;
   length = 0;
-  ui_capture_defaults_view =
-      getenv_s(&length, buffer, sizeof(buffer), "RENODX_NR_TEST_UI_VIEW") == 0
-      && std::strcmp(buffer, "defaults") == 0;
+
   length = 0;
   ui::expand_all_sections =
       getenv_s(&length, buffer, sizeof(buffer), "RENODX_NR_TEST_UI_EXPAND") == 0
@@ -24056,7 +24004,7 @@ inline void OnUiCapturePresent(reshade::api::effect_runtime* runtime) {
   card.tone = static_cast<ui::CardTone>(drawn >> 8);
   const char* slug = ui::CardSlug(card.id);
   const std::string file =
-      std::string("ui-") + slug + (ui_defaults_view ? "-defaults" : "") + ".png";
+      std::string("ui-") + slug + ".png";
 
   uint32_t width = 0;
   uint32_t height = 0;
@@ -24114,15 +24062,10 @@ inline void OnUiCapturePresent(reshade::api::effect_runtime* runtime) {
       tone_px, control_px, draws,
       ui_style_depth_worst.load(std::memory_order_relaxed), panel_us,
       ui_classic_layout.load() ? "classic" : "modern",
-      ui_defaults_view ? "defaults" : "mine",
+      "mine",
       ui_panel_resets.load(std::memory_order_relaxed), ok ? "" : " failed=readback");
   Log(ok ? reshade::log::level::info : reshade::log::level::warning, line);
-  if (ui_capture_defaults_view && !ui_defaults_view) {
-    SetDefaultsView(true);
-    std::fill(std::begin(captured), std::end(captured), false);
-    last_card = 0xffff;
-    held = 0;
-  }
+
 }
 
 // One timestamped backup of the ReShade.ini this game runs with (in ReShade's
@@ -24284,6 +24227,7 @@ inline uint32_t SanitizeEnumKey(
 }
 
 inline void LoadConfiguration() {
+  profile_reload_epoch.fetch_add(1, std::memory_order_relaxed);
   // Config schema marker (kConfigVersion at the top of this file).  v5.3
   // replaces the wholesale stale-config reset - the v5 failure mode that
   // silently erased user tuning - with TARGETED key-wise migration: reads are

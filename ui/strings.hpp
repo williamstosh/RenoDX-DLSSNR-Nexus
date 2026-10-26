@@ -152,7 +152,6 @@ inline constexpr const char* kStabilizeTips[] = {kOptionOff, kStabilizeStill, kS
 inline constexpr const char* kUpsampleTips[] = {kUpsampleAuto, kUpsampleEdge, kUpsampleClassic, kUpsampleArea};
 inline constexpr const char* kCadenceObservation = "Present cadence: %.2f (observation only; not an FG verdict)";
 inline constexpr const char* kPassCountTip = "Runs %u NR passes in total, including Pass 1.";
-inline constexpr const char* kSettingsViewTips[] = {"Temporarily preview the built-in NR effect. Your saved settings are kept.", "Return to your saved NR settings for editing."};
 inline constexpr const char* kPresentGuideCountersTip = "These are legacy Present guide counters. Native FG/XeFG Pre-FG guide use is not included; do not treat them as whole-chain resource availability.";
 inline constexpr const char* kStatusDetails = "Status & warnings (%u)";
 inline constexpr const char* kMenuPages[] = {"Quality", "Multi-Pass", "Diagnostics", "Advanced"};
@@ -316,15 +315,6 @@ inline constexpr const char* kNoneYet = "none yet";
 // v8.0.2 a fixed "v310.8.0", whatever build was loaded), the game's file name.
 inline constexpr const char* kFooter = NR_NEXUS_NAME " %s | DLSSNR %s | %s";
 // i18n: begin - display strings (ui/lang tables)
-
-// The Defaults view (alpha46): segment 0 runs the built-in look, segment 1
-// the player's own.
-inline constexpr const char* kSettingsView = "Settings";
-inline constexpr const char* kSettingsViewLabels[] = {"Built-in effect", "Mine"};
-inline constexpr const char* kSettingsViewTip =
-    "Compare in game: Built-in effect temporarily uses stock Strength, Look and Multi-Pass settings. Mine restores your values. Nothing is saved while Built-in effect is selected.";
-inline constexpr const char* kDefaultsViewNote =
-    "Showing the built-in look.  Your settings are kept; pick Mine to return.";
 
 inline constexpr const char* kResolution = "Resolution";
 inline constexpr const char* kLook = "LOOK";

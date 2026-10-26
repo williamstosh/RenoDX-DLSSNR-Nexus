@@ -247,7 +247,7 @@ struct TemporaryFile {
 }  // namespace internal
 
 // Limits on JSON strings are UTF-8 byte limits. Failure preserves output.
-inline bool Parse(std::string_view text, Document* output, std::string* error = nullptr) {
+inline bool ParseJson(std::string_view text, Json* output, std::string* error = nullptr) {
   if (output == nullptr) return internal::Fail(error, "Missing document output.");
   if (text.size() > MAX_FILE_BYTES) return internal::Fail(error, "Preset exceeds 256 KiB.");
   try {
@@ -268,7 +268,24 @@ inline bool Parse(std::string_view text, Document* output, std::string* error = 
       }
       return true;
     };
-    const auto root = Json::parse(text.begin(), text.end(), callback);
+    auto root = Json::parse(text.begin(), text.end(), callback);
+    *output = std::move(root);
+    if (error != nullptr) {
+      error->clear();
+    }
+    return true;
+  } catch (const std::invalid_argument& exception) {
+    return internal::Fail(error, exception.what());
+  } catch (const std::exception&) {
+    return internal::Fail(error, "Invalid JSON or UTF-8.");
+  }
+}
+
+inline bool Parse(std::string_view text, Document* output, std::string* error = nullptr) {
+  if (output == nullptr) return internal::Fail(error, "Missing document output.");
+  try {
+    Json root;
+    if (!ParseJson(text, &root, error)) return false;
     if (!root.is_object()) return internal::Fail(error, "Preset must be an object.");
     for (const auto& [key, value] : root.items()) {
       if (key != "format" && key != "schema_version" && key != "metadata" && key != "scope" && key != "settings") {
@@ -395,7 +412,9 @@ inline bool LibraryPath(std::filesystem::path* path, std::string* error = nullpt
 }
 
 // External paths must come from an explicit UI choice, never from preset JSON.
-inline bool ReadFile(const std::filesystem::path& absolute_path, Document* output, std::string* error = nullptr) {
+namespace internal {
+
+inline bool ReadTextFile(const std::filesystem::path& absolute_path, std::string* output, std::string* error) {
   if (output == nullptr) return internal::Fail(error, "Missing document output.");
   try {
     if (!internal::IsComponent(absolute_path.filename().native())) return internal::Fail(error, "Unsafe import filename.");
@@ -403,21 +422,37 @@ inline bool ReadFile(const std::filesystem::path& absolute_path, Document* outpu
     if (!internal::OpenDirectory(absolute_path.parent_path(), false, &ancestors, error)) return false;
     internal::Handle file;
     if (!internal::OpenRegularFile(absolute_path, GENERIC_READ, FILE_SHARE_READ, &file, error)) return false;
-    std::string text;
-    if (!internal::ReadContents(file.value, &text, error)) return false;
-    return Parse(text, output, error);
+    return internal::ReadContents(file.value, output, error);
   } catch (const std::exception&) {
     return internal::Fail(error, "Cannot read preset.");
   }
 }
 
+}  // namespace internal
+
+inline bool ReadJsonFile(const std::filesystem::path& absolute_path, Json* output, std::string* error = nullptr) {
+  if (output == nullptr) return internal::Fail(error, "Missing JSON output.");
+  std::string text;
+  if (!internal::ReadTextFile(absolute_path, &text, error)) return false;
+  return ParseJson(text, output, error);
+}
+
+inline bool ReadFile(const std::filesystem::path& absolute_path, Document* output, std::string* error = nullptr) {
+  if (output == nullptr) return internal::Fail(error, "Missing document output.");
+  std::string text;
+  if (!internal::ReadTextFile(absolute_path, &text, error)) return false;
+  return Parse(text, output, error);
+}
+
 // Same-directory CREATE_NEW + read-back verification + rename gives readers either
 // the complete old document or the complete new document. Conflicts never auto-suffix.
-inline bool WriteFile(const std::filesystem::path& absolute_path, const Document& document,
-                      bool overwrite = false, std::string* error = nullptr) {
+template <typename Validate>
+inline bool WriteJsonFile(const std::filesystem::path& absolute_path, std::string_view text,
+                          bool overwrite, Validate validate, std::string* error = nullptr) {
   try {
-    if (!internal::IsFilename(absolute_path.filename())) return internal::Fail(error, "Unsafe preset filename or extension.");
-    const auto text = Serialize(document);
+    if (!internal::IsComponent(absolute_path.filename().native())) return internal::Fail(error, "Unsafe JSON filename.");
+    Json checked;
+    if (!ParseJson(text, &checked, error) || !validate(checked, error)) return false;
     std::vector<internal::Handle> ancestors;
     if (!internal::OpenDirectory(absolute_path.parent_path(), false, &ancestors, error)) return false;
     internal::Handle existing;
@@ -459,9 +494,9 @@ inline bool WriteFile(const std::filesystem::path& absolute_path, const Document
     }
     std::string verified;
     if (!internal::ReadContents(temporary.file.value, &verified, error)) return false;
-    Document parsed;
+    Json parsed;
     if (verified != text) return internal::Fail(error, "Temporary preset read-back mismatch.");
-    if (!Parse(verified, &parsed, error)) return false;
+    if (!ParseJson(verified, &parsed, error) || !validate(parsed, error)) return false;
     const auto& destination = absolute_path.native();
     const auto rename_bytes = sizeof(FILE_RENAME_INFO) + (destination.size() + 1) * sizeof(wchar_t);
     std::vector<std::uint64_t> storage((rename_bytes + sizeof(std::uint64_t) - 1) / sizeof(std::uint64_t), 0);
@@ -484,6 +519,20 @@ inline bool WriteFile(const std::filesystem::path& absolute_path, const Document
     return internal::Fail(error, exception.what());
   } catch (const std::exception&) {
     return internal::Fail(error, "Cannot write preset.");
+  }
+}
+
+inline bool WriteFile(const std::filesystem::path& absolute_path, const Document& document,
+                      bool overwrite = false, std::string* error = nullptr) {
+  try {
+    if (!internal::IsFilename(absolute_path.filename())) return internal::Fail(error, "Unsafe preset filename or extension.");
+    return WriteJsonFile(absolute_path, Serialize(document), overwrite,
+                         [](const Json& root, std::string* message) {
+                           Document parsed;
+                           return Parse(root.dump(), &parsed, message);
+                         }, error);
+  } catch (const std::exception& exception) {
+    return internal::Fail(error, exception.what());
   }
 }
 

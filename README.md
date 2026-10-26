@@ -22,7 +22,7 @@ and four menu themes.
 
 | Version scope | What is available |
 | --- | --- |
-| **0.2.0-dev.1 source** | Adds local presets on top of 0.1.0; not yet a published package. See the [milestone notes](docs/releases/v0.2.0-dev.1.md). |
+| **0.2.0-dev.2 pre-release** | Adds six NR Profile Slots and expanded preset management on top of 0.1.0. See the [milestone notes](docs/releases/v0.2.0-dev.2.md) and the [current guide](docs/USER_GUIDE.md#en-presets). |
 | **0.1.0** | This README describes the version's four-page menu, dual models, independent per-pass look/result settings and four themes. See the [release notes](docs/releases/v0.1.0.md) for validation and remaining limits. |
 | [Previous pre-release: v0.1.0-dev.3](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.1.0-dev.3) | Includes 310.9.16 A/B models and per-pass model selection; it predates the menu, independent result editor and theme updates described here. |
 
@@ -39,7 +39,19 @@ and four menu themes.
 | **Live diagnostics and reports** | Inspect NR activity, requested/resolved models, resources and GPU time when available; prepare optional diagnostics and a reviewed GitHub Issue draft. |
 | **Multilingual interface — 15 languages** | Let Auto follow ReShade or choose a language manually. Display depends on ReShade's loaded font; the guide lists languages and explains missing-glyph fallback. |
 | **Four interface themes** | Cyber Neon, Nexus Dark, Fluent Light and Midnight OLED change the menu's appearance, independently of image processing. |
-| **Local, shareable presets (development)** | Save quality or multi-pass looks to a shared local library, exchange JSON files or clipboard text, review differences, and apply or undo an import. Full backups require extra confirmation. See the [preset guide](docs/USER_GUIDE.md#en-presets); this feature is newer than the 0.1.0 release. |
+| **Six NR Profile Slots (development)** | Three official development candidates plus three custom Slots for each game. Keep independent overrides, capture/rename/clear custom snapshots, undo profile actions or restore one official Slot. Slot edits save automatically; first upgrade keeps current game settings and a failed save blocks switching. |
+| **Local, shareable presets (development)** | My presets / Save and share / Import preset manage a shared local library. Preview imports, assign NR fields to a custom Slot, or explicitly save/share JSON and clipboard text. Full backups require extra confirmation; choosing an export destination alone does not write. See the [profile and preset guide](docs/USER_GUIDE.md#en-presets). |
+
+Slots and preset management are available in the current development pre-release;
+the **0.1.0 stable package does not include them**. Official Lite (Render, 1 pass, B,
+follow input), Balanced (Upscaled, 1 pass, A, follow input), and Max (Present,
+2 passes, A+B, 100%) all store scale 1.0; the first two do not add a second
+resolution reduction. Other managed fields inherit registered defaults. These
+are development candidates, without in-game image-quality/performance validation;
+Release/Debug builds and focused automated checks passed. Runtime compatibility gates still apply.
+Slot autosave is separate from shared-library files and ReShade's normal settings;
+force-closing may lose pending Slot edits. See the guide for read-only/corrupt-file
+protection, migration and revision-conflict recovery.
 
 Model-look controls steer what NR generates; result editing reshapes the change
 returned by each pass. Model choice, look inheritance and result inheritance are
@@ -227,7 +239,7 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 
 | 版本范围 | 可用范围 |
 | --- | --- |
-| **0.2.0-dev.1 源码** | 在 0.1.0 基础上新增本地预设，尚未发布安装包；见[里程碑说明](docs/releases/v0.2.0-dev.1.md)。 |
+| **0.2.0-dev.2 预发布** | 在 0.1.0 基础上新增六个 NR Profile Slot 与增强的预设管理；见[里程碑说明](docs/releases/v0.2.0-dev.2.md)及[当前指南](docs/USER_GUIDE.md#zh-presets)。 |
 | **0.1.0** | 本页描述此版本的四页菜单、双模型、逐层独立外观／结果设置与四套主题；验证及剩余限制见[版本说明](docs/releases/v0.1.0.md)。 |
 | [上一预发布版：v0.1.0-dev.3](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.1.0-dev.3) | 已包含 310.9.16 A/B 双模型与逐 Pass 模型选择；早于本页所述菜单、独立结果编辑器及主题更新。 |
 
@@ -244,7 +256,16 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 | **实时诊断与报告** | 查看 NR 活动、请求／解析模型、资源及可用时的 GPU 时间，准备可选诊断与需用户检查提交的 Issue 草稿。 |
 | **15 种界面语言** | Auto 自动跟随 ReShade，也可手动选择。显示取决于 ReShade 已加载的字体，语言清单与缺字回退说明见指南。 |
 | **四套界面主题** | Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED 只改变菜单视觉，不影响 NR 图像处理。 |
-| **本地共享预设（开发中）** | 将画质或叠层设置保存到共享本地库，通过 JSON 文件或剪贴板分享，预览差异后应用，并可撤销上次导入。完整备份需要额外确认。操作见[预设指南](docs/USER_GUIDE.md#zh-presets)；此功能晚于 0.1.0 正式版。 |
+| **六个 NR Profile Slot（开发中）** | 每游戏三个官方开发候选及三个自定义 Slot，独立保留覆盖值，可捕获／重命名／清空自定义快照、撤销 Slot 操作或恢复当前官方默认值。编辑自动保存，首次升级保留当前配置，保存失败不切换。 |
+| **本地共享预设（开发中）** | 我的预设／保存与分享／导入预设管理共享本地库，可预览导入、将 NR 字段分配到自定义 Slot，或显式保存／分享 JSON 与剪贴板文本。完整备份另行确认，选导出路径不会立即写入。操作见[方案与预设指南](docs/USER_GUIDE.md#zh-presets)。 |
+
+Slot 和预设管理仅在当前开发预发布中提供，**0.1.0 稳定包不包含这些功能**。官方 Lite 为
+Render／1 层／B／跟随输入，Balanced 为 Upscaled／1 层／A／跟随输入，Max 为
+Present／2 层／A+B／100%；三者保存比例均为 1.0，前两者不再叠加一次降分辨率。
+其余管理字段继承注册默认值。这些均为开发候选，尚未完成实机画质／性能验收，
+Release／Debug 构建及受影响自动化检查已通过，Runtime 兼容门槛仍有效。
+Slot 自动保存与共享库文件、ReShade 正常设置分别处理，强退可能丢失待保存的 Slot 编辑；
+只读／损坏保护、迁移及 revision 冲突恢复见指南。
 
 模型外观控制 NR 生成什么，结果编辑则塑造每层模型已经返回的改变量。模型选择、外观继承、
 结果继承彼此独立，附加层既可沿用第 1 层，也可保留各自保存的编辑。介入点、工作分辨率和

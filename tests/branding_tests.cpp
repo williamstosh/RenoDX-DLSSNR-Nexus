@@ -31,7 +31,7 @@ int main() {
       "Precision cyan on deep blue.", "Classic teal and charcoal.",
       "Clear blue on bright surfaces.", "Pure black with restrained green.",
       text::kPresentGuideCountersTip,
-      text::kPassCountTip, text::kSettingsViewTips[0], text::kSettingsViewTips[1],
+      text::kPassCountTip,
       text::kModelStructure,
       text::kCadenceObservation,
       text::kOptionOff, text::kDetailAuto, text::kDetailAlways, text::kStabilizeStill, text::kStabilizeMotion, text::kUpsampleAuto, text::kUpsampleEdge, text::kUpsampleClassic, text::kUpsampleArea,
@@ -39,7 +39,7 @@ int main() {
       text::kResolutionLabels[1],
       text::kExpandAll, text::kCollapseAll, text::kChanged, text::kNrResolution, text::kResolutionFine, text::kProcessingLocation, text::kFgAdvanced, text::kFgFramePolicy, text::kFgFramePolicyTip, text::kResultBasic, text::kResultLimits, text::kResultDetail, text::kResultTemporal, text::kTemporalIndependent, text::kModelAutoTip, text::kModelATip, text::kModelBTip, text::kModelInheritTip, text::kChainMarkTip,
       text::kFrameGenUnconfirmed, text::kFrameGenFallback, text::kFgNoMultiplier, text::kFgUnknown, text::kFgOtherStage, text::kFgBefore, text::kFgEvery, text::kFgGame, text::kFgFallback, text::kFgUpscaled, text::kFgMixed, text::kFgDiagnostics,
-      text::kSettingsViewTip, text::kStatusDetails, "Advanced", text::kPassOverview,
+      text::kStatusDetails, "Advanced", text::kPassOverview,
       "Multi-Pass", "Pass Count", text::kOpenPresentSettings, text::kAbout,
       text::kRuntimeStatus, text::kResources, text::kDetails, text::kResultShaping,
       text::kResultChanged, text::kPresentSettings, text::kPresentDisplay,
@@ -181,6 +181,75 @@ int main() {
       "Unsupported preset format.",
       "Unsupported preset schema version.",
   };
+  // Includes dynamic profile status, notices and fixed slot labels.
+  const char* profile_strings[] = {
+      "Private game profile identity",
+      "Profiles",
+      "This profile requires a newer template version.",
+      " (empty)",
+      "Assign NR fields to custom slot",
+      "Browse folder",
+      "Choose export file",
+      "Choose preset file",
+      "Clear only this official profile's overrides? This action can be undone.",
+      "Clear slot",
+      "Confirm replacing or clearing this slot",
+      "Copy official profile to slot",
+      "Could not create a game profile identity.",
+      "Could not identify this game. Profiles were not loaded.",
+      "Could not read game profiles. Current settings were kept.",
+      "Could not save the game profile identity. Changes remain unsaved.",
+      "Could not start profile storage. Changes remain unsaved.",
+      "Could not start profile storage. Current settings were kept.",
+      "Custom 1",
+      "Custom 2",
+      "Custom 3",
+      "Custom slot",
+      "Custom slot saved. Select it to apply its settings.",
+      "Custom slots",
+      "Development candidate",
+      "Empty slot",
+      "Empty slot. Save current settings or copy an official profile to create it.",
+      "Export destination selected. Confirm export to write the file.",
+      "Exporting current game settings.",
+      "Exporting the saved custom slot snapshot.",
+      "Game location changed. Profiles were copied; current settings were kept.",
+      "Game settings changed elsewhere. The last selected profile was not reapplied.",
+      "Import preset",
+      "Loading profiles...",
+      "Modified",
+      "My presets",
+      "My profiles",
+      "NR Balanced",
+      "NR Lite",
+      "NR Max",
+      "NR Profiles",
+      "Official defaults",
+      "Official profiles",
+      "Open preset folder",
+      "Preset file saved.",
+      "Preset folder opened.",
+      "Preset library",
+      "Preset operation cancelled.",
+      "Profile action undone. Later edits were kept.",
+      "Profile applied. Runtime execution is pending confirmation.",
+      "Profile contains unsupported settings. Current settings were kept.",
+      "Profile storage unavailable",
+      "Profiles changed after this action. Undo was not applied.",
+      "Rename slot",
+      "Restore official defaults",
+      "Retry saving profiles",
+      "Save current game settings to slot",
+      "Save or share this slot",
+      "Saved",
+      "Saving...",
+      "Slot cleared. Running game settings were kept.",
+      "Slot display name",
+      "The selected path is too long for this input field.",
+      "Undo profile action",
+      "Unsaved profile changes",
+      "Use current game settings",
+  };
   for (int language = 0; language < kLanguageCount; ++language) {
     SelectLanguage(language);
     const std::string_view welcome = Tr(text::kWelcomeTitle);
@@ -229,6 +298,13 @@ int main() {
     };
     for (const char* english : preset_strings) {
       if (!check_preset_translation(english)) return 7;
+    }
+    for (const char* english : profile_strings) {
+      if (!check_preset_translation(english)) return 7;
+      if (language != 0 && std::string_view(Tr(english)) == english) {
+        std::fprintf(stderr, "Untranslated profile text: language=%s key=%s\n", kLanguages[language].code, english);
+        return 7;
+      }
     }
     for (const auto& rule : renodx::addons::dlss5::presets::FieldRules()) {
       if (!check_preset_translation(rule.label)) return 7;

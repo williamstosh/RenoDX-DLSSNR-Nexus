@@ -277,6 +277,8 @@ int main(int argc, char** argv) {
     if (test_case == "fail-hdr-version") failed_key = "NRPresentHdrPedestalConfigVersion";
     runtime::LoadConfiguration();
     if (test_case == "presets") {
+#include "profile_runtime_cases.hpp"
+      RunProfileRuntimeCases(base_directory / "profile-runtime-cases");
       namespace presets = renodx::addons::dlss5::presets;
       namespace adapter = runtime::preset_ui;
       namespace ui = renodx::addons::dlss5::ui;
@@ -410,6 +412,109 @@ int main(int argc, char** argv) {
           Check(document.settings.contains(rule.key) == expected, (std::string("Scope capture: ") + rule.key).c_str());
         }
       }
+      const auto quality_original = capture();
+      const Json quality_baseline{{"NRHookPoint", 0u}, {"NRFollowInputRes", true},
+                                  {"NRResolutionScale", 1.f}, {"NRLookUpsample", 0u}};
+      const Json quality_target{{"NRHookPoint", 2u}, {"NRFollowInputRes", false},
+                                {"NRResolutionScale", 0.5f}, {"NRLookUpsample", 3u}};
+      for (const auto& [key, value] : quality_target.items()) {
+        const auto* rule = presets::FindRule(key);
+        Check(rule != nullptr && rule->category == Category::QUALITY,
+              ("Explicit Quality classification: " + key).c_str());
+      }
+      Check(presets::FindRule("NRStyle")->category == Category::QUALITY, "Style remains Quality.");
+      for (const auto key : {"NRPresentEncoding", "NRCodecMode", "NRPresentHdrPedestalPolicy", "NRDepthMode",
+                             "NRMVecScaleX", "NRMVecScaleY", "NRPresentGuides", "NRPresentFrames",
+                             "NRPresentFgSource", "NRPresentUICorrection", "NROutputRect"}) {
+        Check(presets::FindRule(key)->category == Category::COMPATIBILITY,
+              (std::string("Dedicated compatibility classification remains: ") + key).c_str());
+      }
+      for (const auto selected_scope : {presets::Scope::QUALITY, presets::Scope::QUALITY_MULTIPASS}) {
+        Check(apply(quality_baseline), "Prepare four-field Quality baseline.");
+        const auto before_quality = capture();
+        const auto before_preview = Bytes();
+        const auto before_preview_writes = writes.size();
+        const presets::Document requested{.scope = selected_scope, .settings = quality_target};
+        const auto quality_rows = adapter::Preview(requested, false);
+        for (const auto& [key, value] : quality_target.items()) {
+          Check(std::any_of(quality_rows.begin(), quality_rows.end(), [&](const auto& row) {
+            return row.key == key && row.apply && row.after == value;
+          }), ("Quality preview accepts without compatibility opt-in: " + key).c_str());
+        }
+        Check(Bytes() == before_preview && writes.size() == before_preview_writes,
+              "Four-field preview does not write configuration.");
+        Check(apply(quality_target, selected_scope, false), "Quality batch applies all four fields without compatibility opt-in.");
+        const auto captured_quality = adapter::Capture(selected_scope, {{"name", "Quality fields"}});
+        std::string quality_error;
+        const auto quality_path = fixture_root / "quality-fields.nrnexus.json";
+        presets::Document reloaded_quality;
+        Check(presets::WriteFile(quality_path, captured_quality, true, &quality_error)
+                  && presets::ReadFile(quality_path, &reloaded_quality, &quality_error)
+                  && reloaded_quality.settings == captured_quality.settings,
+              "Quality capture survives production preset file save/reload.");
+        runtime::LoadConfiguration();
+        for (const auto& [key, value] : quality_target.items()) {
+          Check(captured_quality.settings.contains(key) && captured_quality.settings[key] == value
+                    && adapter::ReadSetting(key) == value,
+                ("Quality capture and INI reload preserve field: " + key).c_str());
+        }
+        Check(adapter::Undo(&quality_error), "Undo four-field Quality batch after configuration reload.");
+        for (const auto& [key, value] : quality_baseline.items()) {
+          Check(adapter::ReadSetting(key) == value, ("Quality undo restores field: " + key).c_str());
+        }
+        Check(adapter::Apply(reloaded_quality, false, true, &quality_error), "Apply reloaded Quality preset without compatibility opt-in.");
+        for (const auto& [key, value] : before_quality.settings.items()) {
+          if (const auto* rule = presets::FindRule(key);
+              rule->category == Category::COMPATIBILITY || rule->category == Category::GENERAL) {
+            Check(!captured_quality.settings.contains(key) && adapter::ReadSetting(key) == value,
+                  ("Quality file and apply isolate compatibility/general field: " + key).c_str());
+          }
+        }
+        const auto isolated_before = capture();
+        const auto isolated_writes = writes.size();
+        const Json dedicated{{"NRPresentEncoding", 3u}, {"NRDepthMode", 2u}, {"NRMVecScaleX", -1.f},
+                             {"NRPresentFgSource", 2u}, {"NRPresentUICorrection", false},
+                             {"UiMode", "classic"}, {"NRToggleKey", 0x70u},
+                             {"NRPasses", 4u}, {"NRPass4Preset", 2u}};
+        const presets::Document isolated_request{.scope = presets::Scope::QUALITY, .settings = dedicated};
+        const auto isolated_rows = adapter::Preview(isolated_request, true);
+        for (const auto& [key, value] : dedicated.items()) {
+          Check(std::any_of(isolated_rows.begin(), isolated_rows.end(), [&](const auto& row) {
+            return row.key == key && !row.apply && std::string_view(row.status) == "Skipped (outside scope)";
+          }), ("Quality preview rejects dedicated field even with opt-in: " + key).c_str());
+        }
+        Check(adapter::Apply(isolated_request, true, true, &quality_error)
+                  && capture().settings == isolated_before.settings && writes.size() == isolated_writes,
+              "Quality cannot import dedicated compatibility, UI, keys or multipass fields.");
+
+        // Schema v1 predates the expanded Quality field set; absent keys stay local.
+        Check(apply({{"NRPreset", 3u}, {"NRPasses", 2u}, {"NRPass2Preset", 2u}}), "Prepare legacy model requests.");
+        presets::Document old_v1;
+        Check(presets::Parse(presets::Serialize({.scope = selected_scope,
+                    .settings = {{"NRStyle", 1u}, {"NRPreset", 3u}, {"NRPasses", 2u}, {"NRPass2Preset", 2u}}}), &old_v1),
+              "Read schema v1 Quality preset without the four new fields.");
+        const auto old_v1_rows = adapter::Preview(old_v1, false);
+        for (const auto& [key, value] : quality_target.items()) {
+          Check(!old_v1.settings.contains(key)
+                    && std::any_of(old_v1_rows.begin(), old_v1_rows.end(), [&](const auto& row) {
+                      return row.key == key && !row.apply && row.before == value;
+                    }), ("Missing v1 field previews current value without applying: " + key).c_str());
+        }
+        const auto legacy_writes = writes.size();
+        Check(adapter::Apply(old_v1, false, true, &quality_error), "Apply old v1 with missing Quality fields.");
+        runtime::LoadConfiguration();
+        for (const auto& [key, value] : quality_target.items()) {
+          Check(adapter::ReadSetting(key) == value, ("Missing v1 Quality field stays unchanged: " + key).c_str());
+        }
+        Check(model::ResolvePreset(3, 0, true) == 1 && model::ResolvePreset(3, 2, false) == 1
+                  && adapter::ReadSetting("NRPreset") == 3 && adapter::ReadSetting("NRPass2Preset") == 2
+                  && Read("NRPreset") == "3" && Read("NRPass2Preset") == "2",
+              "Old v1 preserves historical model and unsupported request instead of writing runtime fallback.");
+        Check(std::none_of(writes.begin() + legacy_writes, writes.end(), [&](const auto& event) {
+          return quality_target.contains(event.key) || event.key == "NRPreset" || event.key == "NRPass2Preset";
+        }), "Missing v1 fields and unchanged raw model requests are never rewritten.");
+      }
+      Check(apply(quality_original.settings), "Restore configuration after four-field Quality regression.");
       const auto saved_passes = runtime::stack_passes.load();
       Check(apply({{"NRPasses", 1u}}), "Prepare multipass expansion preview.");
       const auto floating_passes = adapter::Preview({.scope = presets::Scope::QUALITY_MULTIPASS,
@@ -491,18 +596,15 @@ int main(int argc, char** argv) {
       Check(apply({{"NRPresentWhiteNits", 321.f}}, presets::Scope::FULL, false)
                 && adapter::ReadSetting("NRPresentWhiteNits") == compatibility_before, "Compatibility requires opt-in.");
       const auto saved = capture();
-      runtime::SetDefaultsView(true);
       const auto defaults_generation = runtime::configuration_generation.load();
       const auto defaults_epoch = runtime::history_reset_epoch.load();
       const auto defaults_bytes = Bytes();
       const auto defaults_writes = writes.size();
       const auto exported = capture();
-      Check(exported.settings == saved.settings, "Built-in temporary view exports saved user snapshot.");
+      Check(exported.settings == saved.settings, "Export reads the actual current user snapshot.");
       Check(defaults_generation == runtime::configuration_generation.load() && defaults_epoch == runtime::history_reset_epoch.load()
                 && defaults_bytes == Bytes() && defaults_writes == writes.size(), "Snapshot export has no write/recreate/history side effects.");
       std::string error;
-      Check(!adapter::Apply(saved, true, true, &error) && defaults_writes == writes.size(), "Built-in temporary view prevents import.");
-      runtime::SetDefaultsView(false);
       for (const uint32_t main_model : {1u, 2u}) {
         for (const uint32_t pass_model : {1u, 2u}) {
           for (uint32_t passes = 1; passes <= 4; ++passes) {
@@ -853,12 +955,7 @@ int main(int argc, char** argv) {
         runtime::LoadConfiguration();
         Check(runtime::LookSettingsSnapshots(false)[1].strength == 0.4f,
               "independent result values survive a configuration reload");
-        runtime::SetDefaultsView(true);
-        Check(runtime::pass_look_result[0].follow.load(), "Built-in effect temporarily restores inherited results");
-        runtime::SetDefaultsView(false);
-        Check(!runtime::pass_look_result[0].follow.load() && runtime::LookSettingsSnapshots(false)[1].strength == 0.4f,
-              "Mine restores independent result values and inheritance");
-        runtime::ResetSettings({runtime::kPassLookResultSettings});
+          runtime::ResetSettings({runtime::kPassLookResultSettings});
         Check(runtime::pass_look_result[0].follow.load() && runtime::pass_look_result[0].strength.load() == 1.f,
               "result reset restores inheritance and stored defaults");
       } else {
