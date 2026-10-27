@@ -259,4 +259,5 @@ try {
     Assert-Test (-not (Test-Path -LiteralPath $taskNegative.OutputDirectory)) 'Missing/empty guide left package output.'
 } finally { $taskPackage = $taskOriginalPackage }
 
+Complete-TestOutput $taskOutput
 [pscustomobject]@{ TestsPassed = $taskPassed; ArchivePath = $taskResult.ArchivePath; OutputDirectory = $taskOutput }

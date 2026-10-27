@@ -31,18 +31,119 @@ function Initialize-TestBuild {
 }
 
 function Initialize-TestOutput {
-    param([string]$Path)
+    param([string]$Path, [ValidateSet('Standard','Full','Acceptance')][string]$RetentionMode = $(if ($env:NR_NEXUS_TEST_RETENTION) { $env:NR_NEXUS_TEST_RETENTION } else { 'Standard' }))
+    $RetentionMode = @('Standard','Full','Acceptance') | Where-Object { $_ -ieq $RetentionMode } | Select-Object -First 1
     $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
     $resolved = [IO.Path]::GetFullPath($Path)
     $allowed = @('tmp', 'artifacts') | Where-Object {
         $resolved.StartsWith((Join-Path $root $_) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
     }
     if (-not $allowed) { throw 'Test output must be below this repository tmp/ or artifacts/.' }
+    Assert-TestArtifactPath $resolved
     if ((Test-Path -LiteralPath $resolved) -and (Get-ChildItem -LiteralPath $resolved -Force | Select-Object -First 1)) {
         throw "Refusing nonempty output: $resolved"
     }
-    New-Item -ItemType Directory -Force -Path $resolved | Out-Null
+    [void][IO.Directory]::CreateDirectory($resolved)
+    if (-not (Get-Variable -Name NexusTestOutputs -Scope Global -ErrorAction SilentlyContinue)) {
+        $global:NexusTestOutputs = @{}
+    }
+    $state = [ordered]@{ schema='nr-nexus-test-output/1'; runId=[guid]::NewGuid().ToString('N')
+        ownerPid=$PID; mode=$RetentionMode; status='Running'; startedUtc=[DateTime]::UtcNow.ToString('o')
+        entry=$MyInvocation.ScriptName; sourceCommit=(& git --no-optional-locks -C $root rev-parse HEAD)
+        intermediates=@(); cleanup=@(); cleanupErrors=@() }
+    $global:NexusTestOutputs[$resolved] = $state
+    $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $resolved 'artifact-lifecycle.json') -Encoding utf8
     return $resolved
+}
+
+function Assert-TestArtifactPath {
+    param([string]$Path)
+    $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+    $current = [IO.Path]::GetFullPath($Path)
+    if ($current -ne $root -and -not $current.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Artifact path escapes repository.'
+    }
+    while ($current) {
+        if (Test-Path -LiteralPath $current) {
+            if ((Get-Item -LiteralPath $current -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw "Artifact path crosses reparse point: $current"
+            }
+        }
+        if ($current -eq $root) { break }
+        $current = [IO.Path]::GetDirectoryName($current)
+    }
+}
+
+function Register-TestCompilerOutput {
+    param([string]$Directory, [string[]]$ObjectPath, [string]$ExecutablePath)
+    $directoryPath = [IO.Path]::GetFullPath($Directory)
+    $state = $global:NexusTestOutputs[$directoryPath]
+    if (-not $state -or $state.status -ne 'Running') { throw 'Compiler output requires an active owned test directory.' }
+    $paths = @($ObjectPath)
+    if ($ExecutablePath) { $paths += @([IO.Path]::ChangeExtension($ExecutablePath, '.lib'), [IO.Path]::ChangeExtension($ExecutablePath, '.exp')) }
+    foreach ($path in $paths) {
+        $absolute = [IO.Path]::GetFullPath($path)
+        Assert-TestArtifactPath $absolute
+        if (-not $absolute.StartsWith($directoryPath + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
+            [IO.Path]::GetExtension($absolute) -notin @('.obj','.lib','.exp') -or (Test-Path -LiteralPath $absolute)) {
+            throw "Compiler intermediate is not a new owned path: $absolute"
+        }
+        if ($state.intermediates -notcontains $absolute) { $state.intermediates += $absolute }
+    }
+    $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $directoryPath 'artifact-lifecycle.json') -Encoding utf8
+}
+
+function Get-TestOutputSize {
+    param([string]$Directory)
+    $pending = [Collections.Generic.Queue[string]]::new()
+    $pending.Enqueue($Directory)
+    $count = 0
+    [long]$bytes = 0
+    while ($pending.Count) {
+        foreach ($item in Get-ChildItem -LiteralPath $pending.Dequeue() -Force) {
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+            if ($item.PSIsContainer) { $pending.Enqueue($item.FullName) }
+            elseif ($item.Name -ne 'artifact-lifecycle.json') { $count++; $bytes += $item.Length }
+        }
+    }
+    return @{files=$count;bytes=$bytes;excludes='artifact-lifecycle.json and reparse targets'}
+}
+
+function Complete-TestOutput {
+    param([string]$Directory, [ValidateSet('Passed','Failed')][string]$Outcome = 'Passed')
+    $directoryPath = [IO.Path]::GetFullPath($Directory)
+    if (-not (Get-Variable -Name NexusTestOutputs -Scope Global -ErrorAction SilentlyContinue) -or
+        -not $global:NexusTestOutputs.ContainsKey($directoryPath)) { return }
+    $state = $global:NexusTestOutputs[$directoryPath]
+    if ($state.status -ne 'Running') { return }
+    Assert-TestArtifactPath $directoryPath
+    $marker = Get-Content -LiteralPath (Join-Path $directoryPath 'artifact-lifecycle.json') -Raw | ConvertFrom-Json
+    if ($marker.runId -ne $state.runId -or $marker.ownerPid -ne $PID -or $marker.mode -ne $state.mode) {
+        throw 'Test output ownership changed; cleanup refused.'
+    }
+    $state['generated'] = Get-TestOutputSize $directoryPath
+    $state.status = $Outcome
+    if ($Outcome -eq 'Passed' -and $state.mode -eq 'Standard') {
+        foreach ($path in $state.intermediates) {
+            if (-not (Test-Path -LiteralPath $path)) { continue }
+            try {
+                Assert-TestArtifactPath $path
+                $item = Get-Item -LiteralPath $path -Force
+                if ($item.Attributes -band [IO.FileAttributes]::ReadOnly) { throw 'Read-only intermediate retained.' }
+                $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+                $stream.Dispose()
+                Remove-Item -LiteralPath $path -ErrorAction Stop
+                $state.cleanup += @{ path=[IO.Path]::GetRelativePath($directoryPath,$path); bytes=$item.Length }
+            } catch {
+                $state.cleanupErrors += @{ path=$path; error=$_.Exception.Message }
+                Write-Warning "Intermediate cleanup stopped: $path : $($_.Exception.Message)"
+                break
+            }
+        }
+    }
+    $state['retained'] = Get-TestOutputSize $directoryPath
+    $state['finishedUtc'] = [DateTime]::UtcNow.ToString('o')
+    $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $directoryPath 'artifact-lifecycle.json') -Encoding utf8
 }
 
 function Get-TestProjectInputs {
@@ -69,15 +170,30 @@ function Get-TestProjectInputs {
 }
 
 function Invoke-TestProcess {
-    param([string]$Executable, [string]$Directory, [string]$Name, [string[]]$Arguments = @())
+    param([string]$Executable, [string]$Directory, [string]$Name, [string[]]$Arguments = @(),
+        [ValidateRange(1,45000)][int]$TimeoutMilliseconds = 45000)
     $start = @{ FilePath=$Executable; WorkingDirectory=$Directory; WindowStyle='Hidden'; PassThru=$true
         RedirectStandardOutput=(Join-Path $Directory "$Name.stdout.log"); RedirectStandardError=(Join-Path $Directory "$Name.stderr.log") }
+    $owner = $null
     if ($Arguments.Count) { $start.ArgumentList = $Arguments }
+    if (Get-Variable -Name NexusTestOutputs -Scope Global -ErrorAction SilentlyContinue) {
+        $owner = $global:NexusTestOutputs.Keys | Where-Object {
+            $Directory -eq $_ -or $Directory.StartsWith($_ + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+        } | Sort-Object Length -Descending | Select-Object -First 1
+        if ($owner) { $start.Environment = @{ NR_NEXUS_TEST_RETENTION=$global:NexusTestOutputs[$owner].mode } }
+    }
     $process = Start-Process @start
     $null = $process.Handle
-    if (-not $process.WaitForExit(45000)) { $process.Kill(); $process.WaitForExit(); throw "Test timeout: $Name" }
+    if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+        $process.Kill(); $process.WaitForExit()
+        if ($owner) { Complete-TestOutput $owner -Outcome Failed }
+        throw "Test timeout: $Name"
+    }
     $process.WaitForExit()
     Get-Content -LiteralPath $start.RedirectStandardOutput
     Get-Content -LiteralPath $start.RedirectStandardError
-    if ($null -eq $process.ExitCode -or $process.ExitCode -ne 0) { throw "Test failed: $Name exit=$($process.ExitCode)" }
+    if ($null -eq $process.ExitCode -or $process.ExitCode -ne 0) {
+        if ($owner) { Complete-TestOutput $owner -Outcome Failed }
+        throw "Test failed: $Name exit=$($process.ExitCode)"
+    }
 }

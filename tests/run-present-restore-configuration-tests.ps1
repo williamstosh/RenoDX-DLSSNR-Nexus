@@ -103,6 +103,7 @@ try {
         "/DCONFIG_TEST_SCOPE_SAVE=$ScopeSaveFunction") +
         @($includes | ForEach-Object { "/I$_" }) +
         @('/c', $testSource, "/Fo$objectPath", '/sourceDependencies', $dependencyLog)
+    Register-TestCompilerOutput -Directory $OutputDirectory -ObjectPath $objectPath -ExecutablePath $executable
     & cl.exe @compileArguments *> $compileLog
     $compileExitCode = $LASTEXITCODE
     Add-RunLine "compile_exit_code=$compileExitCode"
@@ -199,3 +200,4 @@ try {
     Add-RunLine "error=$($_.Exception.Message)"
     throw
 }
+Complete-TestOutput $OutputDirectory -Outcome Passed

@@ -1,6 +1,7 @@
 """Rasterize the test fixture's real ImGui mesh/atlas for visual inspection."""
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -10,7 +11,8 @@ from PIL import Image, ImageDraw, ImageFont
 def render(path, output_directory=None, image_format='png'):
     mesh = json.loads(path.read_text(encoding='utf-8'))
     width, height = int(mesh['width']), int(mesh['height'])
-    atlas = np.frombuffer(path.with_suffix('.rgba').read_bytes(), dtype=np.uint8)
+    atlas_path = capture_atlas(path, mesh)
+    atlas = np.frombuffer(atlas_path.read_bytes(), dtype=np.uint8)
     atlas = atlas.reshape(mesh['atlas_height'], mesh['atlas_width'], 4).astype(np.float32) / 255
     image = np.zeros((height, width, 3), np.float32)
     image[:] = (0.055, 0.06, 0.07)
@@ -53,6 +55,19 @@ def render(path, output_directory=None, image_format='png'):
     print(output)
 
 
+def capture_atlas(path, mesh):
+    # Legacy captures use a same-stem atlas; new runs share only within this directory.
+    name = mesh.get('atlas_file')
+    if name is None:
+        return path.with_suffix('.rgba')
+    if not isinstance(name, str) or not name or '/' in name or '\\' in name or ':' in name or Path(name).name != name:
+        raise ValueError('Capture atlas must be a local filename')
+    atlas = path.parent / name
+    if atlas.suffix != '.rgba' or atlas.is_symlink() or atlas.resolve().parent != path.parent.resolve():
+        raise ValueError('Capture atlas escapes capture directory')
+    return atlas
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -67,14 +82,26 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if args.documentation and (not args.output_directory or args.format != 'webp'):
         parser.error('--documentation requires --output-directory and --format webp')
-    captures = [path for path in sorted(args.directory.glob(args.pattern))
-                if path.with_suffix('.rgba').exists()]
+    captures = []
+    skipped = 0
+    for path in sorted(args.directory.glob(args.pattern)):
+        try:
+            mesh = json.loads(path.read_text(encoding='utf-8'))
+            if 'lists' in mesh and capture_atlas(path, mesh).exists():
+                captures.append(path)
+        except (OSError, ValueError, TypeError) as error:
+            print(f'Skipping {path.name}: {error}', file=sys.stderr)
+            skipped += 1
     if not captures:
         parser.error('No matching mesh/atlas pairs found')
     if args.output_directory:
         args.output_directory.mkdir(parents=True, exist_ok=True)
     for path in captures:
-        render(path, args.output_directory, args.format)
+        try:
+            render(path, args.output_directory, args.format)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            print(f'Skipping {path.name}: {error}', file=sys.stderr)
+            skipped += 1
     if args.documentation:
         # Crops select complete control groups from the production menu, with
         # synthetic activity summaries excluded. No game image is synthesized.
@@ -106,3 +133,5 @@ if __name__ == '__main__':
                 with Image.open(args.output_directory / (stem + '.webp')) as original:
                     sheet.paste(original.crop((0, 174, 650, 742)), (x, y + 42))
             sheet.save(args.output_directory / ('themes' + suffix + '.webp'), lossless=True, method=6)
+    if skipped:
+        sys.exit(1)

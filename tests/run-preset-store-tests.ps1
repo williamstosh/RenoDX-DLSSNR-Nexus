@@ -106,6 +106,8 @@ foreach ($kind in @('exe', 'dll')) {
         $arguments += "/Fe$executable"
     }
     $arguments | ConvertTo-Json | Set-Content -LiteralPath "$OutputDirectory/$kind-arguments.json" -Encoding utf8
+    $binary = if ($kind -eq 'dll') { $module } else { $executable }
+    Register-TestCompilerOutput -Directory $OutputDirectory -ObjectPath (Join-Path $OutputDirectory "$kind.obj") -ExecutablePath $binary
     & cl.exe @arguments *> "$OutputDirectory/$kind-compile.log"
     if ($LASTEXITCODE -ne 0) { throw "Preset $kind build failed; see $OutputDirectory/$kind-compile.log" }
 }
@@ -156,3 +158,4 @@ try {
     }
 }
 Write-Host "Preset store outputs: $OutputDirectory"
+Complete-TestOutput $OutputDirectory -Outcome Passed

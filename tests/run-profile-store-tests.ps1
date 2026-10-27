@@ -19,6 +19,7 @@ $arguments = @('/nologo', '/std:c++20', '/EHsc', '/W4', '/WX', '/O2', '/MT', '/u
     '/DNOMINMAX', '/DWIN32_LEAN_AND_MEAN', "/I$SourceRoot", "/I$HostRoot/external/json/include",
     $source, "/Fo$OutputDirectory/tests.obj", "/Fe$executable", '/sourceDependencies', "$OutputDirectory/dependencies.json")
 $arguments | ConvertTo-Json | Set-Content -LiteralPath "$OutputDirectory/arguments.json" -Encoding utf8
+Register-TestCompilerOutput -Directory $OutputDirectory -ObjectPath (Join-Path $OutputDirectory 'tests.obj') -ExecutablePath $executable
 & cl.exe @arguments *> "$OutputDirectory/compile.log"
 if ($LASTEXITCODE -ne 0) { throw "Profile store build failed; see $OutputDirectory/compile.log" }
 $dependencies = (Get-Content -LiteralPath "$OutputDirectory/dependencies.json" -Raw | ConvertFrom-Json).Data.Includes
@@ -49,3 +50,4 @@ try {
     }
 }
 Write-Host "Profile store evidence retained: $OutputDirectory"
+Complete-TestOutput $OutputDirectory -Outcome Passed

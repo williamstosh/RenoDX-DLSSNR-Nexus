@@ -18,6 +18,7 @@ foreach ($inputPath in $inputs) {
     $hashes[$inputPath] = (Get-FileHash -LiteralPath $inputPath -Algorithm SHA256).Hash
 }
 $hashes | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $OutputDirectory 'input-hashes.json') -Encoding utf8
+Register-TestCompilerOutput -Directory $OutputDirectory -ObjectPath $object -ExecutablePath $executable
 & cl.exe /nologo /std:c++20 /EHsc /W4 /WX /MT /O2 /utf-8 /DNOMINMAX /DWIN32_LEAN_AND_MEAN "/I$sourceRoot" $testSource "/Fo$object" "/Fe$executable" /link ole32.lib shell32.lib uuid.lib *> $compileLog
 if ($LASTEXITCODE -ne 0) {
     Get-Content -LiteralPath $compileLog
@@ -30,3 +31,4 @@ foreach ($inputPath in $inputs) {
     }
 }
 Write-Host "Preset dialog tests passed: $OutputDirectory"
+Complete-TestOutput $OutputDirectory -Outcome Passed

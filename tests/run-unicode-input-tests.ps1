@@ -27,6 +27,8 @@ foreach ($kind in @('exe', 'dll')) {
     }
     $arguments += @('/link', 'user32.lib', 'gdi32.lib')
     $arguments | ConvertTo-Json | Set-Content -LiteralPath "$OutputDirectory/$kind-arguments.json" -Encoding utf8
+    $binary = if ($kind -eq 'dll') { $module } else { $executable }
+    Register-TestCompilerOutput -Directory $OutputDirectory -ObjectPath (Join-Path $OutputDirectory "$kind.obj") -ExecutablePath $binary
     & cl.exe @arguments *> "$OutputDirectory/$kind-compile.log"
     if ($LASTEXITCODE -ne 0) { throw "Unicode input $kind build failed; see $OutputDirectory/$kind-compile.log" }
 }
@@ -58,3 +60,4 @@ foreach ($inputHash in $hashes) {
     fault_injection = 'controlled-not-user-trace'; real_os_ime = 'manual-not-tested' } |
     ConvertTo-Json | Set-Content -LiteralPath "$OutputDirectory/result.json" -Encoding utf8
 Write-Host "Unicode input outputs: $OutputDirectory"
+Complete-TestOutput $OutputDirectory -Outcome Passed

@@ -13,8 +13,13 @@ param(
     [ValidateSet('native-required-menu','native-owner-idle','native-options-resume','native-options-delayed','native-guide-contract','present-guide-models','native-present-decision','trace-metadata')]
     [string[]]$NativeCase = @(),
     [switch]$BuildOnly,
+    [ValidateSet('Standard','Full','Acceptance')][string]$RetentionMode = $(if ($env:NR_NEXUS_TEST_RETENTION) { $env:NR_NEXUS_TEST_RETENTION } else { 'Standard' }),
     [switch]$SoftwareOnly
 )
+$previousRetention = $env:NR_NEXUS_TEST_RETENTION
+try {
+$RetentionMode = @('Standard','Full','Acceptance') | Where-Object { $_ -ieq $RetentionMode } | Select-Object -First 1
+$env:NR_NEXUS_TEST_RETENTION = $RetentionMode
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repositoryRoot = Split-Path $PSScriptRoot -Parent
@@ -98,6 +103,7 @@ foreach ($item in $Suite) {
     $arguments += @((Join-Path $testRoot "$name.cpp"), "/Fo$directory/$name.obj", "/Fe$exe",
         '/sourceDependencies', "$directory/dependencies.json", '/link', '/OPT:REF', '/OPT:ICF') + $link
     $arguments | ConvertTo-Json | Set-Content -LiteralPath "$directory/arguments.json" -Encoding utf8
+    Register-TestCompilerOutput $directory -ObjectPath @(Join-Path $directory "$name.obj") -ExecutablePath $exe
     & cl.exe @arguments *> "$directory/compile.log"
     if ($LASTEXITCODE -ne 0) { throw "Compile/link failed: $item; see $directory/compile.log" }
     $dependencies = (Get-Content -LiteralPath "$directory/dependencies.json" -Raw | ConvertFrom-Json).Data.Includes
@@ -118,5 +124,11 @@ foreach ($item in $Suite) {
     }
     @{suite=$item; build='passed'; run=$(if ($BuildOnly) { 'not_run' } else { 'passed' })} |
         ConvertTo-Json | Set-Content -LiteralPath "$directory/result.json" -Encoding utf8
+    if (-not $BuildOnly) { Complete-TestOutput $directory }
 }
+if (-not $BuildOnly) { Complete-TestOutput $OutputDirectory }
 Write-Host "Test outputs: $OutputDirectory"
+
+} finally {
+    $env:NR_NEXUS_TEST_RETENTION = $previousRetention
+}

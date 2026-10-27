@@ -14,10 +14,12 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // The fixture links the pinned ImGui implementation directly. Suppress only
@@ -271,9 +273,16 @@ int main() {
     runtime::last_input_height = runtime::last_output_height = 2160;
     runtime::dlss_render_share = 4.f / 9.f;
     unsigned checks = 0;
+    std::function<void()> capture_failure;
     const auto check = [&](bool condition, const char* message) {
       ++checks;
       if (!condition) {
+        std::fprintf(stderr, "Assertion failed: %s\n", message);
+        try {
+          if (capture_failure) capture_failure();
+        } catch (const std::exception& diagnostic_error) {
+          std::fprintf(stderr, "Capture unavailable: %s\n", diagnostic_error.what());
+        }
         throw std::runtime_error(message);
       }
     };
@@ -482,6 +491,15 @@ int main() {
       io.AddMousePosEvent(-100.f, -100.f);
       frame();
     };
+    const char* retention_environment = std::getenv("NR_NEXUS_TEST_RETENTION");
+    const std::string retention = (retention_environment == nullptr ? "Standard" : retention_environment);
+    if (retention != "Standard" && retention != "Full" && retention != "Acceptance") {
+      throw std::runtime_error("Unknown NR_NEXUS_TEST_RETENTION mode");
+    }
+    std::vector<unsigned char> saved_atlas;
+    std::string atlas_file;
+    unsigned atlas_count = 0;
+    unsigned capture_count = 0;
     const auto capture = [&](const char* name, const ui::StatusCard* diagnostic_case = nullptr, bool settle = true) {
       // Store the actual ImGui mesh and atlas; the optional CPU renderer uses
       // these without substituting HTML controls or a second menu definition.
@@ -489,6 +507,14 @@ int main() {
         frame(diagnostic_case);
         frame(diagnostic_case);
         frame(diagnostic_case);
+      }
+      // Settling remains part of the fixture in every mode. Only persistence is gated.
+      const std::string_view capture_name(name);
+      if (retention == "Standard" && capture_name != "quality-wide" && capture_name != "ux-library-home"
+          && capture_name != "ux-restore-confirmation-zh" && capture_name != "presets-narrow-zh"
+          && capture_name != "presets-4k-zh" && capture_name != "failure"
+          && std::getenv("NR_NEXUS_UX_REPRO") == nullptr && std::getenv("NR_NEXUS_DOC_CAPTURES") == nullptr) {
+        return;
       }
       Json output{{"width", panel_width}, {"height", panel_height}, {"theme", ui::CurrentTheme().slug},
                   {"page", runtime::ui_menu_page}, {"language", runtime::ui_language_choice.load()},
@@ -513,9 +539,29 @@ int main() {
       io.Fonts->GetTexDataAsRGBA32(&atlas, &atlas_width, &atlas_height);
       output["atlas_width"] = atlas_width;
       output["atlas_height"] = atlas_height;
-      std::ofstream(std::string(name) + ".json") << output;
-      std::ofstream texture(std::string(name) + ".rgba", std::ios::binary);
-      texture.write(reinterpret_cast<char*>(atlas), static_cast<std::streamsize>(atlas_width) * atlas_height * 4);
+      const size_t atlas_bytes = static_cast<size_t>(atlas_width) * atlas_height * 4;
+      if (saved_atlas.size() != atlas_bytes || std::memcmp(saved_atlas.data(), atlas, atlas_bytes) != 0) {
+        atlas_file = "atlas-" + std::to_string(atlas_count++) + ".rgba";
+        std::ofstream texture(atlas_file, std::ios::binary);
+        texture.write(reinterpret_cast<char*>(atlas), static_cast<std::streamsize>(atlas_bytes));
+        texture.close();
+        if (!texture) throw std::runtime_error("Unable to persist capture atlas");
+        saved_atlas.assign(atlas, atlas + atlas_bytes);
+      }
+      output["atlas_file"] = atlas_file;
+      std::ofstream mesh(std::string(name) + ".json");
+      mesh << output;
+      mesh.close();
+      if (!mesh) throw std::runtime_error("Unable to persist capture mesh");
+      ++capture_count;
+    };
+    capture_failure = [&]() {
+      // A failing assertion must remain diagnosable even in the lightweight mode.
+      if (!ImGui::GetCurrentContext()->WithinFrameScope && ImGui::GetDrawData() != nullptr) {
+        capture("failure", nullptr, false);
+      } else {
+        std::fputs("Capture unavailable during active frame; existing captures and assertion trace retained\n", stderr);
+      }
     };
 
     frame();
@@ -1084,7 +1130,7 @@ int main() {
       io.AddMousePosEvent(-100.f, -100.f);
     }
     check(themed_captures == 80, "four themes must each capture four pages, both widths/fold states, faults, popup and tooltip");
-    std::printf("all-theme mesh captures=%u; synthetic fixture, no game/GPU/visual acceptance inferred\n", themed_captures);
+    std::printf("all-theme capture scenarios=%u; persistence follows retention mode; synthetic fixture, no game/GPU/visual acceptance inferred\n", themed_captures);
     runtime::StoreUiTheme(ui::ThemeId::CYBER_NEON);
     runtime::ui_language_choice = 14;
     ui::expand_all_sections = false;
@@ -1610,6 +1656,8 @@ int main() {
     std::printf("production menu CPU mean=%.3f ms, frames=%u; includes synthetic test hooks and language changes, excludes GPU rendering\n",
                 panel_total_ms / panel_frames, panel_frames);
 #include "preset_ux_cases.hpp"
+    std::printf("capture retention=%s meshes=%u atlases=%u\n", retention.c_str(), capture_count, atlas_count);
+    if (std::getenv("NR_NEXUS_TEST_CAPTURE_FAILURE") != nullptr) check(false, "controlled capture retention failure");
     ImGui::DestroyContext();
     return 0;
   } catch (const std::exception& error) {

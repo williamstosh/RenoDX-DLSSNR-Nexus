@@ -42,6 +42,7 @@ foreach ($name in $sources) {
     $arguments += @((Join-Path $PSScriptRoot "$name.cpp"), "/Fo$directory/$name.obj", "/Fe$exe",
         '/sourceDependencies', "$directory/dependencies.json", '/link','/OPT:REF','/OPT:ICF') + $libraries
     $arguments | ConvertTo-Json | Set-Content -LiteralPath "$directory/arguments.json" -Encoding utf8
+    Register-TestCompilerOutput -Directory $OutputDirectory -ObjectPath (Join-Path $directory.FullName "$name.obj") -ExecutablePath $exe
     & cl.exe @arguments *> "$directory/compile.log"
     if ($LASTEXITCODE -ne 0) {
         Get-Content "$directory/compile.log" -Tail 45
@@ -139,3 +140,4 @@ if ($sources -contains 'report_upload_tests') {
     throw 'Upload test source missing; complete report suite cannot be verified.'
 }
 Write-Host "Report issue, privacy, flow and loopback upload suite passed. Outputs: $OutputDirectory"
+Complete-TestOutput $OutputDirectory -Outcome Passed
