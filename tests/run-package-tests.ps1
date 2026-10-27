@@ -100,8 +100,8 @@ try {
         'licenses/ReShade/LICENSE.md', 'licenses/DearImGui/LICENSE.txt', 'licenses/nlohmann-json/LICENSE.MIT',
         'licenses/nlohmann-json/NOTICE.txt', 'licenses/Streamline/license.txt', 'licenses/Streamline/NOTICE.txt',
         'licenses/NVIDIA-DLSS/LICENSE.txt')
-    $taskImageNames = @('quality', 'multipass', 'results', 'diagnostics', 'advanced', 'themes',
-        'quality-zh', 'multipass-zh', 'results-zh', 'diagnostics-zh', 'advanced-zh', 'themes-zh')
+    $taskImageNames = @('quality', 'multipass', 'results', 'diagnostics', 'advanced', 'themes', 'presets',
+        'quality-zh', 'multipass-zh', 'results-zh', 'diagnostics-zh', 'advanced-zh', 'themes-zh', 'presets-zh')
     $taskExpected += @($taskImageNames | ForEach-Object { "images/ui/$_.webp" })
     Assert-Test ($taskNames.Count -eq $taskExpected.Count -and
         -not (Compare-Object $taskExpected $taskNames -CaseSensitive)) 'Complete ZIP whitelist mismatch.'
@@ -134,6 +134,14 @@ try {
         finally { $taskStream.Dispose(); $taskMemory.Dispose() }
         Assert-Test ([Convert]::ToBase64String($taskImageBytes) -ceq [Convert]::ToBase64String(
             [IO.File]::ReadAllBytes((Join-Path $taskRoot "docs/images/ui/$taskImage.webp")))) "Image source mismatch: $taskImage"
+    }
+    foreach ($taskDocument in @('README.md', 'USER_GUIDE.md')) {
+        $taskPackedText = Read-ZipText $taskDocument
+        foreach ($taskImageLink in [regex]::Matches($taskPackedText, '!\[[^\]]*\]\(([^)]+)\)')) {
+            $taskTarget = $taskImageLink.Groups[1].Value
+            if ($taskTarget -match '^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|//)' -or $taskTarget.StartsWith('#')) { continue }
+            Assert-Test ($taskNames -contains $taskTarget) "Document image is not packaged: $taskTarget"
+        }
     }
     $taskSourceDocuments = @{}
     $taskPackedDocuments = @{}
