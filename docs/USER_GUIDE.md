@@ -32,6 +32,8 @@ Defaults below are for a fresh configuration. Existing saved choices and migrati
 
 **Image note (applies to every image below, including the Chinese section):** these are state examples composed offscreen with the current production ImGui interface. They illustrate controls and layout, and do not represent in-game image quality, FPS, or measured runtime performance. Screenshots and captions match the language of each section.
 
+The refreshed Quality, theme and save-task images show the **unreleased 0.2.0-dev.3 source**; other control crops are retained where still accurate. Profile and assisted-input controls visible in any image are development features, outside the published 0.1.0 package.
+
 <a id="en-quality"></a>
 ### Quality: model, location and resolution
 
@@ -231,6 +233,10 @@ Open **Manage profiles** on Quality or Advanced. **Profile library** opens on on
 1. **Save current profile:** initially only the name field is shown; a fresh form uses **Quality + Multi-Pass**. **More options** exposes scope, optional author/description/source game and **Preview export fields**. The source is current game settings unless you came from a saved custom profile; **Use current game settings** switches back. Saved profile exports use Quality scopes; switch back to current game settings for a Full backup. **Save preset to library**, **Export file** and **Copy share text** remain visible. Saving writes the library file; copying puts JSON on the clipboard. Expand Export file for the destination, **Choose export file**, **Browse folder** and the explicit **Export preset file** action. Choosing a destination alone does not write. Replacement permission must be enabled to overwrite an existing file; once enabled, its checkbox remains visible even when options are collapsed.
 2. **Import profile:** start with **Choose preset file** or **Paste share text**; expand **Enter file path** only if you need a full local path and **Read preset file**. Reading only prepares a preview. Differences, apply and custom-profile assignment controls appear after a successful read. Review grouped differences, kept/unsupported/skipped fields and **Show unchanged fields**. Compatibility settings start excluded; full backups require scope confirmation. If settings changed, review the refreshed preview before **Confirm and apply preset**. **Cancel import** discards the pending preview without applying settings.
 3. **Assign NR fields to custom slot** is an alternative to applying an import. Choose Custom 1–3 and confirm replacement if populated; a Full backup also requires scope confirmation. It merges eligible valid NR fields into the saved profile (or current settings for an empty profile), preserving missing fields, without applying it. HDR, depth/motion, FG policies and interface preferences are not assigned. Select that profile separately to apply it.
+
+![Compact save-profile task](images/ui/presets.webp)
+
+*Development source: name and explicit save/copy actions, with More options and Export file collapsed. This example has not saved a file.*
 
 **Back to profile library** returns to home. The title-bar **X**, or **Esc** while the manager is focused and no text editor is active, closes the manager; reopening starts at home. Draft input, library selection, expanded options and a pending import preview are retained during the same session; closing does not save or apply them. Text fields, nested popups and the native assisted-input editor handle their own Esc first. Move or resize the manager by its title bar and resize grip. Size and position are remembered for the running session and constrained to the available display/font size. Simple save and unread import tasks use a compact window. Opening More options or export options, loading a preview, or returning home restores editing space while retaining user-adjusted dimensions. This geometry is not saved across game restarts.
 
@@ -435,6 +441,8 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 
 **配图说明：** 所有配图均为当前生产 ImGui 界面离屏合成的状态示例，用来说明布局与控件，不代表实机画质、FPS 或运行时性能测量。中文章节使用简体中文界面截图与中文图注。顶部版本范围同样适用于本节。
 
+已更新的画质、主题和保存任务配图使用**尚未发布的 0.2.0-dev.3 源码**，其余仍准确的控件区域图继续保留。任何图片中出现的方案及辅助输入控件均属于开发功能，不包含于已发布的 0.1.0 包。
+
 <a id="zh-quality"></a>
 ### 画质：模型、介入点与尺寸
 
@@ -634,6 +642,10 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 1. **保存方案：** 初始只显示名称输入，首次使用默认“画质＋叠层”。展开“更多选项”再修改范围、选填作者／描述／来源游戏或“预览导出字段”。通常来源为当前游戏配置；从自定义方案分享时来源为其已保存快照，可点“使用当前游戏设置”切回。快照导出使用画质范围，完整备份须切回当前游戏设置。“保存方案到方案库”“导出文件”“复制分享文本”始终可见，保存会写入库文件，复制会把 JSON 放入剪贴板。展开“导出文件”后可指定路径、“选择导出文件”或“浏览文件夹”，最后主动点“导出方案文件”才写入。选路径不会立即导出；覆盖已有文件前须勾选替换许可；勾选后确认项始终可见，收起选项也不会隐藏。
 2. **导入方案：** 初始选择“选择方案文件”或“粘贴分享文本”；需要手输本地完整路径时再展开“输入文件路径”，然后“读取方案文件”。读取仅准备预览，成功后才出现差异、应用及自定义方案存入操作。按组检查变化、保留值、不支持及跳过字段，可显示未改变字段。兼容项默认排除，完整备份需确认范围。当前设置变化后须检查刷新预览，再“确认并应用方案”；“取消导入”丢弃待应用预览，不应用设置。
 3. **将 NR 设置存入自定义方案：** 这是直接应用导入的另一种选择。选自定义 1–3，已有内容时确认替换，完整备份还须确认范围。将合格 NR 字段合入该方案快照，空方案则以当前设置为基础，缺失字段保留，不立即应用。不存入 HDR、深度／运动、FG 策略或界面偏好，之后另选该方案才应用。
+
+![简洁保存方案任务](images/ui/presets-zh.webp)
+
+*开发源码：名称输入及明确的保存／复制操作，更多选项和文件导出已折叠；本示例未保存文件。*
 
 “返回方案库”回到主页。标题栏 **X**，或管理窗口获得焦点且没有正在编辑的输入框时按 **Esc**，均可关闭管理器；再次打开从主页开始。同会话保留输入草稿、库内选择、展开选项和待应用的导入预览，关闭不会保存或应用它们。输入框、内部弹窗及原生辅助输入窗优先处理自己的 Esc。可拖动标题栏移动、拖动缩放角调整尺寸；尺寸与位置在当前运行会话中记忆，并按可用显示区域和字体大小约束。简洁保存与尚未读取文件的导入任务使用紧凑窗口。展开“更多选项”或导出选项、读取出预览或返回主页时恢复编辑空间，并保留用户调整的尺寸；此窗口几何不跨游戏重启保存。
 

@@ -6,6 +6,7 @@ param(
     [string]$BuildProject = (Join-Path (Split-Path $PSScriptRoot -Parent) 'build/dlss5.vcxproj'),
     [string]$OutputDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) ('tmp/tests/ui-' + [guid]::NewGuid().ToString('N'))),
     [string]$VcVars64,
+    [ValidateSet('Quick','Full')][string]$SnapshotMode,
     [ValidateSet('Standard','Full','Acceptance')][string]$RetentionMode = $(if ($env:NR_NEXUS_TEST_RETENTION) { $env:NR_NEXUS_TEST_RETENTION } else { 'Standard' })
 )
 $ErrorActionPreference = 'Stop'
@@ -18,6 +19,7 @@ $imguiRoot = Join-Path $HostRoot 'external/reshade/deps/imgui'
 $executable = Join-Path $OutputDirectory 'ui-layout-tests.exe'
 $sources = @((Join-Path $SourceRoot 'tests/ui_layout_tests.cpp'))
 $sources += @('imgui.cpp','imgui_draw.cpp','imgui_tables.cpp','imgui_widgets.cpp') | ForEach-Object { Join-Path $imguiRoot $_ }
+if (-not $SnapshotMode) {
 $arguments = @('/nologo','/std:c++20','/EHsc','/O2','/MT','/utf-8','/DNOMINMAX',"/I$SourceRoot","/I$imguiRoot")
 $arguments += $sources
 $arguments += @("/Fo$OutputDirectory/", "/Fe$executable")
@@ -26,6 +28,7 @@ $arguments | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $OutputDirecto
 & cl.exe @arguments *> (Join-Path $OutputDirectory 'compile.log')
 if ($LASTEXITCODE -ne 0) { throw "UI test build failed: $OutputDirectory/compile.log" }
 Invoke-TestProcess $executable $OutputDirectory 'layout'
+}
 $projectInputs = Get-TestProjectInputs $BuildProject $SourceRoot $HostRoot $ShaderIncludeDirectory
 $menuExecutable = Join-Path $OutputDirectory 'ui-menu-tests.exe'
 $menuDirectory = Join-Path $OutputDirectory 'menu'
@@ -50,9 +53,13 @@ $arguments | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $OutputDirecto
     }) } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'inputs.json') -Encoding utf8
 & cl.exe @arguments *> (Join-Path $OutputDirectory 'menu-compile.log')
 if ($LASTEXITCODE -ne 0) { throw "Production menu test build failed: $OutputDirectory/menu-compile.log" }
-Invoke-TestProcess $menuExecutable $menuDirectory 'menu'
+$previousSnapshotMode = $env:NR_NEXUS_UI_SNAPSHOTS
+try {
+    if ($SnapshotMode) { $env:NR_NEXUS_UI_SNAPSHOTS = $SnapshotMode }
+    Invoke-TestProcess $menuExecutable $menuDirectory 'menu'
+} finally { $env:NR_NEXUS_UI_SNAPSHOTS = $previousSnapshotMode }
 $timer.Stop()
 @{build='passed';run='passed';retention=$RetentionMode;seconds=$timer.Elapsed.TotalSeconds
-    scope='real ImGui layout, synthetic live status; no game or GPU inference'} |
+    snapshotMode=$SnapshotMode; scope='real ImGui layout, synthetic live status; no game or GPU inference'} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $OutputDirectory 'result.json') -Encoding utf8
 Complete-TestOutput $OutputDirectory

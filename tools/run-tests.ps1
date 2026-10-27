@@ -10,6 +10,7 @@ param(
     [string]$VcVars64,
     [string]$DetoursLibrary,
     [string]$PythonExecutable,
+    [ValidateSet('Auto','Quick','Full','None')][string]$UiPreview = 'Auto',
     [ValidateSet('native-required-menu','native-owner-idle','native-options-resume','native-options-delayed','native-guide-contract','present-guide-models','native-present-decision','trace-metadata')]
     [string[]]$NativeCase = @(),
     [switch]$BuildOnly,
@@ -26,6 +27,9 @@ $repositoryRoot = Split-Path $PSScriptRoot -Parent
 $testRoot = Join-Path $repositoryRoot 'tests'
 . (Join-Path $testRoot 'test-support.ps1')
 $SourceRoot = [IO.Path]::GetFullPath($SourceRoot)
+if ($SourceRoot.TrimEnd('\','/') -ne $repositoryRoot.TrimEnd('\','/') -and $UiPreview -in @('Quick','Full')) {
+    throw 'Explicit UI preview requires this checkout as SourceRoot; run the preview entry in the target checkout.'
+}
 $HostRoot = [IO.Path]::GetFullPath($HostRoot)
 $ShaderIncludeDirectory = [IO.Path]::GetFullPath($ShaderIncludeDirectory)
 $OutputDirectory = Initialize-TestOutput $OutputDirectory
@@ -128,6 +132,29 @@ foreach ($item in $Suite) {
 }
 if (-not $BuildOnly) { Complete-TestOutput $OutputDirectory }
 Write-Host "Test outputs: $OutputDirectory"
+if ($Suite -contains 'ui' -and -not $BuildOnly -and $UiPreview -ne 'None') {
+    $previewMode = $UiPreview
+    if ($previewMode -eq 'Auto') {
+        $uiChanges = @(& git --no-optional-locks -C $SourceRoot diff --name-only HEAD -- ui)
+        $uiChanges += @(& git --no-optional-locks -C $SourceRoot ls-files --others --exclude-standard -- ui)
+        # These headers also contain rendering/business code. Trigger on UI
+        # hunks rather than forcing captures for every edit to the monolith.
+        $mixedDiff = @(& git --no-optional-locks -C $SourceRoot diff --unified=0 HEAD -- dlssnr.hpp preset_runtime.hpp profile_runtime.hpp brand.h)
+        $uiChanges += @($mixedDiff | Where-Object {
+            $_ -match '^@@.*\b(Draw[A-Z]\w*|OnOverlay|\w*Ui\w*)\b' -or
+            $_ -match '^[+-](?![+-]).*(ImGui::|ui::|\bui_\w+|\bNR_NEXUS_NAME\b)'
+        })
+        $previewMode = $(if ($uiChanges.Count) { 'Quick' } else { 'None' })
+        if ($SourceRoot.TrimEnd('\','/') -ne $repositoryRoot.TrimEnd('\','/')) {
+            $previewMode = 'None'
+            Write-Host 'Custom SourceRoot tested; invoke preview-ui.ps1 from that checkout to preview the same source.'
+        }
+    }
+    if ($previewMode -ne 'None') {
+        & (Join-Path $PSScriptRoot 'preview-ui.ps1') -Mode $previewMode -PythonExecutable $PythonExecutable `
+            -HostRoot $HostRoot -ShaderIncludeDirectory $ShaderIncludeDirectory -BuildProject $BuildProject -VcVars64 $VcVars64 -RetentionMode $RetentionMode
+    }
+}
 
 } finally {
     $env:NR_NEXUS_TEST_RETENTION = $previousRetention

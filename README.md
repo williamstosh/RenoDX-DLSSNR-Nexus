@@ -75,6 +75,11 @@ performance measurement.*
 *Basic adjustments, brightness/colour limits, detail/halos and temporal stability
 in the same offscreen candidate UI example.*
 
+![Save a local NR profile](docs/images/ui/presets.webp)
+
+*The compact save task in the unreleased 0.2.0-dev.3 source; more options and
+file export expand when needed. Synthetic offscreen example, with no file saved.*
+
 ![Cyber Neon, Nexus Dark, Fluent Light and Midnight OLED](docs/images/ui/themes.webp)
 
 *Four themes of the same candidate menu; themes change the interface only.*
@@ -176,6 +181,12 @@ pwsh ./tools/build.ps1 -ToolRoot .local/shader-tools -Configuration Release
 ```
 
 The output is **`build/Release/renodx-dlss5.addon64`**.
+
+For an offscreen view of the production menu, run `pwsh ./tools/preview-ui.ps1`
+with a Python containing NumPy/Pillow (`-PythonExecutable <python.exe>`).
+Open `artifacts/ui-snapshots/latest/index.html` locally. Quick/Full previews,
+scene selection and checked documentation-image updates share the same ImGui
+capture source; see the [snapshot workflow](docs/UI_SNAPSHOTS.md).
 
 [host/lock.json](host/lock.json) pins RenoDX and its dependencies;
 [host/renodx-compat.patch](host/renodx-compat.patch) supplies the required host
@@ -284,6 +295,11 @@ Slot 自动保存与共享库文件、ReShade 正常设置分别处理，强退�
 
 *同一候选菜单的离屏界面示例：基础结果调整、亮度与色彩限制、细节与光晕、时域稳定。*
 
+![保存本地 NR 方案](docs/images/ui/presets-zh.webp)
+
+*尚未发布的 0.2.0-dev.3 源码中的简洁保存任务，更多选项及文件导出按需展开；
+本图为合成状态的离屏示例，未执行保存。*
+
 ![Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED](docs/images/ui/themes-zh.webp)
 
 *同一候选菜单的四套主题，主题只影响界面。*
@@ -370,6 +386,10 @@ pwsh ./tools/build.ps1 -ToolRoot .local/shader-tools -Configuration Release
 ```
 
 产物为 **`build/Release/renodx-dlss5.addon64`**。
+
+开发时可用 `pwsh ./tools/preview-ui.ps1` 离屏查看生产菜单，Python 需 NumPy／Pillow
+（可传 `-PythonExecutable <python.exe>`）。直接打开 `artifacts/ui-snapshots/latest/index.html`。
+Quick／Full、指定场景及经检查的文档配图更新共用真实 ImGui 捕获，见[快照工作流](docs/UI_SNAPSHOTS.md)。
 
 [host/lock.json](host/lock.json) 固定 RenoDX 宿主及依赖，
 [host/renodx-compat.patch](host/renodx-compat.patch) 补齐所需宿主接口。

@@ -159,11 +159,27 @@ struct Item {
   std::string label;
   bool disabled = false;
   ImGuiWindow* window = nullptr;
+  ImGuiItemStatusFlags status = 0;
 };
 std::map<ImGuiID, Item> items;
+std::map<std::string, ImRect> snapshot_regions;
 
 void ImGuiTestEngineHook_ItemAdd(ImGuiContext* context, ImGuiID id, const ImRect& rect, const ImGuiLastItemData*) {
   items[id] = {.id = id, .rect = rect, .disabled = (context->CurrentItemFlags & ImGuiItemFlags_Disabled) != 0, .window = context->CurrentWindow};
+  if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC_CAPTURES") != nullptr) {
+    const auto* window = context->CurrentWindow;
+    for (int index = 1; window != nullptr && index < window->IDStack.Size; ++index) {
+      for (const auto& [scope, name] : {std::pair{"result_settings", "result_controls"},
+                                       {"##pass_chain", "chain"}, {"##pass_editor", "pass_editor"},
+                                       {"##quality_columns", "model_controls"}, {"NRPreset", "model_primary"},
+                                       {"NRIntensity", "model_primary"}, {"NRTransferStrength", "model_primary"},
+                                       {"NRColorStrength", "model_primary"}}) {
+        if (window->IDStack[index] != ImHashStr(scope, 0, window->IDStack[index - 1])) continue;
+        auto [region, inserted] = snapshot_regions.try_emplace(name, rect);
+        if (!inserted) region->second.Add(rect);
+      }
+    }
+  }
   // BeginCombo does not emit ItemInfo in the pinned ImGui version.
   if (context->CurrentWindow != nullptr && !context->CurrentWindow->IDStack.empty()) {
     for (const char* label : {"##model", "##theme"}) {
@@ -173,8 +189,9 @@ void ImGuiTestEngineHook_ItemAdd(ImGuiContext* context, ImGuiID id, const ImRect
     }
   }
 }
-void ImGuiTestEngineHook_ItemInfo(ImGuiContext*, ImGuiID id, const char* label, ImGuiItemStatusFlags) {
+void ImGuiTestEngineHook_ItemInfo(ImGuiContext*, ImGuiID id, const char* label, ImGuiItemStatusFlags status) {
   items[id].label = label;
+  items[id].status = status;
 }
 void ImGuiTestEngineHook_Log(ImGuiContext*, const char*, ...) {}
 const char* ImGuiTestEngine_FindItemDebugLabel(ImGuiContext*, ImGuiID) { return "test item"; }
@@ -343,6 +360,7 @@ int main() {
     bool preset_latin_font = false;
     const auto frame = [&](const ui::StatusCard* diagnostic_case = nullptr) {
       items.clear();
+      snapshot_regions.clear();
       rendered_text.clear();
       tooltip_text.clear();
       ImGui::GetStyle().FontSizeBase = font_size;
@@ -401,6 +419,16 @@ int main() {
         // Native multiline editors own an internal text scroller. The outer
         // input's item bounds, rather than that private cursor, define layout.
         if (std::strstr(window->Name, "##preset_description_") != nullptr) continue;
+        if (std::strstr(window->Name, "##issue_steps_") != nullptr) {
+          // InputTextMultiline reserves cursor scrolling space beyond its
+          // text viewport. Validate the editor bounds, not that private cursor.
+          if (window->Active && window->ParentWindow != nullptr) {
+            check(window->Pos.x >= window->ParentWindow->InnerRect.Min.x - 1.f
+                      && window->Pos.x + window->Size.x <= window->ParentWindow->InnerRect.Max.x + 1.f,
+                  "report multiline editor extends outside its parent");
+          }
+          continue;
+        }
         if (window->Active && (window->Flags & ImGuiWindowFlags_ChildWindow) != 0
             && (std::strstr(window->Name, "NR Nexus menu fixture") != nullptr
                 || std::strstr(window->Name, "nr_preset_manager") != nullptr)) {
@@ -513,7 +541,8 @@ int main() {
       if (retention == "Standard" && capture_name != "quality-wide" && capture_name != "ux-library-home"
           && capture_name != "ux-restore-confirmation-zh" && capture_name != "presets-narrow-zh"
           && capture_name != "presets-4k-zh" && capture_name != "failure"
-          && std::getenv("NR_NEXUS_UX_REPRO") == nullptr && std::getenv("NR_NEXUS_DOC_CAPTURES") == nullptr) {
+          && std::getenv("NR_NEXUS_UX_REPRO") == nullptr && std::getenv("NR_NEXUS_DOC_CAPTURES") == nullptr
+          && std::getenv("NR_NEXUS_UI_SNAPSHOTS") == nullptr) {
         return;
       }
       Json output{{"width", panel_width}, {"height", panel_height}, {"theme", ui::CurrentTheme().slug},
@@ -563,6 +592,10 @@ int main() {
         std::fputs("Capture unavailable during active frame; existing captures and assertion trace retained\n", stderr);
       }
     };
+
+    if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr) {
+#include "ui_snapshot_cases.hpp"
+    }
 
     frame();
     frame();
@@ -1154,56 +1187,6 @@ int main() {
     capture("diagnostics");
     runtime::ui_menu_page = 3;
     capture("advanced");
-    if (std::getenv("NR_NEXUS_DOC_CAPTURES") != nullptr) {
-      runtime::profile_ui::notice.clear();
-      // Documentation uses the production callback with explicitly synthetic
-      // status. Keep the extra captures opt-in rather than a daily test gate.
-      const auto documentation_capture = [&](const char* name, int page, int language, bool expanded) {
-        io.DisplaySize = ImVec2((std::max)(1800.f, panel_width), (std::max)(1300.f, panel_height));
-        runtime::ui_menu_page = page;
-        runtime::ui_language_choice = language;
-        runtime::ui_classic_layout = false;
-        io.AddMousePosEvent(-100.f, -100.f);
-        for (ImGuiWindow* window : ImGui::GetCurrentContext()->Windows) {
-          window->StateStorage.Clear();
-          window->Scroll = ImVec2(0.f, 0.f);
-        }
-        for (auto& scope : ui::fold_scopes) scope = {};
-        ui::expand_all_sections = expanded;
-        capture(name);
-      };
-      panel_width = 1400.f;
-      panel_height = 1100.f;
-      font_size = 18.f;
-      runtime::look_mode = true;
-      runtime::ui_selected_pass = 1;
-      runtime::stack_passes = 4;
-      runtime::pass_preset[0] = 1;
-      runtime::pass_preset[1] = 2;
-      runtime::pass_look_result[0].follow = false;
-      runtime::pass_look_result[0].mode = true;
-      runtime::StoreUiTheme(ui::ThemeId::CYBER_NEON);
-      documentation_capture("doc-quality", 0, 1, false);
-      documentation_capture("doc-quality-zh", 0, 14, false);
-      documentation_capture("doc-multipass", 1, 1, false);
-      documentation_capture("doc-multipass-zh", 1, 14, false);
-      panel_height = 2100.f;
-      documentation_capture("doc-results", 0, 1, true);
-      documentation_capture("doc-results-zh", 0, 14, true);
-      panel_height = 1400.f;
-      documentation_capture("doc-diagnostics", 2, 1, false);
-      documentation_capture("doc-diagnostics-zh", 2, 14, false);
-      documentation_capture("doc-advanced", 3, 1, false);
-      documentation_capture("doc-advanced-zh", 3, 14, false);
-      panel_width = 650.f;
-      panel_height = 1000.f;
-      for (const auto& theme : ui::kThemes) {
-        runtime::StoreUiTheme(theme.id);
-        documentation_capture((std::string("doc-theme-") + theme.slug).c_str(), 0, 1, false);
-        documentation_capture((std::string("doc-theme-") + theme.slug + "-zh").c_str(), 0, 14, false);
-      }
-      std::puts("documentation captures: production menu, synthetic status, no game or GPU measurements");
-    }
     // The preset modal is the production implementation. No personal library
     // or clipboard is read: seed only synthetic worker results and documents.
     preset_fixture = true;
@@ -1658,6 +1641,14 @@ int main() {
 #include "preset_ux_cases.hpp"
     std::printf("capture retention=%s meshes=%u atlases=%u\n", retention.c_str(), capture_count, atlas_count);
     if (std::getenv("NR_NEXUS_TEST_CAPTURE_FAILURE") != nullptr) check(false, "controlled capture retention failure");
+    if (std::getenv("NR_NEXUS_DOC_CAPTURES") != nullptr) {
+      // Keep the legacy opt-in's regression coverage. Only the preview entry
+      // takes the fast path; both callers share the same production scenes.
+      preset_fixture = false;
+      preset_latin_font = false;
+      clipped_callback = false;
+#include "ui_snapshot_cases.hpp"
+    }
     ImGui::DestroyContext();
     return 0;
   } catch (const std::exception& error) {

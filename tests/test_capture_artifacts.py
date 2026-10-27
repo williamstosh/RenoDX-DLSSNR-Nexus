@@ -6,6 +6,7 @@ import tempfile
 import subprocess
 import sys
 import unittest
+from PIL import Image
 
 spec = importlib.util.spec_from_file_location('capture_renderer', Path(__file__).with_name('render-ui-captures.py'))
 renderer = importlib.util.module_from_spec(spec)
@@ -14,6 +15,13 @@ TEMP_ROOT = Path(__file__).resolve().parents[1] / 'tmp'
 
 
 class CaptureArtifacts(unittest.TestCase):
+    def test_semantic_crop_rejects_stale_or_nonfinite_bounds(self):
+        image = Image.new('RGB', (40, 30))
+        self.assertEqual(renderer.checked_crop(image, [2, 3, 38, 28]).size, (36, 25))
+        for bounds in ([0, 0, 41, 30], [-1, 0, 40, 30], [3, 3, 3, 20], [0, 0, float('nan'), 4]):
+            with self.subTest(bounds=bounds), self.assertRaises(ValueError):
+                renderer.checked_crop(image, bounds)
+
     def test_legacy_and_shared_atlas_render_identically(self):
         with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as directory:
             root = Path(directory)
@@ -46,6 +54,8 @@ class CaptureArtifacts(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=TEMP_ROOT) as directory:
             root = Path(directory)
             (root / 'broken.json').write_text('{', encoding='utf-8')
+            (root / 'missing.json').write_text(json.dumps(dict(width=1, height=1, atlas_width=1,
+                atlas_height=1, lists=[], atlas_file='missing.rgba')), encoding='utf-8')
             (root / 'valid.json').write_text(json.dumps(dict(width=1, height=1, atlas_width=1,
                                                             atlas_height=1, lists=[])), encoding='utf-8')
             (root / 'valid.rgba').write_bytes(bytes([255, 255, 255, 255]))
@@ -53,6 +63,7 @@ class CaptureArtifacts(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 1)
             self.assertIn('Skipping broken.json', result.stderr)
+            self.assertIn('Skipping missing.json', result.stderr)
             self.assertTrue((root / 'valid.png').exists())
 
 
