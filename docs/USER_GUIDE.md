@@ -2,9 +2,9 @@
 
 [English](#english) · [简体中文](#简体中文) · [README](../README.md)
 
-> **Version scope — 0.2.0-dev.4 source / 0.1.0 release:** this guide describes the complete 0.1.0 package: four-page menu, dual models, independent per-pass model styling and result settings, and four interface themes. Check the Releases page for available versioned ZIP packages. Per-pass stages, NR Profiles, presets and assisted input describe the current development source and are not included in the published 0.1.0 package. Earlier pre-release packages do not contain every feature shown here.
+> **Version scope — 0.2.0-dev.4 pre-release / 0.1.0 release:** this guide describes the complete 0.1.0 package: four-page menu, dual models, independent per-pass model styling and result settings, and four interface themes. Check the Releases page for available versioned ZIP packages. Per-pass stages, NR Profiles, presets and assisted input describe the current development source and are not included in the published 0.1.0 package. Earlier pre-release packages do not contain every feature shown here.
 >
-> **版本范围——0.2.0-dev.4 源码／0.1.0 正式版：** 本指南对应完整 0.1.0 包，包含四页菜单、双模型、逐层独立模型风格与结果设置及四套主题。请在 Releases 页面查看可下载的版本化 ZIP；逐层阶段、NR 快速方案、方案库与辅助输入对应当前开发源码，未包含于已发布 0.1.0 包；早期预发布包也不含本指南展示的全部功能。
+> **版本范围——0.2.0-dev.4 预发布／0.1.0 正式版：** 本指南对应完整 0.1.0 包，包含四页菜单、双模型、逐层独立模型风格与结果设置及四套主题。请在 Releases 页面查看可下载的版本化 ZIP；逐层阶段、NR 快速方案、方案库与辅助输入对应当前开发源码，未包含于已发布 0.1.0 包；早期预发布包也不含本指南展示的全部功能。
 
 ## English
 
@@ -32,7 +32,7 @@ Defaults below are for a fresh configuration. Existing saved choices and migrati
 
 **Image note (applies to every image below, including the Chinese section):** these are state examples composed offscreen with the current production ImGui interface. They illustrate controls and layout, and do not represent in-game image quality, FPS, or measured runtime performance. Screenshots and captions match the language of each section.
 
-The refreshed Quality, theme and save-task images show the **unreleased 0.2.0-dev.4 source**; other control crops are retained where still accurate. Profile and assisted-input controls visible in any image are development features, outside the published 0.1.0 package.
+The refreshed Quality, theme and save-task images show the **0.2.0-dev.4 development pre-release**; other control crops are retained where still accurate. Profile and assisted-input controls visible in any image are development features, outside the published 0.1.0 package.
 
 <a id="en-quality"></a>
 ### Quality: model, location and resolution
@@ -249,7 +249,7 @@ Quality includes the base model/appearance/results plus four common controls: Pa
 
 **Undo last import** is available on the Profile library home when there is an import to undo, or beside Manage profiles on Advanced. It restores only fields still equal to imported values, preserving later edits. It is separate from Undo profile action. Library files require explicit saving; profile autosave is separate. Configuration writes are checked before runtime publication, and failed application attempts to restore prior saved values. This does not guarantee a disk/GPU transaction or recovery from a process crash.
 
-Edit the preset name, author, source game, description, search and file paths directly in the overlay's standard ImGui input fields. The description field supports multiple lines. Editing a field does not save a preset: use the normal save/export action afterwards. If direct IME input is garbled, click the keyboard-icon button beside the field title (hover for **Assisted input: Open the compatibility text editor for Chinese and other text.**), or right-click an editable preset field, custom Slot name or report text field and choose **Assisted input...**. Both open the same separate Windows Unicode editor, with its own input-method candidate window. The keyboard graphic in the section hint is static and not clickable; use the button or context menu. Select **Apply** to return the text to that field, then use the normal save/rename/export action. **Cancel** leaves the field unchanged; a result is discarded if its original text changed while editing. Candidate-selection keys follow your IME's behavior. Enter in a single-line field does not apply the text; use the Apply button. Escape first cancels an active composition and otherwise cancels the editor. This optional input path does not modify ReShade's handling of the original inline fields. Native-window focus and fullscreen behavior depend on the game and require validation in the target environment. This editor is present in the unreleased 0.2.0-dev.4 source; the published 0.2.0-dev.2 pre-release does not include it.
+Edit the preset name, author, source game, description, search and file paths directly in the overlay's standard ImGui input fields. The description field supports multiple lines. Editing a field does not save a preset: use the normal save/export action afterwards. If direct IME input is garbled, click the keyboard-icon button beside the field title (hover for **Assisted input: Open the compatibility text editor for Chinese and other text.**), or right-click an editable preset field, custom Slot name or report text field and choose **Assisted input...**. Both open the same separate Windows Unicode editor, with its own input-method candidate window. The keyboard graphic in the section hint is static and not clickable; use the button or context menu. Select **Apply** to return the text to that field, then use the normal save/rename/export action. **Cancel** leaves the field unchanged; a result is discarded if its original text changed while editing. Candidate-selection keys follow your IME's behavior. Enter in a single-line field does not apply the text; use the Apply button. Escape first cancels an active composition and otherwise cancels the editor. This optional input path does not modify ReShade's handling of the original inline fields. Native-window focus and fullscreen behavior depend on the game and require validation in the target environment. This editor is present in the 0.2.0-dev.4 development pre-release; the earlier 0.2.0-dev.2 pre-release does not include it.
 
 Names and descriptions use UTF-8; the name, author and source-game limits are 128 bytes each, and the description limit is 2048 bytes, so Chinese text reaches the limit sooner than ASCII. Input fields are limited by their UTF-8 buffer capacities. If correctly stored text displays as boxes or replacement glyphs in the overlay, check ReShade's language and font override. Correct UTF-8 data does not need re-encoding or a Windows system code-page change. JSON can preserve supplementary characters such as emoji; entering and displaying them in the overlay still depends on the host's input handling and ImGui/font combination.
 
@@ -446,7 +446,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 
 **配图说明：** 所有配图均为当前生产 ImGui 界面离屏合成的状态示例，用来说明布局与控件，不代表实机画质、FPS 或运行时性能测量。中文章节使用简体中文界面截图与中文图注。顶部版本范围同样适用于本节。
 
-已更新的画质、主题和保存任务配图使用**尚未发布的 0.2.0-dev.4 源码**，其余仍准确的控件区域图继续保留。任何图片中出现的方案及辅助输入控件均属于开发功能，不包含于已发布的 0.1.0 包。
+已更新的画质、主题和保存任务配图使用**0.2.0-dev.4 开发预发布源码**，其余仍准确的控件区域图继续保留。任何图片中出现的方案及辅助输入控件均属于开发功能，不包含于已发布的 0.1.0 包。
 
 <a id="zh-quality"></a>
 ### 画质：模型、介入点与尺寸
@@ -619,7 +619,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 <a id="zh-presets"></a>
 ### NR 快速方案与方案库（开发中）
 
-本节对应当前 **0.2.0-dev.4 开发源码**，包括按任务展开的方案库。已发布的 **0.1.0 包不包含六个方案或方案库管理**。以下说明界面操作，不代表下列官方组合已通过实机画质或性能验收。
+本节对应当前 **0.2.0-dev.4 开发预发布源码**，包括按任务展开的方案库。已发布的 **0.1.0 包不包含六个方案或方案库管理**。以下说明界面操作，不代表下列官方组合已通过实机画质或性能验收。
 
 #### 当前游戏的六个方案
 
@@ -663,7 +663,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 
 有可撤销的导入时，方案库主页会显示“撤销上次导入”，也可从高级页“管理方案”旁操作。它只恢复仍等于导入值的字段，保留之后的编辑，与“撤销方案操作”分开。共享库文件仍须显式保存，与方案自动保存分开。配置写入先核验再提交运行时参数，应用失败尝试恢复原保存值；不保证磁盘／GPU 事务或进程崩溃恢复。
 
-预设名称、作者、来源游戏、描述、搜索和文件路径均在叠加层的标准 ImGui 输入框中原位编辑，描述支持多行。编辑输入框只更新表单，之后仍需主动保存／导出预设。若原位 IME 输入乱码，可点击字段标题旁的键盘图标按钮（悬停可查看“辅助输入：打开兼容文本编辑窗口，输入中文等文字。”），或右键可编辑的预设字段、自定义 Slot 名称或报告文字输入框并选择 **辅助输入…**。两者打开同一个独立的 Windows Unicode 编辑窗及输入法候选窗。区域提示中的键盘图形仅作说明，不能点击；请使用标题旁按钮或右键菜单。点“应用”将文字带回原字段，再按原流程保存／重命名／导出；点“取消”放弃编辑，编辑期间原字段已变化时丢弃返回结果。候选选择按输入法自身规则处理；单行框按 Enter 不会应用文字，写回须点“应用”。Escape 优先取消正在进行的组合，没有组合时取消编辑窗。此可选输入路径不修改 ReShade 对原位输入框的消息处理。原生窗口焦点及全屏行为仍须在目标游戏环境中验证。该编辑窗位于尚未发布的 0.2.0-dev.4 源码中，已发布的 0.2.0-dev.2 预发布不包含此功能。
+预设名称、作者、来源游戏、描述、搜索和文件路径均在叠加层的标准 ImGui 输入框中原位编辑，描述支持多行。编辑输入框只更新表单，之后仍需主动保存／导出预设。若原位 IME 输入乱码，可点击字段标题旁的键盘图标按钮（悬停可查看“辅助输入：打开兼容文本编辑窗口，输入中文等文字。”），或右键可编辑的预设字段、自定义 Slot 名称或报告文字输入框并选择 **辅助输入…**。两者打开同一个独立的 Windows Unicode 编辑窗及输入法候选窗。区域提示中的键盘图形仅作说明，不能点击；请使用标题旁按钮或右键菜单。点“应用”将文字带回原字段，再按原流程保存／重命名／导出；点“取消”放弃编辑，编辑期间原字段已变化时丢弃返回结果。候选选择按输入法自身规则处理；单行框按 Enter 不会应用文字，写回须点“应用”。Escape 优先取消正在进行的组合，没有组合时取消编辑窗。此可选输入路径不修改 ReShade 对原位输入框的消息处理。原生窗口焦点及全屏行为仍须在目标游戏环境中验证。该编辑窗位于 0.2.0-dev.4 开发预发布源码中，较早的 0.2.0-dev.2 预发布不包含此功能。
 
 名称和描述使用 UTF-8；名称、作者、来源游戏分别最多 128 字节，描述最多 2048 字节，中文会比 ASCII 更早达到上限。输入框受各自 UTF-8 缓冲区容量限制。若已正确保存的文字在叠加层中显示为方框或替代字形，请检查 ReShade 自身语言和字体覆盖设置。正确的 UTF-8 数据无需重新编码或改变 Windows 系统代码页。JSON 可保留 emoji 等补充平面字符，其叠加层输入和显示仍受宿主输入处理及 ImGui／字体限制。
 
