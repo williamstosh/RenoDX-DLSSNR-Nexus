@@ -8,8 +8,10 @@ param(
     [ValidateSet('smoke','menu')][string]$Scenario = 'smoke',
     [ValidateRange(0,900)][int]$CaptureHoldSeconds = 90,
     [switch]$GpuTimers,
+    [ValidateRange(-1,3600)][int]$TelemetrySeconds = -1,
     [switch]$SdrGameOutput,
     [switch]$StartNrDisabled,
+    [switch]$SrOnly,
     [switch]$CleanEnvironment,
     [switch]$BlockOptionalHudless,
     [switch]$ShowGameHud,
@@ -18,6 +20,10 @@ param(
     [ValidateRange(-1,3)][int]$NrPreset = -1,
     [ValidateRange(-1,2)][int]$NrPass2Preset = -1,
     [ValidateRange(0,4)][int]$NrPasses = 0,
+    [ValidateRange(-1,2)][int]$NrHookPoint = -1,
+    [ValidateRange(-1,3)][int]$NrPass2Stage = -1,
+    [ValidateRange(-1,3)][int]$NrPass3Stage = -1,
+    [ValidateRange(-1,3)][int]$NrPass4Stage = -1,
     [switch]$InstallOnly,
     [switch]$ManualImeSession,
     [switch]$RestoreInstallation,
@@ -28,7 +34,8 @@ if ($ManualImeSession -and ($Scenario -ne 'menu' -or $CaptureHoldSeconds -eq 0 -
     throw '-ManualImeSession requires menu, a nonzero hold and -RestoreInstallation; installation-only is not supported.'
 }
 if ($AddonAbsentControl -and $InstallOnly) { throw 'An absent-add-on control cannot be retained without a test' }
-if (($NrRuntimePath -or $NrPreset -ge 0 -or $NrPass2Preset -ge 0 -or $NrPasses -gt 0) -and
+if (($TelemetrySeconds -ge 0 -or $SrOnly -or $NrRuntimePath -or $NrPreset -ge 0 -or $NrPass2Preset -ge 0 -or $NrPasses -gt 0 -or
+        $NrHookPoint -ge 0 -or $NrPass2Stage -ge 0 -or $NrPass3Stage -ge 0 -or $NrPass4Stage -ge 0) -and
     (-not $RestoreInstallation -or $InstallOnly)) {
     throw 'Model tests require a protected session and -RestoreInstallation; -InstallOnly is not supported.'
 }
@@ -74,7 +81,7 @@ if ($CleanEnvironment) {
     $taskBackupFiles += Join-Path $taskGame 'OptiScaler.ini'
     $taskBackupFiles += Join-Path $taskGame 'ReShadePreset.ini'
 }
-if ($SdrGameOutput -or $ShowGameHud) {
+if ($SdrGameOutput -or $ShowGameHud -or $SrOnly) {
     if (-not (Test-Path -LiteralPath $taskGameConfig -PathType Leaf)) { throw 'Missing game HDR settings file' }
     $taskBackupFiles += $taskGameConfig
 }
@@ -115,9 +122,12 @@ $taskReceipt = [ordered]@{
     installation_verified=$false; runtime_verified=$false; restored=$false
     test_exit_code=$null; visual_quality='not_tested'; performance_target_fps=$taskPerformanceTarget
     gpu_timers_requested=[bool]$GpuTimers
+    requested_telemetry_seconds=$TelemetrySeconds
     nr_model_test=@{runtime=$NrRuntimePath; main=$NrPreset; pass2=$NrPass2Preset; passes=$NrPasses}
+    nr_stage_test=@{hook=$NrHookPoint; pass2=$NrPass2Stage; pass3=$NrPass3Stage; pass4=$NrPass4Stage}
     temporary_game_sdr=[bool]$SdrGameOutput
     start_nr_disabled=[bool]$StartNrDisabled
+    requested_sr_only=[bool]$SrOnly
     clean_environment=[bool]$CleanEnvironment
     block_optional_hudless=[bool]$BlockOptionalHudless
     temporary_game_hud_visible=[bool]$ShowGameHud
@@ -186,9 +196,14 @@ try {
     $taskSectionText = $taskSection.Value
     $taskSectionText = Set-FgPresentSection $taskSectionText ([bool]$BlockOptionalHudless)
     $taskModelSettings = @{}
+    if ($TelemetrySeconds -ge 0) { $taskModelSettings.NRTelemetrySeconds = $TelemetrySeconds }
     if ($NrPreset -ge 0) { $taskModelSettings.NRPreset = $NrPreset }
     if ($NrPass2Preset -ge 0) { $taskModelSettings.NRPass2Preset = $NrPass2Preset }
     if ($NrPasses -gt 0) { $taskModelSettings.NRPasses = $NrPasses }
+    if ($NrHookPoint -ge 0) { $taskModelSettings.NRHookPoint = $NrHookPoint }
+    if ($NrPass2Stage -ge 0) { $taskModelSettings.NRPass2Stage = $NrPass2Stage }
+    if ($NrPass3Stage -ge 0) { $taskModelSettings.NRPass3Stage = $NrPass3Stage }
+    if ($NrPass4Stage -ge 0) { $taskModelSettings.NRPass4Stage = $NrPass4Stage }
     foreach ($taskEntry in $taskModelSettings.GetEnumerator()) {
         $taskPattern = '(?m)^' + $taskEntry.Key + '=[^\r\n]*'
         $taskLine = $taskEntry.Key + '=' + $taskEntry.Value
@@ -238,6 +253,19 @@ try {
             # The game may omit default-valued HUD settings on save. The
             # temporary section belongs to the same whole-file restore guard.
             $taskGameConfigText = $taskGameConfigText.TrimEnd() + "`r`n[Hud]`r`nHudVisibility=true`r`n"
+        }
+        [IO.File]::WriteAllText($taskGameConfig, $taskGameConfigText, [Text.UTF8Encoding]::new($false))
+        $taskReceipt.test_game_config_sha256 = (Get-FileHash -LiteralPath $taskGameConfig).Hash
+    }
+    if ($SrOnly) {
+        $taskGameConfigText = [IO.File]::ReadAllText($taskGameConfig)
+        foreach ($taskMode in @{EnableDLSSRR='false'; DLSSGMode='0'; XessFrameGeneration='false'; FSRFramegen='0'}.GetEnumerator()) {
+            $taskModePattern = '(?m)^' + $taskMode.Key + '=[^\r\n]*'
+            if ([regex]::Matches($taskGameConfigText, $taskModePattern).Count -ne 1) {
+                throw "Expected one game mode setting: $($taskMode.Key)"
+            }
+            $taskGameConfigText = [regex]::Replace($taskGameConfigText, $taskModePattern,
+                $taskMode.Key + '=' + $taskMode.Value)
         }
         [IO.File]::WriteAllText($taskGameConfig, $taskGameConfigText, [Text.UTF8Encoding]::new($false))
         $taskReceipt.test_game_config_sha256 = (Get-FileHash -LiteralPath $taskGameConfig).Hash

@@ -1882,6 +1882,23 @@ inline constexpr Translation kEs[] = {
     {"Restore only this official profile. Other profiles are kept.", "Restaurar solo este perfil oficial. Los demás perfiles se conservan."},
     {"Restore official defaults?", "¿Restaurar los valores oficiales predeterminados?"},
     {"Personal changes to this official profile will be cleared. Other profiles are kept.", "Se borrarán los cambios personales de este perfil oficial. Los demás perfiles se conservan."},
+
+    {"Hook stage", "Etapa del hook"},
+    {"Same as previous", "Como la pasada anterior"},
+    {"Stage selection is independent of model, Look and result inheritance. Passes must run in Render, Upscaled, Present order. Unsupported mixed-stage plans do not run.", "La etapa es independiente de la herencia del modelo, Look y resultado. Las pasadas deben seguir el orden Render, Upscaled, Present. Los planes entre etapas no compatibles no se ejecutan."},
+    {"Requested stage", "Etapa solicitada"},
+    {"Effective stage", "Etapa efectiva"},
+    {"Plan blocked", "Plan bloqueado"},
+    {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "Las etapas efectivas indican la ruta disponible, no confirman la ejecución en GPU. Ray Reconstruction se comprueba por handle al evaluar."},
+    {"Requested stages available", "Etapas solicitadas disponibles"},
+    {"A later pass cannot run at an earlier stage", "Una pasada posterior no puede volver a una etapa anterior"},
+    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "Las pasadas entre etapas requieren DLSS SR/DLAA DX12 nativo"},
+    {"Cross-stage Present execution is not validated", "La ejecución Present entre etapas no está validada"},
+    {"Frame generation owns the NR input path", "La generación de fotogramas controla la entrada NR"},
+    {"Ray Reconstruction runs Render passes after upscaling", "Ray Reconstruction ejecuta las pasadas Render tras el reescalado"},
+    {"Present is unavailable; using the existing Upscaled path", "Present no disponible; se usa la ruta Upscaled existente"},
+    {"Invalid stage selection", "Selección de etapa no válida"},
+    {"Requested stages are unavailable", "Las etapas solicitadas no están disponibles"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

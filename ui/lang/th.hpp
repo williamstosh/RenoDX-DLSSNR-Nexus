@@ -1882,6 +1882,23 @@ inline constexpr Translation kTh[] = {
     {"Restore only this official profile. Other profiles are kept.", "คืนค่าเฉพาะโปรไฟล์อย่างเป็นทางการนี้ โดยเก็บโปรไฟล์อื่นไว้"},
     {"Restore official defaults?", "คืนค่าเริ่มต้นอย่างเป็นทางการหรือไม่?"},
     {"Personal changes to this official profile will be cleared. Other profiles are kept.", "การเปลี่ยนแปลงส่วนตัวในโปรไฟล์อย่างเป็นทางการนี้จะถูกล้าง โดยเก็บโปรไฟล์อื่นไว้"},
+
+    {"Hook stage", "ขั้นตอนฮุก"},
+    {"Same as previous", "เหมือนพาสก่อนหน้า"},
+    {"Stage selection is independent of model, Look and result inheritance. Passes must run in Render, Upscaled, Present order. Unsupported mixed-stage plans do not run.", "การเลือกขั้นตอนเป็นอิสระจากการสืบทอดโมเดล Look และผลลัพธ์ พาสต้องเรียงตาม Render, Upscaled, Present แผนข้ามขั้นตอนที่ไม่รองรับจะไม่ทำงาน"},
+    {"Requested stage", "ขั้นตอนที่ร้องขอ"},
+    {"Effective stage", "ขั้นตอนที่มีผล"},
+    {"Plan blocked", "แผนถูกระงับ"},
+    {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "ขั้นตอนที่มีผลแสดงเส้นทางที่ใช้ได้ ไม่ใช่หลักฐานว่า GPU ทำงานแล้ว ระบบตรวจสอบ Ray Reconstruction แยกตามแฮนเดิลขณะประเมิน"},
+    {"Requested stages available", "ขั้นตอนที่ร้องขอพร้อมใช้งาน"},
+    {"A later pass cannot run at an earlier stage", "พาสถัดไปไม่สามารถย้อนกลับไปขั้นตอนก่อนหน้าได้"},
+    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "พาสข้ามขั้นตอนต้องใช้ DX12 DLSS SR/DLAA แบบเนทีฟ"},
+    {"Cross-stage Present execution is not validated", "ยังไม่ผ่านการตรวจสอบการทำงาน Present ข้ามขั้นตอน"},
+    {"Frame generation owns the NR input path", "การสร้างเฟรมควบคุมเส้นทางอินพุต NR"},
+    {"Ray Reconstruction runs Render passes after upscaling", "Ray Reconstruction เรียกพาส Render หลังอัปสเกล"},
+    {"Present is unavailable; using the existing Upscaled path", "Present ไม่พร้อมใช้งาน ใช้เส้นทาง Upscaled เดิม"},
+    {"Invalid stage selection", "การเลือกขั้นตอนไม่ถูกต้อง"},
+    {"Requested stages are unavailable", "ขั้นตอนที่ร้องขอไม่พร้อมใช้งาน"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

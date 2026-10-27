@@ -1891,6 +1891,23 @@ inline constexpr Translation kZhHans[] = {
     {"Restore only this official profile. Other profiles are kept.", "仅恢复此官方方案，其他方案保持不变。"},
     {"Restore official defaults?", "恢复官方默认设置？"},
     {"Personal changes to this official profile will be cleared. Other profiles are kept.", "此官方方案的个人修改将被清除，其他方案保持不变。"},
+
+    {"Hook stage", "介入阶段"},
+    {"Same as previous", "与上一 Pass 相同"},
+    {"Stage selection is independent of model, Look and result inheritance. Passes must run in Render, Upscaled, Present order. Unsupported mixed-stage plans do not run.", "阶段选择独立于模型、Look 和结果继承。Pass 必须按 Render、Upscaled、Present 顺序执行。不支持的跨阶段计划不会运行。"},
+    {"Requested stage", "请求阶段"},
+    {"Effective stage", "有效阶段"},
+    {"Plan blocked", "计划已阻止"},
+    {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "有效阶段表示可用路径，不证明 GPU 已执行。每个句柄的光线重建状态在求值时检查。"},
+    {"Requested stages available", "请求的阶段可用"},
+    {"A later pass cannot run at an earlier stage", "后续 Pass 不能回到更早的阶段"},
+    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "跨阶段 Pass 需要原生 DX12 DLSS SR/DLAA"},
+    {"Cross-stage Present execution is not validated", "跨阶段 Present 执行尚未验证"},
+    {"Frame generation owns the NR input path", "帧生成占用 NR 输入路径"},
+    {"Ray Reconstruction runs Render passes after upscaling", "光线重建会在放大后执行 Render Pass"},
+    {"Present is unavailable; using the existing Upscaled path", "Present 不可用；使用现有 Upscaled 路径"},
+    {"Invalid stage selection", "无效的阶段选择"},
+    {"Requested stages are unavailable", "请求的阶段不可用"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

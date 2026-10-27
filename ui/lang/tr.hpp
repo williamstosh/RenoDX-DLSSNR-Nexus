@@ -1882,6 +1882,23 @@ inline constexpr Translation kTr[] = {
     {"Restore only this official profile. Other profiles are kept.", "Yalnızca bu resmî profili geri yükle. Diğer profiller korunur."},
     {"Restore official defaults?", "Resmî varsayılanlar geri yüklensin mi?"},
     {"Personal changes to this official profile will be cleared. Other profiles are kept.", "Bu resmî profildeki kişisel değişiklikler temizlenecek. Diğer profiller korunur."},
+
+    {"Hook stage", "Hook aşaması"},
+    {"Same as previous", "Önceki geçişle aynı"},
+    {"Stage selection is independent of model, Look and result inheritance. Passes must run in Render, Upscaled, Present order. Unsupported mixed-stage plans do not run.", "Aşama seçimi model, Look ve sonuç kalıtımından bağımsızdır. Geçişler Render, Upscaled, Present sırasını izlemelidir. Desteklenmeyen çok aşamalı planlar çalıştırılmaz."},
+    {"Requested stage", "İstenen aşama"},
+    {"Effective stage", "Etkin aşama"},
+    {"Plan blocked", "Plan engellendi"},
+    {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "Etkin aşamalar kullanılabilir yolu gösterir; GPU yürütmesini doğrulamaz. Ray Reconstruction değerlendirme sırasında her tanıtıcı için denetlenir."},
+    {"Requested stages available", "İstenen aşamalar kullanılabilir"},
+    {"A later pass cannot run at an earlier stage", "Sonraki geçiş daha erken bir aşamaya dönemez"},
+    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "Aşamalar arası geçişler yerel DX12 DLSS SR/DLAA gerektirir"},
+    {"Cross-stage Present execution is not validated", "Aşamalar arası Present yürütmesi doğrulanmadı"},
+    {"Frame generation owns the NR input path", "Kare üretimi NR giriş yolunu yönetiyor"},
+    {"Ray Reconstruction runs Render passes after upscaling", "Ray Reconstruction, Render geçişlerini yükseltmeden sonra çalıştırır"},
+    {"Present is unavailable; using the existing Upscaled path", "Present kullanılamıyor; mevcut Upscaled yolu kullanılıyor"},
+    {"Invalid stage selection", "Geçersiz aşama seçimi"},
+    {"Requested stages are unavailable", "İstenen aşamalar kullanılamıyor"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

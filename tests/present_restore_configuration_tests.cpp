@@ -245,6 +245,13 @@ int main(int argc, char** argv) {
         } else if (test_case == "pass-result-invalid") {
           addon += "NRPass2LookFollowPass1=0\r\nNRPass2LookMode=1\r\nNRPass2LookStrength=nan\r\nNRPass2LookHalo=99\r\nNRPass2LookDetailRadius=-1\r\nNRPass2LookStabilize=9\r\nNRPass2LookStabilizeMs=9999\r\nNRPass2DetailStability=9\r\n";
         }
+      } else if (test_case.starts_with("nr-stage-")) {
+        addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\nNRHookPoint=1\r\nNRPreset=1\r\nNRPass2Preset=2\r\nNRPass2FollowPass1=1\r\nNRPass2LookFollowPass1=1\r\n";
+        if (test_case == "nr-stage-explicit") {
+          addon += "NRPass2Stage=2\r\nNRPass3Stage=0\r\nNRPass4Stage=3\r\n";
+        } else if (test_case == "nr-stage-invalid") {
+          addon += "NRPass2Stage=99\r\nNRPass3Stage=99\r\nNRPass4Stage=99\r\n";
+        }
       } else if (test_case.starts_with("nr-model-")) {
         addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\n";
         if (test_case == "nr-model-explicit") {
@@ -412,6 +419,37 @@ int main(int argc, char** argv) {
           Check(document.settings.contains(rule.key) == expected, (std::string("Scope capture: ") + rule.key).c_str());
         }
       }
+      const auto stage_original = capture();
+      const Json stage_settings{{"NRPasses", 4u}, {"NRPass2Stage", 2u}, {"NRPass3Stage", 0u}, {"NRPass4Stage", 3u}};
+      const presets::Document stage_request{.scope = presets::Scope::QUALITY_MULTIPASS, .settings = stage_settings};
+      const auto stage_rows = adapter::Preview(stage_request, false);
+      for (const auto& [key, value] : stage_settings.items()) {
+        Check(std::any_of(stage_rows.begin(), stage_rows.end(), [&](const auto& row) {
+          return row.key == key && row.after == value
+              && (std::string_view(row.status) == "Will change" || std::string_view(row.status) == "Unchanged");
+        }), ("Stage appears in multipass difference preview: " + key).c_str());
+      }
+      Check(apply(stage_settings, presets::Scope::QUALITY_MULTIPASS, false), "Apply independent stage settings.");
+      const auto stage_captured = capture();
+      presets::Document stage_roundtrip;
+      Check(presets::Parse(presets::Serialize(stage_captured), &stage_roundtrip)
+                && stage_roundtrip.settings == stage_captured.settings, "Stages survive preset export/import.");
+      runtime::LoadConfiguration();
+      for (const auto& [key, value] : stage_settings.items()) {
+        Check(adapter::ReadSetting(key) == value, ("Stage survives configuration reload: " + key).c_str());
+      }
+      for (const char* key : {"NRPreset", "NRPass2Preset", "NRPass2FollowPass1", "NRPass2LookFollowPass1"}) {
+        Check(adapter::ReadSetting(key) == stage_original.settings[key], "Stage edits preserve model/Look/result inheritance.");
+      }
+      Check(apply({{"NRIntensity", 0.875f}}), "Apply old partial preset without stage fields.");
+      for (const auto& [key, value] : stage_settings.items()) {
+        Check(adapter::ReadSetting(key) == value, "Absent preset stage fields preserve local choices.");
+      }
+      std::string stage_error;
+      Check(adapter::Undo(&stage_error), "Undo partial preset without changing stages.");
+      Check(adapter::Apply(stage_original, true, true, &stage_error), "Restore original configuration before stage undo.");
+      Check(apply(stage_settings, presets::Scope::QUALITY_MULTIPASS, false) && adapter::Undo(&stage_error)
+                && capture().settings == stage_original.settings, "Stage batch undo restores exact original snapshot.");
       const auto quality_original = capture();
       const Json quality_baseline{{"NRHookPoint", 0u}, {"NRFollowInputRes", true},
                                   {"NRResolutionScale", 1.f}, {"NRLookUpsample", 0u}};
@@ -803,6 +841,25 @@ int main(int argc, char** argv) {
                 << checks << " checks, " << failures << " failures\n";
       return (failures == 0 ? 0 : 1);
     }
+    if (test_case.starts_with("nr-stage-")) {
+      const bool explicit_stage = test_case == "nr-stage-explicit";
+      Check(runtime::pass_stage[0] == (explicit_stage ? 2u : 0u)
+                && runtime::pass_stage[1] == 0u && runtime::pass_stage[2] == (explicit_stage ? 3u : 0u),
+            "Missing and invalid stages inherit; explicit stages load unchanged.");
+      Check(runtime::hook_point == runtime::kHookRender && runtime::preset == 1
+                && runtime::pass_preset[0] == 2 && runtime::pass_follow[0] && runtime::pass_look_result[0].follow,
+            "Stage load preserves hook/model/Look/result choices.");
+      for (uint32_t pass = 0; pass < 3; ++pass) {
+        const auto generation = runtime::configuration_generation.load();
+        const auto setting = runtime::kSetPassStage[pass];
+        setting.Commit(1.f);
+        Check(runtime::configuration_generation.load() == generation + 1, "Stage commit requests feature recreation.");
+        Check(Read(setting.key) == "1", "Stage commit persists raw selection.");
+        setting.Commit(0.f);
+        Check(Read(setting.key) == "0", "Stage reset persists inheritance.");
+      }
+      runtime::PersistConfig();
+    }
     if (test_case.starts_with("nr-model-")) {
       namespace model = renodx::addons::dlss5::nr_model;
       Check(model::SupportsSmallModel(310, 9, 16, 0), "identified 310.9.16 supports B");
@@ -1044,7 +1101,7 @@ int main(int argc, char** argv) {
         if (event.key == "ConfigVersion") Check(event.pair_present_at_global, "reset verifies restore defaults before stamp");
       }
       Check(Read("UnregisteredPersistentKnob") == "42", "reset preserves unregistered key");
-    } else if (test_case.starts_with("nr-model-") || test_case.starts_with("pass-result-")) {
+    } else if (test_case.starts_with("nr-model-") || test_case.starts_with("nr-stage-") || test_case.starts_with("pass-result-")) {
       CheckPair("1");
       Check(!Configuration().inherited && Configuration().scope == scope::Scope::FINAL_PRESENT_AND_PRE_FG,
             "model selection leaves explicit restore scope unchanged");

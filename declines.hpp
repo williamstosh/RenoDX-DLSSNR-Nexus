@@ -198,6 +198,8 @@ enum class NrDeclineReason : uint8_t {
   // game's image; ownership moves when the owner device is destroyed.
   // ELIGIBLE: a real DLSS frame NR could not serve.
   kVkOwnerMismatch,
+  kStagePlanUnavailable,
+  kStagePredecessorIncomplete,
   kCount,
 };
 inline std::atomic_uint64_t nr_decline_counts[
@@ -269,6 +271,8 @@ inline const char* const kNrDeclineNames[
     " for an untouched final frame with a matching presentation-queue proof",
     "a Vulkan DLSS evaluate on a second device; NR's runtime and codec belong"
     " to the first device until it is destroyed",
+    "the requested stage plan is invalid or unavailable; saved choices are preserved",
+    "a preceding stage was incomplete or the configuration changed across SR",
 };
 // Short tags for the periodic telemetry line (same order).
 inline const char* const kNrDeclineTags[
@@ -284,9 +288,28 @@ inline const char* const kNrDeclineTags[
     "runtime_switch_pending", "runtime_face_alternation", "no_guide_dims",
     "present_prefg",
     "vk_extension_missing", "vk_nr_pending",
-    "screenshot_wait", "vk_owner_mismatch",
+    "screenshot_wait", "vk_owner_mismatch", "stage_plan", "stage_predecessor",
 };
+// A split chain still belongs to one source SR evaluate. Preserve per-group
+// observations separately and publish one terminal when its outer call ends.
+struct MixedStageTerminal {
+  bool active = false;
+  bool injected = false;
+  NrDeclineReason decline = NrDeclineReason::kCount;
+};
+inline thread_local MixedStageTerminal mixed_stage_terminal;
+inline std::atomic_uint64_t mixed_stage_group_successes{0};
+inline std::atomic_uint64_t mixed_stage_source_successes{0};
+
 inline void CountNrDecline(NrDeclineReason reason) {
+  if (mixed_stage_terminal.active) {
+    if (reason != NrDeclineReason::kNestedMirror
+        && (mixed_stage_terminal.decline == NrDeclineReason::kCount
+            || reason == NrDeclineReason::kGameEvaluateFailed)) {
+      mixed_stage_terminal.decline = reason;
+    }
+    return;
+  }
   nr_decline_counts[static_cast<size_t>(reason)].fetch_add(
       1, std::memory_order_relaxed);
 }

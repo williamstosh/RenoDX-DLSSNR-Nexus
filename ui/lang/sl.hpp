@@ -1882,6 +1882,23 @@ inline constexpr Translation kSl[] = {
     {"Restore only this official profile. Other profiles are kept.", "Obnovi samo ta uradni profil. Drugi profili se ohranijo."},
     {"Restore official defaults?", "Želite obnoviti uradne privzete nastavitve?"},
     {"Personal changes to this official profile will be cleared. Other profiles are kept.", "Osebne spremembe tega uradnega profila bodo izbrisane. Drugi profili se ohranijo."},
+
+    {"Hook stage", "Faza prestrezanja"},
+    {"Same as previous", "Kot prejšnji prehod"},
+    {"Stage selection is independent of model, Look and result inheritance. Passes must run in Render, Upscaled, Present order. Unsupported mixed-stage plans do not run.", "Faza ni odvisna od dedovanja modela, Look in rezultata. Prehodi morajo slediti vrstnemu redu Render, Upscaled, Present. Nepodprti načrti med fazami se ne izvajajo."},
+    {"Requested stage", "Zahtevana faza"},
+    {"Effective stage", "Dejanska faza"},
+    {"Plan blocked", "Načrt blokiran"},
+    {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "Dejanske faze kažejo razpoložljivo pot in ne potrjujejo izvajanja GPU. Ray Reconstruction se preveri za vsak ročaj ob vrednotenju."},
+    {"Requested stages available", "Zahtevane faze so na voljo"},
+    {"A later pass cannot run at an earlier stage", "Poznejši prehod se ne more vrniti v zgodnejšo fazo"},
+    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "Prehodi med fazami zahtevajo izvorni DX12 DLSS SR/DLAA"},
+    {"Cross-stage Present execution is not validated", "Izvajanje Present med fazami ni preverjeno"},
+    {"Frame generation owns the NR input path", "Ustvarjanje sličic nadzoruje vhod NR"},
+    {"Ray Reconstruction runs Render passes after upscaling", "Ray Reconstruction izvede prehode Render po povečavi"},
+    {"Present is unavailable; using the existing Upscaled path", "Present ni na voljo; uporabi se obstoječa pot Upscaled"},
+    {"Invalid stage selection", "Neveljavna izbira faze"},
+    {"Requested stages are unavailable", "Zahtevane faze niso na voljo"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

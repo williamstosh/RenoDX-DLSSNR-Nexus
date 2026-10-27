@@ -134,6 +134,7 @@ const auto RunProfileRuntimeCases = [&](const std::filesystem::path& outputdir) 
   for (int index = 0; index < 3; ++index) {
     select(index);
     commit(runtime::kSetIntensity, 0.25f + static_cast<float>(index) * 0.125f);
+    commit(runtime::kSetPassStage[2], static_cast<float>(index + 1));
     settle();
   }
   commit(runtime::kSetIntensity, 0.5625f);
@@ -146,13 +147,17 @@ const auto RunProfileRuntimeCases = [&](const std::filesystem::path& outputdir) 
     select(index);
     Check(profile::Snapshot()["NRIntensity"] == 0.25f + static_cast<float>(index) * 0.125f,
           "Official switches preserve each Slot's independent override.");
+    Check(profile::Snapshot()["NRPass4Stage"] == index + 1,
+          "Each official Slot preserves its independent inactive pass stage.");
   }
   commit(runtime::kSetStackPasses, 1.f);
   commit(runtime::kSetPassPreset[2], 2.f);
+  commit(runtime::kSetPassStage[2], 3.f);
   commit(runtime::kSetPassIntensity[2], 0.375f);
   settle();
   const auto captured = profile::Snapshot();
-  Check(captured["NRPasses"] == 1 && captured["NRPass4Preset"] == 2 && captured["NRPass4Intensity"] == 0.375f,
+  Check(captured["NRPasses"] == 1 && captured["NRPass4Preset"] == 2 && captured["NRPass4Intensity"] == 0.375f
+            && captured["NRPass4Stage"] == 3,
         "Snapshot retains settings for disabled Pass 4.");
   for (int index = 3; index < 6; ++index) {
     profile::Assign(index, captured, true);
@@ -169,7 +174,11 @@ const auto RunProfileRuntimeCases = [&](const std::filesystem::path& outputdir) 
     Check(profile::state.slots[index].snapshot == captured
               && profile::state.selected == data::SLOT_IDS[index], "Rename preserves custom identity and snapshot.");
   }
-  for (int index = 0; index < 6; ++index) select(index);
+  for (int index = 0; index < 6; ++index) {
+    select(index);
+    Check(profile::Snapshot()["NRPass4Stage"] == (index < 3 ? index + 1 : 3),
+          "All six Slots restore their persisted stage selection.");
+  }
   Check(disk().slots[5].snapshot["NRPass4Preset"] == 2, "Real worker persists disabled pass selection.");
 
   seed();

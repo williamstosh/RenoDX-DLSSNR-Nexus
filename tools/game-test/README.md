@@ -61,6 +61,14 @@ IME 等交互专项可在 `menu` 场景显式传 `-CaptureHoldSeconds 900`，只
 
 双模型定向验证可向直接 wrapper 传 `-NrRuntimePath <310.9.16-DLL>`、
 `-NrPreset 0|1|2|3`、`-NrPass2Preset 0|1|2` 和 `-NrPasses 1..4`。
+逐层阶段定向验证可额外传 `-NrHookPoint 0|1|2`、`-NrPass2Stage 0..3`、
+`-NrPass3Stage 0..3`、`-NrPass4Stage 0..3`；省略保留原 wrapper 的 Present 选择。
+例如 `-NrHookPoint 1 -NrPass2Stage 2 -NrPasses 2 -NrPreset 1 -NrPass2Preset 2`
+请求 Render A → 游戏 SR → Upscaled B。Stage 参数同样只允许完整恢复的受保护会话，
+不能与 `-InstallOnly` 合用；新增参数不授权恢复已暂停的无人流程。
+巫师3的 P0 SR 定向可加 `-SrOnly`，在完整备份的游戏配置中临时请求关闭 RR、DLSS FG、
+XeFG 和 FSR FG；保持 HDR／分辨率。退出后完整恢复，日志须另外确认真实源 Feature 与运行路径。
+`-TelemetrySeconds 1` 可为短场景临时请求逐秒性能／阶段遥测，沿用完整恢复保护；默认不覆盖游戏现有值。
 仅指定的键会临时变化；Runtime 替换前核对版本，并将游戏原 Runtime 加入既有
 备份／哈希核对和退出恢复清单。必须同时使用 `-RestoreInstallation`，不以创建
 参数日志代替实际网络确认或画质／性能验收。

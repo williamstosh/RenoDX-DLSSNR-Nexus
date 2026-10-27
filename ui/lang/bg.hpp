@@ -1882,6 +1882,23 @@ inline constexpr Translation kBg[] = {
     {"Restore only this official profile. Other profiles are kept.", "Възстановява само този официален профил. Другите профили се запазват."},
     {"Restore official defaults?", "Да се възстановят ли официалните настройки по подразбиране?"},
     {"Personal changes to this official profile will be cleared. Other profiles are kept.", "Личните промени в този официален профил ще бъдат изчистени. Другите профили се запазват."},
+
+    {"Hook stage", "Етап на прихващане"},
+    {"Same as previous", "Като предишния проход"},
+    {"Stage selection is independent of model, Look and result inheritance. Passes must run in Render, Upscaled, Present order. Unsupported mixed-stage plans do not run.", "Етапът е независим от наследяването на модел, Look и резултат. Проходите следват реда Render, Upscaled, Present. Неподдържаните планове с различни етапи не се изпълняват."},
+    {"Requested stage", "Заявен етап"},
+    {"Effective stage", "Действащ етап"},
+    {"Plan blocked", "Планът е блокиран"},
+    {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "Действащите етапи показват наличния път, а не доказателство за изпълнение на GPU. Ray Reconstruction се проверява за всеки манипулатор при оценяване."},
+    {"Requested stages available", "Заявените етапи са налични"},
+    {"A later pass cannot run at an earlier stage", "По-късен проход не може да се върне към по-ранен етап"},
+    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "Проходите между етапи изискват нативен DX12 DLSS SR/DLAA"},
+    {"Cross-stage Present execution is not validated", "Изпълнението Present между етапи не е проверено"},
+    {"Frame generation owns the NR input path", "Генерирането на кадри управлява входа на NR"},
+    {"Ray Reconstruction runs Render passes after upscaling", "Ray Reconstruction изпълнява проходите Render след мащабиране"},
+    {"Present is unavailable; using the existing Upscaled path", "Present не е наличен; използва се съществуващият път Upscaled"},
+    {"Invalid stage selection", "Невалиден избор на етап"},
+    {"Requested stages are unavailable", "Заявените етапи не са налични"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

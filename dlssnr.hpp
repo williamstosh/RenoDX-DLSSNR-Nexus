@@ -29,6 +29,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -90,6 +91,7 @@
 #include "root_arguments.hpp"
 #include "runtime_lock.hpp"
 #include "nr_model.hpp"
+#include "stage_plan.hpp"
 #include "capture_arena.hpp"
 #include "command_state.hpp"
 #include "evaluate_chain.hpp"
@@ -395,6 +397,10 @@ struct NormStream {
 };
 
 struct FeatureState {
+  // Stage-local dimensions, normalization and slots must not alternate
+  // between render and display contracts during one source evaluate.
+  std::shared_ptr<FeatureState> render_session;
+  uint32_t pass_offset = 0;
   NVSDK_NGX_Feature source_feature = kFeatureDlss;
   uint32_t input_width = 0;
   uint32_t input_height = 0;
@@ -1005,15 +1011,16 @@ inline CodecPipeline codec_pipeline;
 struct WorksetKey {
   const NVSDK_NGX_Handle* handle = nullptr;
   const ID3D12Resource* resource = nullptr;
+  bool pre_sr = false;
   bool operator==(const WorksetKey& other) const {
-    return handle == other.handle && resource == other.resource;
+    return handle == other.handle && resource == other.resource && pre_sr == other.pre_sr;
   }
 };
 
 struct WorksetKeyHash {
   size_t operator()(const WorksetKey& key) const {
     return std::hash<const void*>()(key.handle)
-        ^ (std::hash<const void*>()(key.resource) << 1);
+        ^ (std::hash<const void*>()(key.resource) << 1) ^ (static_cast<size_t>(key.pre_sr) << 2);
   }
 };
 
@@ -2010,6 +2017,9 @@ inline void OnNativeFgOptions(bool mode_enabled) noexcept {
 inline std::atomic_uint64_t configuration_generation = 1;
 inline std::atomic_uint32_t preset = defaults::kPreset;
 inline std::atomic_uint32_t pass_preset[kMaxNrPasses - 1] = {0u, 0u, 0u};
+inline std::atomic_uint32_t pass_stage[kMaxNrPasses - 1] = {0u, 0u, 0u};
+inline std::atomic_bool stage_source_rr{false};
+
 inline std::atomic<float> intensity = defaults::kIntensity;
 inline std::atomic_uint32_t style = defaults::kStyle;
 inline std::atomic<float> local_tone_strength = defaults::kLocalTone;
@@ -2037,6 +2047,20 @@ inline std::atomic<float> linear_unit_nits = defaults::kLinearUnitNits;
 // have their own intensity and decode-blend strengths so the stack can be
 // tuned pass by pass.
 inline std::atomic_uint32_t stack_passes = defaults::kStackPasses;
+inline stage_plan::Plan RequestedStagePlan(bool ray_reconstruction) {
+  stage_plan::Configuration config{.pass_count = stack_passes.load(), .hook_point = hook_point.load()};
+  for (uint32_t i = 0; i < kMaxNrPasses - 1; ++i) config.stages[i] = pass_stage[i].load();
+  return stage_plan::Build(config, {
+      .mixed_dx12 = !D3D11OnlySession() && !vulkan_present_seen.load(),
+      .ray_reconstruction = ray_reconstruction,
+      .present_available = !vulkan_present_seen.load() && (!D3D11OnlySession() || Dx11NativeRoute()),
+      .fg_owns_input = fg::xefg::OwnsStream() || auto_fg_fallback_active.load()
+          || screenshot::WantsFinalPresent(),
+  });
+}
+inline stage_plan::Plan RequestedStagePlan() {
+  return RequestedStagePlan(stage_source_rr.load(std::memory_order_relaxed));
+}
 inline std::atomic<float> pass_intensity[kMaxNrPasses - 1] = {
     defaults::kPassStrength, defaults::kPassStrength, defaults::kPassStrength};
 inline std::atomic<float> pass_transfer_strength[kMaxNrPasses - 1] = {
@@ -2437,7 +2461,8 @@ inline look::Settings LookSettingsSnapshot(bool auto_engages, bool bypass = fals
 }
 // The default path reads the shared controls once, then copies the immutable
 // snapshot. Independent settings are sampled before any pass is recorded.
-inline std::array<look::Settings, kMaxNrPasses> LookSettingsSnapshots(bool auto_engages, bool bypass = false) {
+inline std::array<look::Settings, kMaxNrPasses> LookSettingsSnapshots(
+    bool auto_engages, bool bypass = false, uint32_t pass_offset = 0) {
   std::array<look::Settings, kMaxNrPasses> settings;
   settings[0] = LookSettingsSnapshot(auto_engages, bypass);
   for (uint32_t pass = 1; pass < kMaxNrPasses; ++pass) {
@@ -2446,6 +2471,9 @@ inline std::array<look::Settings, kMaxNrPasses> LookSettingsSnapshots(bool auto_
                          : LookSettingsSnapshot(auto_engages, bypass, pass);
     // Working resolution and transport remain common to the entire chain.
     settings[pass].upsample = settings[0].upsample;
+  }
+  for (uint32_t pass = 0; pass + pass_offset < kMaxNrPasses; ++pass) {
+    settings[pass] = settings[pass + pass_offset];
   }
   return settings;
 }
@@ -2636,6 +2664,7 @@ inline std::atomic_bool logged_streamline_states = false;
 // own output and corrupt the temporal state.
 inline std::unordered_map<const ID3D12Resource*, std::vector<const void*>>
     processed_outputs;
+inline decltype(processed_outputs) processed_render_outputs;
 constexpr size_t kMaxPassesPerOutput = 4;
 // Addresses of the synthetic Streamline fallback handles (map-node storage in
 // streamline_handle_keys, see ProcessStreamlineInline).  Used only to
@@ -2756,9 +2785,10 @@ inline void PreservePresentCaptureProof(
 // is recorded only on success (processed_outputs[resource].push_back).
 inline bool OutputPassAllowed(
     const ID3D12Resource* resource,
-    const void* handle) {
-  const auto passes = processed_outputs.find(resource);
-  if (passes == processed_outputs.end()) return true;
+    const void* handle, uint32_t stage = 0) {
+  const auto& outputs = (stage == 0 ? processed_outputs : processed_render_outputs);
+  const auto passes = outputs.find(resource);
+  if (passes == outputs.end()) return true;
   const bool new_synthetic = synthetic_handles.count(handle) != 0;
   for (const void* ran : passes->second) {
     if (ran == handle) return false;
@@ -2775,14 +2805,14 @@ inline std::atomic<uint32_t> dedupe_mode = kDedupePerEvaluate;
 
 // The admission every injection path shares.  A mirror is recognized from
 // the call chain in both modes; the per-present rule applies in mode 0.
-inline bool AdmitOutputPass(const ID3D12Resource* resource, const void* handle) {
+inline bool AdmitOutputPass(const ID3D12Resource* resource, const void* handle, uint32_t stage = 0) {
   if (synthetic_handles.count(handle) == 0) evaluate_chain.ngx_owned = true;
-  if (evaluate_chain.Injected(resource)) {
+  if (evaluate_chain.Injected(resource, stage)) {
     CountNrDecline(NrDeclineReason::kNestedMirror);
     return false;
   }
   if (dedupe_mode.load(std::memory_order_relaxed) == kDedupePerPresent
-      && !OutputPassAllowed(resource, handle)) {
+      && !OutputPassAllowed(resource, handle, stage)) {
     CountNrDecline(NrDeclineReason::kDuplicateOutputThisPresent);
     return false;
   }
@@ -2792,11 +2822,12 @@ inline bool AdmitOutputPass(const ID3D12Resource* resource, const void* handle) 
 // processed_outputs is read only by OutputPassAllowed, which only the
 // per-present mode calls: under the default per-evaluate mode the map write
 // (a node and a vector allocation per output per present) was never read.
-inline void RecordOutputPass(const ID3D12Resource* resource, const void* handle) {
+inline void RecordOutputPass(const ID3D12Resource* resource, const void* handle, uint32_t stage = 0) {
   if (dedupe_mode.load(std::memory_order_relaxed) == kDedupePerPresent) {
-    processed_outputs[resource].push_back(handle);
+    auto& outputs = (stage == 0 ? processed_outputs : processed_render_outputs);
+    outputs[resource].push_back(handle);
   }
-  evaluate_chain.MarkInjected(resource);
+  evaluate_chain.MarkInjected(resource, stage);
 }
 
 inline decltype(&slEvaluateFeature) real_streamline_evaluate = nullptr;
@@ -2840,9 +2871,11 @@ inline std::atomic<float> nr_cost_present_ms{0.f};
 inline std::atomic<float> nr_cost_frame_ms{0.f};
 inline bool cost_meter_unavailable = false;
 inline int64_t cost_sample_due_ns = 0;
+inline int64_t stage_cost_sample_due_ns[3] = {};
 struct CostWindow {
   int64_t start_ns = 0;
   uint64_t start_evals = 0;
+  uint64_t start_source_evals = 0;
   uint32_t presents = 0;  // with NR on
   double frame_ms = 0.0;  // sum of those presents' intervals
   double chain_ms = 0.0;  // sum of the sampled chains
@@ -2852,6 +2885,7 @@ inline CostWindow cost_window;
 // The last window's mean chain, carried into a window without a sample.
 inline double cost_chain_ms = 0.0;
 inline uint64_t cost_seen_published = 0;
+inline uint64_t cost_seen_total_us = 0;
 
 // Starts this chain's stage timers when it is timed (evaluate hooks,
 // runtime_mutex): every chain under NRGpuTimers, one per kCostSampleNs under
@@ -2862,12 +2896,15 @@ inline bool BeginChainTimers(ID3D12GraphicsCommandList* command_list, ID3D12Devi
                              const char* path, uint32_t width, uint32_t height) {
   const bool profiling = gpu_timers_enabled.load(std::memory_order_relaxed);
   const int64_t now_ns = SteadyNowNs();
+  const uint32_t stage = (std::strcmp(path, "preSR") == 0 ? 0u
+                          : (std::strcmp(path, "present") == 0 ? 2u : 1u));
   if (!profiling
       && (!cost_meter_enabled.load(std::memory_order_relaxed) || cost_meter_unavailable
-          || now_ns < cost_sample_due_ns)) {
+          || now_ns < stage_cost_sample_due_ns[stage])) {
     return false;
   }
   cost_sample_due_ns = now_ns + kCostSampleNs;
+  stage_cost_sample_due_ns[stage] = cost_sample_due_ns;
   if (gpu_timers::Begin(command_list, device, path, width, height)) return true;
   if (!profiling && !cost_meter_unavailable) {
     cost_meter_unavailable = true;
@@ -4438,8 +4475,14 @@ inline void RetireSupersededWorksets(int64_t now_ns) {
         for (auto& slot : state->second.slots) {
           slot.pending_reset = true;
         }
+        if (state->second.render_session) {
+          for (auto& slot : state->second.render_session->slots) slot.pending_reset = true;
+        }
       } else {
         ReleaseAllNrSlots(state->second, true);
+        if (state->second.render_session) {
+          ReleaseAllNrSlots(*state->second.render_session, true);
+        }
       }
     }
   }
@@ -4459,6 +4502,13 @@ inline void RefreshActiveFeatureCount() {
   for (const auto& [_, state] : features) {
     for (const auto& slot : state.slots) {
       if (slot.handle != nullptr) ++count;
+    }
+    if (state.render_session) {
+      for (const auto& slot : state.render_session->slots) {
+        if (slot.handle != nullptr) {
+          ++count;
+        }
+      }
     }
   }
   active_features = count;
@@ -4538,6 +4588,10 @@ inline void ReleaseAllNrSlots(FeatureState& state, bool retire = false) {
 }
 
 inline void ReleaseFeatureState(FeatureState& state) {
+  if (state.render_session) {
+    ReleaseFeatureState(*state.render_session);
+    state.render_session.reset();
+  }
   ReleaseAllNrSlots(state);
   ReleaseCom(state.norm.commit);
 }
@@ -5964,15 +6018,19 @@ inline FinalResources* EnsureWorkset(
     Log(reshade::log::level::error, message.str());
     return nullptr;
   }
-  const WorksetKey workset_key{owner, key};
+  const WorksetKey workset_key{owner, key, create_pre_sr_color};
   NormStream* norm_stream = nullptr;
   if (const auto stream = features.find(owner); stream != features.end()) {
-    if (stream->second.last_workset_key != nullptr
-        && stream->second.last_workset_key != key) {
+    FeatureState* state = &stream->second;
+    if (create_pre_sr_color && state->render_session) {
+      state = state->render_session.get();
+    }
+    if (state->last_workset_key != nullptr
+        && state->last_workset_key != key) {
       ++game_window.alternations;
     }
-    stream->second.last_workset_key = key;
-    norm_stream = &stream->second.norm;
+    state->last_workset_key = key;
+    norm_stream = &state->norm;
   }
   // The resolved source-units contract (NRSourceEncoding / NRLinearUnitNits
   // folded into the format inference) participates in the reuse check: a
@@ -6767,12 +6825,13 @@ inline bool EnsureNrFeature(
     }
   }
   NVSDK_NGX_Parameter* parameters = slot.parameters;
-  const uint32_t requested = (slot_index == 0 || pass_preset[slot_index - 1].load() == 0
-                                 ? preset.load() : pass_preset[slot_index - 1].load());
+  const uint32_t logical_pass = state.pass_offset + slot_index;
+  const uint32_t requested = (logical_pass == 0 || pass_preset[logical_pass - 1].load() == 0
+                                 ? preset.load() : pass_preset[logical_pass - 1].load());
   slot.nr_preset = nr_model::ResolvePreset(requested, 0, direct_runtime_requirements.dual_models);
   if (requested != 0 && requested != slot.nr_preset) {
     Log(reshade::log::level::warning,
-        "NR pass " + std::to_string(slot_index + 1) + " preset " + std::to_string(requested)
+        "NR pass " + std::to_string(logical_pass + 1) + " preset " + std::to_string(requested)
             + " is unsupported by this runtime; using A (Legacy), saved selection preserved");
   }
   SetNrCreateParameters(parameters, input_width, input_height, output_width,
@@ -7212,13 +7271,14 @@ inline void SnapshotPresentRestoreConfiguration(PresentTarget* target) {
 }
 
 template <typename Resources>
-inline bool ChainActive(const Resources& resources, uint32_t stack, const PresentTarget* present = nullptr) {
+inline bool ChainActive(const Resources& resources, uint32_t stack, const PresentTarget* present = nullptr,
+                        uint32_t pass_offset = 0) {
   const bool frozen_hdr = present != nullptr && resources.hdr_mode != 0;
   const bool display = (frozen_hdr ? present->hdr_curve == 1u : FrameDisplayCodec(resources));
   const bool pedestal = (frozen_hdr ? present->hdr_pedestal.formal_gate != 0.f : FramePedestalRemoval(resources));
   for (uint32_t pass = 0; pass < stack; ++pass) {
-    const bool transfer = (frozen_hdr ? present->pass_transfer_strength[pass] : PassTransferStrength(pass)) > 0.f;
-    const float color = (frozen_hdr ? present->pass_color_strength[pass] : PassColorStrength(pass));
+    const bool transfer = (frozen_hdr ? present->pass_transfer_strength[pass] : PassTransferStrength(pass_offset + pass)) > 0.f;
+    const float color = (frozen_hdr ? present->pass_color_strength[pass] : PassColorStrength(pass_offset + pass));
     if (display ? (pedestal && transfer) || color > 0.f : transfer) {
       return true;
     }
@@ -8347,7 +8407,8 @@ inline LookRoute RunLookStage(
     NrFeatureSlot& slot,
     uint32_t pass,
     const LookChain& chain,
-    const EvaluationContract& frame) {
+    const EvaluationContract& frame,
+    uint32_t pass_offset = 0) {
   const uint32_t codec_set = pass * kCodecSrvSetStride;
   const LookRoute unchanged{
       codec_set, res.input_width, res.input_height, res.input_width, res.input_height};
@@ -8403,7 +8464,7 @@ inline LookRoute RunLookStage(
         {.generation = present_generation,
          .time_ns = SteadyNowNs(),
          .workset = res.id,
-         .pass = pass + 1,
+         .pass = pass_offset + pass + 1,
          .nr_width = res.input_width,
          .nr_height = res.input_height});
     look_traced_passes.fetch_add(1, std::memory_order_relaxed);
@@ -8859,6 +8920,65 @@ FindOrRegisterFeature(
   state.source_feature = kFeatureDlss;
   LogCreateContract(handle, state, "evaluate");
   return features.emplace(handle, state).first;
+}
+
+// Snapshot one requested/effective plan across the real SR call. Settings can
+// change while the game records SR; the following group then declines rather
+// than evaluating a different chain on the already modified input.
+inline stage_plan::Plan EvaluationStagePlan(const NVSDK_NGX_Handle* handle) {
+  if (evaluate_chain.depth != 0 && evaluate_chain.plan_handle == handle) return evaluate_chain.plan;
+  bool rr = false;
+  if (const auto source = created_feature_ids.find(handle); source != created_feature_ids.end()) {
+    rr = source->second == kFeatureDlssd;
+  } else if (const auto source = features.find(handle); source != features.end()) {
+    rr = source->second.source_feature == kFeatureDlssd;
+  }
+  stage_source_rr.store(rr, std::memory_order_relaxed);
+  const auto plan = RequestedStagePlan(rr);
+  if (evaluate_chain.depth != 0) {
+    mixed_stage_terminal.active |= plan.mixed;
+    evaluate_chain.plan_handle = handle;
+    evaluate_chain.plan = plan;
+    evaluate_chain.configuration_generation = configuration_generation.load();
+    evaluate_chain.render_attempted = false;
+    evaluate_chain.render_complete = false;
+  }
+  return plan;
+}
+
+struct StageTelemetry {
+  uint64_t groups = 0;
+  uint64_t evaluates = 0;
+  uint64_t rebuilds = 0;
+  uint64_t resets = 0;
+  uint64_t skipped = 0;
+  uint32_t pass_begin = 0;
+  uint32_t pass_count = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  std::array<uint32_t, kMaxNrPasses> resolved_requests{};
+};
+inline std::array<StageTelemetry, 3> stage_telemetry;
+struct StageExecutionScope {
+  StageTelemetry* stats = nullptr;
+  bool complete = false;
+  ~StageExecutionScope() {
+    if (!complete) {
+      ++stats->skipped;
+    }
+  }
+};
+inline std::atomic<stage_plan::Reason> last_stage_plan_reason = stage_plan::Reason::NONE;
+
+inline bool StagePlanAdmitted(const stage_plan::Plan& plan) {
+  if (plan.valid) return true;
+  CountNrDecline(NrDeclineReason::kStagePlanUnavailable);
+  if (last_stage_plan_reason.exchange(plan.reason, std::memory_order_relaxed) != plan.reason) {
+    Log(reshade::log::level::warning,
+        std::string("NR stage plan skipped: ") + stage_plan::ReasonText(plan.reason)
+            + "; saved Stage and Model selections preserved");
+  }
+  return false;
 }
 
 // Which create flags a stream runs on (DATA-12).  NGX parameter blocks are
@@ -9438,6 +9558,26 @@ inline bool ProcessInline(
       || !IsSupportedInjectionCommandList(command_list)) {
     return false;
   }
+  const auto plan = EvaluationStagePlan(handle);
+  if (!StagePlanAdmitted(plan)) return false;
+  const auto execution_stage = (present != nullptr ? stage_plan::Stage::PRESENT : stage_plan::Stage::UPSCALED);
+  const auto group = (plan.mixed ? plan.At(execution_stage)
+                                : stage_plan::Group{.stage = execution_stage, .count = plan.pass_count});
+  if (group.count == 0) return false;
+  auto& stage_stats = stage_telemetry[static_cast<size_t>(execution_stage)];
+  ++stage_stats.groups;
+  stage_stats.pass_begin = group.begin;
+  stage_stats.pass_count = group.count;
+  StageExecutionScope stage_scope{.stats = &stage_stats};
+  if (plan.mixed && evaluate_chain.depth != 0
+      && (evaluate_chain.configuration_generation != configuration_generation.load()
+          || (plan.At(stage_plan::Stage::RENDER).count != 0 && !evaluate_chain.render_complete))) {
+    if (auto state = features.find(handle); state != features.end()) {
+      for (auto& slot : state->second.slots) slot.pending_reset = true;
+    }
+    CountNrDecline(NrDeclineReason::kStagePredecessorIncomplete);
+    return false;
+  }
   if (command_list_touched != nullptr) *command_list_touched = false;
   InjectedCommandScope injected_command_scope;
   // A missing MV lands in not_dlss below (ineligible), which the engagement
@@ -9543,6 +9683,7 @@ inline bool ProcessInline(
 
   auto entry = FindOrRegisterFeature(handle, game_parameters, "");
   FeatureState& feature = entry->second;
+  feature.pass_offset = group.begin;
   FeatureState current = DeriveFeatureState(game_parameters);
   ResolveCreateFlags(handle, game_parameters, &feature, &current);
   // HDR transfer mode must be current before the NR codec/resources are
@@ -9733,7 +9874,9 @@ inline bool ProcessInline(
   ComputeNrWorkingResolution(
       width, height, current.input_width, current.input_height,
       nr_input_width, nr_input_height);
-  const uint32_t requested_stack = std::clamp(stack_passes.load(), 1u, kMaxNrPasses);
+  const uint32_t requested_stack = group.count;
+  stage_stats.width = width;
+  stage_stats.height = height;
   const bool dims_committed =
       CommitNrResolution(feature, nr_input_width, nr_input_height);
   LogNrWorkingResolutionReduced(width, height, nr_input_width, nr_input_height);
@@ -9760,6 +9903,7 @@ inline bool ProcessInline(
         return slot.handle != nullptr && slot.nr_create_flags != flags;
       });
   if (dimensions_changed || configuration_changed || hdr_changed || create_flags_changed) {
+    ++stage_stats.rebuilds;
     // Contract-level change: every stack pass's feature must be recreated.
     // Deliberately NOT triggered by a null slot-0 handle: after a failure the
     // handle is released but the failure latch must survive so the bounded
@@ -9843,7 +9987,7 @@ inline bool ProcessInline(
   // requires the game's motion vectors (above), which reproject the edit.
   LookChain look_chain{
       .settings = LookSettingsSnapshots(
-          true, present != nullptr && present->diagnostic.bypass_host_look),
+          true, present != nullptr && present->diagnostic.bypass_host_look, group.begin),
       .motion_scale = {current.motion_scale_x, current.motion_scale_y},
   };
   if (codec_ok) {
@@ -9952,8 +10096,8 @@ inline bool ProcessInline(
     bool mature = true;
     for (uint32_t pass = 0; pass < requested_stack; ++pass) {
       if (feature.slots[pass].handle == nullptr
-          && (workset->hdr_mode == 0 || PassTransferStrength(pass) > 0.f
-              || PassColorStrength(pass) > 0.f)) mature = false;
+          && (workset->hdr_mode == 0 || PassTransferStrength(group.begin + pass) > 0.f
+              || PassColorStrength(group.begin + pass) > 0.f)) mature = false;
     }
     if (mature && !screenshot::HasPending()) {
       if (screenshot::PrepareCapture(
@@ -10176,7 +10320,7 @@ inline bool ProcessInline(
   transfer_strength_inert.store(
       res.hdr_mode == 0 ? 2u : FramePedestalRemoval(res) ? 0u : 1u,
       std::memory_order_relaxed);
-  if (res.hdr_mode != 0 && !ChainActive(res, requested_stack, present)) {
+  if (res.hdr_mode != 0 && !ChainActive(res, requested_stack, present, group.begin)) {
     // Explicit zero strength is the only v6 image-path bypass.
     if (capture_this_eval) {
       Transition(command_list, res.original, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -10341,8 +10485,8 @@ inline bool ProcessInline(
     // earlier dispatches cannot read a later pass's surfaces.
     const uint32_t srv_table_start = pass * kCodecSrvSetStride;
     const float pass_transfer = (present != nullptr && res.hdr_mode != 0
-        ? present->pass_transfer_strength[pass] : PassTransferStrength(pass));
-    const float pass_color = (present != nullptr ? present->pass_color_strength[pass] : PassColorStrength(pass));
+        ? present->pass_transfer_strength[pass] : PassTransferStrength(group.begin + pass));
+    const float pass_color = (present != nullptr ? present->pass_color_strength[pass] : PassColorStrength(group.begin + pass));
 
     if (res.hdr_mode != 0
         && pass_transfer <= 0.f && pass_color <= 0.f) {
@@ -10512,7 +10656,7 @@ inline bool ProcessInline(
     SetEvaluationParameters(
         feature,
         feature.slots[pass],
-        pass,
+        group.begin + pass,
         chain_reset_epoch,
         res,
         frame,
@@ -10520,6 +10664,9 @@ inline bool ProcessInline(
         nr_input_height,
         feature_out_width,
         feature_out_height);
+    ++stage_stats.evaluates;
+    stage_stats.resets += feature.slots[pass].model_reset;
+    stage_stats.resolved_requests[group.begin + pass] = feature.slots[pass].nr_preset;
 
     if (timers_active) {
       gpu_timers::Mark(command_list, gpu_timers::PassEvalStart(pass));
@@ -10593,7 +10740,7 @@ inline bool ProcessInline(
     // The look stage reshapes the model's edit (or measures it) before the
     // resolve, which then reads the route it returns.
     const LookRoute route =
-        RunLookStage(command_list, device, res, feature.slots[pass], pass, look_chain, frame);
+        RunLookStage(command_list, device, res, feature.slots[pass], pass, look_chain, frame, group.begin);
     ID3D12Resource* const looked_neural =
         (route.shaped ? (route.srv_set == kDescriptorTransportSet + srv_table_start
                             ? res.look_up_neural : res.look_output) : res.nr_output);
@@ -11127,6 +11274,7 @@ inline bool ProcessInline(
   // successful NR evaluation - a fresh-slot maturation frame passes the game
   // image through untouched.
   RecordOutputPass(output, handle);
+  stage_scope.complete = executed + 1 == static_cast<int32_t>(requested_stack);
   if (executed < 0) {
     // Fresh-slot maturation: NR did not run, the image passed through.
     CountNrDecline(NrDeclineReason::kSlotWarmupMaturation);
@@ -11140,6 +11288,10 @@ inline bool ProcessInline(
   }
   for (auto& slot : feature.slots) slot.fail_count = 0;
   ++successful_evaluations;
+  if (mixed_stage_terminal.active) {
+    mixed_stage_terminal.injected = true;
+    mixed_stage_group_successes.fetch_add(1, std::memory_order_relaxed);
+  }
   d3d12_nr_success_ns.store(SteadyNowNs(), std::memory_order_relaxed);
   lastgasp::MarkOnce("nr:eval-engaged");
   streamline_escalation_deficits.store(0, std::memory_order_relaxed);
@@ -11197,6 +11349,13 @@ inline bool ProcessInline(
 // ---------------------------------------------------------------------------
 
 inline std::atomic_uint64_t successful_pre_sr_evaluations = 0;
+inline uint64_t SourceSuccessfulEvaluations() {
+  const auto groups = successful_evaluations.load(std::memory_order_relaxed)
+      + successful_pre_sr_evaluations.load(std::memory_order_relaxed);
+  const auto split_groups = mixed_stage_group_successes.load(std::memory_order_relaxed);
+  return (groups > split_groups ? groups - split_groups : 0)
+      + mixed_stage_source_successes.load(std::memory_order_relaxed);
+}
 
 // The pre-SR stand-in's state while NGX reads it.
 inline constexpr D3D12_RESOURCE_STATES kPreSrReadable =
@@ -11234,11 +11393,28 @@ inline bool ProcessInlinePreSR(
     // recording started - the bool return alone conflates "injected" with
     // "declined before recording").
     bool* commands_recorded = nullptr) {
-  if (!enabled.load() || !nr_before_upscale.load() || command_list == nullptr
+  if (!enabled.load() || command_list == nullptr
       || handle == nullptr || game_parameters == nullptr
       || !IsSupportedInjectionCommandList(command_list)) {
     return false;
   }
+  const auto plan = EvaluationStagePlan(handle);
+  if (!StagePlanAdmitted(plan)) return false;
+  const auto group = plan.At(stage_plan::Stage::RENDER);
+  if (group.count == 0) return false;
+  const uint32_t admission_stage = (plan.mixed ? 1u : 0u);
+  if (evaluate_chain.depth != 0 && evaluate_chain.render_attempted) {
+    CountNrDecline(NrDeclineReason::kNestedMirror);
+    return false;
+  }
+  if (evaluate_chain.depth != 0) {
+    evaluate_chain.render_attempted = true;
+  }
+  auto& stage_stats = stage_telemetry[static_cast<size_t>(stage_plan::Stage::RENDER)];
+  ++stage_stats.groups;
+  stage_stats.pass_begin = group.begin;
+  stage_stats.pass_count = group.count;
+  StageExecutionScope stage_scope{.stats = &stage_stats};
   InjectedCommandScope injected_command_scope;
   auto* color = GetD3D12Resource(game_parameters, NVSDK_NGX_Parameter_Color);
   auto* motion = GetD3D12Resource(game_parameters, NVSDK_NGX_Parameter_MotionVectors);
@@ -11259,7 +11435,7 @@ inline bool ProcessInlinePreSR(
   // One NR pass per color surface per present per source handle
   // (mirrors the after path's admission; pre-SR never mixes with the
   // Streamline synthetic path, so the mirror rule reduces to same-handle).
-  if (!AdmitOutputPass(color, handle)) return false;
+  if (!AdmitOutputPass(color, handle, admission_stage)) return false;
 
   const D3D12_RESOURCE_DESC color_desc = color->GetDesc();
   const D3D12_RESOURCE_DESC motion_desc = motion->GetDesc();
@@ -11373,7 +11549,14 @@ inline bool ProcessInlinePreSR(
     return false;
   }
   auto entry = FindOrRegisterFeature(handle, game_parameters, "pre-SR ");
-  FeatureState& feature = entry->second;
+  if (plan.mixed && !entry->second.render_session) {
+    const auto contract = create_contracts.find(handle);
+    entry->second.render_session = std::make_shared<FeatureState>(
+        contract != create_contracts.end() ? contract->second : DeriveFeatureState(game_parameters));
+    entry->second.render_session->source_feature = entry->second.source_feature;
+  }
+  FeatureState& feature = (plan.mixed ? *entry->second.render_session : entry->second);
+  feature.pass_offset = group.begin;
   FeatureState current = DeriveFeatureState(game_parameters);
   ObserveGameFrame(current);
   if (current.input_width == 0) {
@@ -11449,7 +11632,9 @@ inline bool ProcessInlinePreSR(
   // adapt/recreate checks so the NR feature's create flags track it.
   const DXGI_FORMAT color_format = ConcreteResourceFormat(color_desc.Format);
   const uint8_t hdr_mode = FrameHdrMode(color_format, feature.create_flags);
-  const uint32_t requested_stack = std::clamp(stack_passes.load(), 1u, kMaxNrPasses);
+  const uint32_t requested_stack = group.count;
+  stage_stats.width = width;
+  stage_stats.height = height;
   // NR working resolution (v5.1): the same controls as the after path, with
   // the NGX color surface as the reference - pre-SR has no separate output
   // resolution, the game's own DLSS upscales after us.  Scaled mode runs the
@@ -11475,6 +11660,7 @@ inline bool ProcessInlinePreSR(
         return slot.handle != nullptr && slot.nr_create_flags != flags;
       });
   if (dimensions_changed || configuration_changed || hdr_changed || create_flags_changed) {
+    ++stage_stats.rebuilds;
     // Contract-level change: every stack pass's feature must be recreated,
     // and slots beyond the current stack depth are freed (via the overlay's
     // RecreateFeatures on pass-count changes).  A null slot-0 handle after a
@@ -11523,7 +11709,7 @@ inline bool ProcessInlinePreSR(
   // pan: 39.8 % of pixels boil unfiltered, 45.0 % filtered, 44.4 % with
   // DLSS alone).
   LookChain look_chain{
-      .settings = LookSettingsSnapshots(false),
+      .settings = LookSettingsSnapshots(false, false, group.begin),
       .motion_scale = {current.motion_scale_x, current.motion_scale_y},
   };
   if (codec_ok) {
@@ -11594,12 +11780,14 @@ inline bool ProcessInlinePreSR(
   transfer_strength_inert.store(
       res.hdr_mode == 0 ? 2u : FramePedestalRemoval(res) ? 0u : 1u,
       std::memory_order_relaxed);
-  if (res.hdr_mode != 0 && !ChainActive(res, requested_stack)) {
+  if (res.hdr_mode != 0 && !ChainActive(res, requested_stack, nullptr, group.begin)) {
     // Explicit zero strength is the only v6 image-path bypass; the game's
     // own evaluate runs on its own color below.
     ++bypassed_evaluations;
     CountNrDecline(NrDeclineReason::kZeroStrengthPassthrough);
-    RecordOutputPass(color, handle);
+    evaluate_chain.render_complete = true;
+    stage_scope.complete = true;
+    RecordOutputPass(color, handle, admission_stage);
     device->Release();
     return false;
   }
@@ -11811,8 +11999,8 @@ inline bool ProcessInlinePreSR(
     // This pass's SRV set and write UAV slot were fixed at workset creation
     // (kDescriptor* layout) - see ProcessInline's loop.
     const uint32_t srv_table_start = pass * kCodecSrvSetStride;
-    const float pass_transfer = PassTransferStrength(pass);
-    const float pass_color = PassColorStrength(pass);
+    const float pass_transfer = PassTransferStrength(group.begin + pass);
+    const float pass_color = PassColorStrength(group.begin + pass);
 
     if (res.hdr_mode != 0
         && pass_transfer <= 0.f && pass_color <= 0.f) {
@@ -11991,7 +12179,7 @@ inline bool ProcessInlinePreSR(
     SetEvaluationParameters(
         feature,
         feature.slots[pass],
-        pass,
+        group.begin + pass,
         chain_reset_epoch,
         res,
         frame,
@@ -11999,6 +12187,9 @@ inline bool ProcessInlinePreSR(
         nr_input_height,
         nr_input_width,
         nr_input_height);
+    ++stage_stats.evaluates;
+    stage_stats.resets += feature.slots[pass].model_reset;
+    stage_stats.resolved_requests[group.begin + pass] = feature.slots[pass].nr_preset;
 
     if (timers_active) {
       gpu_timers::Mark(command_list, gpu_timers::PassEvalStart(pass));
@@ -12045,7 +12236,7 @@ inline bool ProcessInlinePreSR(
     last_model_pass = static_cast<int32_t>(pass);
     // The look stage, as on the after path.
     const LookRoute route =
-        RunLookStage(command_list, device, res, feature.slots[pass], pass, look_chain, frame);
+        RunLookStage(command_list, device, res, feature.slots[pass], pass, look_chain, frame, group.begin);
     Transition(
         command_list,
         write_surface,
@@ -12177,7 +12368,7 @@ inline bool ProcessInlinePreSR(
     // mirrored second evaluate of the same handle in this present cannot
     // evaluate the freshly created slot on the same command list.
     CountNrDecline(NrDeclineReason::kSlotWarmupMaturation);
-    RecordOutputPass(color, handle);
+    RecordOutputPass(color, handle, admission_stage);
     Transition(
         command_list,
         res.proxy,
@@ -12376,7 +12567,9 @@ inline bool ProcessInlinePreSR(
       const_cast<NVSDK_NGX_Parameter*>(game_parameters),
       NVSDK_NGX_Parameter_Color,
       res.pre_sr_color);
-  RecordOutputPass(color, handle);
+  evaluate_chain.render_complete = executed + 1 == static_cast<int32_t>(requested_stack);
+  stage_scope.complete = evaluate_chain.render_complete;
+  RecordOutputPass(color, handle, admission_stage);
   if (!model_evaluated) {
     ++bypassed_evaluations;
     CountNrDecline(NrDeclineReason::kSlotWarmupMaturation);
@@ -12389,6 +12582,10 @@ inline bool ProcessInlinePreSR(
   }
   for (auto& slot : feature.slots) slot.fail_count = 0;
   const uint64_t count = ++successful_pre_sr_evaluations;
+  if (mixed_stage_terminal.active) {
+    mixed_stage_terminal.injected = true;
+    mixed_stage_group_successes.fetch_add(1, std::memory_order_relaxed);
+  }
   d3d12_nr_success_ns.store(SteadyNowNs(), std::memory_order_relaxed);
   lastgasp::MarkOnce("nr:eval-engaged");
   streamline_escalation_deficits.store(0, std::memory_order_relaxed);
@@ -12417,6 +12614,14 @@ inline bool ProcessStreamlineInline(
     sl::Feature streamline_feature,
     const StreamlineCapture& capture,
     bool* command_list_touched = nullptr) {
+  const auto plan = RequestedStagePlan(streamline_feature == sl::kFeatureDLSS_RR);
+  if (plan.mixed) {
+    auto unavailable = plan;
+    unavailable.valid = false;
+    unavailable.reason = stage_plan::Reason::UNSUPPORTED_BACKEND;
+    StagePlanAdmitted(unavailable);
+    return false;
+  }
   // The Streamline layer is an "after" insertion point: NR enhances the
   // finished DLSS output.  With the pre-SR insertion point selected the two
   // are mutually exclusive, exactly as for the NGX evaluate path - except for
@@ -12809,16 +13014,15 @@ inline bool RegisteredDlssEvaluate(const NVSDK_NGX_Handle* handle,
 // before.  Caller must hold runtime_mutex.
 inline std::atomic_bool logged_pre_sr_rr = false;
 inline bool PreSrTakes(const NVSDK_NGX_Handle* handle) {
-  if (fg::xefg::OwnsStream() || !nr_before_upscale.load()) return false;
-  NVSDK_NGX_Feature feature = kFeatureDlss;
-  if (!KnownHandleFeature(handle, &feature) || feature != kFeatureDlssd) return true;
-  if (!logged_pre_sr_rr.exchange(true)) {
+  if (fg::xefg::OwnsStream()) return false;
+  const auto plan = EvaluationStagePlan(handle);
+  if (plan.reason == stage_plan::Reason::RR_AFTER && !logged_pre_sr_rr.exchange(true)) {
     Log(reshade::log::level::info,
         "pre-SR is selected, but this evaluate is Ray Reconstruction"
         " (DLSSD/RR): its Color is still-noisy ray-traced lighting that RR cleans,"
         " so NR runs on RR's finished output after upscaling instead");
   }
-  return false;
+  return plan.valid && plan.At(stage_plan::Stage::RENDER).count != 0;
 }
 
 // P4 A1 (defined beside the queue-completion installer, which lives below
@@ -12982,6 +13186,11 @@ inline bool ForgetSourceHandleLocked(const NVSDK_NGX_Handle* handle) {
   OnNativeFgFeatureReleased(handle);
   const auto entry = features.find(handle);
   if (entry != features.end()) {
+    if (entry->second.render_session) {
+      ReleaseAllNrSlots(*entry->second.render_session, true);
+      ReleaseCom(entry->second.render_session->norm.commit);
+      entry->second.render_session.reset();
+    }
     ReleaseAllNrSlots(entry->second, true);
     // The worksets retired below hold their own references to the texel.
     ReleaseCom(entry->second.norm.commit);
@@ -15322,6 +15531,7 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureSlot(
   const EvaluateChainScope chain_scope;
   const screenshot::EvaluationScope capture_scope;
   const bool nested_in_c_wrapper = inside_game_evaluate_wrapper;
+  const SourceStageScope source_scope(handle, !nested_in_c_wrapper && !InsideDirectCall());
   // Counted in `seen` from here until this evaluate names its terminal.
   const EvaluateInFlightScope in_flight(!nested_in_c_wrapper);
   if (!nested_in_c_wrapper) {
@@ -15501,7 +15711,8 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureSlot(
     CountNrDecline(NrDeclineReason::kTeardownPending);
     return result;
   }
-  if (PreSrTakes(handle)) return result;
+  if (!StagePlanAdmitted(EvaluationStagePlan(handle))) return result;
+  if (PreSrTakes(handle) && !EvaluationStagePlan(handle).mixed) return result;
   // The Present hook point: this evaluate lends NR its guides and NR runs
   // at the present (present_path.hpp).  When the present path cannot serve
   // (starved presents, an unusable swapchain) the after path below runs.
@@ -15578,6 +15789,7 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureCSlot(
   const EvaluateChainScope chain_scope;
   const screenshot::EvaluationScope capture_scope;
   const EvaluateInFlightScope in_flight(true);
+  const SourceStageScope source_scope(handle, !InsideDirectCall());
   ++intercepted_evaluations;
   if (InsideDirectCall()) {
     own_evaluations.fetch_add(1, std::memory_order_relaxed);
@@ -15701,7 +15913,8 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureCSlot(
     CountNrDecline(NrDeclineReason::kTeardownPending);
     return result;
   }
-  if (PreSrTakes(handle)) return result;
+  if (!StagePlanAdmitted(EvaluationStagePlan(handle))) return result;
+  if (PreSrTakes(handle) && !EvaluationStagePlan(handle).mixed) return result;
   // The Present hook point: this evaluate lends NR its guides and NR runs
   // at the present (present_path.hpp).  When the present path cannot serve
   // (starved presents, an unusable swapchain) the after path below runs.
@@ -17539,6 +17752,8 @@ inline constexpr const char* kSkipReasonText[] = {
     "NR has not seen the game's Vulkan DLSS start up",
     nullptr,  // screenshot_wait
     "The game ran DLSS on a second Vulkan device",
+    "Requested stages are unavailable",
+    "Warm-up after a start or a settings change",
 };
 // i18n: end
 // A new eligible decline without a player phrase fails the build: the panel
@@ -17612,8 +17827,7 @@ inline FunnelInputs CollectFunnelInputs() {
   in.seen = intercepted_evaluations.load(std::memory_order_relaxed)
       + present_frames_seen.load(std::memory_order_relaxed)
       + present_prefg_attempts.load(std::memory_order_relaxed);
-  in.injected = successful_evaluations.load(std::memory_order_relaxed)
-      + successful_pre_sr_evaluations.load(std::memory_order_relaxed);
+  in.injected = SourceSuccessfulEvaluations();
   in.submitted_ok = submitted_injections.load(std::memory_order_relaxed);
 
   // eligible = seen - (never ours) - (our own re-entry) - (mirrored layers)
@@ -18132,11 +18346,14 @@ inline void EmitHealthSummary() {
 // presents to be paced, as the health ledger's windows do.
 inline void TickNrCost(int64_t now_ns, double interval_ms) {
   if (gpu_timers::published_segments != cost_seen_published) {
+    const uint64_t samples = gpu_timers::stage_published[0] + gpu_timers::stage_published[1]
+        + gpu_timers::stage_published[2];
+    static uint64_t seen_samples = 0;
+    cost_window.chain_ms += (gpu_timers::measured_total_us - cost_seen_total_us) / 1000.0;
+    cost_window.samples += static_cast<uint32_t>(samples - seen_samples);
+    seen_samples = samples;
+    cost_seen_total_us = gpu_timers::measured_total_us;
     cost_seen_published = gpu_timers::published_segments;
-    if (gpu_timers::stats.valid) {
-      cost_window.chain_ms += gpu_timers::stats.total_us / 1000.0;
-      ++cost_window.samples;
-    }
   }
   if (interval_ms > 0.0 && enabled.load(std::memory_order_relaxed)) {
     ++cost_window.presents;
@@ -18146,6 +18363,8 @@ inline void TickNrCost(int64_t now_ns, double interval_ms) {
                          + successful_pre_sr_evaluations.load(std::memory_order_relaxed);
   if (cost_window.start_ns != 0 && now_ns - cost_window.start_ns < kCostWindowNs) return;
   const uint64_t nr_evals = evals - cost_window.start_evals;
+  const uint64_t sources = SourceSuccessfulEvaluations();
+  const uint64_t nr_sources = sources - cost_window.start_source_evals;
   if (cost_window.samples != 0) cost_chain_ms = cost_window.chain_ms / cost_window.samples;
   if (nr_evals == 0) cost_chain_ms = 0.0;
   const bool paced = cost_window.start_ns != 0 && cost_window.presents >= 8;
@@ -18155,9 +18374,10 @@ inline void TickNrCost(int64_t now_ns, double interval_ms) {
   nr_cost_present_ms.store(
       paced ? static_cast<float>(cost_chain_ms * nr_evals / cost_window.presents) : 0.f,
       std::memory_order_relaxed);
-  nr_cost_gpu_ms.store(paced ? static_cast<float>(cost_chain_ms) : 0.f,
+  nr_cost_gpu_ms.store(paced && nr_sources != 0
+                          ? static_cast<float>(cost_chain_ms * nr_evals / nr_sources) : 0.f,
                        std::memory_order_relaxed);
-  cost_window = {.start_ns = now_ns, .start_evals = evals};
+  cost_window = {.start_ns = now_ns, .start_evals = evals, .start_source_evals = sources};
 }
 
 // Lifecycle tick (runtime_mutex).  `frame`: a real present; synthetic ticks
@@ -18927,6 +19147,16 @@ inline void EmitTelemetry(int64_t now_ns, bool force = false) {
                       * look::kHistoryBytesPerPixel;
       }
     }
+    if (state.render_session) {
+      for (const auto& slot : state.render_session->slots) {
+        if (slot.handle != nullptr) {
+          ++live_slots;
+        }
+        if (slot.look_history.buffers[0] != nullptr) {
+          hist_bytes += 2ull * slot.look_history.width * slot.look_history.height * look::kHistoryBytesPerPixel;
+        }
+      }
+    }
   }
   uint64_t present_bytes =
       d3d12_bytes(present_prefg_hudless) + d3d12_bytes(present_prefg_compose.output);
@@ -18979,6 +19209,41 @@ inline void EmitTelemetry(int64_t now_ns, bool force = false) {
                ? telemetry_window_nr_ns / 1e3 / telemetry_window_nr_calls
                : 0.0)
        << " cpu_us_max=" << telemetry_window_nr_max_ns / 1e3 << "]";
+  const auto execution_plan = RequestedStagePlan();
+  line << " stage_plan[valid=" << execution_plan.valid << " reason="
+       << stage_plan::ReasonText(execution_plan.reason) << " requested=";
+  for (uint32_t pass = 0; pass < execution_plan.pass_count; ++pass) {
+    if (pass != 0) {
+      line << ',';
+    }
+    line << pass + 1 << ':' << stage_plan::Name(execution_plan.requested[pass])
+         << "->" << (execution_plan.valid ? stage_plan::Name(execution_plan.effective[pass]) : "disabled");
+  }
+  line << ']';
+  for (size_t stage = 0; stage < stage_telemetry.size(); ++stage) {
+    const auto& stats = stage_telemetry[stage];
+    if (stats.groups == 0) continue;
+    const auto& gpu = gpu_timers::stage_stats[stage];
+    line << " nr_stage[" << stage_plan::Name(static_cast<stage_plan::Stage>(stage))
+         << " range=" << stats.pass_begin + 1 << '+' << stats.pass_count
+         << " groups=" << stats.groups << " evals=" << stats.evaluates
+         << " dimensions=" << stats.width << 'x' << stats.height
+         << " rebuilds=" << stats.rebuilds << " resets=" << stats.resets << " skipped=" << stats.skipped
+         << " gpu_us=";
+    if (gpu.valid) {
+      line << gpu.total_us;
+    } else {
+      line << "unmeasured";
+    }
+    line << " resolved_creation_requests=";
+    for (uint32_t pass = stats.pass_begin; pass < stats.pass_begin + stats.pass_count; ++pass) {
+      if (pass != stats.pass_begin) {
+        line << ',';
+      }
+      line << pass + 1 << ':' << stats.resolved_requests[pass];
+    }
+    line << " internal_network=unconfirmed]";
+  }
   if (vram.valid) {
     line << " vram_mib[local=" << (vram.local_usage >> 20) << '/'
          << (vram.local_budget >> 20)
@@ -19517,6 +19782,7 @@ inline void RunLifecycleTick(int64_t present_ns, bool from_present) {
     }
     generation = ++present_generation;
     processed_outputs.clear();
+    processed_render_outputs.clear();
     // Streamline tags are NOT dropped here: a present can fall between a
     // tag and its evaluate (DLSS-G's pacer presents 2-4 times a frame), and
     // frame-indexed tags age out by frame (StreamlineViewportState).
@@ -20090,10 +20356,16 @@ inline void RecreateFeaturesLocked() {
     native_fg_result.store(fg::Result::PREPARED, std::memory_order_release);
   }
   processed_outputs.clear();
+  processed_render_outputs.clear();
   streamline_viewports.clear();
   if (direct_api.module == nullptr) direct_load_state = DirectLoadState::Unknown;
   direct_runtime_failed = false;
   for (auto& [_, feature] : features) {
+    if (feature.render_session) {
+      ReleaseAllNrSlots(*feature.render_session, true);
+      ReleaseCom(feature.render_session->norm.commit);
+      feature.render_session.reset();
+    }
     ReleaseAllNrSlots(feature, true);
     for (auto& slot : feature.slots) {
       slot.failed = false;
@@ -20245,6 +20517,11 @@ inline constexpr Setting kSetPassPreset[] = {
     {"NRPass3Preset", &pass_preset[1], 0u, SettingEffect::kRecreate},
     {"NRPass4Preset", &pass_preset[2], 0u, SettingEffect::kRecreate}};
 static_assert(std::size(kSetPassPreset) == kMaxNrPasses - 1);
+inline constexpr Setting kSetPassStage[] = {
+    {"NRPass2Stage", &pass_stage[0], 0u, SettingEffect::kRecreate},
+    {"NRPass3Stage", &pass_stage[1], 0u, SettingEffect::kRecreate},
+    {"NRPass4Stage", &pass_stage[2], 0u, SettingEffect::kRecreate}};
+static_assert(std::size(kSetPassStage) == kMaxNrPasses - 1);
 inline constexpr Setting kSetStyle{
     "NRStyle", &style, defaults::kStyle, SettingEffect::kHistory};
 inline constexpr Setting kSetLocalTone{
@@ -20777,6 +21054,7 @@ inline constexpr const Setting* kHookPointSettings[] = {
 inline constexpr const Setting* kPerformanceSettings[] = {
     &kSetFollowInputRes, &kSetResolutionScale, &kSetLookUpsample};
 inline constexpr const Setting* kStackingSettings[] = {
+    &kSetPassStage[0], &kSetPassStage[1], &kSetPassStage[2],
     &kSetPassPreset[0], &kSetPassPreset[1], &kSetPassPreset[2],
     &kSetStackPasses,     &kSetPassIntensity[0], &kSetPassIntensity[1],
     &kSetPassIntensity[2], &kSetPassTransfer[0], &kSetPassTransfer[1],
@@ -21656,18 +21934,13 @@ inline void DrawSectionHookPoint(const ui::PanelText& text, bool present_details
       " presents, after its own post-processing and HUD, before ReShade's"
       " effects.",
       ui::text::kHookTips);
-  // A hook point this session cannot run keeps NR on the Upscaled one
-  // (PreSrTakes, PresentHookServes, PresentTakesEvaluate).  Through v8.0.2
-  // only Raw details and the log said so: the choice looked applied.
-  const uint32_t chosen = hook_point.load();
-  const char* const fallback = chosen == kHookRender && logged_pre_sr_rr.load()
-                                   ? ui::text::kHookRenderRr
-                                   : nullptr;
-  if (fallback != nullptr) {
-    if (text.modern) ui::RowLabel("");
-    ImGui::PushTextWrapPos(0.f);
-    ImGui::TextColored(ui::CurrentTheme().warn, "%s", text.Tr(fallback));
-    ImGui::PopTextWrapPos();
+  const auto plan = RequestedStagePlan();
+  if (!plan.valid || plan.requested[0] != plan.effective[0]) {
+    ImGui::TextWrapped("%s: %s", text.Tr(ui::text::kRequestedStage),
+                       text.Tr(stage_plan::Name(plan.requested[0])));
+    ImGui::TextWrapped("%s: %s", text.Tr(ui::text::kEffectiveStage),
+                       text.Tr(plan.valid ? stage_plan::Name(plan.effective[0]) : ui::text::kStageBlocked));
+    ImGui::TextWrapped("%s", text.Tr(stage_plan::ReasonText(plan.reason)));
   }
   if (present_details) {
     DrawPresentControls(text);
@@ -21812,6 +22085,13 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
     kSetStackPasses.Commit(static_cast<float>(
         std::clamp(ui_passes + 1, 1, static_cast<int>(kMaxNrPasses))));
   }
+  const auto stage_plan = RequestedStagePlan();
+  if (!stage_plan.valid) {
+    ImGui::TextWrapped("%s: %s", text.Tr(ui::text::kStageBlocked),
+                       text.Tr(stage_plan::ReasonText(stage_plan.reason)));
+  } else if (stage_plan.requested != stage_plan.effective) {
+    ImGui::TextWrapped("%s", text.Tr(stage_plan::ReasonText(stage_plan.reason)));
+  }
   if (text.modern && kSetStackPasses.Modified()
       && ui::ResetButton("passes_reset", kPassSegments[0])) {
     kSetStackPasses.Commit(kSetStackPasses.fallback);
@@ -21875,13 +22155,15 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
               }
               for (const char* status : {ui::text::kEditing, ui::text::kConfigured}) {
                 const auto measured = ui::MeasureProcessingChainNode(
-                    {title, std::string(ui::Tr(model_name)) + " *", ui::Tr(status)}, width);
+                    {title, std::string(ui::Tr(stage_plan::Name(stage_plan.requested[measure_pass])))
+                                + " | " + ui::Tr(model_name) + " *", ui::Tr(status)}, width);
                 node_height = (std::max)(node_height, measured.content_height);
               }
             }
             node_height += ImGui::GetStyle().FramePadding.y * 2.f;
           }
           const Setting* node_settings[] = {
+              &(pass == 0 ? kSetHookPoint : kSetPassStage[pass - 1]),
               &(pass == 0 ? kSetPreset : kSetPassPreset[pass - 1]),
               &(pass == 0 ? kSetIntensity : kSetPassIntensity[pass - 1]),
               &(pass == 0 ? kSetTransferStrength : kSetPassTransfer[pass - 1]),
@@ -21895,16 +22177,20 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
                                 || (pass != 0 && kSetPassFollow[pass - 1].Modified())
                                 || (pass == 0 && (kSetSkinIndependent.Modified() || AnyModified({kLookResultSettings})));
           const auto node = ui::MeasureProcessingChainNode(
-              {caption, std::string(ui::Tr(model)) + (modified ? " *" : ""),
+              {caption, std::string(ui::Tr(stage_plan::Name(stage_plan.requested[pass])))
+                            + " | " + ui::Tr(model) + (modified ? " *" : ""),
                ui::Tr(pass == ui_selected_pass ? ui::text::kEditing : ui::text::kConfigured)}, width);
           if (ui::ProcessingChainButton(node, ImVec2(width, node_height), pass == ui_selected_pass)) {
             ui_selected_pass = pass;
           }
-          ui::ItemTooltip("%s\n%s: %s\n%s\n%s\n%s\n%s\n%s", caption, ui::Tr(ui::text::kRequest), ui::Tr(model),
+          ui::ItemTooltip("%s\n%s: %s\n%s\n%s\n%s\n%s\n%s\n%s: %s\n%s: %s", caption, ui::Tr(ui::text::kRequest), ui::Tr(model),
                           ui::Tr(requested == 0 && pass != 0 ? ui::text::kInheritModel : ui::text::kIndependentModel),
                           ui::Tr(pass != 0 && pass_follow[pass - 1].load() ? ui::text::kStyleFollows : ui::text::kStyleIndependent),
                           ui::Tr(pass != 0 && pass_look_result[pass - 1].follow.load() ? ui::text::kResultFollows : ui::text::kResultIndependent),
-                          ui::Tr(ui::text::kRuntimeUnconfirmed), ui::Tr(ui::text::kChainMarkTip));
+                          ui::Tr(ui::text::kRuntimeUnconfirmed), ui::Tr(ui::text::kChainMarkTip),
+                          ui::Tr(ui::text::kRequestedStage), ui::Tr(stage_plan::Name(stage_plan.requested[pass])),
+                          ui::Tr(ui::text::kEffectiveStage),
+                          ui::Tr(stage_plan.valid ? stage_plan::Name(stage_plan.effective[pass]) : ui::text::kStageBlocked));
           const ImVec2 begin = ImGui::GetItemRectMin();
           const ImVec2 end = ImGui::GetItemRectMax();
           if (pass % columns != 0) {
@@ -21948,6 +22234,19 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
     } else {
       ImGui::TextUnformatted(caption);
     }
+    constexpr const char* kFirstStages[] = {"Upscaled", "Render", "Present"};
+    const char* stage_choices[] = {ui::text::kPreviousStage, "Render", "Upscaled", "Present"};
+    if (pass == 0) {
+      ChoiceSetting(text, kSetHookPoint, ui::text::kPassStage, kFirstStages, ui::text::kPassStageTip);
+    } else {
+      ChoiceSetting(text, kSetPassStage[pass - 1], ui::text::kPassStage, stage_choices, ui::text::kPassStageTip);
+    }
+    const auto editor_plan = RequestedStagePlan();
+    ImGui::TextWrapped("%s: %s", text.Tr(ui::text::kRequestedStage),
+                       text.Tr(stage_plan::Name(editor_plan.requested[pass])));
+    ImGui::TextWrapped("%s: %s", text.Tr(ui::text::kEffectiveStage),
+                       text.Tr(editor_plan.valid ? stage_plan::Name(editor_plan.effective[pass]) : ui::text::kStageBlocked));
+    ImGui::TextWrapped("%s", text.Tr(ui::text::kStagePlanNote));
     const int editor_columns = (ImGui::GetContentRegionAvail().x >= ImGui::GetFontSize() * ui::tokens::kWideEm ? 2 : 1);
     ui::StyleScope editor_spacing;
     if (text.modern) {
@@ -22536,11 +22835,21 @@ inline void DrawSectionDiagnosticsRaw() {
              : std::to_string(static_cast<int>(res_scale * 100.f + 0.5f)) + "%");
   // PresentHookServes also includes a native Pre-FG owner. The selected
   // domain alone therefore cannot describe its execution timing.
-  if (PresentHookServes()) {
+  const auto plan = RequestedStagePlan();
+  if (plan.mixed || !plan.valid) {
+    ImGui::TextWrapped("%s", ui::Tr(ui::text::kStagePlanNote));
+    ImGui::TextWrapped("%s", ui::Tr(stage_plan::ReasonText(plan.reason)));
+    for (uint32_t pass = 0; pass < plan.pass_count; ++pass) {
+      ImGui::Text("%s %u | %s: %s | %s: %s", ui::Tr("Pass"), pass + 1,
+                  ui::Tr(ui::text::kRequestedStage), ui::Tr(stage_plan::Name(plan.requested[pass])),
+                  ui::Tr(ui::text::kEffectiveStage),
+                  ui::Tr(plan.valid ? stage_plan::Name(plan.effective[pass]) : ui::text::kStageBlocked));
+    }
+  } else if (PresentHookServes()) {
     ImGui::TextUnformatted(
         "Present domain: see the status summary for the observed NR/FG timing"
         " (Pre-FG or final Present).");
-  } else if (nr_before_upscale.load() && logged_pre_sr_rr.load()) {
+  } else if (nr_before_upscale.load() && stage_source_rr.load()) {
     ImGui::TextUnformatted(
         "Active path: after - Render (pre-SR) is selected, but the game upscales"
         " with Ray Reconstruction, whose input is still-noisy lighting; NR runs"
@@ -22728,6 +23037,35 @@ inline void DrawSectionDiagnosticsRaw() {
   }
   {
     RuntimeLock lock(runtime_mutex);
+    ImGui::TextUnformatted("NR stages: counters are session totals; pass range, size and model requests are last observed.");
+    for (size_t stage = 0; stage < stage_telemetry.size(); ++stage) {
+      const auto& observed = stage_telemetry[stage];
+      const char* name = stage_plan::Name(static_cast<stage_plan::Stage>(stage));
+      ImGui::TextWrapped("%s: groups=%llu evaluates=%llu rebuilds=%llu resets=%llu skipped=%llu",
+                         name, static_cast<unsigned long long>(observed.groups),
+                         static_cast<unsigned long long>(observed.evaluates),
+                         static_cast<unsigned long long>(observed.rebuilds),
+                         static_cast<unsigned long long>(observed.resets),
+                         static_cast<unsigned long long>(observed.skipped));
+      if (observed.groups == 0) {
+        ImGui::TextUnformatted("  Pass range / size / model requests: not observed");
+      } else {
+        ImGui::Text("  pass_begin=%u (zero-based) count=%u size=%ux%u",
+                    observed.pass_begin, observed.pass_count, observed.width, observed.height);
+        ImGui::Text("  resolved_requests=[%u, %u, %u, %u] (internal network unconfirmed)",
+                    observed.resolved_requests[0], observed.resolved_requests[1],
+                    observed.resolved_requests[2], observed.resolved_requests[3]);
+      }
+      const auto& timing = gpu_timers::stage_stats[stage];
+      ImGui::Text("  GPU samples=%llu", static_cast<unsigned long long>(gpu_timers::stage_published[stage]));
+      if (timing.valid) {
+        ImGui::Text("  Last GPU sample [%ux%u]: total %.2fms model %.2fms overhead %.2fms",
+                    timing.width, timing.height, timing.total_us / 1000.f,
+                    timing.eval_us / 1000.f, timing.own_us / 1000.f);
+      } else {
+        ImGui::TextUnformatted("  GPU timing: not measured");
+      }
+    }
     if (gpu_timers::stats.valid) {
       const gpu_timers::Stats& t = gpu_timers::stats;
       ImGui::Text(
@@ -23184,6 +23522,9 @@ inline std::string BuildSupportReport() {
          << " NRPass2Preset=" << pass_preset[0].load()
          << " NRPass3Preset=" << pass_preset[1].load()
          << " NRPass4Preset=" << pass_preset[2].load()
+         << " NRPass2Stage=" << pass_stage[0].load()
+         << " NRPass3Stage=" << pass_stage[1].load()
+         << " NRPass4Stage=" << pass_stage[2].load()
          << " NRPreUpscale=" << nr_before_upscale.load()
          << " NRCodecMode=" << codec_mode.load()
          << " NRFollowInputRes=" << nr_follow_input_res.load()
@@ -23202,7 +23543,7 @@ inline std::string BuildSupportReport() {
                  : ui::kLanguages[ui_language_choice.load() - 1].code)
          << "\n"
          << "counters: enhanced="
-         << successful_evaluations.load() + successful_pre_sr_evaluations.load()
+         << SourceSuccessfulEvaluations()
          << " fg_submitted=" << TotalFgSubmittedFrames()
          << " bypassed=" << bypassed_evaluations.load()
          << " creates=" << intercepted_creates.load()
@@ -23216,6 +23557,17 @@ inline std::string BuildSupportReport() {
            << " enabled=" << result.mode.load() << " strength=" << result.strength.load()
            << " stabilize=" << result.stabilize.load() << " stabilize_ms=" << result.stabilize_ms.load()
            << " detail_stability=" << result.detail_stability.load() << "\n";
+  }
+  const auto plan = RequestedStagePlan();
+  report << "stage_plan: valid=" << plan.valid << " groups=" << plan.group_count
+         << " reason=" << stage_plan::ReasonText(plan.reason) << " (route only, execution unconfirmed)\n";
+  for (uint32_t pass = 0; pass < plan.pass_count; ++pass) {
+    const uint32_t requested_model = (pass == 0 ? preset.load() : pass_preset[pass - 1].load());
+    report << "pass[" << pass + 1 << "].plan: requested_stage=" << stage_plan::Name(plan.requested[pass])
+           << " effective_stage=" << (plan.valid ? stage_plan::Name(plan.effective[pass]) : "blocked")
+           << " requested_model=" << requested_model
+           << " resolved_model=" << nr_model::ResolvePreset(preset.load(), requested_model, loader.nr_requirements.dual_models)
+           << " (configuration only; internal network unconfirmed)\n";
   }
   if (!telemetry.empty()) report << "telemetry: " << telemetry << "\n";
   return report::RedactText(report.str(), report::SystemRedaction());
@@ -23256,7 +23608,7 @@ inline void DrawDiagnostics(const NrVerdict& verdict) {
       ui::Tr(std::strcmp(verdict.api, "vulkan") == 0 ? "Vulkan"
              : bridge     ? (nr_before_upscale.load() ? "Direct3D 11 bridge, before upscaling"
                                                        : "Direct3D 11 bridge, after upscaling")
-             : inline_path ? (nr_before_upscale.load() && !logged_pre_sr_rr.load()
+             : inline_path ? (nr_before_upscale.load() && !stage_source_rr.load()
                                   ? "Direct3D 12, before upscaling"
                                   : "Direct3D 12, after upscaling")
              : std::strcmp(verdict.path, "foreign") == 0
@@ -23472,13 +23824,15 @@ inline void ApplyNrPlacement(const NrPlacement& to) {
 // puts back the settings from before the first click.  Every click is
 // logged.  Overlay thread: published atomics only.
 inline void DrawFasterPresets() {
+  // These estimates assume every pass uses one global placement/size.
+  if (RequestedStagePlan().mixed) return;
   static NrPlacement undo;
   static bool undo_armed = false;
   const float gpu_ms = nr_cost_gpu_ms.load(std::memory_order_relaxed);
   const NrPlacement now{hook_point.load(), nr_follow_input_res.load(),
                         nr_resolution_scale.load()};
   // Ray Reconstruction keeps NR after upscaling (PreSrTakes).
-  const bool pre_possible = !logged_pre_sr_rr.load(std::memory_order_relaxed);
+  const bool pre_possible = !stage_source_rr.load(std::memory_order_relaxed);
   const bool now_pre = now.hook == kHookRender && pre_possible;
   const double now_pixels = NrWorkingPixels(now, now_pre);
   const NrPlacement options[] = {
@@ -24351,6 +24705,7 @@ inline void LoadConfiguration() {
   float saved_anchor = defaults::kProxyAnchorNits;
   uint32_t saved_preset = defaults::kPreset;
   uint32_t saved_pass_presets[kMaxNrPasses - 1] = {};
+  uint32_t saved_pass_stages[kMaxNrPasses - 1] = {};
   uint32_t saved_style = defaults::kStyle;
   float saved_intensity = defaults::kIntensity;
   float saved_local_tone = defaults::kLocalTone;
@@ -24605,6 +24960,7 @@ inline void LoadConfiguration() {
   for (uint32_t pass = 1; pass < kMaxNrPasses; ++pass) {
     const std::string prefix = "NRPass" + std::to_string(pass + 1);
     reshade::get_config_value(nullptr, kConfigSection, (prefix + "Preset").c_str(), saved_pass_presets[pass - 1]);
+    reshade::get_config_value(nullptr, kConfigSection, (prefix + "Stage").c_str(), saved_pass_stages[pass - 1]);
     reshade::get_config_value(
         nullptr, kConfigSection, (prefix + "Intensity").c_str(),
         saved_pass_values[pass - 1][0]);
@@ -24980,6 +25336,8 @@ inline void LoadConfiguration() {
   for (uint32_t pass = 1; pass < kMaxNrPasses; ++pass) {
     pass_preset[pass - 1] = SanitizeEnumKey(saved_pass_presets[pass - 1], 0u, 0u, 2u,
                                           kSetPassPreset[pass - 1].key);
+    pass_stage[pass - 1] = SanitizeEnumKey(saved_pass_stages[pass - 1], 0u, 0u, 3u,
+                                         kSetPassStage[pass - 1].key);
     pass_intensity[pass - 1] = SanitizeFloatKey(
         saved_pass_values[pass - 1][0], defaults::kPassStrength, 0.f, 2.f,
         kSetPassIntensity[pass - 1].key);
@@ -25884,6 +26242,7 @@ inline bool Shutdown(bool proof_gated) {
     core_release_feature = nullptr;
     direct_load_state = DirectLoadState::Unknown;
     processed_outputs.clear();
+    processed_render_outputs.clear();
     synthetic_handles.clear();
     streamline_viewports.clear();
     streamline_handle_keys.clear();

@@ -1348,6 +1348,15 @@ inline bool RunBridge(ID3D11DeviceContext* context,
                       bridge::ScopedD3D11Redirect* redirect,
                       const PresentTarget* present = nullptr) {
   using bridge::ResourceKey;
+  auto plan = RequestedStagePlan();
+  if (plan.mixed || !plan.valid) {
+    plan.valid = false;
+    if (plan.mixed) {
+      plan.reason = stage_plan::Reason::UNSUPPORTED_BACKEND;
+    }
+    StagePlanAdmitted(plan);
+    return false;
+  }
   const bool pre = redirect != nullptr;
   bool named = false;
   bool delivered = false;

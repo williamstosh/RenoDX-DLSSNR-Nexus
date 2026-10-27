@@ -1882,6 +1882,23 @@ inline constexpr Translation kPtBr[] = {
     {"Restore only this official profile. Other profiles are kept.", "Restaurar apenas este perfil oficial. Os outros perfis serão mantidos."},
     {"Restore official defaults?", "Restaurar os padrões oficiais?"},
     {"Personal changes to this official profile will be cleared. Other profiles are kept.", "As alterações pessoais deste perfil oficial serão apagadas. Os outros perfis serão mantidos."},
+
+    {"Hook stage", "Etapa do hook"},
+    {"Same as previous", "Igual ao passe anterior"},
+    {"Stage selection is independent of model, Look and result inheritance. Passes must run in Render, Upscaled, Present order. Unsupported mixed-stage plans do not run.", "A etapa é independente da herança de modelo, Look e resultado. Os passes devem seguir a ordem Render, Upscaled, Present. Planos entre etapas sem suporte não são executados."},
+    {"Requested stage", "Etapa solicitada"},
+    {"Effective stage", "Etapa efetiva"},
+    {"Plan blocked", "Plano bloqueado"},
+    {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "As etapas efetivas indicam a rota disponível, sem confirmar execução na GPU. Ray Reconstruction é verificado por handle durante a avaliação."},
+    {"Requested stages available", "Etapas solicitadas disponíveis"},
+    {"A later pass cannot run at an earlier stage", "Um passe posterior não pode voltar a uma etapa anterior"},
+    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "Passes entre etapas exigem DLSS SR/DLAA DX12 nativo"},
+    {"Cross-stage Present execution is not validated", "A execução Present entre etapas não foi validada"},
+    {"Frame generation owns the NR input path", "A geração de quadros controla a entrada NR"},
+    {"Ray Reconstruction runs Render passes after upscaling", "Ray Reconstruction executa passes Render após o upscaling"},
+    {"Present is unavailable; using the existing Upscaled path", "Present indisponível; usando a rota Upscaled existente"},
+    {"Invalid stage selection", "Seleção de etapa inválida"},
+    {"Requested stages are unavailable", "As etapas solicitadas não estão disponíveis"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

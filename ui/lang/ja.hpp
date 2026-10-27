@@ -1882,6 +1882,23 @@ inline constexpr Translation kJa[] = {
     {"Restore only this official profile. Other profiles are kept.", "この公式プロファイルのみを復元します。他のプロファイルは保持されます。"},
     {"Restore official defaults?", "公式の初期設定を復元しますか？"},
     {"Personal changes to this official profile will be cleared. Other profiles are kept.", "この公式プロファイルへの個人の変更が消去されます。他のプロファイルは保持されます。"},
+
+    {"Hook stage", "フック段階"},
+    {"Same as previous", "前のパスと同じ"},
+    {"Stage selection is independent of model, Look and result inheritance. Passes must run in Render, Upscaled, Present order. Unsupported mixed-stage plans do not run.", "段階の選択はモデル、Look、結果の継承から独立しています。パスは Render、Upscaled、Present の順に実行する必要があります。未対応の段階間プランは実行されません。"},
+    {"Requested stage", "要求された段階"},
+    {"Effective stage", "有効な段階"},
+    {"Plan blocked", "プランはブロックされています"},
+    {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "有効な段階は利用可能な経路を示し、GPU 実行を証明しません。Ray Reconstruction は評価時にハンドルごとに確認します。"},
+    {"Requested stages available", "要求された段階を利用可能"},
+    {"A later pass cannot run at an earlier stage", "後のパスは前の段階に戻れません"},
+    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "段階間パスにはネイティブ DX12 DLSS SR/DLAA が必要です"},
+    {"Cross-stage Present execution is not validated", "段階間の Present 実行は未検証です"},
+    {"Frame generation owns the NR input path", "フレーム生成が NR 入力経路を使用しています"},
+    {"Ray Reconstruction runs Render passes after upscaling", "Ray Reconstruction は拡大後に Render パスを実行します"},
+    {"Present is unavailable; using the existing Upscaled path", "Present を利用できないため、既存の Upscaled 経路を使用します"},
+    {"Invalid stage selection", "無効な段階選択"},
+    {"Requested stages are unavailable", "要求された段階を利用できません"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

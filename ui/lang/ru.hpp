@@ -1882,6 +1882,23 @@ inline constexpr Translation kRu[] = {
     {"Restore only this official profile. Other profiles are kept.", "Восстановить только этот официальный профиль. Остальные профили сохранятся."},
     {"Restore official defaults?", "Восстановить официальные настройки по умолчанию?"},
     {"Personal changes to this official profile will be cleared. Other profiles are kept.", "Личные изменения этого официального профиля будут удалены. Остальные профили сохранятся."},
+
+    {"Hook stage", "Стадия перехвата"},
+    {"Same as previous", "Как у предыдущего прохода"},
+    {"Stage selection is independent of model, Look and result inheritance. Passes must run in Render, Upscaled, Present order. Unsupported mixed-stage plans do not run.", "Стадия не зависит от наследования модели, Look и результата. Порядок проходов: Render, Upscaled, Present. Неподдерживаемые межстадийные планы не выполняются."},
+    {"Requested stage", "Запрошенная стадия"},
+    {"Effective stage", "Действующая стадия"},
+    {"Plan blocked", "План заблокирован"},
+    {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "Действующие стадии показывают доступный путь, а не факт выполнения GPU. Ray Reconstruction проверяется для каждого дескриптора при вычислении."},
+    {"Requested stages available", "Запрошенные стадии доступны"},
+    {"A later pass cannot run at an earlier stage", "Следующий проход не может вернуться к более ранней стадии"},
+    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "Межстадийные проходы требуют нативного DX12 DLSS SR/DLAA"},
+    {"Cross-stage Present execution is not validated", "Межстадийное выполнение Present не проверено"},
+    {"Frame generation owns the NR input path", "Генерация кадров управляет входом NR"},
+    {"Ray Reconstruction runs Render passes after upscaling", "Ray Reconstruction выполняет проходы Render после масштабирования"},
+    {"Present is unavailable; using the existing Upscaled path", "Present недоступен; используется существующий путь Upscaled"},
+    {"Invalid stage selection", "Недопустимый выбор стадии"},
+    {"Requested stages are unavailable", "Запрошенные стадии недоступны"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

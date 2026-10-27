@@ -129,6 +129,9 @@ struct Stats {
   bool valid = false;
 };
 inline Stats stats;
+inline Stats stage_stats[3];
+inline uint64_t stage_published[3] = {};
+inline uint64_t measured_total_us = 0;
 inline uint64_t dropped_segments = 0;
 inline uint64_t published_segments = 0;
 inline uint64_t unexecuted_segments = 0;
@@ -280,6 +283,11 @@ inline bool Publish(const Segment& s, bool log) {
   std::memcpy(next.path, s.path, sizeof(next.path));
   next.valid = true;
   stats = next;
+  const uint32_t stage = (std::strcmp(s.path, "preSR") == 0 ? 0u
+                            : (std::strcmp(s.path, "present") == 0 ? 2u : 1u));
+  stage_stats[stage] = next;
+  ++stage_published[stage];
+  measured_total_us += next.total_us;
 
   const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                              std::chrono::steady_clock::now().time_since_epoch())

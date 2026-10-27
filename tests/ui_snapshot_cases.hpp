@@ -41,7 +41,15 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
                                   {"diagnostics-normal", 2}, {"diagnostics-warning", 2}, {"diagnostics-error", 2}}) {
       scenarios.push_back({.id = id, .page = page, .action = id});
     }
+    scenarios.push_back({.id = "pass-render-a-upscaled-b", .page = 1,
+                         .action = "cross-stage", .language = 1});
+    scenarios.push_back({.id = "pass-render-a-upscaled-b-zh", .page = 1,
+                         .action = "cross-stage", .language = 14});
     if (snapshot_mode == "Full") {
+      scenarios.push_back({.id = "pass-cross-stage-collapsed-zh", .page = 1, .action = "cross-stage-collapsed"});
+      scenarios.push_back({.id = "pass-render2-upscaled2-zh", .page = 1, .action = "cross-stage-four"});
+      scenarios.push_back({.id = "pass-backward-stage-zh", .page = 1, .action = "cross-stage-backward"});
+      scenarios.push_back({.id = "pass-mixed-present-zh", .page = 1, .action = "cross-stage-present"});
       for (const char* id : {"preset-selected", "preset-rename", "preset-delete-confirmation",
                              "preset-custom-slots", "preset-import-scope", "preset-import-scope-confirmed",
                              "preset-export-actions"}) {
@@ -153,6 +161,51 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     runtime::ui_language_choice = scenario.language;
     runtime::ui_menu_page = scenario.page;
     runtime::ui_selected_pass = (scenario.action == "pass-first" ? 0 : 1);
+    runtime::hook_point = runtime::kHookPresent;
+    runtime::stack_passes = 4;
+    runtime::preset = 0;
+    for (uint32_t pass = 0; pass < 3; ++pass) {
+      runtime::pass_stage[pass] = 0;
+      runtime::pass_preset[pass] = 0;
+    }
+    const bool cross_stage = scenario.action.starts_with("cross-stage");
+    const bool collapsed = scenario.action == "collapsed" || scenario.action.ends_with("-collapsed")
+        || scenario.action.starts_with("preset-") || scenario.action.starts_with("auxiliary-");
+    if (cross_stage) {
+      runtime::hook_point = runtime::kHookRender;
+      runtime::stack_passes = 2;
+      runtime::preset = 1;
+      runtime::pass_stage[0] = 2;
+      runtime::pass_preset[0] = 2;
+      if (scenario.action == "cross-stage-four") {
+        runtime::stack_passes = 4;
+        runtime::pass_stage[0] = 0;
+        runtime::pass_stage[1] = 2;
+        runtime::pass_preset[1] = 1;
+        runtime::pass_preset[2] = 2;
+        runtime::ui_selected_pass = 2;
+      } else if (scenario.action == "cross-stage-backward") {
+        runtime::hook_point = runtime::kHookUpscaled;
+        runtime::pass_stage[0] = 1;
+      } else if (scenario.action == "cross-stage-present") {
+        runtime::hook_point = runtime::kHookUpscaled;
+        runtime::pass_stage[0] = 3;
+      }
+      const auto plan = runtime::RequestedStagePlan();
+      namespace stages = renodx::addons::dlss5::stage_plan;
+      if (scenario.action == "cross-stage-backward" || scenario.action == "cross-stage-present") {
+        check(!plan.valid && plan.reason == (scenario.action == "cross-stage-backward"
+                  ? stages::Reason::BACKWARD_STAGE : stages::Reason::MIXED_PRESENT),
+              "unsupported snapshot plan must preserve and explain the requested configuration");
+      } else {
+        check(plan.valid && plan.mixed && plan.group_count == 2,
+              "representative cross-stage snapshot requires a valid two-stage plan");
+        if (scenario.action == "cross-stage-four") {
+          check(plan.groups[0].count == 2 && plan.groups[1].count == 2,
+                "four-pass snapshot must show two Render and two Upscaled passes");
+        }
+      }
+    }
     profile::active = -1;
     panel_width = scenario.width;
     panel_height = (scenario.action == "viewport" ? 900.f : 1100.f);
@@ -167,13 +220,12 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     drain_workers();
     if (scenario.action != "doc-default") {
       // The manager inherits the page's fold scope; keep its custom tools folded until explicitly clicked.
-      const bool collapsed = scenario.action == "collapsed" || scenario.action.starts_with("preset-")
-          || scenario.action.starts_with("auxiliary-");
       click(find(collapsed ? "collapse_all" : "expand_all"));
     }
     settle();
     const bool long_page = scenario.action == "expanded" || scenario.action == "collapsed"
-        || scenario.action == "pass-independent" || scenario.action == "pass-first" || scenario.action == "doc-default";
+        || scenario.action == "pass-independent" || scenario.action == "pass-first" || scenario.action == "doc-default"
+        || cross_stage;
     ImGuiWindow* settings = nullptr;
     if (long_page) {
       bool fitted = false;
@@ -202,14 +254,14 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
         if ((item.status & ImGuiItemStatusFlags_Openable) == 0) continue;
         ++fold_count;
         if (scenario.action != "doc-default") {
-          check(((item.status & ImGuiItemStatusFlags_Opened) != 0) == (scenario.action != "collapsed"),
+          check(((item.status & ImGuiItemStatusFlags_Opened) != 0) == !collapsed,
                 "snapshot tree/header disagrees with real expand/collapse command");
         }
       }
       const int scope = scenario.page * 8 + (scenario.page == 0 ? static_cast<int>(runtime::hook_point.load())
                                            : scenario.page == 1 ? runtime::ui_selected_pass : 0);
       if (scenario.action != "doc-default") {
-        check(ui::fold_scopes[scope].target == (scenario.action != "collapsed"), "snapshot fold scope target mismatch");
+        check(ui::fold_scopes[scope].target == !collapsed, "snapshot fold scope target mismatch");
       }
       std::printf("snapshot %s height=%.0f fold_nodes=%u\n", scenario.id.c_str(), panel_height, fold_count);
     }
@@ -473,6 +525,16 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
                {"kind", (long_page ? "full-page" : "viewport")}, {"interaction", interaction},
                {"regions", regions}, {"checks", {{"synthetic", true}, {"capture_bounds", true}}}};
     if (long_page) entry["checks"]["zero_scroll"] = true;
+    if (cross_stage) {
+      const auto plan = runtime::RequestedStagePlan();
+      entry["plan"] = {{"requested", Json::array()}, {"models", Json::array()},
+                        {"valid", plan.valid}, {"reason", renodx::addons::dlss5::stage_plan::ReasonText(plan.reason)},
+                        {"execution_confirmed", false}};
+      for (uint32_t pass = 0; pass < plan.pass_count; ++pass) {
+        entry["plan"]["requested"].push_back(renodx::addons::dlss5::stage_plan::Name(plan.requested[pass]));
+        entry["plan"]["models"].push_back(pass == 0 ? runtime::preset.load() : runtime::pass_preset[pass - 1].load());
+      }
+    }
     if (!scenario.doc_role.empty()) entry["doc_role"] = scenario.doc_role;
     if (scenario.action == "preset-export") {
       entry["limitations"] = {"Metadata/export options viewport; use Full preset-export-actions for the scrolled final action."};

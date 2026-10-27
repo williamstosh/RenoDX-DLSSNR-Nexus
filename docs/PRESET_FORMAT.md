@@ -32,7 +32,9 @@ JSON 与插件内部文本使用 UTF-8，Windows 文件操作使用宽路径；�
 | `quality-multipass` | 上述画质，加 `MULTIPASS`：`NRPasses`（含基础层的总数）以及当前启用层的模型、强度、Transfer/Color、steering、独立结果和两组继承开关 |
 | `full` | 所有非 `EXCLUDED` 字段，包括未启用层保存的独立值、`COMPATIBILITY` 和 `GENERAL`；仅已接入读取／应用入口的字段能够实际恢复 |
 
-`NRHookPoint`（整数 `0..2`）、`NRFollowInputRes`（boolean）、`NRResolutionScale`（数值 `0.33..1`）、`NRLookUpsample`（整数 `0..3`）现在归 `QUALITY`。这是既有 schema 1 的字段分类扩展，不升 schema；旧文件缺少这些字段时保留当前值。画质范围不包含 HDR、运动／深度、FG 策略、界面偏好、快捷键或诊断；`NRUICorrection` 仅指模型的图像 UI correction。基础 `NRTransferStrength`／`NRColorStrength` 归 `QUALITY`，附加层 `Transfer`／`Color` 归 `MULTIPASS`。介入点、分辨率和上采样仍为全链设置，没有独立 pass 分辨率或 stage。
+`NRHookPoint`（整数 `0..2`）、`NRFollowInputRes`（boolean）、`NRResolutionScale`（数值 `0.33..1`）、`NRLookUpsample`（整数 `0..3`）现在归 `QUALITY`。这是既有 schema 1 的字段分类扩展，不升 schema；旧文件缺少这些字段时保留当前值。画质范围不包含 HDR、运动／深度、FG 策略、界面偏好、快捷键或诊断；`NRUICorrection` 仅指模型的图像 UI correction。基础 `NRTransferStrength`／`NRColorStrength` 归 `QUALITY`，附加层 `Transfer`／`Color` 归 `MULTIPASS`。分辨率和上采样仍为全链设置，没有独立 pass 分辨率。
+
+开发源码新增 `MULTIPASS` 字段 `NRPass2Stage`、`NRPass3Stage`、`NRPass4Stage`：整数 `0..3`，`0` 与上一层相同、`1` Render、`2` Upscaled、`3` Present；默认 `0`。`NRHookPoint` 保持旧映射，继续表示第 1 层。Stage 与模型、外观和结果继承独立；导入缺失字段不重置当前值，Full 包含未启用层，Quality + Multi-Pass 仅包含启用层。倒序或不可用组合保留请求并停用执行，由 Planner／诊断说明原因，不在持久化时改写请求。NR 模型选择及旧 Runtime 回退格式不变。
 
 | 画质字段 | loader 数值范围／类型 |
 | --- | --- |
@@ -126,7 +128,7 @@ JSON 与插件内部文本使用 UTF-8，Windows 文件操作使用宽路径；�
 
 ## 当前游戏的六 Slot（开发源码）
 
-Slot 不是共享预设 schema 的扩展。独立文件为 `%LOCALAPPDATA%\NR Nexus\Profiles\<32hex-id>\slots.json`，实现见 [profile_store.hpp](../profile_store.hpp)、[profile_templates.hpp](../profile_templates.hpp) 和 [profile_runtime.hpp](../profile_runtime.hpp)。0.1.0 包不包含此功能；当前 0.2.0-dev.3 源码已通过 Release／Debug 构建及受影响自动化检查，实机交互与画质仍待验收。
+Slot 不是共享预设 schema 的扩展。独立文件为 `%LOCALAPPDATA%\NR Nexus\Profiles\<32hex-id>\slots.json`，实现见 [profile_store.hpp](../profile_store.hpp)、[profile_templates.hpp](../profile_templates.hpp) 和 [profile_runtime.hpp](../profile_runtime.hpp)。0.1.0 包不包含此功能；当前 0.2.0-dev.4 源码已通过 Release／Debug 构建及受影响自动化检查，实机交互与画质仍待验收。
 
 manifest 严格包含 `format="nr-nexus-profiles"`、`schema_version=1`、无符号 64 位 `revision`、`owner`、`selected`、`last_applied` 和 `slots`。`slots` 恰好六个固定 ID：`official_lite`、`official_balanced`、`official_max`、`custom_slot_1`、`custom_slot_2`、`custom_slot_3`；显示名称不是 ID。每项包含 `name`（最多 128 UTF-8 字节）、`populated`、`template_version`（正 uint32）、`overrides`、`snapshot`。官方初始 populated，自定义初始为空；未选择时 `selected` 为空字符串。
 

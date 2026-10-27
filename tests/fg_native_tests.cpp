@@ -672,7 +672,10 @@ int RunNativeRequiredMenuTest() {
   }
 }
 
+#include "stage_execution_cases.hpp"
+
 int main(int argc, char** argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--stage-chain") == 0) return stage_execution_cases::Run();
   if (argc == 2 && std::strcmp(argv[1], "--native-required-menu") == 0) return RunNativeRequiredMenuTest();
   if (argc == 2 && std::strcmp(argv[1], "--native-owner-idle") == 0) return RunNativeOwnerIdleTest();
   if (argc == 2 && std::strcmp(argv[1], "--native-options-resume") == 0) return RunNativeOptionsResumeTest();

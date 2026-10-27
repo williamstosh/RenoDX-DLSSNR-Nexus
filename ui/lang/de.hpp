@@ -1882,6 +1882,23 @@ inline constexpr Translation kDe[] = {
     {"Restore only this official profile. Other profiles are kept.", "Nur dieses offizielle Profil wiederherstellen. Andere Profile bleiben erhalten."},
     {"Restore official defaults?", "Offizielle Standardwerte wiederherstellen?"},
     {"Personal changes to this official profile will be cleared. Other profiles are kept.", "Persönliche Änderungen an diesem offiziellen Profil werden gelöscht. Andere Profile bleiben erhalten."},
+
+    {"Hook stage", "Hook-Phase"},
+    {"Same as previous", "Wie vorheriger Pass"},
+    {"Stage selection is independent of model, Look and result inheritance. Passes must run in Render, Upscaled, Present order. Unsupported mixed-stage plans do not run.", "Die Phase ist unabhängig von Modell-, Look- und Ergebnisvererbung. Passes müssen der Reihenfolge Render, Upscaled, Present folgen. Nicht unterstützte phasenübergreifende Pläne werden nicht ausgeführt."},
+    {"Requested stage", "Angeforderte Phase"},
+    {"Effective stage", "Wirksame Phase"},
+    {"Plan blocked", "Plan blockiert"},
+    {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "Wirksame Phasen zeigen den verfügbaren Pfad, bestätigen aber keine GPU-Ausführung. Ray Reconstruction wird pro Handle bei der Auswertung geprüft."},
+    {"Requested stages available", "Angeforderte Phasen verfügbar"},
+    {"A later pass cannot run at an earlier stage", "Ein späterer Pass kann nicht in einer früheren Phase laufen"},
+    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "Phasenübergreifende Passes erfordern natives DX12 DLSS SR/DLAA"},
+    {"Cross-stage Present execution is not validated", "Phasenübergreifendes Present ist nicht validiert"},
+    {"Frame generation owns the NR input path", "Frame Generation belegt den NR-Eingabepfad"},
+    {"Ray Reconstruction runs Render passes after upscaling", "Ray Reconstruction führt Render-Passes nach dem Upscaling aus"},
+    {"Present is unavailable; using the existing Upscaled path", "Present nicht verfügbar; vorhandener Upscaled-Pfad wird verwendet"},
+    {"Invalid stage selection", "Ungültige Phasenauswahl"},
+    {"Requested stages are unavailable", "Angeforderte Phasen sind nicht verfügbar"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

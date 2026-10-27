@@ -170,6 +170,14 @@ inline constexpr const char* kPresentDisplay = "HDR & compatibility";
 inline constexpr const char* kGeneral = "Language & notifications";
 
 inline constexpr const char* kChainNote = "Configured chain; execution is reported in Diagnostics.";
+inline constexpr const char* kPassStage = "Hook stage";
+inline constexpr const char* kPreviousStage = "Same as previous";
+inline constexpr const char* kPassStageTip = "Stage selection is independent of model, Look and result inheritance. Passes must run in Render, Upscaled, Present order. Unsupported mixed-stage plans do not run.";
+inline constexpr const char* kRequestedStage = "Requested stage";
+inline constexpr const char* kEffectiveStage = "Effective stage";
+inline constexpr const char* kStageBlocked = "Plan blocked";
+inline constexpr const char* kStagesUnavailable = "Requested stages are unavailable";
+inline constexpr const char* kStagePlanNote = "Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.";
 inline constexpr const char* kModelNote =
     "This build does not read the runtime's actual network. Resolved models describe configuration only.";
 inline constexpr const char* kResourceNote = "Observed this session; the selected resource policy is not proof of availability.";

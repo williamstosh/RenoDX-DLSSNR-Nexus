@@ -919,10 +919,30 @@ int main() {
         + "\n" + ui::text::kInheritModel
         + "\n" + (runtime::pass_follow[2].load() ? ui::text::kStyleFollows : ui::text::kStyleIndependent)
         + "\n" + (runtime::pass_look_result[2].follow.load() ? ui::text::kResultFollows : ui::text::kResultIndependent)
-        + "\n" + ui::text::kRuntimeUnconfirmed + "\n" + ui::text::kChainMarkTip;
+        + "\n" + ui::text::kRuntimeUnconfirmed + "\n" + ui::text::kChainMarkTip
+        + "\n" + ui::text::kRequestedStage + ": "
+        + renodx::addons::dlss5::stage_plan::Name(runtime::RequestedStagePlan().requested[3])
+        + "\n" + ui::text::kEffectiveStage + ": "
+        + (runtime::RequestedStagePlan().valid
+               ? renodx::addons::dlss5::stage_plan::Name(runtime::RequestedStagePlan().effective[3]) : ui::text::kStageBlocked);
     hover(chain_nodes().at(3), chain_tip.c_str(), nullptr);
     click(chain_nodes().at(1));
     check(runtime::ui_selected_pass == 1, "pass navigation failed");
+    check(has_text(ui::text::kPassStage) && has_text(ui::text::kStagePlanNote),
+          "pass editor separates stage selection from model and execution evidence");
+    const auto saved_hook = runtime::hook_point.load();
+    runtime::hook_point = runtime::kHookPresent;
+    runtime::kSetPassStage[0].Commit(1.f);
+    frame();
+    frame();
+    const std::string rejected_stage = std::string(ui::text::kStageBlocked) + ": "
+        + renodx::addons::dlss5::stage_plan::ReasonText(runtime::RequestedStagePlan().reason);
+    check(has_text(rejected_stage.c_str()),
+          "invalid backward stage must display plan rejection and reason");
+    check(runtime::kSetPassStage[0].Get() == 1.f, "rejected stage request must remain editable and saved");
+    runtime::kSetPassStage[0].Commit(0.f);
+    runtime::hook_point = saved_hook;
+    frame();
     click(switch_for_label(ui::text::kInheritResult));
     check(!runtime::pass_look_result[0].follow.load(), "result inheritance switch failed");
     click(switch_for_label("Adjust NR's look"));

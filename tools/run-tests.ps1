@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('all','report','branding','ui','presets','unicode-input','native','sdr-policy','hdr-policy','scope','config','constants','fg-xefg','fg-native','lifecycle','bridge-motion')]
+    [ValidateSet('all','report','branding','ui','presets','unicode-input','native','sdr-policy','hdr-policy','scope','config','constants','fg-xefg','fg-native','lifecycle','bridge-motion','stage-plan')]
     [string[]]$Suite = @('all'),
     [string]$SourceRoot = (Split-Path $PSScriptRoot -Parent),
     [string]$HostRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) '.local/renodx'),
@@ -11,7 +11,7 @@ param(
     [string]$DetoursLibrary,
     [string]$PythonExecutable,
     [ValidateSet('Auto','Quick','Full','None')][string]$UiPreview = 'Auto',
-    [ValidateSet('native-required-menu','native-owner-idle','native-options-resume','native-options-delayed','native-guide-contract','present-guide-models','native-present-decision','trace-metadata')]
+    [ValidateSet('native-required-menu','native-owner-idle','native-options-resume','native-options-delayed','native-guide-contract','present-guide-models','native-present-decision','trace-metadata','stage-chain')]
     [string[]]$NativeCase = @(),
     [switch]$BuildOnly,
     [ValidateSet('Standard','Full','Acceptance')][string]$RetentionMode = $(if ($env:NR_NEXUS_TEST_RETENTION) { $env:NR_NEXUS_TEST_RETENTION } else { 'Standard' }),
@@ -43,6 +43,7 @@ $sources = [ordered]@{
     config='present_restore_configuration_tests'; constants='present_hdr_runtime_constants_tests'
     'fg-xefg'='fg_xefg_tests'; 'fg-native'='fg_native_tests'
     lifecycle='fg_lifecycle_tests'; 'bridge-motion'='d3d11_bridge_motion_tests'
+    'stage-plan'='stage_plan_tests'
 }
 if ($Suite -contains 'all') { $Suite = @($sources.Keys) }
 if ($BuildOnly -and @($Suite | Where-Object { $_ -in @('config','constants','lifecycle','ui') }).Count) {
@@ -94,7 +95,7 @@ foreach ($item in $Suite) {
     $exe = Join-Path $directory "$name.exe"
     $arguments = $common + @($includes | ForEach-Object { "/I$_" })
     $link = $libraries
-    if ($item -in @('branding','sdr-policy','hdr-policy','scope')) { $link = @() }
+    if ($item -in @('branding','sdr-policy','hdr-policy','scope','stage-plan')) { $link = @() }
     if ($item -in @('fg-native','bridge-motion')) {
         if (-not (Test-Path -LiteralPath "$ShaderIncludeDirectory/embed/shaders.h")) { throw 'Build new shaders first.' }
         $arguments += @('/bigobj','/Gy','/Gw','/DNDEBUG','/DRESHADE_ADDON=1',

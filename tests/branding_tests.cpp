@@ -9,6 +9,7 @@
 
 #include "brand.h"
 #include "preset_fields.hpp"
+#include "stage_plan.hpp"
 #include "ui/strings.hpp"
 #include "version.h"
 
@@ -25,6 +26,17 @@ int main() {
   std::snprintf(footer, sizeof(footer), text::kFooter, "v" NR_NEXUS_VERSION, "test-runtime", "test.exe");
   if (std::string_view(footer) != NR_NEXUS_NAME " v" NR_NEXUS_VERSION " | DLSSNR test-runtime | test.exe") return 1;
   const char* report_strings[] = {
+      text::kPassStage, text::kPreviousStage, text::kPassStageTip,
+      text::kRequestedStage, text::kEffectiveStage, text::kStageBlocked, text::kStagePlanNote,
+      text::kStagesUnavailable,
+      renodx::addons::dlss5::stage_plan::ReasonText(renodx::addons::dlss5::stage_plan::Reason::NONE),
+      renodx::addons::dlss5::stage_plan::ReasonText(renodx::addons::dlss5::stage_plan::Reason::BACKWARD_STAGE),
+      renodx::addons::dlss5::stage_plan::ReasonText(renodx::addons::dlss5::stage_plan::Reason::UNSUPPORTED_BACKEND),
+      renodx::addons::dlss5::stage_plan::ReasonText(renodx::addons::dlss5::stage_plan::Reason::MIXED_PRESENT),
+      renodx::addons::dlss5::stage_plan::ReasonText(renodx::addons::dlss5::stage_plan::Reason::FG_OWNS_INPUT),
+      renodx::addons::dlss5::stage_plan::ReasonText(renodx::addons::dlss5::stage_plan::Reason::RR_AFTER),
+      renodx::addons::dlss5::stage_plan::ReasonText(renodx::addons::dlss5::stage_plan::Reason::PRESENT_AFTER),
+      renodx::addons::dlss5::stage_plan::ReasonText(renodx::addons::dlss5::stage_plan::Reason::INVALID_STAGE),
       text::kInterfaceTheme, text::kRestoreTheme, text::kThemeTip, text::kEditing,
       text::kStyleFollows, text::kStyleIndependent, text::kResultFollows,
       text::kResultIndependent, text::kRuntimeUnconfirmed,

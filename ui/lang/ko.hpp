@@ -1882,6 +1882,23 @@ inline constexpr Translation kKo[] = {
     {"Restore only this official profile. Other profiles are kept.", "이 공식 프로필만 복원합니다. 다른 프로필은 유지됩니다."},
     {"Restore official defaults?", "공식 기본값을 복원하시겠습니까?"},
     {"Personal changes to this official profile will be cleared. Other profiles are kept.", "이 공식 프로필의 개인 변경 사항이 삭제됩니다. 다른 프로필은 유지됩니다."},
+
+    {"Hook stage", "후킹 단계"},
+    {"Same as previous", "이전 패스와 동일"},
+    {"Stage selection is independent of model, Look and result inheritance. Passes must run in Render, Upscaled, Present order. Unsupported mixed-stage plans do not run.", "단계 선택은 모델, Look 및 결과 상속과 독립적입니다. 패스는 Render, Upscaled, Present 순서로 실행해야 합니다. 지원되지 않는 다중 단계 계획은 실행하지 않습니다."},
+    {"Requested stage", "요청 단계"},
+    {"Effective stage", "유효 단계"},
+    {"Plan blocked", "계획 차단됨"},
+    {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "유효 단계는 사용 가능한 경로를 표시하며 GPU 실행을 증명하지 않습니다. Ray Reconstruction은 평가 시 핸들별로 확인합니다."},
+    {"Requested stages available", "요청 단계 사용 가능"},
+    {"A later pass cannot run at an earlier stage", "후속 패스는 이전 단계로 돌아갈 수 없습니다"},
+    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "단계 간 패스에는 네이티브 DX12 DLSS SR/DLAA가 필요합니다"},
+    {"Cross-stage Present execution is not validated", "단계 간 Present 실행은 검증되지 않았습니다"},
+    {"Frame generation owns the NR input path", "프레임 생성이 NR 입력 경로를 사용 중입니다"},
+    {"Ray Reconstruction runs Render passes after upscaling", "Ray Reconstruction은 업스케일링 후 Render 패스를 실행합니다"},
+    {"Present is unavailable; using the existing Upscaled path", "Present를 사용할 수 없어 기존 Upscaled 경로를 사용합니다"},
+    {"Invalid stage selection", "잘못된 단계 선택"},
+    {"Requested stages are unavailable", "요청한 단계를 사용할 수 없습니다"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

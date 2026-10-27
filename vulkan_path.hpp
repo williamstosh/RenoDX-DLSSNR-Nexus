@@ -3075,6 +3075,15 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluate(
         " hook point (vk[present_fallback=] counts these evaluates)");
   }
   GuardHook([&] {
+    auto plan = RequestedStagePlan();
+    if (plan.mixed || !plan.valid) {
+      plan.valid = false;
+      if (plan.mixed) {
+        plan.reason = stage_plan::Reason::UNSUPPORTED_BACKEND;
+      }
+      StagePlanAdmitted(plan);
+      return;
+    }
     const NrDeclineReason decline = ProcessNr(command_buffer, handle, parameters);
     if (decline != NrDeclineReason::kCount) CountNrDecline(decline);
   });
