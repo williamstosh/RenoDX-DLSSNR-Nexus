@@ -22,9 +22,9 @@ and four menu themes.
 
 | Version scope | What is available |
 | --- | --- |
-| **0.2.0-dev.4 pre-release** | Adds optional native Unicode assisted input, streamlined presets/profiles and independent per-pass stages. DX12 Render → game DLSS SR → Upscaled has bounded Witcher 3 HDR tests with AA/AB/BA/BB; broader image/long-session acceptance remains open. Cross-stage Present and DX11/Vulkan are disabled. See the [Multi-Pass guide](docs/USER_GUIDE.md#en-multipass) and [profile guide](docs/USER_GUIDE.md#en-presets). |
+| **0.2.0-dev.5 pre-release** | Adds optional native Unicode assisted input, streamlined presets/profiles and independent per-pass stages, and corrects the packaged documentation images. DX12 Render → game DLSS SR → Upscaled has bounded Witcher 3 HDR tests with AA/AB/BA/BB; broader image/long-session acceptance remains open. Cross-stage Present and DX11/Vulkan are disabled. See the [Multi-Pass guide](docs/USER_GUIDE.md#en-multipass) and [profile guide](docs/USER_GUIDE.md#en-presets). |
 | **0.1.0** | This README describes the version's four-page menu, dual models, independent per-pass look/result settings and four themes. See the [release notes](docs/releases/v0.1.0.md) for validation and remaining limits. |
-| [Previous pre-release: v0.2.0-dev.2](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.0-dev.2) | Adds six NR Profile Slots, local presets and expanded preset management on top of 0.1.0. It predates the assisted-input editor described here. |
+| [Previous pre-release: v0.2.0-dev.4](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.0-dev.4) | Same stage and input source; its package omitted two documentation images. Use v0.2.0-dev.5 for the complete package. |
 
 ### What makes Nexus different
 
@@ -77,7 +77,7 @@ in the same offscreen candidate UI example.*
 
 ![Save a local NR profile](docs/images/ui/presets.webp)
 
-*The compact save task in the 0.2.0-dev.4 development source; more options and
+*The compact save task in the 0.2.0-dev.5 development source; more options and
 file export expand when needed. Synthetic offscreen example, with no file saved.*
 
 ![Cyber Neon, Nexus Dark, Fluent Light and Midnight OLED](docs/images/ui/themes.webp)
@@ -251,9 +251,9 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 
 | 版本范围 | 可用范围 |
 | --- | --- |
-| **0.2.0-dev.4 预发布** | 新增可选原生 Unicode 辅助输入、精简预设／方案及逐层独立阶段。DX12 Render → 游戏 DLSS SR → Upscaled 已有巫师3 HDR 下 AA／AB／BA／BB 短时实测，广泛画质／长时验收仍未完成。跨阶段 Present、DX11/Vulkan 停用。见[叠层指南](docs/USER_GUIDE.md#zh-multipass)和[方案指南](docs/USER_GUIDE.md#zh-presets)。 |
+| **0.2.0-dev.5 预发布** | 新增可选原生 Unicode 辅助输入、精简预设／方案及逐层独立阶段，并修正发布包的文档配图清单。DX12 Render → 游戏 DLSS SR → Upscaled 已有巫师3 HDR 下 AA／AB／BA／BB 短时实测，广泛画质／长时验收仍未完成。跨阶段 Present、DX11/Vulkan 停用。见[叠层指南](docs/USER_GUIDE.md#zh-multipass)和[方案指南](docs/USER_GUIDE.md#zh-presets)。 |
 | **0.1.0** | 本页描述此版本的四页菜单、双模型、逐层独立外观／结果设置与四套主题；验证及剩余限制见[版本说明](docs/releases/v0.1.0.md)。 |
-| [上一预发布版：v0.2.0-dev.2](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.0-dev.2) | 在 0.1.0 基础上新增六个 NR Profile Slot、本地预设与增强管理；早于本页所述辅助输入编辑窗。 |
+| [上一预发布版：v0.2.0-dev.4](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.0-dev.4) | 插件阶段与输入源码相同；该包缺少两张文档配图，完整包请使用 v0.2.0-dev.5。 |
 
 ### 核心特色
 
@@ -297,7 +297,7 @@ Slot 自动保存与共享库文件、ReShade 正常设置分别处理，强退�
 
 ![保存本地 NR 方案](docs/images/ui/presets-zh.webp)
 
-*0.2.0-dev.4 开发预发布源码中的简洁保存任务，更多选项及文件导出按需展开；
+*0.2.0-dev.5 开发预发布源码中的简洁保存任务，更多选项及文件导出按需展开；
 本图为合成状态的离屏示例，未执行保存。*
 
 ![Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED](docs/images/ui/themes-zh.webp)
