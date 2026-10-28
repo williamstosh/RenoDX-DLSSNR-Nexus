@@ -2,9 +2,9 @@
 
 [English](#english) · [简体中文](#简体中文) · [README](../README.md)
 
-> **Version scope — 0.2.0-dev.5 pre-release / 0.1.0 release:** this guide describes the complete 0.1.0 package: four-page menu, dual models, independent per-pass model styling and result settings, and four interface themes. Check the Releases page for available versioned ZIP packages. Per-pass stages, NR Profiles, presets and assisted input describe the current development source and are not included in the published 0.1.0 package. Earlier pre-release packages do not contain every feature shown here.
+> **Version scope — 0.2.0-dev.6 source / 0.1.0 release:** this guide describes the complete 0.1.0 package: four-page menu, dual models, independent per-pass model styling and result settings, and four interface themes. Check the Releases page for available versioned ZIP packages. Per-pass stages, NR Profiles, presets and assisted input describe the current development source and are not included in the published 0.1.0 package. Earlier pre-release packages do not contain every feature shown here.
 >
-> **版本范围——0.2.0-dev.5 预发布／0.1.0 正式版：** 本指南对应完整 0.1.0 包，包含四页菜单、双模型、逐层独立模型风格与结果设置及四套主题。请在 Releases 页面查看可下载的版本化 ZIP；逐层阶段、NR 快速方案、方案库与辅助输入对应当前开发源码，未包含于已发布 0.1.0 包；早期预发布包也不含本指南展示的全部功能。
+> **版本范围——0.2.0-dev.6 源码／0.1.0 正式版：** 本指南对应完整 0.1.0 包，包含四页菜单、双模型、逐层独立模型风格与结果设置及四套主题。请在 Releases 页面查看可下载的版本化 ZIP；逐层阶段、NR 快速方案、方案库与辅助输入对应当前开发源码，未包含于已发布 0.1.0 包；早期预发布包也不含本指南展示的全部功能。
 
 ## English
 
@@ -32,7 +32,7 @@ Defaults below are for a fresh configuration. Existing saved choices and migrati
 
 **Image note (applies to every image below, including the Chinese section):** these are state examples composed offscreen with the current production ImGui interface. They illustrate controls and layout, and do not represent in-game image quality, FPS, or measured runtime performance. Screenshots and captions match the language of each section.
 
-The refreshed Quality, theme and save-task images show the **0.2.0-dev.5 development pre-release**; other control crops are retained where still accurate. Profile and assisted-input controls visible in any image are development features, outside the published 0.1.0 package.
+The refreshed Quality, theme and save-task images show the **0.2.0-dev.6 development source**; other control crops are retained where still accurate. Profile and assisted-input controls visible in any image are development features, outside the published 0.1.0 package.
 
 <a id="en-quality"></a>
 ### Quality: model, location and resolution
@@ -170,9 +170,9 @@ Turning Adjust NR's look off does **not** turn off Detail stability or shared up
 
 Each pass processes the preceding result. These are not parallel alternatives and the node selector only selects which pass you edit. The chain diagram shows configuration. The selected node says Editing; other nodes say Configured. An asterisk indicates settings changed from defaults, not per-pass timing or runtime network confirmation.
 
-**Development source: per-pass stages.** Pass 1 keeps the Quality page's Hook Point. Passes 2–4 add **Stage: Same as previous / Render / Upscaled / Present**, independently of model, styling and result inheritance. The default keeps the old single-stage chain. Stages must move in order `Render → Upscaled → Present`; a backward request disables the chain and preserves your choices. Native DX12 DLSS SR/DLAA can split Render and Upscaled groups, for example `Pass 1 · Render · A → game DLSS SR → Pass 2 · Upscaled · B`. A/B combinations remain independent of stage. Render consumes the render image and supplies its result as the game's SR input; Upscaled consumes the game's SR output.
+**Development source: per-pass stages.** Pass 1 keeps the Quality page's Hook Point. Passes 2–4 add **Stage: Same as previous / Render / Upscaled / Present**, independently of model, styling and result inheritance. The default keeps the old single-stage chain. Stages must move in order `Render → Upscaled → Present`; a backward request disables the chain and preserves your choices. Native DX12 and native DX11 Bridge DLSS SR/DLAA can split Render and Upscaled groups, for example `Pass 1 · Render · A → game DLSS SR → Pass 2 · Upscaled · B`. A/B combinations remain independent of stage. Render consumes the render image and supplies its result as the game's SR input; Upscaled consumes the game's SR output. The DX11 path requires an immediate context, shared-fence support and a private DX12 device on the same adapter. Each mixed-stage delivery waits for proven GPU completion with a bounded event wait, adding synchronization cost; failed Render delivery or failed game SR skips the following group and resets NR history.
 
-Cross-stage Present, DX11/Vulkan and paths where FG owns NR input are currently disabled with an explanation. The existing single-stage Present/FG behavior remains available. RR keeps its safe behavior: requested Render passes run on the finished RR output at Upscaled. Requested/effective stages and resolved model creation requests do not prove internal network selection or successful execution. Diagnostics shows observed group/evaluate/reset/rebuild/skip counts, last sizes and measured GPU samples. Bounded Witcher 3 DX12 HDR tests covered AA/AB/BA/BB with RR/FG off; broader image, motion and long-session acceptance remains open. Existing screenshots show the earlier menu.
+Cross-stage Present, Vulkan and paths where FG owns NR input are currently disabled with an explanation. The existing single-stage Present/FG behavior remains available. RR keeps its safe behavior: requested Render passes run on the finished RR output at Upscaled. Requested/effective stages and resolved model creation requests do not prove internal network selection or successful execution. Diagnostics shows observed group/evaluate/reset/rebuild/skip counts, last sizes and measured GPU samples; DX11 Bridge also reports completion-wait time and delivery failures. Bounded Witcher 3 DX12 HDR tests covered AA/AB/BA/BB with RR/FG off; DX11 game and image-quality acceptance is separate. Final Present (default F5) capture remains incompatible with mixed chains and reports a decline; it is not fixed by DX11 support. Existing screenshots show the earlier menu.
 
 Pass 1 shares the base Quality controls, including its result settings. Editing either page changes the same settings. Passes 2–4 have independent model strength (**1**, **0–2**), HDR transfer (**1**, **0–1**) and Color (**1**, **0–1**) even while styling follows Pass 1. HDR transfer has the same source-dependent restrictions described under Advanced.
 
@@ -205,7 +205,7 @@ Model styling changes synthesis and resets temporal history; result edits reshap
 <a id="en-presets"></a>
 ### NR Profiles and profile library (development)
 
-This section describes the current **0.2.0-dev.5 development source**, including the task-based profile library. The published **0.1.0 package contains neither six Slots nor preset management**. These instructions describe the interface and do not establish in-game image-quality or performance validation for the official combinations below.
+This section describes the current **0.2.0-dev.6 development source**, including the task-based profile library. The published **0.1.0 package contains neither six Slots nor preset management**. These instructions describe the interface and do not establish in-game image-quality or performance validation for the official combinations below.
 
 #### Six Slots for this game
 
@@ -249,7 +249,7 @@ Quality includes the base model/appearance/results plus four common controls: Pa
 
 **Undo last import** is available on the Profile library home when there is an import to undo, or beside Manage profiles on Advanced. It restores only fields still equal to imported values, preserving later edits. It is separate from Undo profile action. Library files require explicit saving; profile autosave is separate. Configuration writes are checked before runtime publication, and failed application attempts to restore prior saved values. This does not guarantee a disk/GPU transaction or recovery from a process crash.
 
-Edit the preset name, author, source game, description, search and file paths directly in the overlay's standard ImGui input fields. The description field supports multiple lines. Editing a field does not save a preset: use the normal save/export action afterwards. If direct IME input is garbled, click the keyboard-icon button beside the field title (hover for **Assisted input: Open the compatibility text editor for Chinese and other text.**), or right-click an editable preset field, custom Slot name or report text field and choose **Assisted input...**. Both open the same separate Windows Unicode editor, with its own input-method candidate window. The keyboard graphic in the section hint is static and not clickable; use the button or context menu. Select **Apply** to return the text to that field, then use the normal save/rename/export action. **Cancel** leaves the field unchanged; a result is discarded if its original text changed while editing. Candidate-selection keys follow your IME's behavior. Enter in a single-line field does not apply the text; use the Apply button. Escape first cancels an active composition and otherwise cancels the editor. This optional input path does not modify ReShade's handling of the original inline fields. Native-window focus and fullscreen behavior depend on the game and require validation in the target environment. This editor is present in the 0.2.0-dev.5 development pre-release; the earlier 0.2.0-dev.2 pre-release does not include it.
+Edit the preset name, author, source game, description, search and file paths directly in the overlay's standard ImGui input fields. The description field supports multiple lines. Editing a field does not save a preset: use the normal save/export action afterwards. If direct IME input is garbled, click the keyboard-icon button beside the field title (hover for **Assisted input: Open the compatibility text editor for Chinese and other text.**), or right-click an editable preset field, custom Slot name or report text field and choose **Assisted input...**. Both open the same separate Windows Unicode editor, with its own input-method candidate window. The keyboard graphic in the section hint is static and not clickable; use the button or context menu. Select **Apply** to return the text to that field, then use the normal save/rename/export action. **Cancel** leaves the field unchanged; a result is discarded if its original text changed while editing. Candidate-selection keys follow your IME's behavior. Enter in a single-line field does not apply the text; use the Apply button. Escape first cancels an active composition and otherwise cancels the editor. This optional input path does not modify ReShade's handling of the original inline fields. Native-window focus and fullscreen behavior depend on the game and require validation in the target environment. This editor is present in the 0.2.0-dev.6 development source; the earlier 0.2.0-dev.2 pre-release does not include it.
 
 Names and descriptions use UTF-8; the name, author and source-game limits are 128 bytes each, and the description limit is 2048 bytes, so Chinese text reaches the limit sooner than ASCII. Input fields are limited by their UTF-8 buffer capacities. If correctly stored text displays as boxes or replacement glyphs in the overlay, check ReShade's language and font override. Correct UTF-8 data does not need re-encoding or a Windows system code-page change. JSON can preserve supplementary characters such as emoji; entering and displaying them in the overlay still depends on the host's input handling and ImGui/font combination.
 
@@ -446,7 +446,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 
 **配图说明：** 所有配图均为当前生产 ImGui 界面离屏合成的状态示例，用来说明布局与控件，不代表实机画质、FPS 或运行时性能测量。中文章节使用简体中文界面截图与中文图注。顶部版本范围同样适用于本节。
 
-已更新的画质、主题和保存任务配图使用**0.2.0-dev.5 开发预发布源码**，其余仍准确的控件区域图继续保留。任何图片中出现的方案及辅助输入控件均属于开发功能，不包含于已发布的 0.1.0 包。
+已更新的画质、主题和保存任务配图使用**0.2.0-dev.6 开发源码**，其余仍准确的控件区域图继续保留。任何图片中出现的方案及辅助输入控件均属于开发功能，不包含于已发布的 0.1.0 包。
 
 <a id="zh-quality"></a>
 ### 画质：模型、介入点与尺寸
@@ -584,9 +584,9 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 
 后一层处理前一层结果，不是并行方案。点节点只选择编辑对象，处理链表示配置；当前节点显示编辑中，其他为已配置。星号表示偏离默认，不表示逐层耗时或运行时网络确认。
 
-**开发源码：逐层阶段。** 第 1 层沿用画质页的介入点；第 2–4 层新增**阶段：与上一层相同／Render／Upscaled／Present**，与模型、外观及结果继承分别独立。默认保持旧版单阶段链。阶段必须按 `Render → Upscaled → Present` 前进；倒退请求会停用整链并保留选择。原生 DX12 DLSS SR/DLAA 可以拆分 Render 和 Upscaled 分组，例如 `第 1 层 · Render · A → 游戏 DLSS SR → 第 2 层 · Upscaled · B`。A/B 组合不受阶段限制。Render 的结果作为游戏 SR 的真实输入，Upscaled 读取游戏 SR 输出。
+**开发源码：逐层阶段。** 第 1 层沿用画质页的介入点；第 2–4 层新增**阶段：与上一层相同／Render／Upscaled／Present**，与模型、外观及结果继承分别独立。默认保持旧版单阶段链。阶段必须按 `Render → Upscaled → Present` 前进；倒退请求会停用整链并保留选择。原生 DX12 和原生 DX11 Bridge DLSS SR/DLAA 可以拆分 Render 和 Upscaled 分组，例如 `第 1 层 · Render · A → 游戏 DLSS SR → 第 2 层 · Upscaled · B`。A/B 组合不受阶段限制。Render 的结果作为游戏 SR 的真实输入，Upscaled 读取游戏 SR 输出。DX11 需要 immediate context、共享 Fence 支持及同适配器私有 DX12 设备；混合链每阶段通过有界事件等待确认 GPU 完成，会增加同步成本。Render 交付或游戏 SR 失败时跳过后组并重置 NR 历史。
 
-跨阶段 Present、DX11/Vulkan，以及 FG 接管 NR 输入的路径目前停用并说明原因；原有单阶段 Present/FG 行为继续保留。RR 保持安全回退：请求 Render 的层在 RR 完成后于 Upscaled 执行。请求／有效阶段及解析后的模型创建请求不证明内部网络或实际执行成功；诊断显示已观测分组、Evaluate、重置、重建、跳过次数、最后尺寸及有结果的 GPU 计时。已在关闭 RR／FG 的巫师3 DX12 HDR 场景短时实测 AA／AB／BA／BB，广泛画质、运动和长时验收仍未完成；既有配图展示此前菜单。
+跨阶段 Present、Vulkan，以及 FG 接管 NR 输入的路径目前停用并说明原因；原有单阶段 Present/FG 行为继续保留。RR 保持安全回退：请求 Render 的层在 RR 完成后于 Upscaled 执行。请求／有效阶段及解析后的模型创建请求不证明内部网络或实际执行成功；诊断显示已观测分组、Evaluate、重置、重建、跳过次数、最后尺寸及有结果的 GPU 计时，DX11 Bridge 另记录完成等待耗时与交付失败。已在关闭 RR／FG 的巫师3 DX12 HDR 场景短时实测 AA／AB／BA／BB；DX11 游戏与画质单独验收。Final Present（默认 F5）截图仍与混合链不兼容并给出跳过诊断，本次 DX11 支持没有修复该问题。既有配图展示此前菜单。
 
 第 1 层与画质页的基础控件、结果设置是同一份值。第 2–4 层即使继承外观，也分别拥有模型强度（**1，0–2**）、HDR 传递（**1，0–1**）及 Color／颜色强度（**1，0–1**）；HDR 传递仍受高级页中的来源条件限制。
 
@@ -619,7 +619,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 <a id="zh-presets"></a>
 ### NR 快速方案与方案库（开发中）
 
-本节对应当前 **0.2.0-dev.5 开发预发布源码**，包括按任务展开的方案库。已发布的 **0.1.0 包不包含六个方案或方案库管理**。以下说明界面操作，不代表下列官方组合已通过实机画质或性能验收。
+本节对应当前 **0.2.0-dev.6 开发源码**，包括按任务展开的方案库。已发布的 **0.1.0 包不包含六个方案或方案库管理**。以下说明界面操作，不代表下列官方组合已通过实机画质或性能验收。
 
 #### 当前游戏的六个方案
 
@@ -663,7 +663,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 
 有可撤销的导入时，方案库主页会显示“撤销上次导入”，也可从高级页“管理方案”旁操作。它只恢复仍等于导入值的字段，保留之后的编辑，与“撤销方案操作”分开。共享库文件仍须显式保存，与方案自动保存分开。配置写入先核验再提交运行时参数，应用失败尝试恢复原保存值；不保证磁盘／GPU 事务或进程崩溃恢复。
 
-预设名称、作者、来源游戏、描述、搜索和文件路径均在叠加层的标准 ImGui 输入框中原位编辑，描述支持多行。编辑输入框只更新表单，之后仍需主动保存／导出预设。若原位 IME 输入乱码，可点击字段标题旁的键盘图标按钮（悬停可查看“辅助输入：打开兼容文本编辑窗口，输入中文等文字。”），或右键可编辑的预设字段、自定义 Slot 名称或报告文字输入框并选择 **辅助输入…**。两者打开同一个独立的 Windows Unicode 编辑窗及输入法候选窗。区域提示中的键盘图形仅作说明，不能点击；请使用标题旁按钮或右键菜单。点“应用”将文字带回原字段，再按原流程保存／重命名／导出；点“取消”放弃编辑，编辑期间原字段已变化时丢弃返回结果。候选选择按输入法自身规则处理；单行框按 Enter 不会应用文字，写回须点“应用”。Escape 优先取消正在进行的组合，没有组合时取消编辑窗。此可选输入路径不修改 ReShade 对原位输入框的消息处理。原生窗口焦点及全屏行为仍须在目标游戏环境中验证。该编辑窗位于 0.2.0-dev.5 开发预发布源码中，较早的 0.2.0-dev.2 预发布不包含此功能。
+预设名称、作者、来源游戏、描述、搜索和文件路径均在叠加层的标准 ImGui 输入框中原位编辑，描述支持多行。编辑输入框只更新表单，之后仍需主动保存／导出预设。若原位 IME 输入乱码，可点击字段标题旁的键盘图标按钮（悬停可查看“辅助输入：打开兼容文本编辑窗口，输入中文等文字。”），或右键可编辑的预设字段、自定义 Slot 名称或报告文字输入框并选择 **辅助输入…**。两者打开同一个独立的 Windows Unicode 编辑窗及输入法候选窗。区域提示中的键盘图形仅作说明，不能点击；请使用标题旁按钮或右键菜单。点“应用”将文字带回原字段，再按原流程保存／重命名／导出；点“取消”放弃编辑，编辑期间原字段已变化时丢弃返回结果。候选选择按输入法自身规则处理；单行框按 Enter 不会应用文字，写回须点“应用”。Escape 优先取消正在进行的组合，没有组合时取消编辑窗。此可选输入路径不修改 ReShade 对原位输入框的消息处理。原生窗口焦点及全屏行为仍须在目标游戏环境中验证。该编辑窗位于 0.2.0-dev.6 开发源码中，较早的 0.2.0-dev.2 预发布不包含此功能。
 
 名称和描述使用 UTF-8；名称、作者、来源游戏分别最多 128 字节，描述最多 2048 字节，中文会比 ASCII 更早达到上限。输入框受各自 UTF-8 缓冲区容量限制。若已正确保存的文字在叠加层中显示为方框或替代字形，请检查 ReShade 自身语言和字体覆盖设置。正确的 UTF-8 数据无需重新编码或改变 Windows 系统代码页。JSON 可保留 emoji 等补充平面字符，其叠加层输入和显示仍受宿主输入处理及 ImGui／字体限制。
 

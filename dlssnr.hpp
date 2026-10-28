@@ -2052,6 +2052,7 @@ inline stage_plan::Plan RequestedStagePlan(bool ray_reconstruction) {
   for (uint32_t i = 0; i < kMaxNrPasses - 1; ++i) config.stages[i] = pass_stage[i].load();
   return stage_plan::Build(config, {
       .mixed_dx12 = !D3D11OnlySession() && !vulkan_present_seen.load(),
+      .mixed_dx11 = D3D11OnlySession() && Dx11NativeRoute(),
       .ray_reconstruction = ray_reconstruction,
       .present_available = !vulkan_present_seen.load() && (!D3D11OnlySession() || Dx11NativeRoute()),
       .fg_owns_input = fg::xefg::OwnsStream() || auto_fg_fallback_active.load()
@@ -4285,6 +4286,10 @@ inline void ReleaseFinalResources(FinalResources& resources) {
 // no workset of a running stream could ever prove idle - no recycle, no
 // retirement.  This workset's uses of it are its heap's, and the texel lives
 // until the last workset holding it has retired.
+// pre_sr_source is likewise shared by successive Render worksets (the
+// bridge keeps its Color twin resident). Each workset holds its own COM
+// reference, and its heap proves that workset's uses complete; tracking the
+// shared source here would let the current workset pin all retired scratch.
 //
 // Runs on every evaluate (TrackWorksetRecording) and for every pooled
 // workset on every retirement/recycle check, so the list is one per-thread
@@ -4306,7 +4311,6 @@ inline const std::vector<const void*>& CollectWorksetGpuObjects(const FinalResou
   if (res.decoded != nullptr && res.decoded != res.original) objects.push_back(res.decoded);
   if (res.decoded_alt != nullptr) objects.push_back(res.decoded_alt);
   if (res.pre_sr_color != nullptr) objects.push_back(res.pre_sr_color);
-  if (res.pre_sr_source != nullptr) objects.push_back(res.pre_sr_source);
   if (res.block_mean != nullptr) objects.push_back(res.block_mean);
   if (res.work0 != nullptr) objects.push_back(res.work0);
   if (res.work_a != nullptr) objects.push_back(res.work_a);
@@ -19170,8 +19174,10 @@ inline void EmitTelemetry(int64_t now_ns, bool force = false) {
                      + d3d11_bytes(stream.neutral_depth11);
   }
   uint64_t bridge_bytes = 0;
-  for (const auto& [_, set] : bridge_sets) {
-    bridge_bytes += set.bytes + d3d11_bytes(set.depth_stage) + d3d11_bytes(set.motion_stage);
+  for (const auto& [handle, sets] : bridge_sets) {
+    for (const auto& set : sets) {
+      bridge_bytes += set.bytes + d3d11_bytes(set.depth_stage) + d3d11_bytes(set.motion_stage);
+    }
   }
   uint64_t vk_bytes = 0;
   for (const auto& [_, feature] : vk::features) {

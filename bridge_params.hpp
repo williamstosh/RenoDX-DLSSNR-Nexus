@@ -196,6 +196,11 @@ class ScopedD3D11Redirect {
     // the same way (RestorePreSrColor).
     game_ = const_cast<NVSDK_NGX_Parameter*>(game);
     name_ = name;
+    // Bridge retirement can run between preparation and the real SR call.
+    // Keep both bindings alive until restoration has completed.
+    static_cast<ID3D11Resource*>(original_)->AddRef();
+    replacement_ = replacement;
+    if (replacement_ != nullptr) replacement_->AddRef();
     Write(replacement);
   }
 
@@ -203,6 +208,10 @@ class ScopedD3D11Redirect {
     if (game_ == nullptr) return;
     Write(original_);
     game_ = nullptr;
+    static_cast<ID3D11Resource*>(original_)->Release();
+    original_ = nullptr;
+    if (replacement_ != nullptr) replacement_->Release();
+    replacement_ = nullptr;
   }
 
  private:
@@ -217,6 +226,7 @@ class ScopedD3D11Redirect {
   NVSDK_NGX_Parameter* game_ = nullptr;
   const char* name_ = nullptr;
   void* original_ = nullptr;
+  ID3D11Resource* replacement_ = nullptr;
   bool typed_ = false;
 };
 

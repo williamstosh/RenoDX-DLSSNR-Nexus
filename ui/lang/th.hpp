@@ -1892,7 +1892,7 @@ inline constexpr Translation kTh[] = {
     {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "ขั้นตอนที่มีผลแสดงเส้นทางที่ใช้ได้ ไม่ใช่หลักฐานว่า GPU ทำงานแล้ว ระบบตรวจสอบ Ray Reconstruction แยกตามแฮนเดิลขณะประเมิน"},
     {"Requested stages available", "ขั้นตอนที่ร้องขอพร้อมใช้งาน"},
     {"A later pass cannot run at an earlier stage", "พาสถัดไปไม่สามารถย้อนกลับไปขั้นตอนก่อนหน้าได้"},
-    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "พาสข้ามขั้นตอนต้องใช้ DX12 DLSS SR/DLAA แบบเนทีฟ"},
+    {"Cross-stage passes require native DX11/DX12 DLSS SR/DLAA", "พาสข้ามขั้นตอนต้องใช้ DX11/DX12 DLSS SR/DLAA แบบเนทีฟ"},
     {"Cross-stage Present execution is not validated", "ยังไม่ผ่านการตรวจสอบการทำงาน Present ข้ามขั้นตอน"},
     {"Frame generation owns the NR input path", "การสร้างเฟรมควบคุมเส้นทางอินพุต NR"},
     {"Ray Reconstruction runs Render passes after upscaling", "Ray Reconstruction เรียกพาส Render หลังอัปสเกล"},

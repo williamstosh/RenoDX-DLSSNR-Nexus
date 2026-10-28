@@ -1892,7 +1892,7 @@ inline constexpr Translation kKo[] = {
     {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "유효 단계는 사용 가능한 경로를 표시하며 GPU 실행을 증명하지 않습니다. Ray Reconstruction은 평가 시 핸들별로 확인합니다."},
     {"Requested stages available", "요청 단계 사용 가능"},
     {"A later pass cannot run at an earlier stage", "후속 패스는 이전 단계로 돌아갈 수 없습니다"},
-    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "단계 간 패스에는 네이티브 DX12 DLSS SR/DLAA가 필요합니다"},
+    {"Cross-stage passes require native DX11/DX12 DLSS SR/DLAA", "단계 간 패스에는 네이티브 DX11/DX12 DLSS SR/DLAA가 필요합니다"},
     {"Cross-stage Present execution is not validated", "단계 간 Present 실행은 검증되지 않았습니다"},
     {"Frame generation owns the NR input path", "프레임 생성이 NR 입력 경로를 사용 중입니다"},
     {"Ray Reconstruction runs Render passes after upscaling", "Ray Reconstruction은 업스케일링 후 Render 패스를 실행합니다"},

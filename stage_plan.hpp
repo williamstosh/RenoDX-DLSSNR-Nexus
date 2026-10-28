@@ -24,6 +24,7 @@ struct Configuration {
 };
 struct Capabilities {
   bool mixed_dx12 = true;
+  bool mixed_dx11 = false;
   bool ray_reconstruction = false;
   bool present_available = true;
   bool fg_owns_input = false;
@@ -63,7 +64,7 @@ inline constexpr const char* ReasonText(Reason reason) {
   switch (reason) {
     case Reason::NONE: return "Requested stages available";
     case Reason::BACKWARD_STAGE: return "A later pass cannot run at an earlier stage";
-    case Reason::UNSUPPORTED_BACKEND: return "Cross-stage passes require native DX12 DLSS SR/DLAA";
+    case Reason::UNSUPPORTED_BACKEND: return "Cross-stage passes require native DX11/DX12 DLSS SR/DLAA";
     case Reason::MIXED_PRESENT: return "Cross-stage Present execution is not validated";
     case Reason::FG_OWNS_INPUT: return "Frame generation owns the NR input path";
     case Reason::RR_AFTER: return "Ray Reconstruction runs Render passes after upscaling";
@@ -97,7 +98,7 @@ inline Plan Build(const Configuration& config, const Capabilities& caps = {}) {
   plan.effective = plan.requested;
   if (!plan.valid) return plan;
   if (plan.mixed) {
-    if (!caps.mixed_dx12) {
+    if (!caps.mixed_dx12 && !caps.mixed_dx11) {
       plan.reason = Reason::UNSUPPORTED_BACKEND;
     } else if (plan.requested[plan.pass_count - 1] == Stage::PRESENT) {
       plan.reason = Reason::MIXED_PRESENT;

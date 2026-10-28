@@ -1892,7 +1892,7 @@ inline constexpr Translation kFr[] = {
     {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "Les étapes effectives indiquent le chemin disponible, sans confirmer l’exécution GPU. Ray Reconstruction est vérifié par handle lors de l’évaluation."},
     {"Requested stages available", "Étapes demandées disponibles"},
     {"A later pass cannot run at an earlier stage", "Une passe ultérieure ne peut pas revenir à une étape antérieure"},
-    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "Les passes multi-étapes nécessitent DLSS SR/DLAA DX12 natif"},
+    {"Cross-stage passes require native DX11/DX12 DLSS SR/DLAA", "Les passes multi-étapes nécessitent DLSS SR/DLAA DX11/DX12 natif"},
     {"Cross-stage Present execution is not validated", "L’exécution Present multi-étapes n’est pas validée"},
     {"Frame generation owns the NR input path", "La génération d’images contrôle l’entrée NR"},
     {"Ray Reconstruction runs Render passes after upscaling", "Ray Reconstruction exécute les passes Render après l’agrandissement"},

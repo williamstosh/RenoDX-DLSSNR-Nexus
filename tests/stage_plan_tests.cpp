@@ -72,25 +72,27 @@ int main() {
           }
         }
 
-        for (uint32_t flags = 0; flags < 16; ++flags) {
+        for (uint32_t flags = 0; flags < 32; ++flags) {
           context = "count=" + std::to_string(count) + " hook=" + std::to_string(hook)
                     + " stages=" + std::to_string(code) + " caps=" + std::to_string(flags);
           const planner::Capabilities caps{
               .mixed_dx12 = (flags & 1) != 0,
+              .mixed_dx11 = (flags & 16) != 0,
               .ray_reconstruction = (flags & 2) != 0,
               .present_available = (flags & 4) != 0,
               .fg_owns_input = (flags & 8) != 0};
           const auto saved_caps = caps;
           const auto plan = planner::Build(config, caps);
           ++capability_cases;
-          const bool accepted = ordered && (!mixed || (caps.mixed_dx12 && !has_present && !caps.fg_owns_input));
+          const bool accepted = ordered && (!mixed || ((caps.mixed_dx12 || caps.mixed_dx11) && !has_present && !caps.fg_owns_input));
           check(plan.pass_count == count && plan.requested == requested && plan.mixed == mixed,
                 "requested plan preserves explicit choices and previous-pass inheritance");
           check(plan.valid == accepted, "only ordered, supported stage combinations are executable");
           check(config.pass_count == saved_config.pass_count && config.hook_point == saved_config.hook_point
                     && config.stages == saved_config.stages,
                 "planning and fallback never overwrite saved configuration");
-          check(caps.mixed_dx12 == saved_caps.mixed_dx12 && caps.ray_reconstruction == saved_caps.ray_reconstruction
+          check(caps.mixed_dx12 == saved_caps.mixed_dx12 && caps.mixed_dx11 == saved_caps.mixed_dx11
+                    && caps.ray_reconstruction == saved_caps.ray_reconstruction
                     && caps.present_available == saved_caps.present_available && caps.fg_owns_input == saved_caps.fg_owns_input,
                 "capability inputs remain unchanged");
           if (!accepted) {
@@ -98,7 +100,7 @@ int main() {
                   "rejected chains expose their request without executable or partial groups");
             if (!ordered) {
               check(plan.reason == Reason::BACKWARD_STAGE, "backward passes are rejected before capability fallback");
-            } else if (!caps.mixed_dx12) {
+            } else if (!caps.mixed_dx12 && !caps.mixed_dx11) {
               check(plan.reason == Reason::UNSUPPORTED_BACKEND, "unsupported backend explains mixed-chain rejection");
             } else if (has_present) {
               check(plan.reason == Reason::MIXED_PRESENT, "mixed Present remains unvalidated even when Present is unavailable");

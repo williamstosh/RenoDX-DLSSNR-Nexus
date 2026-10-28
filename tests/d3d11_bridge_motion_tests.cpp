@@ -5,6 +5,8 @@
 #include <wrl/client.h>
 #include <cstdio>
 #include <initializer_list>
+#include <thread>
+#include <tuple>
 using Microsoft::WRL::ComPtr;
 int ProbeFormats() {
   ComPtr<IDXGIFactory4> factory;
@@ -77,18 +79,32 @@ namespace native = renodx::addons::dlss5::internal;
 namespace params = renodx::addons::dlss5::bridge;
 std::vector<ComPtr<ID3D12Resource>> model_uploads;
 uint32_t model_calls = 0;
+std::vector<uint32_t> model_presets;
+struct ModelObservation {
+  int reset;
+  float intensity;
+  uint32_t style;
+  float tone;
+};
+std::vector<ModelObservation> model_observations;
+uint32_t fail_model_call = 0;
 NVSDK_NGX_Result NVSDK_CONV MotionCreateModel(ID3D12GraphicsCommandList*, NVSDK_NGX_Feature,
-    const NVSDK_NGX_Parameter*, NVSDK_NGX_Handle** handle) {
-  *handle = reinterpret_cast<NVSDK_NGX_Handle*>(new uint32_t(1));
+    const NVSDK_NGX_Parameter* parameters, NVSDK_NGX_Handle** handle) {
+  *handle = reinterpret_cast<NVSDK_NGX_Handle*>(new uint32_t(native::GetUInt(parameters, "DLSSNR.Hint.Render.Preset")));
   return NVSDK_NGX_Result_Success;
 }
 NVSDK_NGX_Result NVSDK_CONV MotionReleaseModel(NVSDK_NGX_Handle* handle) {
   delete reinterpret_cast<uint32_t*>(handle);
   return NVSDK_NGX_Result_Success;
 }
-NVSDK_NGX_Result NVSDK_CONV MotionEvaluateModel(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Handle*,
+NVSDK_NGX_Result NVSDK_CONV MotionEvaluateModel(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Handle* handle,
     const NVSDK_NGX_Parameter* parameters, PFN_NVSDK_NGX_ProgressCallback) {
   ++model_calls;
+  model_presets.push_back(*reinterpret_cast<const uint32_t*>(handle));
+  model_observations.push_back({native::GetInt(parameters, "DLSSNR.Reset"),
+      native::GetFloat(parameters, "DLSSNR.Intensity"), native::GetUInt(parameters, "DLSSNR.Style"),
+      native::GetFloat(parameters, "DLSSNR.LocalToneStrength")});
+  if (model_calls == fail_model_call) return NVSDK_NGX_Result_Fail;
   auto* output = native::GetD3D12Resource(parameters, "DLSSNR.Output");
   Check(output != nullptr, "model output is a real D3D12 resource");
   auto* device = native::bridge.device12;
@@ -331,7 +347,7 @@ int main(int argc, char** argv) {
           if (pre) {
             params::ScopedD3D11Redirect redirect;
             delivered = native::RunBridge(context.Get(), handle, &parameters, &redirect);
-            if (delivered) Check(params::GetD3D11Resource(&parameters, NVSDK_NGX_Parameter_Color) == native::bridge_sets.at(handle).color11,
+            if (delivered) Check(params::GetD3D11Resource(&parameters, NVSDK_NGX_Parameter_Color) == native::bridge_sets.at(handle)[1].color11,
                 "Render redirects shared Color");
           } else {
             delivered = native::RunBridge(context.Get(), handle, &parameters, nullptr);
@@ -346,7 +362,7 @@ int main(int argc, char** argv) {
           }
         }
         Check(delivered && model_calls > calls_before, "real RunBridge delivers model GPU output");
-        auto& set = native::bridge_sets.at(handle);
+        auto& set = native::bridge_sets.at(handle)[pre ? 1 : 0];
         Check(set.usable && set.motion_convert == convert && set.depth_convert == depth_convert, "selected conversion paths");
         Check(pre ? (set.color11 && !set.output11) : (!set.color11 && set.output11), "Render/Upscaled twin selection");
         Check(set.color12->GetDesc().Width == width && set.output12->GetDesc().Width == 17, "distinct input/output geometry");
@@ -438,6 +454,374 @@ int main(int argc, char** argv) {
             pre ? "Render" : "Upscaled", convert ? "RG32 fallback" : "RG16 direct", depth_convert ? "converted" : "direct");
       }
     }
+    // Exercise the real D3D11 detour and both shared sets. Only SR/NR are stand-ins.
+    native::d3d11_swapchain_seen.store(true);
+    native::dx11_route.store(native::kDx11RouteNative);
+    native::direct_runtime_requirements.dual_models = true;
+    native::dedupe_mode.store(renodx::addons::dlss5::kDedupePerEvaluate);
+    native::stack_passes.store(2);
+    native::hook_point.store(native::kHookRender);
+    native::preset.store(1);
+    native::pass_preset[0].store(2);
+    native::pass_stage[0].store(2);
+    native::pass_transfer_strength[0].store(0.5f);
+    native::pass_color_strength[0].store(0.5f);
+    native::pass_look_result[0].follow.store(true);
+    // Publish the fixture loader identity so the detour never loads a vendor DLL.
+    native::ngx_loader_staging.nr_ready = true;
+    native::ngx_loader_staging.core_ready = true;
+    native::PublishNgxLoaderSymbols();
+    params::OwnedParameters mixed_parameters;
+    mixed_parameters.Set(NVSDK_NGX_Parameter_Width, width);
+    mixed_parameters.Set(NVSDK_NGX_Parameter_Height, height);
+    mixed_parameters.Set(NVSDK_NGX_Parameter_OutWidth, 17u);
+    mixed_parameters.Set(NVSDK_NGX_Parameter_OutHeight, 11u);
+    mixed_parameters.Set(NVSDK_NGX_Parameter_Color, static_cast<ID3D11Resource*>(color.Get()));
+    mixed_parameters.Set(NVSDK_NGX_Parameter_Output, static_cast<ID3D11Resource*>(output.Get()));
+    mixed_parameters.Set(NVSDK_NGX_Parameter_MotionVectors, static_cast<ID3D11Resource*>(rg16.Get()));
+    mixed_parameters.Set(NVSDK_NGX_Parameter_Depth, static_cast<ID3D11Resource*>(depth_direct.Get()));
+    mixed_parameters.Set(NVSDK_NGX_Parameter_MV_Scale_X, 1.f);
+    mixed_parameters.Set(NVSDK_NGX_Parameter_MV_Scale_Y, 1.f);
+    mixed_parameters.Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,
+        int(NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes));
+    const auto* mixed_handle = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t(0xD120));
+    const params::ParameterView mixed_create_view(&mixed_parameters, nullptr);
+    native::RegisterCreatedFeatureLocked(mixed_handle, native::kFeatureDlss, &mixed_create_view);
+    bool mixed_delivered = false;
+    uint64_t resident_builds = 0;
+    bool stable_residency = false;
+    for (int frame = 0; frame < 12; ++frame) {
+      ++native::present_generation;
+      context->UpdateSubresource(color.Get(), 0, nullptr, color_pixels.data(), width * 8, 0);
+      context->UpdateSubresource(output.Get(), 0, nullptr, output_pixels.data(), 17 * 8, 0);
+      const auto calls_before = model_calls;
+      bool redirected = false;
+      std::vector<unsigned char> sr_input, sr_output;
+      const auto result = native::Ngx11Evaluate(0, "mixed fixture", context.Get(), mixed_handle, &mixed_parameters, [&] {
+        auto* input = params::GetD3D11Resource(&mixed_parameters, NVSDK_NGX_Parameter_Color);
+        redirected = input != color.Get();
+        ComPtr<ID3D11Texture2D> input_texture;
+        Check(SUCCEEDED(input->QueryInterface(IID_PPV_ARGS(&input_texture))), "SR receives D3D11 Color texture");
+        sr_input = Read11(input_texture.Get(), 8);
+        // The SR stand-in preserves the Render pixels in a known output region.
+        const D3D11_BOX region{0, 0, 0, width, height, 1};
+        context->CopySubresourceRegion(output.Get(), 0, 0, 0, 0, input, 0, &region);
+        sr_output = Read11(output.Get(), 8);
+        return NVSDK_NGX_Result_Success;
+      });
+      Check(NVSDK_NGX_SUCCEED(result), "mixed detour preserves successful SR result");
+      Check(params::GetD3D11Resource(&mixed_parameters, NVSDK_NGX_Parameter_Color) == color.Get(),
+          "mixed detour restores original Color binding");
+      if (native::bridge_submitted_value.load()) {
+        WaitForGpu(native::bridge.fence_done12, native::bridge_submitted_value.load());
+      }
+      if (!redirected || model_calls - calls_before != 2) continue;
+      Check(model_presets[calls_before] == 1 && model_presets[calls_before + 1] == 2,
+          "actual model requests execute A before SR and B after SR");
+      auto& sets = native::bridge_sets.at(mixed_handle);
+      Check(sets[1].usable && sets[0].usable && sets[1].color11 && sets[0].output11,
+          "Render and Upscaled shared sets remain resident together");
+      Check(sets[1].last_value < sets[0].last_value, "Render submits before Upscaled");
+      Check(sr_input == Read11(sets[1].color11, 8), "SR reads exact Render shared twin pixels");
+      Check(std::memcmp(sr_input.data(), color_pixels.data(), sr_input.size()) != 0,
+          "Render result actually changes SR input");
+      for (UINT y = 0; y < height; ++y) {
+        Check(std::memcmp(sr_input.data() + size_t(y) * width * 8,
+            sr_output.data() + size_t(y) * 17 * 8, width * 8) == 0,
+            "SR output contains exact Render input pixels");
+      }
+      const auto final_pixels = Read11(output.Get(), 8);
+      Check(final_pixels == Read11(sets[0].output11, 8), "Upscaled result handed back exactly to game Output");
+      Check(final_pixels != sr_output, "Upscaled B processes SR output after Render A");
+      Check(std::memcmp(Read11(color.Get(), 8).data(), color_pixels.data(), color_pixels.size() * 2) == 0,
+          "mixed chain leaves original game Color untouched");
+      if (mixed_delivered) {
+        Check(native::bridge_sets_built == resident_builds, "steady mixed frame does not rebuild either set");
+        stable_residency = true;
+        break;
+      }
+      mixed_delivered = true;
+      resident_builds = native::bridge_sets_built;
+    }
+    Check(mixed_delivered && stable_residency, "AB reaches two complete frames with stable resident sets");
+    {
+      // Rebuild scratch while retaining the resident Render twin. Control the
+      // tracker receipt separately from GPU timing so both retention gates are
+      // deterministic; these extra lists record no GPU commands.
+      const auto* owner = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t(0xD121));
+      native::RegisterCreatedFeatureLocked(owner, native::kFeatureDlss, &mixed_create_view);
+      auto* twin = native::bridge_sets.at(mixed_handle)[1].color12;
+      const native::WorksetKey key{owner, twin, true};
+      ComPtr<ID3D12CommandAllocator> allocator, new_allocator;
+      ComPtr<ID3D12GraphicsCommandList> old_list, new_list;
+      ComPtr<ID3D12Fence> receipt;
+      auto* device12 = native::bridge.device12;
+      Check(SUCCEEDED(device12->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+          IID_PPV_ARGS(&allocator))), "retirement regression allocator");
+      Check(SUCCEEDED(device12->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+          IID_PPV_ARGS(&new_allocator))), "retirement new recording allocator");
+      Check(SUCCEEDED(device12->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+          allocator.Get(), nullptr, IID_PPV_ARGS(&old_list))), "retirement old recording");
+      Check(SUCCEEDED(device12->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+          new_allocator.Get(), nullptr, IID_PPV_ARGS(&new_list))), "retirement new recording");
+      Check(SUCCEEDED(device12->CreateFence(0, D3D12_FENCE_FLAG_NONE,
+          IID_PPV_ARGS(&receipt))), "retirement controlled submission receipt");
+      auto* old = native::EnsureWorkset(device12, owner, twin, width, height, width, height,
+          DXGI_FORMAT_R16G16B16A16_FLOAT, 1, 1, 0, true);
+      Check(old != nullptr, "retirement old Render workset");
+      twin->AddRef();
+      old->pre_sr_source = twin;
+      const auto old_id = old->id;
+      const auto* old_scratch = old->original;
+      const auto* old_heap = old->descriptors;
+      const auto* shared_norm = old->norm_commit;
+      native::TrackWorksetRecording(old_list.Get(), *old);
+      Check(SUCCEEDED(old_list->Close()), "retirement close old recording");
+      ID3D12CommandList* lists[] = {old_list.Get()};
+      const auto pending = submission::BeginSubmission(1, lists);
+      Check(pending.size() == 1, "old recording has an exact submission reservation");
+      submission::CompleteSubmission(pending, receipt.Get(), 1);
+      auto* current = native::EnsureWorkset(device12, owner, twin, width, height, width, height,
+          DXGI_FORMAT_R16G16B16A16_FLOAT, 1, 2, 0, true);
+      Check(current != nullptr && current->id != old_id, "stack change rebuilds Render scratch");
+      twin->AddRef();
+      current->pre_sr_source = twin;
+      Check(current->original != old_scratch && current->descriptors != old_heap
+                && current->norm_commit == shared_norm,
+          "rebuilt workset has independent scratch/heap and shares stream Norm");
+      native::TrackWorksetRecording(new_list.Get(), *current);
+      Check(SUCCEEDED(new_list->Close()), "retirement close new recording");
+      const auto retained = [&] {
+        for (const auto& entry : native::retired_final_resources) {
+          if (entry.resources.id == old_id) {
+            Check(entry.tracker_proof, "regression uses exact tracker retirement");
+            return true;
+          }
+        }
+        return false;
+      };
+      native::DrainRetiredResources(true);
+      Check(retained(), "old pending submission retains its scratch");
+      Check(SUCCEEDED(receipt->Signal(1)), "complete controlled old submission receipt");
+      native::DrainRetiredResources(true);
+      Check(retained(), "completed but replayable old recording retains its scratch");
+      const auto replay = submission::BeginSubmission(1, lists);
+      Check(replay.size() == 1, "old replay has an exact submission reservation");
+      submission::CompleteSubmission(replay, receipt.Get(), 2);
+      Check(SUCCEEDED(old_list->Reset(allocator.Get(), nullptr)), "discard old recording");
+      submission::OnCommandListReset(old_list.Get());
+      Check(SUCCEEDED(old_list->Close()), "close discarded old recording");
+      native::DrainRetiredResources(true);
+      Check(retained(), "discarded old recording with pending replay retains its scratch");
+      Check(SUCCEEDED(receipt->Signal(2)), "complete controlled old replay receipt");
+      native::DrainRetiredResources(true);
+      Check(!submission::ResourceReleasable(current->original),
+          "new workset recording remains live during old retirement");
+      Check(submission::ResourceReleasable(old_scratch)
+                && submission::ResourceReleasable(old_heap),
+          "old workset exclusive objects have no remaining recorded uses");
+      Check(!retained(), "new Render workset sharing Color twin must not pin retired scratch");
+      submission::OnCommandListDestroyed(old_list.Get());
+      submission::OnCommandListDestroyed(new_list.Get());
+      native::RetireWorkset(key);
+      native::DrainRetiredResources(true);
+      native::ForgetSourceHandleLocked(owner);
+      std::printf("PASS retirement rebuilt Render/shared Color/Norm/pending submission/replayable recording\n");
+    }
+    {
+      // Neither binding's lifetime depends on the map or on Set retaining COM
+      // objects. A bridge retirement during the SR handoff keeps Color live.
+      ComPtr<ID3D11Texture2D> replacement = native::bridge_sets.at(mixed_handle)[1].color11;
+      params::ScopedD3D11Redirect redirect;
+      redirect.Point(&mixed_parameters, NVSDK_NGX_Parameter_Color, replacement.Get());
+      native::RetireBridgeSetLocked(mixed_handle);
+      Check(Read11(replacement.Get(), 8).size() == width * height * 8,
+          "redirect owns its shared Color through bridge retirement");
+      redirect.Restore();
+      Check(params::GetD3D11Resource(&mixed_parameters, NVSDK_NGX_Parameter_Color) == color.Get(),
+          "explicit redirect restoration remains idempotent");
+    }
+    std::printf("PASS mixed AB real D3D11/D3D12 handoff/readback/residency\n");
+    struct FrameResult {
+      NVSDK_NGX_Result result;
+      uint32_t calls_before;
+      uint32_t calls_at_sr = 0;
+      bool redirected = false;
+      std::vector<unsigned char> sr_pixels;
+    };
+    const auto frame = [&](bool fail_sr = false, bool change_generation = false,
+                           bool nested = false, bool drain = true, bool inspect = true) {
+      ++native::present_generation;
+      context->UpdateSubresource(color.Get(), 0, nullptr, color_pixels.data(), width * 8, 0);
+      context->UpdateSubresource(output.Get(), 0, nullptr, output_pixels.data(), 17 * 8, 0);
+      FrameResult observed{.calls_before = model_calls};
+      const auto sr = [&] {
+        observed.calls_at_sr = model_calls;
+        auto* input = params::GetD3D11Resource(&mixed_parameters, NVSDK_NGX_Parameter_Color);
+        observed.redirected = input != color.Get();
+        const D3D11_BOX region{0, 0, 0, width, height, 1};
+        context->CopySubresourceRegion(output.Get(), 0, 0, 0, 0, input, 0, &region);
+        if (inspect) observed.sr_pixels = Read11(output.Get(), 8);
+        if (change_generation) ++native::configuration_generation;
+        return fail_sr ? NVSDK_NGX_Result_Fail : NVSDK_NGX_Result_Success;
+      };
+      observed.result = native::Ngx11Evaluate(0, "stage fixture", context.Get(), mixed_handle, &mixed_parameters, [&] {
+        if (nested) {
+          return native::Ngx11Evaluate(0, "nested C/C++ fixture", context.Get(), mixed_handle, &mixed_parameters, sr);
+        }
+        return sr();
+      });
+      Check(params::GetD3D11Resource(&mixed_parameters, NVSDK_NGX_Parameter_Color) == color.Get(),
+          "all detour exits restore Color");
+      if (drain) {
+        WaitForGpu(native::bridge.fence_done12, native::bridge_submitted_value.load());
+        native::DrainRetiredResources(true);
+        renodx::addons::dlss5::gpu_timers::Poll(native::queue_tracking_active.load(), false);
+      }
+      return observed;
+    };
+    const auto configure = [&](uint32_t count, uint32_t render_count, bool reverse) {
+      native::stack_passes.store(count);
+      native::hook_point.store(render_count != 0 ? native::kHookRender : native::kHookUpscaled);
+      native::preset.store(reverse ? 2u : 1u);
+      native::intensity.store(0.5f);
+      native::style.store(0);
+      native::local_tone_strength.store(0.25f);
+      for (uint32_t pass = 1; pass < 4; ++pass) {
+        native::pass_stage[pass - 1].store(pass < render_count ? 1u : 2u);
+        native::pass_preset[pass - 1].store((pass + uint32_t(reverse)) % 2 + 1);
+        native::pass_follow[pass - 1].store(false);
+        native::pass_intensity[pass - 1].store(0.5f + 0.125f * pass);
+        native::pass_style[pass - 1].store(pass % 3);
+        native::pass_local_tone[pass - 1].store(0.25f + 0.125f * pass);
+        native::pass_transfer_strength[pass - 1].store(0.5f);
+        native::pass_color_strength[pass - 1].store(0.5f);
+        native::pass_look_result[pass - 1].follow.store(false);
+        native::pass_look_result[pass - 1].mode.store(true);
+        native::pass_look_result[pass - 1].strength.store(0.5f + 0.125f * pass);
+      }
+      native::RecreateFeatures();
+    };
+    const auto mature = [&](uint32_t count, uint32_t render_count) {
+      for (uint32_t attempt = 0; attempt < 16; ++attempt) {
+        const auto observed = frame();
+        Check(model_calls - observed.calls_before <= count, "no duplicate pass during maturation");
+        if (model_calls - observed.calls_before == count
+            && observed.calls_at_sr - observed.calls_before == render_count
+            && (render_count == 0 || observed.redirected)) return;
+      }
+      Check(false, "stage configuration matures to a complete chain");
+    };
+    // Every legal Render/Upscaled split, plus AB/BA and 1->2->3->1 hot changes.
+    const uint32_t configurations[][3] = {
+        {1, 0, 0}, {2, 1, 0}, {2, 1, 1}, {3, 1, 0}, {3, 2, 1},
+        {4, 1, 0}, {4, 2, 1}, {4, 3, 0}, {1, 1, 0}, {1, 0, 0}};
+    for (const auto& config : configurations) {
+      const auto [count, render_count, reverse] = std::tuple{config[0], config[1], config[2]};
+      configure(count, render_count, reverse != 0);
+      mature(count, render_count);
+      const auto built_before = native::bridge_sets_built;
+      const auto observed = frame(false, false, true);
+      Check(model_calls - observed.calls_before == count, "exact pass count across nested exports");
+      Check(observed.calls_at_sr - observed.calls_before == render_count, "passes execute on the assigned side of SR");
+      Check(native::bridge_sets_built == built_before, "hot model/stage changes retain compatible twins");
+      for (uint32_t pass = 0; pass < count; ++pass) {
+        const auto index = observed.calls_before + pass;
+        Check(model_presets[index] == (pass + reverse) % 2 + 1, "logical model assignment survives local stage slots");
+        const auto& model = model_observations[index];
+        Check(model.intensity == 0.5f + 0.125f * pass && model.style == pass % 3
+                  && model.tone == 0.25f + 0.125f * pass, "per-pass steering keeps logical pass identity");
+        Check(model.reset == 0, "steady temporal history is not reset every frame");
+      }
+      mixed_parameters.Set(NVSDK_NGX_Parameter_Reset, 1);
+      const auto reset_frame = frame();
+      mixed_parameters.Set(NVSDK_NGX_Parameter_Reset, 0);
+      for (uint32_t pass = 0; pass < count; ++pass) {
+        Check(model_observations[reset_frame.calls_before + pass].reset == 1, "game Reset reaches every group");
+      }
+      std::printf("PASS stages passes=%u Render=%u Upscaled=%u reverse=%u\n", count, render_count, count - render_count, reverse);
+    }
+    for (const uint32_t render_count : {1u, 2u}) {
+      configure(render_count + 1, render_count, false);
+      mature(render_count + 1, render_count);
+      fail_model_call = model_calls + render_count;
+      const auto failed = frame();
+      fail_model_call = 0;
+      Check(NVSDK_NGX_SUCCEED(failed.result) && !failed.redirected, "failed/partial Render keeps native SR input");
+      Check(model_calls - failed.calls_before == render_count, "failed/partial Render never executes Upscaled");
+      Check(Read11(output.Get(), 8) == failed.sr_pixels, "Render failure preserves native SR result");
+      Check(native::features.at(mixed_handle).slots[0].pending_reset, "failed predecessor resets following history");
+    }
+    configure(2, 1, false);
+    mature(2, 1);
+    const auto failed_sr = frame(true);
+    Check(NVSDK_NGX_FAILED(failed_sr.result) && model_calls - failed_sr.calls_before == 1,
+        "failed native SR never executes Upscaled");
+    Check(Read11(output.Get(), 8) == failed_sr.sr_pixels, "failed SR output is not overwritten by NR");
+    Check(native::features.at(mixed_handle).slots[0].pending_reset, "SR failure resets following history");
+    const auto changed = frame(false, true);
+    Check(model_calls - changed.calls_before == 1 && Read11(output.Get(), 8) == changed.sr_pixels,
+        "configuration generation change blocks the dependent group");
+    configure(2, 1, false);
+    mature(2, 1);
+    auto& busy_slot = native::bridge.ring[(native::bridge_submitted_value.load() + 1) % native::kBridgeRing];
+    const auto old_value = busy_slot.value;
+    busy_slot.value = native::bridge_submitted_value.load() + native::kBridgeRing;
+    const auto busy = frame();
+    busy_slot.value = old_value;
+    Check(model_calls == busy.calls_before && !busy.redirected && Read11(output.Get(), 8) == busy.sr_pixels,
+        "ring without completion proof preserves SR and skips both groups");
+    // Out may be rescued while done is blocked by a test-owned GPU fence.
+    // The bounded event wait must fail safely, and even a mode change must
+    // not overwrite the still-pending twins. No production busy wait is used.
+    ComPtr<ID3D12Fence> stalled;
+    Check(SUCCEEDED(native::bridge.device12->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&stalled))), "stall gate");
+    Check(SUCCEEDED(native::bridge.queue->Wait(stalled.Get(), 1)), "stall private queue");
+    std::jthread release_stall([stalled] { Sleep(1600); stalled->Signal(1); });
+    const auto signals_before_stall = native::bridge_signals.load();
+    const auto timed_out = frame(false, false, false, false);
+    const auto pending = native::bridge_submitted_value.load();
+    Check(!timed_out.redirected && model_calls - timed_out.calls_before == 1,
+        "watchdog rescue is not a successful Render delivery");
+    Check(native::bridge.fence_done12->GetCompletedValue() < pending
+              && native::bridge_pending_delivery_value == pending, "real completion remains unproven after rescue");
+    Check(Read11(output.Get(), 8) == timed_out.sr_pixels, "timeout preserves native SR result");
+    const auto blocked = frame(false, false, false, false);
+    native::hook_point.store(native::kHookUpscaled);
+    native::stack_passes.store(1);
+    const auto blocked_single = frame(false, false, false, false);
+    Check(model_calls == blocked.calls_before && model_calls == blocked_single.calls_before
+              && native::bridge_signals.load() == signals_before_stall + 1,
+        "unproven mixed delivery blocks twin writes across a switch to single stage");
+    native::RetireBridgeSetLocked(mixed_handle);
+    const auto retained = native::bridge_retired.size();
+    native::DrainBridgeRetired(native::bridge.fence_done12->GetCompletedValue());
+    Check(!native::bridge_retired.empty() && native::bridge_retired.size() <= retained,
+        "in-flight twins remain retired until actual done");
+    release_stall.join();
+    WaitForGpu(native::bridge.fence_done12, pending);
+    native::DrainBridgeRetired(pending);
+    mature(1, 0);
+    Check(native::bridge_pending_delivery_value == 0, "recovery clears pending delivery after real completion");
+    std::printf("PASS failures Render/partial/SR/generation/ring/watchdog/retire/recovery\n");
+    // Existing GPU timers measure NR command spans; wall time and the bridge
+    // completion ledger separately include the fixture's synchronization.
+    native::gpu_timers_enabled.store(true);
+    for (uint32_t mode = 0; mode < 3; ++mode) {
+      const uint32_t count = (mode == 2 ? 2u : 1u);
+      configure(count, mode == 0 ? 0u : 1u, false);
+      mature(count, mode == 0 ? 0u : 1u);
+      const auto cpu_start = native::SteadyNowNs();
+      const auto wait_start = native::bridge_completion_wait_ns;
+      const auto gpu_start = renodx::addons::dlss5::gpu_timers::measured_total_us;
+      for (int sample = 0; sample < 20; ++sample) frame(false, false, false, true, false);
+      std::printf("PERF synthetic 13x9->17x11 mode=%u wall_us/frame=%.3f completion_wait_us/frame=%.3f nr_gpu_us/frame=%.3f\n",
+          mode, (native::SteadyNowNs() - cpu_start) / 20000.0,
+          (native::bridge_completion_wait_ns - wait_start) / 20000.0,
+          (renodx::addons::dlss5::gpu_timers::measured_total_us - gpu_start) / 20.0);
+    }
+    native::ForgetSourceHandleLocked(mixed_handle);
+    native::RetireBridgeSetLocked(mixed_handle);
     Check(native::DrainBridgeQueue(), "production bridge drained");
     native::ReleaseBridge();
     Check(native::bridge.motion_cs == nullptr, "bridge motion shader released");

@@ -1892,7 +1892,7 @@ inline constexpr Translation kPtBr[] = {
     {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "As etapas efetivas indicam a rota disponível, sem confirmar execução na GPU. Ray Reconstruction é verificado por handle durante a avaliação."},
     {"Requested stages available", "Etapas solicitadas disponíveis"},
     {"A later pass cannot run at an earlier stage", "Um passe posterior não pode voltar a uma etapa anterior"},
-    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "Passes entre etapas exigem DLSS SR/DLAA DX12 nativo"},
+    {"Cross-stage passes require native DX11/DX12 DLSS SR/DLAA", "Passes entre etapas exigem DLSS SR/DLAA DX11/DX12 nativo"},
     {"Cross-stage Present execution is not validated", "A execução Present entre etapas não foi validada"},
     {"Frame generation owns the NR input path", "A geração de quadros controla a entrada NR"},
     {"Ray Reconstruction runs Render passes after upscaling", "Ray Reconstruction executa passes Render após o upscaling"},

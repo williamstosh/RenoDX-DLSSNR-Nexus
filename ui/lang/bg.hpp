@@ -1892,7 +1892,7 @@ inline constexpr Translation kBg[] = {
     {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "Действащите етапи показват наличния път, а не доказателство за изпълнение на GPU. Ray Reconstruction се проверява за всеки манипулатор при оценяване."},
     {"Requested stages available", "Заявените етапи са налични"},
     {"A later pass cannot run at an earlier stage", "По-късен проход не може да се върне към по-ранен етап"},
-    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "Проходите между етапи изискват нативен DX12 DLSS SR/DLAA"},
+    {"Cross-stage passes require native DX11/DX12 DLSS SR/DLAA", "Проходите между етапи изискват нативен DX11/DX12 DLSS SR/DLAA"},
     {"Cross-stage Present execution is not validated", "Изпълнението Present между етапи не е проверено"},
     {"Frame generation owns the NR input path", "Генерирането на кадри управлява входа на NR"},
     {"Ray Reconstruction runs Render passes after upscaling", "Ray Reconstruction изпълнява проходите Render след мащабиране"},

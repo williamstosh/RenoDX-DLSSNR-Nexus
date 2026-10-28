@@ -1901,7 +1901,7 @@ inline constexpr Translation kZhHans[] = {
     {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "有效阶段表示可用路径，不证明 GPU 已执行。每个句柄的光线重建状态在求值时检查。"},
     {"Requested stages available", "请求的阶段可用"},
     {"A later pass cannot run at an earlier stage", "后续 Pass 不能回到更早的阶段"},
-    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "跨阶段 Pass 需要原生 DX12 DLSS SR/DLAA"},
+    {"Cross-stage passes require native DX11/DX12 DLSS SR/DLAA", "跨阶段 Pass 需要原生 DX11/DX12 DLSS SR/DLAA"},
     {"Cross-stage Present execution is not validated", "跨阶段 Present 执行尚未验证"},
     {"Frame generation owns the NR input path", "帧生成占用 NR 输入路径"},
     {"Ray Reconstruction runs Render passes after upscaling", "光线重建会在放大后执行 Render Pass"},

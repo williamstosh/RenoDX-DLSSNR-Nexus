@@ -1892,7 +1892,7 @@ inline constexpr Translation kSl[] = {
     {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "Dejanske faze kažejo razpoložljivo pot in ne potrjujejo izvajanja GPU. Ray Reconstruction se preveri za vsak ročaj ob vrednotenju."},
     {"Requested stages available", "Zahtevane faze so na voljo"},
     {"A later pass cannot run at an earlier stage", "Poznejši prehod se ne more vrniti v zgodnejšo fazo"},
-    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "Prehodi med fazami zahtevajo izvorni DX12 DLSS SR/DLAA"},
+    {"Cross-stage passes require native DX11/DX12 DLSS SR/DLAA", "Prehodi med fazami zahtevajo izvorni DX11/DX12 DLSS SR/DLAA"},
     {"Cross-stage Present execution is not validated", "Izvajanje Present med fazami ni preverjeno"},
     {"Frame generation owns the NR input path", "Ustvarjanje sličic nadzoruje vhod NR"},
     {"Ray Reconstruction runs Render passes after upscaling", "Ray Reconstruction izvede prehode Render po povečavi"},

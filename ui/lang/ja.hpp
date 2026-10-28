@@ -1892,7 +1892,7 @@ inline constexpr Translation kJa[] = {
     {"Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.", "有効な段階は利用可能な経路を示し、GPU 実行を証明しません。Ray Reconstruction は評価時にハンドルごとに確認します。"},
     {"Requested stages available", "要求された段階を利用可能"},
     {"A later pass cannot run at an earlier stage", "後のパスは前の段階に戻れません"},
-    {"Cross-stage passes require native DX12 DLSS SR/DLAA", "段階間パスにはネイティブ DX12 DLSS SR/DLAA が必要です"},
+    {"Cross-stage passes require native DX11/DX12 DLSS SR/DLAA", "段階間パスにはネイティブ DX11/DX12 DLSS SR/DLAA が必要です"},
     {"Cross-stage Present execution is not validated", "段階間の Present 実行は未検証です"},
     {"Frame generation owns the NR input path", "フレーム生成が NR 入力経路を使用しています"},
     {"Ray Reconstruction runs Render passes after upscaling", "Ray Reconstruction は拡大後に Render パスを実行します"},
