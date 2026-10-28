@@ -19,7 +19,7 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 
 | 版本范围 | 可用范围 |
 | --- | --- |
-| **0.2.0-dev.6 预发布** | 新增原生 DX11 Bridge Render → 游戏 DLSS SR/DLAA → Upscaled，最多四层沿用逐层独立模型、外观及结果配置；另含默认关闭的 DX12 Upscaled→Present 实验（需 `NRExperimentalPresentChain=1`）。混合链每阶段交付须确认 GPU 真正完成，会增加同步成本；DX11 游戏／画质验收与自动化 GPU 测试分开记录。已实现的 Render→Upscaled 可与原生 DLSS FG／XeFG 并用，既有输入所有权及实验门控仍适用。B2 的 Upscaled→Pre-FG 尾组尚未实现，Vulkan 混合链仍停用。见[叠层指南](docs/USER_GUIDE.md#zh-multipass)。 |
+| **0.2.0-dev.7 预发布** | 新增原生 DX11 Bridge Render → 游戏 DLSS SR/DLAA → Upscaled，最多四层沿用逐层独立模型、外观及结果配置；另含默认关闭的 DX12 Upscaled→Present 实验（需 `NRExperimentalPresentChain=1`）。混合链每阶段交付须确认 GPU 真正完成，会增加同步成本；DX11 游戏／画质验收与自动化 GPU 测试分开记录。已实现的 Render→Upscaled 可与原生 DLSS FG／XeFG 并用，既有输入所有权及实验门控仍适用。B2 的 Upscaled→Pre-FG 尾组尚未实现，Vulkan 混合链仍停用。见[叠层指南](docs/USER_GUIDE.md#zh-multipass)。 |
 | **0.2.0-dev.5 预发布** | 新增可选原生 Unicode 辅助输入、精简预设／方案及逐层独立阶段，并修正发布包的文档配图清单。DX12 Render → 游戏 DLSS SR → Upscaled 已有巫师3 HDR 下 AA／AB／BA／BB 短时实测，广泛画质／长时验收仍未完成。跨阶段 Present、DX11/Vulkan 停用。见[叠层指南](docs/USER_GUIDE.md#zh-multipass)和[方案指南](docs/USER_GUIDE.md#zh-presets)。 |
 | **0.1.0** | 本页描述此版本的四页菜单、双模型、逐层独立外观／结果设置与四套主题；验证及剩余限制见[版本说明](docs/releases/v0.1.0.md)。 |
 | [上一预发布版：v0.2.0-dev.5](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.0-dev.5) | 新增逐层阶段、辅助输入及修正后的文档配图包。 |
@@ -67,7 +67,7 @@ Slot 自动保存与共享库文件、ReShade 正常设置分别处理，强退�
 
 ![保存本地 NR 方案](docs/images/ui/presets-zh.webp)
 
-*0.2.0-dev.6 开发预发布源码中的简洁保存任务，更多选项及文件导出按需展开；
+*0.2.0-dev.7 开发预发布源码中的简洁保存任务，更多选项及文件导出按需展开；
 本图为合成状态的离屏示例，未执行保存。*
 
 ![Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED](docs/images/ui/themes-zh.webp)
@@ -219,7 +219,7 @@ and four menu themes.
 
 | Version scope | What is available |
 | --- | --- |
-| **0.2.0-dev.6 pre-release** | Adds native DX11 Bridge Render → game DLSS SR/DLAA → Upscaled, reusing independent per-pass models, looks and results across up to four passes, plus a default-off DX12 Upscaled→Present experiment (`NRExperimentalPresentChain=1`). Each mixed-stage delivery requires proven GPU completion and adds synchronization cost. DX11 game/image-quality acceptance is separate from automated GPU tests. The implemented Render→Upscaled chain can run alongside native DLSS FG/XeFG; existing input-ownership and experimental gates still apply. B2's Upscaled→Pre-FG tail group is not implemented, and mixed Vulkan chains remain disabled. See the [Multi-Pass guide](docs/USER_GUIDE.md#en-multipass). |
+| **0.2.0-dev.7 pre-release** | Adds native DX11 Bridge Render → game DLSS SR/DLAA → Upscaled, reusing independent per-pass models, looks and results across up to four passes, plus a default-off DX12 Upscaled→Present experiment (`NRExperimentalPresentChain=1`). Each mixed-stage delivery requires proven GPU completion and adds synchronization cost. DX11 game/image-quality acceptance is separate from automated GPU tests. The implemented Render→Upscaled chain can run alongside native DLSS FG/XeFG; existing input-ownership and experimental gates still apply. B2's Upscaled→Pre-FG tail group is not implemented, and mixed Vulkan chains remain disabled. See the [Multi-Pass guide](docs/USER_GUIDE.md#en-multipass). |
 | **0.2.0-dev.5 pre-release** | Adds optional native Unicode assisted input, streamlined presets/profiles and independent per-pass stages, and corrects the packaged documentation images. DX12 Render → game DLSS SR → Upscaled has bounded Witcher 3 HDR tests with AA/AB/BA/BB; broader image/long-session acceptance remains open. Cross-stage Present and DX11/Vulkan are disabled. See the [Multi-Pass guide](docs/USER_GUIDE.md#en-multipass) and [profile guide](docs/USER_GUIDE.md#en-presets). |
 | **0.1.0** | This README describes the version's four-page menu, dual models, independent per-pass look/result settings and four themes. See the [release notes](docs/releases/v0.1.0.md) for validation and remaining limits. |
 | [Previous pre-release: v0.2.0-dev.5](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.0-dev.5) | Adds per-pass stages, assisted input and the corrected documentation image package. |
@@ -276,7 +276,7 @@ in the same offscreen candidate UI example.*
 
 ![Save a local NR profile](docs/images/ui/presets.webp)
 
-*The compact save task in the 0.2.0-dev.6 development source; more options and
+*The compact save task in the 0.2.0-dev.7 development source; more options and
 file export expand when needed. Synthetic offscreen example, with no file saved.*
 
 ![Cyber Neon, Nexus Dark, Fluent Light and Midnight OLED](docs/images/ui/themes.webp)

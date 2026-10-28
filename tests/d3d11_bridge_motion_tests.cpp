@@ -925,6 +925,12 @@ int main(int argc, char** argv) {
       release_stall.join();
       WaitForGpu(native::bridge.fence_done12, pending);
       native::DrainBridgeRetired(pending);
+      // Three watchdog trips intentionally make the production bridge lost for
+      // the rest of this D3D11 session. The fixture starts a fresh bridge to
+      // continue testing pending-delivery recovery; production does not.
+      native::ReleaseBridge();
+      Check(native::EnsureBridgeUp(context.Get()) == native::kBridgeReady,
+          "fixture starts a fresh bridge after the watchdog burst");
       mature(1, 0);
       Check(native::bridge_pending_delivery_value == 0, "recovery clears pending delivery after real completion");
       std::printf("PASS failures Render/partial/SR/exception/generation/ring/watchdog/retire/recovery aliased=%u\n",
