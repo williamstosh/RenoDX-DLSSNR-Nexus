@@ -81,7 +81,12 @@ foreach ($notesTestTag in @('v1.2.3-dev.1', 'v1.2.3-rc.1', 'v1.2.3')) {
     Assert-NotesTest ($notesTestResult.Body.Contains('independent models without a pull request')) 'Direct feature commit was omitted'
     Assert-NotesTest ($notesTestResult.Body.Contains("/commit/$notesTestDirect")) 'Direct commit link missing'
     Assert-NotesTest ([regex]::Matches($notesTestResult.Body, '/pull/7\)').Count -eq 1) 'Duplicate pull request reference'
-    Assert-NotesTest ($notesTestResult.Body.StartsWith('[简体中文](#简体中文) · [English](#english)')) 'Top navigation missing'
+    Assert-NotesTest ($notesTestResult.Body.StartsWith("[简体中文](#user-content-nr-nexus-$notesTestTag-zh) · [English](#user-content-nr-nexus-$notesTestTag-en)")) 'Top navigation missing'
+    foreach ($language in @('zh', 'en')) {
+        $anchor = "nr-nexus-$notesTestTag-$language"
+        Assert-NotesTest ([regex]::Matches($notesTestResult.Body, [regex]::Escape("<a name=`"$anchor`"></a>")).Count -eq 1) 'Explicit language anchor must occur once'
+        Assert-NotesTest ($notesTestResult.Body.Contains("(#user-content-$anchor)")) 'Link must target the GitHub-prefixed anchor'
+    }
     Assert-NotesTest ($notesTestResult.Body.IndexOf('## 简体中文') -lt $notesTestResult.Body.IndexOf('## English')) 'Language order changed'
     Assert-NotesTest ($notesTestResult.Body.IndexOf('### Installation') -lt $notesTestResult.Body.IndexOf('## Source / 源码')) 'Generated content displaced language blocks'
     Assert-NotesTest ([regex]::Matches($notesTestResult.Body, '(?m)^## Source / 源码$').Count -eq 1) 'Source section must occur once'

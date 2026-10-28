@@ -4,6 +4,7 @@
 <!-- 中文完整区块在前，英文完整区块在后。每种语言保留版本亮点、验证情况、已知限制、安装说明四个必需章节；按需保留新增功能与改进、修复内容两个可选章节，中英文对应。 -->
 <!-- 首发 Previous 为 none；不手填 Source、Full Changelog 或 References，生成器会统一追加 ## Source / 源码、## References / PR 与 Commit 记录。 -->
 <!-- Previous: vPREVIOUS -->
+<!-- 源文件使用标题跳转；发布生成器自动添加包含 Tag 的显式 name 锚点及对应 user-content- 跳转，避免 Releases 列表冲突。 -->
 
 [简体中文](#简体中文) · [English](#english)
 

@@ -96,6 +96,11 @@ foreach ($notesLine in $notesLog) {
     }
 }
 $notesBody = [regex]::Replace($notesText.Substring($notesTitle.Length), '(?m)^<!-- Previous: .*? -->\n?', '').Trim()
+# Release pages omit automatic heading IDs. GitHub prefixes explicit names with user-content-.
+$notesAnchor = 'nr-nexus-' + $Tag
+$notesBody = $notesBody.Replace($notesNavigation, "[简体中文](#user-content-$notesAnchor-zh) · [English](#user-content-$notesAnchor-en)")
+$notesBody = $notesBody.Replace('## 简体中文', "<a name=`"$notesAnchor-zh`"></a>`n`n## 简体中文")
+$notesBody = $notesBody.Replace('## English', "<a name=`"$notesAnchor-en`"></a>`n`n## English")
 $notesBody += "`n`n## Source / 源码`n`nTag: [$Tag](https://github.com/$Repository/tree/$Tag)`n`nSource: https://github.com/$Repository/commit/$notesSource"
 if ($notesPreviousTag -ne 'none') {
     $notesBody += "`n`n[Full Changelog](https://github.com/$Repository/compare/$notesPreviousTag...$Tag)"

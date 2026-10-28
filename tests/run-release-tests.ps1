@@ -65,7 +65,7 @@ Extract the release archive.
 $releaseTestNotes = $releaseTestNotes.Replace('TAG', $releaseTestVersion.Tag)
 [IO.File]::WriteAllText($releaseTestNotesPath, $releaseTestNotes)
 function Assert-TestNotes([string]$Body) {
-    Assert-Test ($Body.StartsWith('[简体中文](#简体中文) · [English](#english)')) 'Reviewed navigation missing'
+    Assert-Test ($Body.StartsWith("[简体中文](#user-content-nr-nexus-$($releaseTestVersion.Tag)-zh) · [English](#user-content-nr-nexus-$($releaseTestVersion.Tag)-en)")) 'Reviewed navigation missing'
     Assert-Test ($Body.IndexOf('## 简体中文') -lt $Body.IndexOf('## English')) 'Language blocks reordered'
     Assert-Test ($Body.Contains('### 版本亮点') -and $Body.Contains('### Highlights') -and $Body.Contains('direct feature: add independent per-pass models')) 'Reviewed features or direct commits missing'
     foreach ($heading in @('Source / 源码', 'References / PR 与 Commit 记录')) {
