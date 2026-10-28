@@ -36,16 +36,22 @@ inline constexpr uint32_t kDedupePerPresent = 0;
 inline constexpr uint32_t kDedupePerEvaluate = 1;
 
 struct StageSourceState {
+  static constexpr uint32_t kMaxOutputs = 8;
   const void* plan_handle = nullptr;
   stage_plan::Plan plan;
   uint64_t configuration_generation = 0;
   bool render_attempted = false;
   bool render_complete = false;
+  bool present_predecessor_attempted = false;
   uint32_t game_wrappers = 0;
+  // Mirrors share marks only within one real source call. Streamline may
+  // enclose several calls that legitimately reuse the same output resource.
+  uint32_t output_count = 0;
+  const void* outputs[kMaxOutputs] = {};
+  uint32_t output_stages[kMaxOutputs] = {};
 };
 
 struct EvaluateChain : StageSourceState {
-  static constexpr uint32_t kMaxOutputs = 8;
   uint32_t depth = 0;
   // A hooked NGX evaluate inside this chain got past the structural gates
   // (a DLSS block with guides and usable geometry): the NGX path owns the
@@ -58,9 +64,6 @@ struct EvaluateChain : StageSourceState {
   // block.  v8.5.0-rc1 Resonance: prefg_fallbacks equal to mirror (807/807).
   // Not a depth test: Streamline's evaluate hook encloses its NGX evaluates.
   bool prefg_ran = false;
-  uint32_t output_count = 0;
-  const void* outputs[kMaxOutputs] = {};
-  uint32_t output_stages[kMaxOutputs] = {};
 
   bool Injected(const void* output, uint32_t stage = 0) const noexcept {
     for (uint32_t i = 0; i < output_count; ++i) {

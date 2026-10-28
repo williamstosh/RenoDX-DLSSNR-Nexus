@@ -235,6 +235,17 @@ inline std::atomic_uint64_t bridge_skew{0};
 inline uint64_t bridge_completion_waits = 0;
 inline uint64_t bridge_completion_wait_ns = 0;
 inline uint64_t bridge_completion_failures = 0;
+// Cumulative CPU API spans, not GPU copy durations. runtime_mutex guards
+// these alongside completion waits; telemetry deltas separate submission
+// overhead from time blocked on the already-flushed GPU dependency chain.
+struct BridgeCpuTiming {
+  uint64_t samples = 0;
+  uint64_t input_ns = 0;
+  uint64_t submit_ns = 0;
+  uint64_t completion_ns = 0;
+  uint64_t return_ns = 0;
+};
+inline std::array<BridgeCpuTiming, 2> bridge_cpu_timing;
 // A mixed transaction that withheld the D3D11 return Wait must finish before
 // any later input copy can overwrite its twins, even after a mode switch.
 inline uint64_t bridge_pending_delivery_value = 0;
@@ -1661,6 +1672,12 @@ inline bool RunBridge(ID3D11DeviceContext* context,
     }
 
     ID3D11DeviceContext4* const ctx = bridge.context11;
+    auto& cpu = bridge_cpu_timing[pre ? 1 : 0];
+    const bool measure_cpu = telemetry_seconds.load(std::memory_order_relaxed) != 0;
+    int64_t cpu_start = (measure_cpu ? SteadyNowNs() : 0);
+    if (measure_cpu) {
+      ++cpu.samples;
+    }
     ctx->CopySubresourceRegion(set->motion_convert ? set->motion_stage : set->motion11, 0, 0, 0, 0,
                                textures[at(ResourceKey::kMotionVectors)], 0, nullptr);
     if (set->exposure11 != nullptr) {
@@ -1712,6 +1729,10 @@ inline bool RunBridge(ID3D11DeviceContext* context,
     } else {
       ctx->CopySubresourceRegion(set->output11, 0, 0, 0, 0, output, 0, nullptr);
     }
+    if (measure_cpu) {
+      cpu.input_ns += SteadyNowNs() - cpu_start;
+      cpu_start = SteadyNowNs();
+    }
     if (FAILED(ctx->Signal(bridge.fence_in11, value))) {
       bridge_skew.fetch_add(1, std::memory_order_relaxed);
       if (plan.mixed) decline(NrDeclineReason::kBridgeDown, "the D3D11 input fence signal failed");
@@ -1743,6 +1764,9 @@ inline bool RunBridge(ID3D11DeviceContext* context,
     set->last_value = value;
     bridge_submitted_value.store(value, std::memory_order_release);
     if (plan.mixed) bridge_pending_delivery_value = value;
+    if (measure_cpu) {
+      cpu.submit_ns += SteadyNowNs() - cpu_start;
+    }
     if (!submitted) {
       bridge.fence_out12->Signal(value);
       // ExecuteCommandLists may already have issued the work before a queue
@@ -1763,7 +1787,11 @@ inline bool RunBridge(ID3D11DeviceContext* context,
       const HRESULT event_result = bridge.fence_done12->SetEventOnCompletion(value, bridge.completion_event);
       const DWORD wait_result = (SUCCEEDED(event_result)
           ? WaitForSingleObject(bridge.completion_event, 1000) : WAIT_FAILED);
-      bridge_completion_wait_ns += SteadyNowNs() - wait_start;
+      const int64_t waited_ns = SteadyNowNs() - wait_start;
+      bridge_completion_wait_ns += waited_ns;
+      if (measure_cpu) {
+        cpu.completion_ns += waited_ns;
+      }
       const uint64_t completed_value = bridge.fence_done12->GetCompletedValue();
       if (completed_value == UINT64_MAX) {
         ++bridge_completion_failures;
@@ -1786,6 +1814,9 @@ inline bool RunBridge(ID3D11DeviceContext* context,
         return;
       }
     }
+    if (measure_cpu) {
+      cpu_start = SteadyNowNs();
+    }
     if (FAILED(ctx->Wait(bridge.fence_out11, value))) {
       bridge_skew.fetch_add(1, std::memory_order_relaxed);
       if (plan.mixed) decline(NrDeclineReason::kBridgeDown, "the D3D11 return fence wait failed");
@@ -1802,6 +1833,9 @@ inline bool RunBridge(ID3D11DeviceContext* context,
       redirect->Point(parameters, NVSDK_NGX_Parameter_Color, set->color11);
       delivered = bridge::GetD3D11Resource(parameters, NVSDK_NGX_Parameter_Color) == set->color11;
       if (!delivered) decline(NrDeclineReason::kBridgeDown, "the game's Color binding rejected the bridge twin");
+    }
+    if (measure_cpu) {
+      cpu.return_ns += SteadyNowNs() - cpu_start;
     }
   });
   if (!named) CountNrDecline(NrDeclineReason::kBridgeDown);
@@ -2247,5 +2281,14 @@ inline std::string BridgeTelemetry() {
       << " completion_failures=" << bridge_completion_failures
       << " shared_mib=" << ((bytes + (1u << 20) - 1) >> 20) << " mode=copy]"
       << " surfaces[live=" << live_sets << " retired=" << retired << "]";
+  for (size_t stage = 0; stage < bridge_cpu_timing.size(); ++stage) {
+    const auto& cpu = bridge_cpu_timing[stage];
+    if (cpu.samples == 0) continue;
+    out << " bridge_cpu[" << (stage == 0 ? "Upscaled" : "Render")
+        << " samples=" << cpu.samples << " input_ms=" << cpu.input_ns / 1'000'000.0
+        << " submit_ms=" << cpu.submit_ns / 1'000'000.0
+        << " completion_ms=" << cpu.completion_ns / 1'000'000.0
+        << " return_ms=" << cpu.return_ns / 1'000'000.0 << ']';
+  }
   return out.str();
 }

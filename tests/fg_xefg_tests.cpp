@@ -44,10 +44,25 @@ struct Gpu {
   ComPtr<ID3D12Fence> fence;
   std::vector<ComPtr<ID3D12Resource>> uploads;
   uint64_t serial = 0;
-  Gpu() {
+  explicit Gpu(bool hardware = false) {
     ComPtr<IDXGIAdapter> warp;
     Check(SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))), "DXGI factory");
-    Check(SUCCEEDED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp))), "WARP adapter");
+    if (hardware) {
+      for (UINT index = 0; ; ++index) {
+        ComPtr<IDXGIAdapter1> candidate;
+        if (factory->EnumAdapters1(index, &candidate) == DXGI_ERROR_NOT_FOUND) break;
+        DXGI_ADAPTER_DESC1 adapter_desc{};
+        candidate->GetDesc1(&adapter_desc);
+        if (adapter_desc.VendorId == 0x10DE && (adapter_desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0) {
+          candidate.As(&warp);
+          std::wcout << L"GPU fixture: " << adapter_desc.Description << L'\n';
+          break;
+        }
+      }
+      Check(warp != nullptr, "NVIDIA hardware adapter");
+    } else {
+      Check(SUCCEEDED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp))), "WARP adapter");
+    }
     Check(SUCCEEDED(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))), "WARP device");
     D3D12_COMMAND_QUEUE_DESC desc{};
     Check(SUCCEEDED(device->CreateCommandQueue(&desc, IID_PPV_ARGS(&queue))), "queue");

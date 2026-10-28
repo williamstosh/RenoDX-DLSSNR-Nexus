@@ -178,6 +178,83 @@ int main() {
     }
   }
 
+  context = "B1 default capability";
+  check(!planner::Capabilities{}.mixed_present_dx12, "mixed Present DX12 execution requires explicit opt-in");
+  struct B1Case {
+    std::string_view name;
+    planner::Configuration config;
+    std::array<Stage, 4> requested;
+  };
+  const std::array b1_cases = {
+      B1Case{.name = "Upscaled->Present",
+             .config = {.pass_count = 2, .hook_point = 0, .stages = {3}},
+             .requested = {Stage::UPSCALED, Stage::PRESENT}},
+      B1Case{.name = "Render->Present",
+             .config = {.pass_count = 2, .hook_point = 1, .stages = {3}},
+             .requested = {Stage::RENDER, Stage::PRESENT}},
+      B1Case{.name = "Render->Upscaled->Present",
+             .config = {.pass_count = 3, .hook_point = 1, .stages = {2, 3}},
+             .requested = {Stage::RENDER, Stage::UPSCALED, Stage::PRESENT}},
+      B1Case{.name = "Upscaled->Upscaled->Present",
+             .config = {.pass_count = 3, .hook_point = 0, .stages = {0, 3}},
+             .requested = {Stage::UPSCALED, Stage::UPSCALED, Stage::PRESENT}},
+      B1Case{.name = "Upscaled->Present->Present",
+             .config = {.pass_count = 3, .hook_point = 0, .stages = {3, 0}},
+             .requested = {Stage::UPSCALED, Stage::PRESENT, Stage::PRESENT}},
+      B1Case{.name = "Upscaled->Present->Present->Present",
+             .config = {.pass_count = 4, .hook_point = 0, .stages = {3, 0, 0}},
+             .requested = {Stage::UPSCALED, Stage::PRESENT, Stage::PRESENT, Stage::PRESENT}},
+  };
+  for (const auto& test_case : b1_cases) {
+    for (uint32_t flags = 0; flags < 64; ++flags) {
+      context = "B1 " + std::string(test_case.name) + " caps=" + std::to_string(flags);
+      const auto saved_config = test_case.config;
+      const planner::Capabilities caps{
+          .mixed_dx12 = (flags & 1) != 0,
+          .mixed_dx11 = (flags & 2) != 0,
+          .ray_reconstruction = (flags & 4) != 0,
+          .present_available = (flags & 8) != 0,
+          .fg_owns_input = (flags & 16) != 0,
+          .mixed_present_dx12 = (flags & 32) != 0};
+      const auto saved_caps = caps;
+      const bool b1_route = test_case.config.pass_count == 2
+                            && test_case.requested[0] == Stage::UPSCALED
+                            && test_case.requested[1] == Stage::PRESENT;
+      const bool supported = b1_route && caps.mixed_present_dx12 && caps.mixed_dx12
+                             && caps.present_available && !caps.ray_reconstruction;
+      const bool accepted = supported && !caps.fg_owns_input;
+      const auto plan = planner::Build(test_case.config, caps);
+      check(plan.valid == accepted, "B1 admits only the opted-in two-pass DX12 SR/DLAA route without FG");
+      check(plan.pass_count == test_case.config.pass_count && plan.mixed
+                && plan.requested == test_case.requested && plan.effective == test_case.requested,
+            "B1 preserves requested stages and never moves the Present tail back to Upscaled");
+      check(test_case.config.pass_count == saved_config.pass_count
+                && test_case.config.hook_point == saved_config.hook_point && test_case.config.stages == saved_config.stages,
+            "B1 admission and rejection preserve saved configuration");
+      check(caps.mixed_dx12 == saved_caps.mixed_dx12 && caps.mixed_dx11 == saved_caps.mixed_dx11
+                && caps.ray_reconstruction == saved_caps.ray_reconstruction
+                && caps.present_available == saved_caps.present_available && caps.fg_owns_input == saved_caps.fg_owns_input
+                && caps.mixed_present_dx12 == saved_caps.mixed_present_dx12,
+            "B1 planning preserves all capability inputs");
+      if (!accepted) {
+        const auto reason = (!caps.mixed_dx12 && !caps.mixed_dx11 ? Reason::UNSUPPORTED_BACKEND
+                             : (supported ? Reason::FG_OWNS_INPUT : Reason::MIXED_PRESENT));
+        check(plan.reason == reason && plan.group_count == 0,
+              "rejected B1 chains explain the failure and expose no partial executable groups");
+        continue;
+      }
+      check(plan.reason == Reason::NONE && plan.group_count == 2,
+            "accepted B1 retains two executable groups without fallback");
+      check(plan.groups[0].stage == Stage::UPSCALED && plan.groups[0].begin == 0 && plan.groups[0].count == 1
+                && plan.groups[1].stage == Stage::PRESENT && plan.groups[1].begin == 1 && plan.groups[1].count == 1,
+            "accepted B1 executes each pass exactly once in Upscaled then Present order");
+      check(plan.At(Stage::RENDER).count == 0
+                && plan.At(Stage::UPSCALED).begin == 0 && plan.At(Stage::UPSCALED).count == 1
+                && plan.At(Stage::PRESENT).begin == 1 && plan.At(Stage::PRESENT).count == 1,
+            "B1 stage lookup preserves the distinct Present tail");
+    }
+  }
+
   context = "model compatibility";
   check(model::SupportsSmallModel(310, 9, 16, 0) && !model::SupportsSmallModel(310, 8, 0, 0),
         "dual-model support uses the identified runtime");
@@ -276,27 +353,38 @@ int main() {
       nr::mixed_stage_terminal = {.active = true, .injected = true};
       nr::evaluate_chain.render_attempted = true;
       nr::evaluate_chain.configuration_generation = 73;
+      nr::evaluate_chain.MarkInjected(reinterpret_cast<void*>(uintptr_t{3}), 1);
       {
         const nr::SourceStageScope mirror(reinterpret_cast<void*>(uintptr_t{1}), true);
         check(nr::evaluate_chain.game_wrappers == 2 && nr::evaluate_chain.render_attempted,
               "same-source nested wrappers share one stage state");
+        check(nr::evaluate_chain.Injected(reinterpret_cast<void*>(uintptr_t{3}), 1),
+              "same-source nested wrappers retain their output dedupe mark");
       }
       {
         const nr::SourceStageScope different(reinterpret_cast<void*>(uintptr_t{2}), true);
         check(nr::evaluate_chain.game_wrappers == 1 && !nr::evaluate_chain.render_attempted
                   && !nr::mixed_stage_terminal.active,
               "another nested source starts from independent stage state and terminal");
+        check(!nr::evaluate_chain.Injected(reinterpret_cast<void*>(uintptr_t{3}), 1),
+              "another source may evaluate the same output without inheriting a mirror mark");
+        nr::evaluate_chain.MarkInjected(reinterpret_cast<void*>(uintptr_t{4}), 0);
         nr::mixed_stage_terminal.active = true;
         nr::CountNrDecline(nr::NrDeclineReason::kGameEvaluateFailed);
       }
       check(nr::mixed_stage_terminal.injected && nr::evaluate_chain.render_attempted
                 && nr::evaluate_chain.configuration_generation == 73,
             "a failing child source restores the parent's plan and success");
+      check(nr::evaluate_chain.Injected(reinterpret_cast<void*>(uintptr_t{3}), 1)
+                && !nr::evaluate_chain.Injected(reinterpret_cast<void*>(uintptr_t{4}), 0),
+            "a child source restores the parent's output marks without leaking its own");
     }
     {
       const nr::SourceStageScope next(reinterpret_cast<void*>(uintptr_t{1}), true);
       check(!nr::evaluate_chain.render_attempted && nr::evaluate_chain.game_wrappers == 1,
             "a sequential source call does not inherit an earlier Render admission");
+      check(!nr::evaluate_chain.Injected(reinterpret_cast<void*>(uintptr_t{3}), 1),
+            "a later real evaluate of the same source starts with clean output marks");
       nr::mixed_stage_terminal = {.active = true, .injected = true};
     }
     check(nr::mixed_stage_source_successes.load() == multi_success_before + 2

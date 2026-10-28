@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('all','report','branding','ui','presets','unicode-input','native','sdr-policy','hdr-policy','scope','config','constants','fg-xefg','fg-native','lifecycle','bridge-motion','stage-plan')]
+    [ValidateSet('all','report','branding','ui','presets','unicode-input','native','sdr-policy','hdr-policy','scope','config','constants','fg-xefg','fg-native','lifecycle','bridge-motion','stage-plan','copy-slots')]
     [string[]]$Suite = @('all'),
     [string]$SourceRoot = (Split-Path $PSScriptRoot -Parent),
     [string]$HostRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) '.local/renodx'),
@@ -11,8 +11,9 @@ param(
     [string]$DetoursLibrary,
     [string]$PythonExecutable,
     [ValidateSet('Auto','Quick','Full','None')][string]$UiPreview = 'Auto',
-    [ValidateSet('native-required-menu','native-owner-idle','native-options-resume','native-options-delayed','native-guide-contract','present-guide-models','native-present-decision','trace-metadata','stage-chain')]
+    [ValidateSet('native-required-menu','native-owner-idle','native-options-resume','native-options-delayed','native-guide-contract','present-guide-models','native-present-decision','trace-metadata','stage-chain','source-lifecycle','feature-switch','feature-switch-hardware','f5-mixed','present-chain','present-chain-hardware','present-chain-scrgb','present-chain-hdr10','native-full','native-full-hardware')]
     [string[]]$NativeCase = @(),
+    [ValidateSet('dlaa','sr')][string[]]$BridgeCase = @(),
     [switch]$BuildOnly,
     [ValidateSet('Standard','Full','Acceptance')][string]$RetentionMode = $(if ($env:NR_NEXUS_TEST_RETENTION) { $env:NR_NEXUS_TEST_RETENTION } else { 'Standard' }),
     [switch]$SoftwareOnly
@@ -44,12 +45,14 @@ $sources = [ordered]@{
     'fg-xefg'='fg_xefg_tests'; 'fg-native'='fg_native_tests'
     lifecycle='fg_lifecycle_tests'; 'bridge-motion'='d3d11_bridge_motion_tests'
     'stage-plan'='stage_plan_tests'
+    'copy-slots'='copy_slots_tests'
 }
 if ($Suite -contains 'all') { $Suite = @($sources.Keys) }
 if ($BuildOnly -and @($Suite | Where-Object { $_ -in @('config','constants','lifecycle','ui') }).Count) {
     throw '-BuildOnly requires explicitly selecting native/policy/scope/fg-xefg/fg-native/bridge-motion suites.'
 }
 if ($NativeCase.Count -and $Suite -notcontains 'fg-native') { throw '-NativeCase requires -Suite fg-native (or all).' }
+if ($BridgeCase -and $Suite -notcontains 'bridge-motion') { throw '-BridgeCase requires -Suite bridge-motion (or all).' }
 if (-not $DetoursLibrary) { $DetoursLibrary = Join-Path $HostRoot 'external/Detours/lib.X64/detours.lib' }
 $parameters = @{ SourceRoot=$SourceRoot; HostRoot=$HostRoot; ShaderIncludeDirectory=$ShaderIncludeDirectory
     BuildProject=$BuildProject; VcVars64=$VcVars64 }
@@ -118,11 +121,20 @@ foreach ($item in $Suite) {
     $hashes | ConvertTo-Json | Set-Content -LiteralPath "$directory/inputs.json" -Encoding utf8
     if (-not $BuildOnly) {
         if ($item -eq 'bridge-motion') {
-            if (-not $SoftwareOnly) { Invoke-TestProcess $exe $directory 'hardware' }
-            Invoke-TestProcess $exe $directory 'warp' @('--warp')
+            $bridgeCases = if ($BridgeCase.Count) { $BridgeCase } else { @('') }
+            foreach ($case in $bridgeCases) {
+                $bridgeArguments = @()
+                $suffix = ''
+                if ($case) { $bridgeArguments += "--$case"; $suffix = "-$case" }
+                if (-not $SoftwareOnly) { Invoke-TestProcess $exe $directory "hardware$suffix" $bridgeArguments }
+                Invoke-TestProcess $exe $directory "warp$suffix" (@('--warp') + $bridgeArguments)
+            }
         } elseif ($item -eq 'fg-native' -and $NativeCase.Count) {
             foreach ($case in $NativeCase) { Invoke-TestProcess $exe $directory $case @("--$case") }
-        } else { Invoke-TestProcess $exe $directory 'test' }
+        } else {
+            Invoke-TestProcess $exe $directory 'test'
+            if ($item -eq 'fg-native') { Invoke-TestProcess $exe $directory 'f5-mixed' @('--f5-mixed') }
+        }
         foreach ($inputHash in $hashes) {
             if ((Get-FileHash -LiteralPath $inputHash.path).Hash -ne $inputHash.sha256) { throw "Test input changed: $($inputHash.path)" }
         }

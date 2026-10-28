@@ -312,6 +312,19 @@ struct BasicLookHistory {
 };
 using LookHistory = BasicLookHistory<ID3D12Resource*>;
 
+enum HistoryResetReason : uint32_t {
+  kResetUnknown = 1u << 0,
+  kResetCreated = 1u << 1,
+  kResetConfiguration = 1u << 2,
+  kResetDimensions = 1u << 3,
+  kResetSourceChange = 1u << 4,
+  kResetGame = 1u << 5,
+  kResetEpochUnverified = 1u << 6,
+  kResetStateless = 1u << 7,
+  kResetRecovery = 1u << 8,
+  kResetContract = 1u << 9,
+};
+
 // One NR feature instance (handle + parameter block + latches).  Slot 0 is
 // the original single-pass NR feature; slots 1..kMaxNrPasses-1 exist only
 // while NR stacking is enabled.
@@ -337,6 +350,9 @@ struct NrFeatureSlot {
   // global reset epoch (a new slot must never reset older slots or another
   // stream's history).
   bool pending_reset = false;
+  // Diagnostic evidence only; these fields never participate in Reset policy.
+  uint32_t pending_reset_reasons = 0;
+  uint32_t model_reset_reasons = 0;
   // The queue tracker was live when this handle was created, so every
   // recording that used it is a tracked submission use (see
   // RetiredNrFeature::tracker_proof).
@@ -397,6 +413,8 @@ struct NormStream {
 };
 
 struct FeatureState {
+  uint64_t source_generation = 0;
+  bool mixed_recording_discarded = false;
   // Stage-local dimensions, normalization and slots must not alternate
   // between render and display contracts during one source evaluate.
   std::shared_ptr<FeatureState> render_session;
@@ -931,6 +949,9 @@ struct EvaluationContract {
 // (hdr_mode, units); and its absolute units have a fixed divisor from the
 // display's SDR white (codec::PresentDivisor; 0 keeps FrameCodecDivisor).
 struct PresentTarget {
+  // Borrowed only during a B1 tail recording; other Present routes use
+  // their existing single-stage plan.
+  const stage_plan::Plan* stage_execution_plan = nullptr;
   D3D12_RESOURCE_STATES output_state = D3D12_RESOURCE_STATE_PRESENT;
   const ID3D12Resource* workset_key = nullptr;
   uint8_t hdr_mode = 0;
@@ -954,6 +975,8 @@ struct PresentTarget {
   uint32_t sdr_restore_effective_mode = 0;
   std::array<float, kMaxNrPasses> pass_color_strength{};
   uint64_t guide_serial = 0;
+  uint64_t diagnostic_source_generation = 0;
+  NVSDK_NGX_Feature diagnostic_source_feature = NVSDK_NGX_Feature_Reserved_Unknown;
   uint32_t guide_mode = 0;
   uintptr_t swapchain_identity = 0;
   DXGI_FORMAT swapchain_format = DXGI_FORMAT_UNKNOWN;
@@ -1883,6 +1906,8 @@ inline constexpr uint32_t kHookUpscaled = 0;
 inline constexpr uint32_t kHookRender = 1;
 inline constexpr uint32_t kHookPresent = 2;
 inline std::atomic_uint32_t hook_point = defaults::kHookPoint;
+inline std::atomic_bool experimental_present_chain{false};
+inline std::atomic_bool mixed_present_fg_seen{false};
 inline std::atomic_uint32_t auto_fg_fallback = defaults::kAutoFgFallback;
 inline std::atomic_bool auto_fg_fallback_active{false};
 // The pre-SR selection as the evaluate paths ask for it: a view of
@@ -1983,15 +2008,28 @@ inline std::atomic_uint64_t history_reset_epoch = 1;
 // Every source also snaps the normalization governor, so a support log must
 // be able to say which one fired.
 enum class HistoryResetSource : uint8_t { kGameReset, kSetting, kRecreate, kCount };
+struct HistoryResetRequestDiagnostic {
+  std::shared_mutex mutex;
+  uint64_t epoch = 0;
+  HistoryResetSource source = HistoryResetSource::kCount;
+};
+inline HistoryResetRequestDiagnostic history_reset_request_diagnostic;
 inline std::atomic_uint64_t history_reset_counts[
     static_cast<size_t>(HistoryResetSource::kCount)] = {};
 inline void RequestHistoryReset(
     HistoryResetSource source = HistoryResetSource::kSetting) {
-  history_reset_epoch.fetch_add(1, std::memory_order_relaxed);
+  const auto epoch = history_reset_epoch.fetch_add(1, std::memory_order_relaxed) + 1;
   history_reset_counts[static_cast<size_t>(source)].fetch_add(
       1, std::memory_order_relaxed);
+  // Leaf lock: no runtime/configuration lock or callbacks are acquired here.
+  std::unique_lock lock(history_reset_request_diagnostic.mutex);
+  if (epoch > history_reset_request_diagnostic.epoch) {
+    history_reset_request_diagnostic.epoch = epoch;
+    history_reset_request_diagnostic.source = source;
+  }
 }
 inline void OnNativeFgOptions(bool mode_enabled) noexcept {
+  if (!mode_enabled) mixed_present_fg_seen.store(false);
   native_fg_declaration.store(mode_enabled ? NativeFgDeclaration::kOn : NativeFgDeclaration::kOff,
                               std::memory_order_relaxed);
   const bool was_off = native_fg_public_off.exchange(!mode_enabled, std::memory_order_acq_rel);
@@ -2056,7 +2094,9 @@ inline stage_plan::Plan RequestedStagePlan(bool ray_reconstruction) {
       .ray_reconstruction = ray_reconstruction,
       .present_available = !vulkan_present_seen.load() && (!D3D11OnlySession() || Dx11NativeRoute()),
       .fg_owns_input = fg::xefg::OwnsStream() || auto_fg_fallback_active.load()
-          || screenshot::WantsFinalPresent(),
+          || (experimental_present_chain.load() && (fg::xefg::Enabled() || mixed_present_fg_seen.load() || native_fg_owns.load()
+              || native_fg_declaration.load() == NativeFgDeclaration::kOn)),
+      .mixed_present_dx12 = experimental_present_chain.load(),
   });
 }
 inline stage_plan::Plan RequestedStagePlan() {
@@ -2773,7 +2813,10 @@ inline void CapturePresentGuides(
     const NVSDK_NGX_Handle* handle,
     const NVSDK_NGX_Parameter* parameters,
     D3D12_RESOURCE_STATES motion_state,
-    D3D12_RESOURCE_STATES depth_state);
+    D3D12_RESOURCE_STATES depth_state, bool mixed_predecessor = false);
+// NGX wrappers precede the Present storage needed by the B1 handoff.
+inline bool ProcessMixedPresentPredecessor(ID3D12GraphicsCommandList* list,
+    const NVSDK_NGX_Handle* handle, const NVSDK_NGX_Parameter* parameters, bool* touched);
 inline void CapturePresentGuides11(
     ID3D11DeviceContext* context,
     const NVSDK_NGX_Handle* handle,
@@ -4674,7 +4717,7 @@ inline void DrainRetiredResources(bool nr_release_allowed) {
   // Advance the exact proofs first: drop closed generations whose
   // submissions all completed.
   submission::PruneCompletedGenerations(
-      screenshot::WantsFinalPresent() ? PreservePresentCaptureProof : nullptr);
+      (screenshot::WantsFinalPresent() || experimental_present_chain.load()) ? PreservePresentCaptureProof : nullptr);
   // A removed device will never execute the retired work, so releasing is
   // safe - but that must be diagnosed, not mistaken for a proven completion.
   static std::atomic<bool> logged_device_removal{false};
@@ -6916,6 +6959,7 @@ inline bool EnsureNrFeature(
   slot.nr_hdr_mode = resources.hdr_mode;
   slot.nr_create_flags = NrCreateFlags(state.create_flags, resources.hdr_mode != 0);
   slot.pending_reset = true;
+  slot.pending_reset_reasons |= kResetCreated;
   // fail_count is NOT cleared here: only a successful evaluate proves the
   // slot works.  A contract that creates but fails its evaluate would
   // otherwise re-create (a 100-250 ms stall) on every frame.
@@ -7058,13 +7102,40 @@ inline void SetModelParameters(NrFeatureSlot& slot, uint32_t slot_index,
   // this frame, or when it was freshly created (pending_reset).  With
   // NRChainedHistory off (legacy diagnostic stacking), passes 2+ are still
   // deliberately stateless - reset on every frame.
+  const bool chained_history = chained_temporal_history.load();
   const bool do_reset = StackSlotNeedsReset(
-      chained_temporal_history.load(),
+      chained_history,
       slot_index,
       slot.pending_reset,
       frame_reset,
       slot.acknowledged_reset_epoch,
       chain_reset_epoch);
+  slot.model_reset_reasons = 0;
+  if (do_reset) {
+    if (slot.pending_reset) {
+      slot.model_reset_reasons |= (slot.pending_reset_reasons != 0 ? slot.pending_reset_reasons : kResetUnknown);
+    }
+    if (frame_reset != 0) {
+      slot.model_reset_reasons |= kResetGame;
+    }
+    if (!chained_history && slot_index != 0) {
+      slot.model_reset_reasons |= kResetStateless;
+    }
+    if (slot.acknowledged_reset_epoch != chain_reset_epoch) {
+      std::shared_lock lock(history_reset_request_diagnostic.mutex);
+      if (history_reset_request_diagnostic.epoch != chain_reset_epoch) {
+        slot.model_reset_reasons |= kResetEpochUnverified;
+      } else {
+        switch (history_reset_request_diagnostic.source) {
+          case HistoryResetSource::kGameReset: slot.model_reset_reasons |= kResetGame; break;
+          case HistoryResetSource::kSetting: slot.model_reset_reasons |= kResetConfiguration; break;
+          case HistoryResetSource::kRecreate: slot.model_reset_reasons |= kResetCreated; break;
+          default: slot.model_reset_reasons |= kResetEpochUnverified; break;
+        }
+      }
+    }
+  }
+  slot.pending_reset_reasons = 0;
   slot.pending_reset = false;
   slot.acknowledged_reset_epoch = chain_reset_epoch;
   NVSDK_NGX_Parameter_SetI(parameters, "DLSSNR.Reset", do_reset ? 1 : 0);
@@ -8926,11 +8997,52 @@ FindOrRegisterFeature(
   return features.emplace(handle, state).first;
 }
 
+inline void RejectMixedFinalPresent(const stage_plan::Plan& plan) {
+  if (plan.mixed && screenshot::WantsFinalPresent()) {
+    screenshot::FailRequest("unsupported_present",
+        "Final Present comparison is unavailable for a mixed Stage chain;"
+        " NR continues at its selected stages. Use Evaluated model buffers for a diagnostic pair.");
+  }
+}
+
+struct SourcePlanDiagnostic {
+  uint64_t sequence = 0;
+  uint64_t source_generation = 0;
+  NVSDK_NGX_Feature source_feature = NVSDK_NGX_Feature_Reserved_Unknown;
+  bool source_released = false;
+  stage_plan::Plan plan;
+};
+// Value snapshots under runtime_mutex, not references into the registry/TLS.
+inline uint64_t source_diagnostic_sequence = 0;
+inline SourcePlanDiagnostic last_source_plan;
+
+inline void ObserveSourcePlan(const NVSDK_NGX_Handle* handle, const stage_plan::Plan& plan) {
+  const auto source = created_feature_ids.find(handle);
+  if (source != created_feature_ids.end() && source->second != kFeatureDlss && source->second != kFeatureDlssd) return;
+  SourcePlanDiagnostic observed{.sequence = ++source_diagnostic_sequence, .plan = plan};
+  if (const auto feature = features.find(handle); feature != features.end()) {
+    observed.source_generation = feature->second.source_generation;
+  } else if (const auto contract = create_contracts.find(handle); contract != create_contracts.end()) {
+    observed.source_generation = contract->second.source_generation;
+  }
+  if (source != created_feature_ids.end()) {
+    observed.source_feature = source->second;
+  }
+  last_source_plan = observed;
+}
+
 // Snapshot one requested/effective plan across the real SR call. Settings can
 // change while the game records SR; the following group then declines rather
 // than evaluating a different chain on the already modified input.
-inline stage_plan::Plan EvaluationStagePlan(const NVSDK_NGX_Handle* handle) {
-  if (evaluate_chain.depth != 0 && evaluate_chain.plan_handle == handle) return evaluate_chain.plan;
+inline stage_plan::Plan EvaluationStagePlan(const NVSDK_NGX_Handle* handle, bool observe_source = true) {
+  if (evaluate_chain.depth != 0 && evaluate_chain.plan_handle == handle) {
+    // F5 can arrive during real SR, after this source's plan was frozen.
+    RejectMixedFinalPresent(evaluate_chain.plan);
+    if (observe_source) {
+      ObserveSourcePlan(handle, evaluate_chain.plan);
+    }
+    return evaluate_chain.plan;
+  }
   bool rr = false;
   if (const auto source = created_feature_ids.find(handle); source != created_feature_ids.end()) {
     rr = source->second == kFeatureDlssd;
@@ -8939,6 +9051,10 @@ inline stage_plan::Plan EvaluationStagePlan(const NVSDK_NGX_Handle* handle) {
   }
   stage_source_rr.store(rr, std::memory_order_relaxed);
   const auto plan = RequestedStagePlan(rr);
+  if (observe_source) {
+    ObserveSourcePlan(handle, plan);
+  }
+  RejectMixedFinalPresent(plan);
   if (evaluate_chain.depth != 0) {
     mixed_stage_terminal.active |= plan.mixed;
     evaluate_chain.plan_handle = handle;
@@ -8950,6 +9066,26 @@ inline stage_plan::Plan EvaluationStagePlan(const NVSDK_NGX_Handle* handle) {
   return plan;
 }
 
+struct NrEvaluationDiagnostic {
+  uint64_t sequence = 0;
+  int64_t observed_ns = 0;
+  uint64_t source_generation = 0;
+  NVSDK_NGX_Feature source_feature = NVSDK_NGX_Feature_Reserved_Unknown;
+  bool source_released = false;
+  uint32_t pass = 0;
+  stage_plan::Stage requested = stage_plan::Stage::UPSCALED;
+  stage_plan::Stage planned = stage_plan::Stage::UPSCALED;
+  stage_plan::Reason plan_reason = stage_plan::Reason::NONE;
+  NVSDK_NGX_Result result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
+  bool api_returned = false;
+  bool reset_sent = false;
+  uint32_t reset_reasons = 0;
+};
+struct LocalResetDiagnostic {
+  uint64_t sequence = 0;
+  uint64_t source_generation = 0;
+  uint32_t reasons = 0;
+};
 struct StageTelemetry {
   uint64_t groups = 0;
   uint64_t evaluates = 0;
@@ -8961,8 +9097,91 @@ struct StageTelemetry {
   uint32_t width = 0;
   uint32_t height = 0;
   std::array<uint32_t, kMaxNrPasses> resolved_requests{};
+  uint64_t accepted = 0;
+  uint64_t reset_accepted = 0;
+  NrEvaluationDiagnostic last_evaluate;
+  LocalResetDiagnostic last_reset_request;
+  int64_t diagnostic_logged_ns = 0;
+  uint64_t diagnostic_log_suppressed = 0;
+  bool diagnostic_log_pending = false;
 };
 inline std::array<StageTelemetry, 3> stage_telemetry;
+
+inline std::string HistoryResetReasonsText(uint32_t reasons) {
+  std::string text;
+  for (const auto& [flag, name] : std::initializer_list<std::pair<uint32_t, const char*>>{
+           {kResetUnknown, "unknown"}, {kResetCreated, "created"},
+           {kResetConfiguration, "configuration"}, {kResetDimensions, "dimensions"},
+           {kResetSourceChange, "source_change"}, {kResetGame, "game"},
+           {kResetEpochUnverified, "epoch_unverified"}, {kResetStateless, "stateless"},
+           {kResetRecovery, "recovery"}, {kResetContract, "contract"}}) {
+    if ((reasons & flag) == 0) continue;
+    if (!text.empty()) {
+      text += '+';
+    }
+    text += name;
+  }
+  return (text.empty() ? "none" : text);
+}
+
+inline void ObserveLocalHistoryReset(stage_plan::Stage stage, uint64_t source_generation, uint32_t reasons) {
+  stage_telemetry[static_cast<size_t>(stage)].last_reset_request = {
+      .sequence = ++source_diagnostic_sequence, .source_generation = source_generation, .reasons = reasons};
+}
+
+inline void ObserveNrEvaluation(stage_plan::Stage stage, const NVSDK_NGX_Handle* handle,
+    const FeatureState& feature, const NrFeatureSlot& slot, uint32_t pass,
+    NVSDK_NGX_Result result, const stage_plan::Plan& plan, const PresentTarget* present = nullptr,
+    bool api_returned = true) {
+  auto& stats = stage_telemetry[static_cast<size_t>(stage)];
+  NrEvaluationDiagnostic observed{.sequence = ++source_diagnostic_sequence, .observed_ns = SteadyNowNs(),
+      .source_generation = feature.source_generation, .pass = pass,
+      .requested = plan.requested[pass], .planned = plan.effective[pass], .plan_reason = plan.reason,
+      .result = result, .api_returned = api_returned, .reset_sent = slot.model_reset, .reset_reasons = slot.model_reset_reasons};
+  if (const auto source = created_feature_ids.find(handle); source != created_feature_ids.end()) {
+    observed.source_feature = source->second;
+  }
+  if (present != nullptr) {
+    observed.source_generation = present->diagnostic_source_generation;
+    observed.source_feature = present->diagnostic_source_feature;
+  }
+  if (api_returned && NVSDK_NGX_SUCCEED(result)) {
+    ++stats.accepted;
+    stats.reset_accepted += slot.model_reset;
+  }
+  const auto& previous = stats.last_evaluate;
+  const bool changed = previous.sequence == 0 || previous.source_generation != observed.source_generation
+      || previous.source_feature != observed.source_feature || previous.result != observed.result
+      || previous.api_returned != observed.api_returned
+      || previous.reset_reasons != observed.reset_reasons || previous.requested != observed.requested
+      || previous.plan_reason != observed.plan_reason;
+  stats.diagnostic_log_pending |= changed;
+  if (stats.diagnostic_log_pending) {
+    if (stats.diagnostic_logged_ns == 0 || observed.observed_ns - stats.diagnostic_logged_ns >= 1'000'000'000) {
+      try {
+        std::ostringstream message;
+        message << "NR source observation: seq=" << observed.sequence << " source_generation="
+                << (observed.source_generation != 0 ? std::to_string(observed.source_generation) : "Unverified")
+                << " type=" << (observed.source_feature == NVSDK_NGX_Feature_Reserved_Unknown ? "Unknown" : SourceFeatureName(observed.source_feature))
+                << " actual=" << stage_plan::Name(stage) << " pass=" << pass + 1
+                << " requested=" << stage_plan::Name(observed.requested)
+                << " planned=" << stage_plan::Name(observed.planned)
+                << " reset_sent=" << observed.reset_sent << " reset_reason=" << HistoryResetReasonsText(observed.reset_reasons)
+                << " api_returned=" << api_returned << " ngx_accepted=" << (api_returned && NVSDK_NGX_SUCCEED(result))
+                << " gpu_execution=unverified";
+        Log(reshade::log::level::debug, message.str());
+        stats.diagnostic_log_pending = false;
+      } catch (...) {
+        // Logging failure cannot change the already returned NGX result.
+        ++stats.diagnostic_log_suppressed;
+      }
+      stats.diagnostic_logged_ns = observed.observed_ns;
+    } else {
+      ++stats.diagnostic_log_suppressed;
+    }
+  }
+  stats.last_evaluate = observed;
+}
 struct StageExecutionScope {
   StageTelemetry* stats = nullptr;
   bool complete = false;
@@ -9533,6 +9752,7 @@ struct NrRecording {
   bool model_invoked = false;
   bool model_recorded = false;
   bool output_ready = false;
+  bool group_complete = false;
 };
 
 inline bool ProcessInline(
@@ -9562,7 +9782,8 @@ inline bool ProcessInline(
       || !IsSupportedInjectionCommandList(command_list)) {
     return false;
   }
-  const auto plan = EvaluationStagePlan(handle);
+  const auto plan = (present != nullptr && present->stage_execution_plan != nullptr
+      ? *present->stage_execution_plan : EvaluationStagePlan(handle, present == nullptr));
   if (!StagePlanAdmitted(plan)) return false;
   const auto execution_stage = (present != nullptr ? stage_plan::Stage::PRESENT : stage_plan::Stage::UPSCALED);
   const auto group = (plan.mixed ? plan.At(execution_stage)
@@ -9574,10 +9795,14 @@ inline bool ProcessInline(
   stage_stats.pass_count = group.count;
   StageExecutionScope stage_scope{.stats = &stage_stats};
   if (plan.mixed && evaluate_chain.depth != 0
+      && (present == nullptr || present->stage_execution_plan == nullptr)
       && (evaluate_chain.configuration_generation != configuration_generation.load()
           || (plan.At(stage_plan::Stage::RENDER).count != 0 && !evaluate_chain.render_complete))) {
     if (auto state = features.find(handle); state != features.end()) {
-      for (auto& slot : state->second.slots) slot.pending_reset = true;
+      for (auto& slot : state->second.slots) {
+        slot.pending_reset = true;
+        slot.pending_reset_reasons |= kResetRecovery;
+      }
     }
     CountNrDecline(NrDeclineReason::kStagePredecessorIncomplete);
     return false;
@@ -9918,9 +10143,15 @@ inline bool ProcessInline(
     // global reset epoch (other streams' histories are unaffected).
     ReleaseAllNrSlots(feature, true);
     for (auto& slot : feature.slots) {
+      slot.pending_reset_reasons |= (dimensions_changed ? kResetDimensions : 0u)
+          | (configuration_changed ? kResetConfiguration : 0u)
+          | ((hdr_changed || create_flags_changed) ? kResetContract : 0u);
       slot.failed = false;
       slot.fail_count = 0;
     }
+    ObserveLocalHistoryReset(execution_stage,
+        present != nullptr ? present->diagnostic_source_generation : feature.source_generation,
+        feature.slots[0].pending_reset_reasons);
   }
 
   feature.input_width = nr_input_width;
@@ -10679,6 +10910,7 @@ inline bool ProcessInline(
     // tracked use, so a later retirement waits for exactly this submission.
     submission::TrackUse(command_list, feature.slots[pass].handle);
     NVSDK_NGX_Result nr_result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
+    bool nr_returned = false;
     if (recording != nullptr) recording->model_invoked = true;
     {
       DirectCallScope ngx_direct_call;
@@ -10694,6 +10926,7 @@ inline bool ProcessInline(
                   feature.slots[pass].handle,
                   feature.slots[pass].parameters,
                   nullptr);
+        nr_returned = true;
       } catch (...) {
         // The shared failure path below retains the game DLSS output,
         // releases the handle, and arms the correct retry policy; the
@@ -10702,6 +10935,7 @@ inline bool ProcessInline(
         nr_result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
       }
     }
+    ObserveNrEvaluation(execution_stage, handle, feature, feature.slots[pass], group.begin + pass, nr_result, plan, present, nr_returned);
     last_result = static_cast<uint32_t>(nr_result);
     if (NVSDK_NGX_FAILED(nr_result)) {
       stack_failure = nr_result;
@@ -11264,6 +11498,7 @@ inline bool ProcessInline(
     // normally and keep their history.
     for (uint32_t later = failed_pass + 1; later < kMaxNrPasses; ++later) {
       feature.slots[later].pending_reset = true;
+      feature.slots[later].pending_reset_reasons |= kResetRecovery;
     }
     LogNrStackFailure(stack_failure, failed_pass, requested_stack, false);
     // Do not abort the capture here: a failed evaluate (e.g. an intermediate
@@ -11317,7 +11552,10 @@ inline bool ProcessInline(
   if (path_count == 1 || path_count == 60 || path_count == 600) {
     LogNrEvaluationSuccess(path_name, path_count, res, frame, requested_stack, false);
   }
-  if (recording != nullptr) recording->output_ready = true;
+  if (recording != nullptr) {
+    recording->output_ready = true;
+    recording->group_complete = stage_scope.complete;
+  }
   if (present != nullptr && recording == nullptr) {
     PublishPresentRestoreOwner(present->domain, present->restore_decision.reason,
         present->restore_contract_compatible, present->service_serial, present->restore_config_epoch, "nr_recorded");
@@ -11674,9 +11912,13 @@ inline bool ProcessInlinePreSR(
     // reset epoch.
     ReleaseAllNrSlots(feature, true);
     for (auto& slot : feature.slots) {
+      slot.pending_reset_reasons |= (dimensions_changed ? kResetDimensions : 0u)
+          | (configuration_changed ? kResetConfiguration : 0u)
+          | ((hdr_changed || create_flags_changed) ? kResetContract : 0u);
       slot.failed = false;
       slot.fail_count = 0;
     }
+    ObserveLocalHistoryReset(stage_plan::Stage::RENDER, feature.source_generation, feature.slots[0].pending_reset_reasons);
   }
   feature.input_width = nr_input_width;
   feature.input_height = nr_input_height;
@@ -12202,6 +12444,7 @@ inline bool ProcessInlinePreSR(
     // tracked use, so a later retirement waits for exactly this submission.
     submission::TrackUse(command_list, feature.slots[pass].handle);
     NVSDK_NGX_Result nr_result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
+    bool nr_returned = false;
     {
       DirectCallScope ngx_direct_call;
       try {
@@ -12216,11 +12459,13 @@ inline bool ProcessInlinePreSR(
                   feature.slots[pass].handle,
                   feature.slots[pass].parameters,
                   nullptr);
+        nr_returned = true;
       } catch (...) {
         Log(reshade::log::level::error, "pre-SR feature 18 evaluate raised an exception");
         nr_result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
       }
     }
+    ObserveNrEvaluation(stage_plan::Stage::RENDER, handle, feature, feature.slots[pass], group.begin + pass, nr_result, plan, nullptr, nr_returned);
     last_result = static_cast<uint32_t>(nr_result);
     if (NVSDK_NGX_FAILED(nr_result)) {
       stack_failure = nr_result;
@@ -12355,6 +12600,7 @@ inline bool ProcessInlinePreSR(
     // normally and keep their history.
     for (uint32_t later = failed_pass + 1; later < kMaxNrPasses; ++later) {
       feature.slots[later].pending_reset = true;
+      feature.slots[later].pending_reset_reasons |= kResetRecovery;
     }
     LogNrStackFailure(stack_failure, failed_pass, requested_stack, true);
     if (timers_active) {
@@ -13166,6 +13412,8 @@ inline void RegisterCreatedFeatureLocked(const NVSDK_NGX_Handle* handle,
         " keeps its runtime and history (teardown[foreign_cancels=])");
   }
   FeatureState state = DeriveFeatureState(parameters);
+  static uint64_t source_generation = 0;
+  state.source_generation = ++source_generation;
   state.source_feature = feature;
   if (const auto stale = features.find(handle); stale != features.end()) {
     ReleaseCom(stale->second.norm.commit);
@@ -13190,6 +13438,16 @@ inline bool ForgetSourceHandleLocked(const NVSDK_NGX_Handle* handle) {
   OnNativeFgFeatureReleased(handle);
   const auto entry = features.find(handle);
   if (entry != features.end()) {
+    if (entry->second.source_generation != 0) {
+      if (last_source_plan.source_generation == entry->second.source_generation) {
+        last_source_plan.source_released = true;
+      }
+      for (auto& stats : stage_telemetry) {
+        if (stats.last_evaluate.source_generation == entry->second.source_generation) {
+          stats.last_evaluate.source_released = true;
+        }
+      }
+    }
     if (entry->second.render_session) {
       ReleaseAllNrSlots(*entry->second.render_session, true);
       ReleaseCom(entry->second.render_session->norm.commit);
@@ -15600,6 +15858,7 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureSlot(
     const bool frame_generation =
         handle != nullptr && FrameGenerationEvaluate(handle, parameters);
     if (frame_generation) {
+      mixed_present_fg_seen.store(true);
       ObservePresentFrameGeneration(parameters);
       // Streamline applies options at a later application Present. A valid
       // FG evaluate still consumes this image even after an Off request.
@@ -15747,7 +16006,9 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureSlot(
   }
   bool command_list_touched = false;
   const int64_t started_ns = SteadyNowNs();
-  ProcessInline(command_list, handle, parameters, &command_list_touched);
+  if (!ProcessMixedPresentPredecessor(command_list, handle, parameters, &command_list_touched)) {
+    ProcessInline(command_list, handle, parameters, &command_list_touched);
+  }
   RecordInjectionCpu(started_ns);
   if (command_list_touched) state_envelope.MarkInjectionCommandsRecorded();
   return result;
@@ -15828,6 +16089,7 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureCSlot(
     const bool frame_generation =
         handle != nullptr && FrameGenerationEvaluate(handle, parameters);
     if (frame_generation) {
+      mixed_present_fg_seen.store(true);
       ObservePresentFrameGeneration(parameters);
       // Streamline applies options at a later application Present. A valid
       // FG evaluate still consumes this image even after an Off request.
@@ -15943,7 +16205,9 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureCSlot(
   }
   bool command_list_touched = false;
   const int64_t started_ns = SteadyNowNs();
-  ProcessInline(command_list, handle, parameters, &command_list_touched);
+  if (!ProcessMixedPresentPredecessor(command_list, handle, parameters, &command_list_touched)) {
+    ProcessInline(command_list, handle, parameters, &command_list_touched);
+  }
   RecordInjectionCpu(started_ns);
   if (command_list_touched) state_envelope.MarkInjectionCommandsRecorded();
   return result;
@@ -19209,12 +19473,24 @@ inline void EmitTelemetry(int64_t now_ns, bool force = false) {
                : 0.0)
        << " p50=" << telemetry_pacing.Percentile(0.50)
        << " p99=" << telemetry_pacing.Percentile(0.99)
-       << " max=" << telemetry_pacing.max_ms << "] nr[evals="
+       << " max=" << telemetry_pacing.max_ms
+       << " p95=" << telemetry_pacing.Percentile(0.95) << "] nr[evals="
        << (evals - telemetry_window_start_evals) << " cpu_us_avg="
        << (telemetry_window_nr_calls != 0
                ? telemetry_window_nr_ns / 1e3 / telemetry_window_nr_calls
                : 0.0)
        << " cpu_us_max=" << telemetry_window_nr_max_ns / 1e3 << "]";
+  line << " frame_hist[bin_ms=0.25 bins=";
+  bool first_bin = true;
+  for (uint32_t bin = 0; bin < telemetry::kPacingBins; ++bin) {
+    if (telemetry_pacing.bins[bin] == 0) continue;
+    if (!first_bin) {
+      line << ',';
+    }
+    line << bin << ':' << telemetry_pacing.bins[bin];
+    first_bin = false;
+  }
+  line << ']';
   const auto execution_plan = RequestedStagePlan();
   line << " stage_plan[valid=" << execution_plan.valid << " reason="
        << stage_plan::ReasonText(execution_plan.reason) << " requested=";
@@ -19225,10 +19501,35 @@ inline void EmitTelemetry(int64_t now_ns, bool force = false) {
     line << pass + 1 << ':' << stage_plan::Name(execution_plan.requested[pass])
          << "->" << (execution_plan.valid ? stage_plan::Name(execution_plan.effective[pass]) : "disabled");
   }
-  line << ']';
+  line << " evidence=current_configuration_not_execution]";
+  line << " source_diagnostics[coverage=DX11/DX12 observation=last_seen]";
+  if (last_source_plan.sequence != 0) {
+    line << " source_plan[seq=" << last_source_plan.sequence << " source_generation="
+         << (last_source_plan.source_generation != 0 ? std::to_string(last_source_plan.source_generation) : "Unverified")
+         << " type=" << (last_source_plan.source_feature == NVSDK_NGX_Feature_Reserved_Unknown ? "Unknown" : SourceFeatureName(last_source_plan.source_feature))
+         << " lifetime=" << (last_source_plan.source_generation == 0 ? "Unverified" : (last_source_plan.source_released ? "released" : "observed"))
+         << " valid=" << last_source_plan.plan.valid << " reason=" << stage_plan::ReasonText(last_source_plan.plan.reason)
+         << " requested/planned=";
+    for (uint32_t pass = 0; pass < last_source_plan.plan.pass_count; ++pass) {
+      if (pass != 0) {
+        line << ',';
+      }
+      line << pass + 1 << ':' << stage_plan::Name(last_source_plan.plan.requested[pass]) << "->"
+           << (last_source_plan.plan.valid ? stage_plan::Name(last_source_plan.plan.effective[pass]) : "disabled");
+    }
+    line << " actual_evaluate=see_last_nr_evaluate]";
+  } else {
+    line << " source_plan[Unknown not_observed]";
+  }
+  line << " present_chain[experimental=" << experimental_present_chain.load()
+       << " route=final_present status=" << mixed_present_status
+       << " tail_submitted=" << mixed_present_submitted << " rejected=" << mixed_present_rejected
+       << " last_tail_gpu_complete=" << (!mixed_present_last_fence.empty()
+           && mixed_present_last_fence->GetCompletedValue() != UINT64_MAX
+           && mixed_present_last_fence->GetCompletedValue() >= mixed_present_last_value) << ']';
   for (size_t stage = 0; stage < stage_telemetry.size(); ++stage) {
     const auto& stats = stage_telemetry[stage];
-    if (stats.groups == 0) continue;
+    if (stats.groups == 0 && stats.last_reset_request.sequence == 0) continue;
     const auto& gpu = gpu_timers::stage_stats[stage];
     line << " nr_stage[" << stage_plan::Name(static_cast<stage_plan::Stage>(stage))
          << " range=" << stats.pass_begin + 1 << '+' << stats.pass_count
@@ -19248,7 +19549,36 @@ inline void EmitTelemetry(int64_t now_ns, bool force = false) {
       }
       line << pass + 1 << ':' << stats.resolved_requests[pass];
     }
-    line << " internal_network=unconfirmed]";
+    line << " internal_network=unconfirmed counter_basis=attempts/reset_parameters"
+         << " ngx_accepted=" << stats.accepted << " reset_ngx_accepted=" << stats.reset_accepted << ']';
+    const auto& observed = stats.last_evaluate;
+    if (observed.sequence != 0) {
+      line << " last_nr_evaluate[stage=" << stage_plan::Name(static_cast<stage_plan::Stage>(stage))
+           << " seq=" << observed.sequence << " age_ms=" << std::max<int64_t>(0, now_ns - observed.observed_ns) / 1'000'000
+           << " source_generation=" << (observed.source_generation != 0 ? std::to_string(observed.source_generation) : "Unverified")
+           << " type=" << (observed.source_feature == NVSDK_NGX_Feature_Reserved_Unknown ? "Unknown" : SourceFeatureName(observed.source_feature))
+           << " lifetime=" << (observed.source_generation == 0 ? "Unverified" : (observed.source_released ? "released" : "observed"))
+           << " actual_pass=" << observed.pass + 1 << " requested=" << stage_plan::Name(observed.requested)
+           << " planned=" << stage_plan::Name(observed.planned) << " plan_reason=" << stage_plan::ReasonText(observed.plan_reason)
+           << " api_returned=" << observed.api_returned << " ngx_result=";
+      if (observed.api_returned) {
+        line << "0x" << std::hex << static_cast<uint32_t>(observed.result) << std::dec;
+      } else {
+        line << "Unavailable(exception)";
+      }
+      line << " reset_sent=" << observed.reset_sent << " reset_reason=" << HistoryResetReasonsText(observed.reset_reasons)
+           << " reset_ngx_accepted=" << (observed.reset_sent && observed.api_returned && NVSDK_NGX_SUCCEED(observed.result))
+           << " gpu_execution=Unverified log_changes_suppressed=" << stats.diagnostic_log_suppressed << ']';
+    } else {
+      line << " last_nr_evaluate[stage=" << stage_plan::Name(static_cast<stage_plan::Stage>(stage)) << " Unknown not_observed]";
+    }
+    if (stats.last_reset_request.sequence != 0) {
+      line << " local_reset_request[stage=" << stage_plan::Name(static_cast<stage_plan::Stage>(stage))
+           << " seq=" << stats.last_reset_request.sequence << " source_generation="
+           << (stats.last_reset_request.source_generation != 0 ? std::to_string(stats.last_reset_request.source_generation) : "Unverified")
+           << " reason=" << HistoryResetReasonsText(stats.last_reset_request.reasons)
+           << " application=see_last_nr_evaluate]";
+    }
   }
   if (vram.valid) {
     line << " vram_mib[local=" << (vram.local_usage >> 20) << '/'
@@ -20244,7 +20574,7 @@ inline void OnPresent(
   // arms or disarms the NGX serialization first (ngx_serial.hpp): stored
   // before RunPresentPath's turn reads unlocked_in_flight, so a game call
   // either saw it armed and locked, or is counted and drained.
-  ngx_serial::armed.store(PresentHookServes());
+  ngx_serial::armed.store(PresentHookServes() || experimental_present_chain.load());
   GuardHook([&] { RunPresentPath(queue, swapchain, fg_fallback); });
   // And the present ends here: its own NR work (an NR feature create runs
   // 250-600 ms) is not a gap in presents.  Stamped at entry only, the first
@@ -24514,6 +24844,7 @@ inline void ReadIniRawValues() {
       {"NRPresentMVecUnits", IniKind::kUint},
       {"NRPresentPreFgContract", IniKind::kUint},
       {"NRPresentBlockHudless", IniKind::kBool},
+      {"NRExperimentalPresentChain", IniKind::kBool},
       {"NRAutoFgFallback", IniKind::kUint},
       {"NRNormTrace", IniKind::kBool},     {"NRScreenshotPlanes", IniKind::kBool},
       {"UiWelcomed", IniKind::kBool},      {"UiIssueNotice", IniKind::kBool},
@@ -24704,6 +25035,7 @@ inline void LoadConfiguration() {
   uint32_t saved_present_pre_fg = defaults::kPresentPreFg;
   uint32_t saved_present_pre_fg_contract = defaults::kPresentPreFgContract;
   bool saved_present_block_hudless = false;
+  bool saved_experimental_present_chain = false;
   uint32_t saved_present_mvec_units = defaults::kPresentMvecUnits;
   uint32_t saved_auto_fg_fallback = defaults::kAutoFgFallback;
   uint32_t saved_vk_state_restore = defaults::kVkStateRestore;
@@ -24810,6 +25142,9 @@ inline void LoadConfiguration() {
       nullptr, kConfigSection, "NRPresentPreFgContract", saved_present_pre_fg_contract);
   reshade::get_config_value(
       nullptr, kConfigSection, "NRPresentBlockHudless", saved_present_block_hudless);
+  reshade::get_config_value(
+      nullptr, kConfigSection, "NRExperimentalPresentChain", saved_experimental_present_chain);
+  experimental_present_chain.store(saved_experimental_present_chain);
   reshade::get_config_value(
       nullptr, kConfigSection, "NRPresentMVecUnits", saved_present_mvec_units);
   reshade::get_config_value(
@@ -25845,6 +26180,16 @@ inline void OnDestroyDevice(reshade::api::device* device) {
 // session.  `swapchains=` / `swapchains_ours=` in the telemetry line are what
 // a field log would show it by.
 inline void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) {
+  if (swapchain != nullptr) {
+    RuntimeLock lock(runtime_mutex);
+    if (auto stream = present_streams.find(swapchain); stream != present_streams.end()) {
+      stream->second.mixed_buffers.clear();
+      stream->second.mixed_source_resource.reset();
+      stream->second.mixed_copy_marker = nullptr;
+      stream->second.mixed_capture = 0;
+      stream->second.mixed_sources = 0;
+    }
+  }
   if (resize || swapchain == nullptr) return;
   if (shutting_down.load(std::memory_order_acquire)) return;
   // The Present hook point's stream of this swapchain goes with it, through
@@ -25972,6 +26317,7 @@ inline void UnhookInstalledDetours() {
 // detours must die with the DLL that owns them.
 inline void DetachLite() {
   shutting_down.store(true, std::memory_order_release);
+  UnhookMixedPresentCopyHooks();
   UnhookCommandListStateHooks();
   UnhookDeviceStateHooks();
   UnhookQueueCompletionHooks();

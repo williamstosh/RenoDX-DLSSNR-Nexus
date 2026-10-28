@@ -511,6 +511,11 @@ int Run() {
             bool isolate_render_reset = false;
             bool isolated_reset_checked = false;
             for (uint32_t attempt = 0; attempt < 20 && stable_frames < 2; ++attempt) {
+              const bool final_capture = count == 2 && render_count == 1 && models == 1 && output_size == 16;
+              if (final_capture && attempt % 2 == 0) {
+                addon::screenshot::source_mode.store(1);
+                Check(addon::screenshot::RequestCapture(), "arm F5 before mixed production execution");
+              }
               evaluations.clear();
               gpu.Transition(color.Get(), NATIVE_INPUT_STATE, D3D12_RESOURCE_STATE_COMMON);
               gpu.Write(color.Get(), 96);
@@ -562,7 +567,14 @@ int Run() {
                 gpu.Write(color.Get(), 208);
                 gpu.Transition(color.Get(), D3D12_RESOURCE_STATE_COMMON, NATIVE_INPUT_STATE);
                 if (render_count < count) {
+                  if (final_capture && attempt % 2 != 0) {
+                    Check(addon::screenshot::RequestCapture(), "arm F5 between SR consumer and Upscaled");
+                  }
                   native::ProcessInline(gpu.list.Get(), handle, &parameters);
+                  if (final_capture) {
+                    Check(!addon::screenshot::IsArmed() && !addon::screenshot::HasPending(),
+                          "production mixed execution rejects F5 without a capture allocation");
+                  }
                   const auto before_duplicate = model_calls;
                   {
                     const addon::EvaluateChainScope inner;

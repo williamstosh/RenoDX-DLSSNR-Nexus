@@ -28,6 +28,7 @@ struct Capabilities {
   bool ray_reconstruction = false;
   bool present_available = true;
   bool fg_owns_input = false;
+  bool mixed_present_dx12 = false;
 };
 struct Group {
   Stage stage = Stage::UPSCALED;
@@ -101,7 +102,18 @@ inline Plan Build(const Configuration& config, const Capabilities& caps = {}) {
     if (!caps.mixed_dx12 && !caps.mixed_dx11) {
       plan.reason = Reason::UNSUPPORTED_BACKEND;
     } else if (plan.requested[plan.pass_count - 1] == Stage::PRESENT) {
-      plan.reason = Reason::MIXED_PRESENT;
+      // B1 is an opt-in two-pass SR/DLAA route. Per-frame source and queue
+      // proofs belong to the executor, not to this configuration planner.
+      const bool b1 = caps.mixed_present_dx12 && caps.mixed_dx12
+          && caps.present_available && !caps.ray_reconstruction
+          && plan.pass_count == 2 && plan.requested[0] == Stage::UPSCALED;
+      if (b1) {
+        if (caps.fg_owns_input) {
+          plan.reason = Reason::FG_OWNS_INPUT;
+        }
+      } else {
+        plan.reason = Reason::MIXED_PRESENT;
+      }
     } else if (caps.fg_owns_input) {
       plan.reason = Reason::FG_OWNS_INPUT;
     }
