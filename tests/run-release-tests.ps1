@@ -18,6 +18,62 @@ New-Item -ItemType Directory -Path (Join-Path $releaseTestSourceRoot 'tools') | 
 Copy-Item -LiteralPath (Join-Path $releaseTestRoot 'tools/check-version.ps1') -Destination (Join-Path $releaseTestSourceRoot 'tools/check-version.ps1')
 Copy-Item -LiteralPath (Join-Path $releaseTestRoot 'version.h') -Destination (Join-Path $releaseTestSourceRoot 'version.h')
 [IO.File]::WriteAllText((Join-Path $releaseTestSourceRoot 'dlssnr.hpp'), '#include "version.h"' + "`n" + 'constexpr char kAddonVersion[] = "v" NR_NEXUS_VERSION;')
+$releaseTestNotesPath = Join-Path $releaseTestDirectory 'reviewed-notes.md'
+$releaseTestNotes = @'
+# NR Nexus TAG
+
+[简体中文](#简体中文) · [English](#english)
+
+<!-- Previous: none -->
+
+## 简体中文
+
+### 版本亮点
+
+支持独立模型。
+
+### 验证情况
+
+模拟发布通过。
+
+### 已知限制
+
+尚未验证实机。
+
+### 安装说明
+
+解压安装附件。
+
+## English
+
+### Highlights
+
+Select independent models per pass.
+
+### Validation
+
+Synthetic publication tests passed.
+
+### Known Limitations
+
+Game visuals remain unverified.
+
+### Installation
+
+Extract the release archive.
+'@
+$releaseTestNotes = $releaseTestNotes.Replace('TAG', $releaseTestVersion.Tag)
+[IO.File]::WriteAllText($releaseTestNotesPath, $releaseTestNotes)
+function Assert-TestNotes([string]$Body) {
+    Assert-Test ($Body.StartsWith('[简体中文](#简体中文) · [English](#english)')) 'Reviewed navigation missing'
+    Assert-Test ($Body.IndexOf('## 简体中文') -lt $Body.IndexOf('## English')) 'Language blocks reordered'
+    Assert-Test ($Body.Contains('### 版本亮点') -and $Body.Contains('### Highlights') -and $Body.Contains('direct feature: add independent per-pass models')) 'Reviewed features or direct commits missing'
+    foreach ($heading in @('Source / 源码', 'References / PR 与 Commit 记录')) {
+        Assert-Test ([regex]::Matches($Body, '(?m)^## ' + [regex]::Escape($heading) + '$').Count -eq 1) "Generated section must occur once: $heading"
+    }
+    Assert-Test ([regex]::Matches($Body, '\[Full Changelog\]').Count -eq 1) 'Generated changelog must occur once'
+    Assert-Test ([regex]::Matches($Body, '(?m)^Source: https://github.com/fixture/repository/commit/' + $releaseTestSource + '$').Count -eq 1) 'Publisher source identity changed'
+}
 function Reset-TestChecksum {
     [IO.File]::WriteAllText($releaseTestChecksum, "$releaseTestHash  $([IO.Path]::GetFileName($releaseTestArchive))`n")
 }
@@ -104,7 +160,7 @@ try {
                 if ($Uri -eq 'https://api.github.com/repos/fixture/repository/releases' -and $Method -eq 'POST') {
                     Assert-Test $payload.draft 'Creation must remain private until assets pass'
                     Assert-Test (-not $payload.generate_release_notes) 'GitHub PR-only notes must not replace reviewed highlights'
-                    Assert-Test ($payload.body.Contains('## Highlights') -and $payload.body.Contains('direct feature: add independent per-pass models')) 'Reviewed highlights and direct commit references must be included'
+                    Assert-TestNotes $payload.body
                     Assert-Test ($payload.PSObject.Properties.Name -notcontains 'target_commitish') 'An existing tag needs no target_commitish/workflow-write permission'
                     $releaseTestState.release = [pscustomobject]@{
                         id=1;tag_name=$payload.tag_name;target_commitish='main';body=$payload.body;name=$payload.name;draft=$true;assets=@()
@@ -129,7 +185,7 @@ try {
                 if ($Uri -eq 'https://api.github.com/repos/fixture/repository/releases/1' -and $Method -eq 'PATCH') {
                     if ($payload.PSObject.Properties.Name -notcontains 'draft') {
                         Assert-Test $releaseTestState.release.draft 'Retry must not edit published release notes'
-                        Assert-Test ($payload.body.Contains('## Highlights') -and $payload.body.Contains('direct feature: add independent per-pass models')) 'Draft recovery lost reviewed features or direct commits'
+                        Assert-TestNotes $payload.body
                         $releaseTestState.release.body=$payload.body
                         $releaseTestState.release.name=$payload.name
                         return $releaseTestState.release
@@ -146,11 +202,11 @@ try {
                 $tag = if ($releaseTestScenario -eq 'tag-version-mismatch') { 'v999.0.0' } else { $releaseTestVersion.Tag }
                 $publishArguments = @{Tag=$tag;ArchivePath=$releaseTestArchive;Repository='fixture/repository'}
                 if ($releaseTestScenario -eq 'separate-source-root') { $publishArguments.SourceRoot=$releaseTestSourceRoot }
-                $publishArguments.NotesPath=Join-Path $releaseTestRoot "docs/releases/$($releaseTestVersion.Tag).md"
+                $publishArguments.NotesPath=$releaseTestNotesPath
                 if ($releaseTestScenario -eq 'notes-missing') { $publishArguments.NotesPath=Join-Path $releaseTestDirectory 'absent.md' }
                 if ($releaseTestScenario -eq 'notes-pr-only') {
                     $publishArguments.NotesPath=Join-Path $releaseTestDirectory 'pr-only.md'
-                    [IO.File]::WriteAllText($publishArguments.NotesPath, "# NR Nexus $($releaseTestVersion.Tag)`n`n## Highlights`n- [#3](https://github.com/fixture/repository/pull/3)`n")
+                    [IO.File]::WriteAllText($publishArguments.NotesPath, $releaseTestNotes.Replace('Select independent models per pass.', '- [#3](https://github.com/fixture/repository/pull/3)'))
                 }
                 & (Join-Path $releaseTestRoot 'tools/publish-release.ps1') @publishArguments
             } catch { $failed=$true }

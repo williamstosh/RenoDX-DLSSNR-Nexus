@@ -40,12 +40,16 @@ function Read-ZipText([string]$Name) {
 
 function Assert-DocumentLinks([string]$Name, [string]$Text, [hashtable]$Documents, [string[]]$Paths, [bool]$Source = $false) {
     $chineseStart = $Text.IndexOf('## 简体中文', [StringComparison]::Ordinal)
-    Assert-Test ($chineseStart -ge 0) "Chinese section missing in $Name"
+    $englishStart = $Text.IndexOf('## English', [StringComparison]::Ordinal)
+    Assert-Test ([regex]::Matches($Text, '(?m)^## 简体中文\r?$').Count -eq 1 -and
+        [regex]::Matches($Text, '(?m)^## English\r?$').Count -eq 1 -and
+        $chineseStart -lt $englishStart) "Expected one Chinese section followed by one English section in $Name"
+    Assert-Test ($Text.Substring(0, $chineseStart).Contains('[简体中文](#简体中文) · [English](#english)')) "Language navigation missing in $Name"
     $englishImages = @()
     $chineseImages = @()
     foreach ($image in [regex]::Matches($Text, '!\[[^\]]*\]\(([^\s)]+)\)')) {
         $file = [IO.Path]::GetFileName($image.Groups[1].Value)
-        $chinese = $image.Index -gt $chineseStart
+        $chinese = $image.Index -gt $chineseStart -and $image.Index -lt $englishStart
         Assert-Test (($file -cmatch '-zh\.webp$') -eq $chinese) "Image language mismatch in ${Name}: $file"
         if ($chinese) { $chineseImages += $file -creplace '-zh\.webp$', '.webp' }
         else { $englishImages += $file }
