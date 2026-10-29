@@ -866,6 +866,48 @@ inline void DrawRows(const std::vector<Difference>& differences) {
   ImGui::EndChild();
 }
 
+inline std::vector<Difference> SlotPreview(int index) {
+  auto differences = Preview(preview, false);
+  const auto baseline = (profile_ui::state.slots[index].populated
+                             ? profile_ui::state.slots[index].snapshot
+                             : profile_ui::Snapshot());
+  for (auto &row : differences) {
+    if (!profile_ui::Managed(row.key))
+      continue;
+    row.before = baseline.value(row.key, Json(nullptr));
+    if (!preview.settings.contains(row.key)) {
+      row.after = row.before;
+    } else if (std::string_view(row.status) == "Will change" ||
+               std::string_view(row.status) == "Unchanged") {
+      row.apply = row.before != row.after;
+      row.status = (row.apply ? "Will change" : "Unchanged");
+    }
+  }
+  return differences;
+}
+
+inline bool AssignPreviewToSlot(int index) {
+  auto settings = (profile_ui::state.slots[index].populated
+                       ? profile_ui::state.slots[index].snapshot
+                       : profile_ui::Snapshot());
+  const auto differences = SlotPreview(index);
+  for (const auto &row : differences) {
+    if (!profile_ui::Managed(row.key))
+      continue;
+    if (std::string_view(row.status) == "Invalid value") {
+      notice =
+          "Profile contains unsupported settings. Current settings were kept.";
+      return false;
+    }
+    if (row.apply || std::string_view(row.status) == "Unchanged")
+      settings[row.key] = row.after;
+  }
+  const auto serial = profile_ui::serial;
+  profile_ui::Assign(index, settings);
+  notice = profile_ui::notice;
+  return profile_ui::serial != serial;
+}
+
 inline void DrawManager() {
   Pump();
   profile_ui::Initialize();
@@ -984,6 +1026,24 @@ inline void DrawManager() {
       if (!undo.empty() && ui::ActionButton(ui::Tr("Undo last import"), "undo_preset")) {
         std::string error;
         if (!Undo(&error)) notice = error;
+      }
+      if (ui::ActionButton(ui::Tr("Profile actions"), "library_slot_actions"))
+        ImGui::OpenPopup("library_slot_actions_menu");
+      ImGui::SetNextWindowSizeConstraints(ImVec2(0.f, 0.f),
+          ImVec2(ImGui::GetIO().DisplaySize.x * 0.9f, ImGui::GetIO().DisplaySize.y * 0.9f));
+      if (ImGui::BeginPopup("library_slot_actions_menu")) {
+        for (int i = 0; i < 6; ++i) {
+          ImGui::PushID(i);
+          const auto slot_name = profile_ui::Name(i);
+          ImGui::SetNextWindowSizeConstraints(ImVec2(0.f, 0.f),
+              ImVec2(ImGui::GetIO().DisplaySize.x * 0.9f, ImGui::GetIO().DisplaySize.y * 0.9f));
+          if (ImGui::BeginMenu(ui::Ellipsize(slot_name.c_str(), ImGui::GetFontSize() * 24.f).c_str())) {
+            profile_ui::DrawSlotMenu(i);
+            ImGui::EndMenu();
+          }
+          ImGui::PopID();
+        }
+        ImGui::EndPopup();
       }
       if (ui::TreeNode("custom_slot_tools", ui::Tr("Custom slots"), 0, false)) {
         profile_ui::DrawCustomTools();
@@ -1215,17 +1275,7 @@ inline void DrawManager() {
                            || !profile_ui::loaded || !profile_ui::writable
                            || (profile_ui::state.slots[profile_ui::edit_index].populated && !profile_ui::confirm_replace));
       if (ui::ActionButton(ui::Tr("Assign NR fields to custom slot"), "import_to_slot")) {
-        auto settings = (profile_ui::state.slots[profile_ui::edit_index].populated
-                             ? profile_ui::state.slots[profile_ui::edit_index].snapshot : profile_ui::Snapshot());
-        const auto differences = Preview(preview, false);
-        bool invalid = false;
-        for (const auto& row : differences) {
-          invalid |= profile_ui::Managed(row.key) && std::string_view(row.status) == "Invalid value";
-          if (profile_ui::Managed(row.key) && (row.apply || std::string_view(row.status) == "Unchanged")) settings[row.key] = row.after;
-        }
-        if (invalid) profile_ui::notice = "Profile contains unsupported settings. Current settings were kept.";
-        else profile_ui::Assign(profile_ui::edit_index, settings);
-        notice = profile_ui::notice;
+        AssignPreviewToSlot(profile_ui::edit_index);
       }
       ImGui::EndDisabled();
       ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Cancel import")).x + ImGui::GetStyle().FramePadding.x * 2.f);
@@ -1284,6 +1334,304 @@ inline void DrawEntry(bool multipass = false, bool management_only = false) {
       ImGui::EndDisabled();
     }
     DrawManager();
+    {
+      using Task = profile_ui::SlotTask;
+      static Task task = Task::NONE;
+      static int index = -1;
+      static bool replace = false;
+      static presets::Document document;
+      static profiles::Slot target_before;
+      static std::string saved_destination;
+      Pump();
+      bool busy;
+      {
+        std::shared_lock lock(worker.mutex);
+        busy = worker.busy || worker.ready;
+      }
+      if (profile_ui::slot_task != Task::NONE && !busy) {
+        task = profile_ui::slot_task;
+        index = profile_ui::task_index;
+        profile_ui::slot_task = Task::NONE;
+        SettleSlider(true);
+        profile_ui::Observe();
+        target_before = profile_ui::state.slots[index];
+        replace = overwrite = false;
+        notice.clear();
+        saved_destination.clear();
+        const auto value = profile_ui::Name(index);
+        std::memcpy(name, value.c_str(),
+                    (std::min)(sizeof(name), value.size() + 1));
+        std::memcpy(profile_ui::rename, value.c_str(),
+                    (std::min)(sizeof(profile_ui::rename), value.size() + 1));
+        path[0] = '\0';
+        if (task == Task::EXPORT) {
+          document = {.metadata = {{"name", value}},
+                      .scope = presets::Scope::QUALITY_MULTIPASS,
+                      .settings = profile_ui::state.slots[index].snapshot};
+          // Official snapshots cache the last application. Template + overrides
+          // is authoritative even when this official slot is not active.
+          try {
+            document.settings = profile_ui::data::Resolve(
+                index, profile_ui::state.slots[index],
+                profile_ui::defaults_snapshot, profile_ui::Validate);
+          } catch (const std::exception& exception) {
+            notice = exception.what();
+            document.settings = Json::object();
+          }
+          if (library_path.empty()) {
+            Start(Job::REFRESH);
+          } else {
+            std::filesystem::path filename;
+            std::string error;
+            if (presets::MakeFilename(name, &filename, &error)) {
+              const auto bytes = (library_path / filename).u8string();
+              if (bytes.size() < sizeof(path)) {
+                std::memcpy(path, bytes.c_str(), bytes.size() + 1);
+              }
+            } else {
+              notice = error;
+            }
+          }
+        } else if (task == Task::IMPORT) {
+          have_preview = false;
+          rows.clear();
+          confirm_full = false;
+          if (library_path.empty()) {
+            Start(Job::REFRESH);
+          } else {
+            const auto bytes = library_path.u8string();
+            if (bytes.size() < sizeof(path)) {
+              std::memcpy(path, bytes.c_str(), bytes.size() + 1);
+            }
+          }
+        }
+        ImGui::OpenPopup("###nr_slot_operation");
+      }
+      if (task != Task::NONE) {
+        const char* title = "Profile actions";
+        switch (task) {
+        case Task::RENAME:
+          title = "Rename slot";
+          break;
+        case Task::COPY:
+          title = "Copy from official profile";
+          break;
+        case Task::IMPORT:
+          title = "Import profile";
+          break;
+        case Task::EXPORT:
+          title = "Export profile";
+          break;
+        case Task::CLEAR:
+          title = "Clear slot";
+          break;
+        case Task::RESTORE:
+          title = "Restore official defaults?";
+          break;
+        default:
+          break;
+        }
+        const auto display = ImGui::GetIO().DisplaySize;
+        const float em = ImGui::GetFontSize();
+        const float width =
+            (std::max)(1.f, (std::min)(em * 30.f, display.x - em * 2.f));
+        ImGui::SetNextWindowSizeConstraints(
+            ImVec2(width, 0.f),
+            ImVec2(width, (std::max)(1.f, display.y - em * 2.f)));
+        bool open = true;
+        if (ImGui::BeginPopupModal(
+                (std::string(ui::Tr(title)) + "###nr_slot_operation").c_str(),
+                &open,
+                ImGuiWindowFlags_AlwaysAutoResize |
+                    ImGuiWindowFlags_NoSavedSettings)) {
+          ImGui::PushTextWrapPos(0.f);
+          ImGui::TextWrapped("%s", profile_ui::Name(index).c_str());
+          const auto& current = profile_ui::state.slots[index];
+          if (current.snapshot != target_before.snapshot ||
+              current.overrides != target_before.overrides ||
+              current.name != target_before.name ||
+              current.populated != target_before.populated) {
+            replace = false;
+            target_before = current;
+          }
+          ImGui::BeginDisabled(
+              busy || !profile_ui::loaded || !profile_ui::writable ||
+              profile_ui::pending_action != profile_ui::Action::NONE);
+          if (task == Task::RENAME) {
+            ImGui::SetNextItemWidth(-1.f);
+            ui::text_input::DrawLabeled(ui::Tr("Slot display name"),
+                                        profile_ui::rename,
+                                        sizeof(profile_ui::rename));
+            ImGui::BeginDisabled(profile_ui::rename[0] == '\0' ||
+                                 !current.populated);
+            if (ui::ActionButton(ui::Tr("Rename slot"), "rename_slot")) {
+              profile_ui::RenameSlot(index, profile_ui::rename);
+              notice = profile_ui::notice;
+            }
+            ImGui::EndDisabled();
+          } else if (task == Task::COPY || task == Task::CLEAR ||
+                     task == Task::RESTORE) {
+            if (task == Task::COPY) {
+              ImGui::TextWrapped("%s",
+                                 ui::Tr("Copies the original official "
+                                        "template, without personal changes."));
+              const char* sources[] = {"NR Lite", "NR Balanced", "NR Max"};
+              ImGui::SetNextItemWidth(-1.f);
+              const int chosen =
+                  ui::Segmented("##copy_official", sources, 3,
+                                profile_ui::copy_official, nullptr);
+              if (chosen >= 0) {
+                profile_ui::copy_official = chosen;
+                replace = false;
+              }
+            } else {
+              ImGui::TextWrapped(
+                  "%s",
+                  ui::Tr(
+                      task == Task::CLEAR
+                          ? "Running game settings and library files are kept."
+                          : "Personal changes to this official profile will be "
+                            "cleared. Other profiles are kept."));
+            }
+            if (current.populated) {
+              ui::Checkbox(ui::Tr("Confirm replacing or clearing this slot"),
+                           &replace);
+            }
+            ImGui::BeginDisabled(current.populated && !replace);
+            if (ui::ActionButton(ui::Tr(task == Task::COPY
+                                            ? "Copy official profile to slot"
+                                        : task == Task::CLEAR ? "Clear slot"
+                                                              : "Restore"),
+                                 "confirm_slot_operation")) {
+              if (task == Task::COPY) {
+                profile_ui::Assign(index, profile_ui::data::Template(
+                                              profile_ui::copy_official,
+                                              profile_ui::defaults_snapshot));
+              } else if (task == Task::CLEAR) {
+                profile_ui::ClearSlot(index);
+              } else {
+                profile_ui::Request(profile_ui::Action::RESTORE, index);
+              }
+              notice = profile_ui::notice;
+              replace = false;
+            }
+            ImGui::EndDisabled();
+          } else if (task == Task::EXPORT) {
+            ImGui::TextWrapped("%s",
+                               ui::Tr("Export the actual saved slot settings, "
+                                      "including personal changes."));
+            ImGui::SetNextItemWidth(-1.f);
+            ui::text_input::DrawLabeled(ui::Tr("Preset name"), name,
+                                        sizeof(name));
+            if (ui::ActionButton(ui::Tr("Choose export file"),
+                                 "choose_export")) {
+              std::filesystem::path filename;
+              std::string error;
+              if (presets::MakeFilename(name, &filename, &error)) {
+                Start(Job::CHOOSE_EXPORT, filename);
+              } else {
+                notice = error;
+              }
+            }
+            ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Browse folder")).x +
+                               ImGui::GetStyle().FramePadding.x * 2.f);
+            if (ui::ActionButton(ui::Tr("Browse folder"), "choose_folder")) {
+              Start(Job::CHOOSE_FOLDER);
+            }
+            ImGui::SetNextItemWidth(-1.f);
+            ui::text_input::DrawLabeled(ui::Tr("Export file path"), path,
+                                        sizeof(path));
+            ui::Checkbox(ui::Tr("Replace an existing file with this name"),
+                         &overwrite);
+            ImGui::BeginDisabled(name[0] == '\0' || path[0] == '\0' ||
+                                 document.settings.empty());
+            if (ui::ActionButton(ui::Tr("Export preset file"),
+                                 "export_preset")) {
+              document.metadata["name"] = name;
+              saved_destination = path;
+              Start(Job::EXPORT, {}, std::filesystem::u8path(path), {},
+                    document);
+            }
+            ImGui::EndDisabled();
+          } else if (task == Task::IMPORT) {
+            if (ui::ActionButton(ui::Tr("Choose preset file"), "choose_import")) {
+              Start(Job::CHOOSE_IMPORT);
+            }
+            ImGui::SetNextItemWidth(-1.f);
+            ui::text_input::DrawLabeled(ui::Tr("File path"), path,
+                                        sizeof(path));
+            if (ui::ActionButton(ui::Tr("Read preset file"), "read_preset")) {
+              Start(Job::READ, std::filesystem::u8path(path));
+            }
+            if (have_preview) {
+              ImGui::TextWrapped("%s",
+                                 preview.metadata.value("name", "").c_str());
+              ImGui::TextWrapped(
+                  "%s",
+                  ui::Tr("Only confirmed valid fields in this preset will "
+                         "change. Missing fields keep their current values."));
+              if (preview.scope == presets::Scope::FULL) {
+                ui::Checkbox(
+                    ui::Tr("Confirm the full backup scope shown below"),
+                    &confirm_full);
+              }
+              auto slot_rows = SlotPreview(index);
+              std::erase_if(slot_rows, [](const auto& row) {
+                return !profile_ui::Managed(row.key);
+              });
+              DrawRows(slot_rows);
+              if (current.populated) {
+                ui::Checkbox(ui::Tr("Confirm replacing or clearing this slot"),
+                             &replace);
+              }
+              ImGui::BeginDisabled(
+                  (current.populated && !replace) ||
+                  (preview.scope == presets::Scope::FULL && !confirm_full));
+              if (ui::ActionButton(ui::Tr("Assign NR fields to custom slot"),
+                                   "import_to_slot")) {
+                AssignPreviewToSlot(index);
+                replace = false;
+              }
+              ImGui::EndDisabled();
+            }
+          }
+          ImGui::EndDisabled();
+          if (busy) {
+            ImGui::TextDisabled("%s", ui::Tr("Working..."));
+          } else if (!notice.empty()) {
+            ImGui::TextWrapped("%s", ui::Tr(notice.c_str()));
+            if (notice == "Preset file exported.") {
+              ImGui::TextWrapped("%s", saved_destination.c_str());
+            }
+            const bool undoable =
+                notice == "Slot renamed." ||
+                notice ==
+                    "Custom slot saved. Select it to apply its settings." ||
+                notice == "Slot cleared. Running game settings were kept." ||
+                notice == "Official defaults restored.";
+            if (undoable && notice == profile_ui::notice &&
+                profile_ui::undo.available) {
+              ImGui::BeginDisabled(!profile_ui::writable ||
+                                   profile_ui::pending_action !=
+                                       profile_ui::Action::NONE);
+              if (ui::ActionButton(ui::Tr("Undo"), "undo_slot_operation")) {
+                profile_ui::Request(profile_ui::Action::UNDO);
+                notice = profile_ui::notice;
+              }
+              ImGui::EndDisabled();
+            }
+          }
+          if (ui::ActionButton(ui::Tr("Close"), "close_slot_operation")) {
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::PopTextWrapPos();
+          ImGui::EndPopup();
+        }
+        if (!ImGui::IsPopupOpen("###nr_slot_operation")) {
+          task = Task::NONE;
+        }
+      }
+    }
   }
   ImGui::PopID();
 }

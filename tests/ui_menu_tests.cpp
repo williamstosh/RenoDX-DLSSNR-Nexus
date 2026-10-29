@@ -260,6 +260,7 @@ int main() {
     }
     ranges_builder.AddText("\xef\x80\x8c\xef\x81\xb1\xef\x80\x8d\xef\x84\x8c\xef\x83\xa2");
     ranges_builder.AddText("中文电影画质_日本語_한국어_é_作者_Élodie_日本_巫师3_Witcher_中文描述，混合 café／한글／e\xcc\x81");
+    ranges_builder.AddText("我的夜景方案（自定义）");
     ImVector<ImWchar> ranges;
     ranges_builder.BuildRanges(&ranges);
     const char* font_path = "C:/Windows/Fonts/msyh.ttc";
@@ -678,6 +679,13 @@ int main() {
     for (int page = 0; page < 4; ++page) {
       click(find(ui::text::kMenuPages[page]));
       check(runtime::ui_menu_page == page, "category navigation failed");
+      const Item expand = find("expand_all");
+      const Item collapse = find("collapse_all");
+      check(std::abs(expand.rect.Min.y - collapse.rect.Min.y) <= 0.5f,
+            "page tools share one row");
+      const auto* window = collapse.window;
+      check(std::abs(collapse.rect.Max.x - (window->WorkRect.Max.x - ImGui::GetStyle().ScrollbarSize)) <= 1.f,
+            "all page tools align to the right scroller content edge");
     }
     runtime::ui_menu_page = 0;
     frame();
@@ -691,10 +699,34 @@ int main() {
     }
     check(status_found, "status navigation entry missing");
     click(status_entry);
-    check(runtime::ui_menu_page == 2, "status entry did not select Diagnostics");
-    for (ImGuiWindow* window : ImGui::GetCurrentContext()->Windows) {
-      check(!window->Active || (window->Flags & ImGuiWindowFlags_Popup) == 0, "status navigation opened a floating popup");
+    check(runtime::ui_menu_page == 0 && !find("status_open_diagnostics").disabled,
+          "status details must preserve the page and expose the full diagnostics action");
+    {
+      namespace timers = renodx::addons::dlss5::gpu_timers;
+      const auto original = timers::stage_stats[1];
+      const bool was_enabled = runtime::enabled.load();
+      runtime::enabled = true;
+      auto& sample = timers::stage_stats[1];
+      sample = {};
+      sample.valid = true;
+      sample.measured_ns = timers::NowNs();
+      sample.samples = 1;
+      sample.passes[0] = {.id = 0, .model = 1, .width = 640, .height = 360,
+          .output_width = 640, .output_height = 360, .eval_us = 100,
+          .state = timers::SampleState::VALID};
+      frame(); frame();
+      const auto measured_pass = [](const TextItem& item) {
+        return item.text.find("640x360 -> 640x360") != std::string::npos;
+      };
+      check(std::ranges::any_of(rendered_text, measured_pass), "details expose dimensions from a GPU-complete pass sample");
+      sample.measured_ns -= 3'000'000'000;
+      frame(); frame();
+      check(std::ranges::none_of(rendered_text, measured_pass), "details reject stale pass dimensions instead of showing configured values as actual");
+      sample = original;
+      runtime::enabled = was_enabled;
     }
+    click(find("status_open_diagnostics"));
+    check(runtime::ui_menu_page == 2, "status details did not navigate to Diagnostics");
     click(find("Quality"));
     const bool enabled_before = runtime::enabled.load();
     click(find("##nr_enable"));
@@ -1059,7 +1091,8 @@ int main() {
                 if (!classic) {
                   ImGuiWindow* settings = nullptr;
                   for (ImGuiWindow* window : ImGui::GetCurrentContext()->Windows) {
-                    if (window->Active && std::strstr(window->Name, "##nr_settings") != nullptr) {
+                    const auto* settings_name = std::strstr(window->Name, "/##nr_settings_");
+                    if (window->Active && settings_name != nullptr && std::strchr(settings_name + 1, '/') == nullptr) {
                       settings = window;
                     }
                   }
@@ -1071,6 +1104,10 @@ int main() {
                   runtime::nr_cost_gpu_ms = 25.f;
                   runtime::health_active_mask = 0;
                   frame();
+                  if (std::abs(settings->Pos.y - anchor) > 0.01f) {
+                    std::printf("scroller drift: %s page=%d width=%.0f font=%.0f language=%d anchor=%.1f now=%.1f\n",
+                                settings->Name, page, width, font, language, anchor, settings->Pos.y);
+                  }
                   check(std::abs(settings->Pos.y - anchor) <= 0.01f, "live refresh moved production settings scroller");
                 }
               }

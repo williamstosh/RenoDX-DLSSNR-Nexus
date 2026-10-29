@@ -289,6 +289,49 @@ int main() {
       "Cancel",
       "Restore",
   };
+  const char* runtime_strings[] = {
+      "Export profile",
+      "Open Diagnostics",
+      "Details",
+      "Resolution unavailable",
+      "NR GPU %.1f ms",
+      "NR cost unavailable",
+      "Model names are resolved creation requests. The runtime's internal network cannot be read back.",
+      "NR is off. Previous samples do not confirm current execution.",
+      "GPU-complete group: %.3f ms | %u samples",
+      "Pass %u | %s | %ux%u -> %ux%u | model request %s",
+      "NGX %.3f ms | Encode %.3f ms | Resolve %.3f ms",
+      "Pass %u: %s",
+      "Execution stage pending confirmation",
+      "Runtime details",
+      "Fallback and compatibility",
+      "Not measured",
+      "Awaiting closed recording and GPU completion",
+      "GPU complete: single submission",
+      "Not executed",
+      "Skipped: zero strength",
+      "Discarded: recording not submitted",
+      "Rejected: command list replayed",
+      "Expired: no recent proven sample",
+      "Unavailable: device removed",
+      "Unavailable: exact submission or queue frequency missing",
+      "Rejected: incomplete or invalid timestamps",
+      "Render",
+      "Upscaled",
+      "Present",
+      "Left-click to apply; right-click to manage.",
+      "Left-click to create; right-click to manage.",
+      "Change only the slot display name.",
+      "Create this slot first.",
+      "Export the actual saved slot settings, including personal changes.",
+      "Running game settings and library files are kept.",
+      "This slot is already empty.",
+      "Slot renamed.",
+      "Enter a nonempty slot name within the length limit.",
+      "Copies the original official template, without personal changes.",
+      "Personal changes have been automatically saved.",
+      "Undo",
+  };
   for (int language = 0; language < kLanguageCount; ++language) {
     SelectLanguage(language);
     const std::string_view welcome = Tr(text::kWelcomeTitle);
@@ -349,6 +392,16 @@ int main() {
       if (!check_preset_translation(english)) return 7;
       if (language != 0 && std::string_view(Tr(english)) == english) {
         std::fprintf(stderr, "Untranslated profile UX text: language=%s key=%s\n", kLanguages[language].code, english);
+        return 7;
+      }
+    }
+    for (const char* english : runtime_strings) {
+      if (!check_preset_translation(english)) return 7;
+      const bool technical_stage = std::string_view(english) == "Render"
+                                   || std::string_view(english) == "Upscaled"
+                                   || std::string_view(english) == "Present";
+      if (language != 0 && !technical_stage && std::string_view(Tr(english)) == english) {
+        std::fprintf(stderr, "Untranslated runtime text: language=%s key=%s\n", kLanguages[language].code, english);
         return 7;
       }
     }

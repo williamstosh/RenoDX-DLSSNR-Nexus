@@ -242,6 +242,60 @@ int main() {
     observation.Update(input, ++ns);
     check(observation.route == ui::FgRoute::kUnknown, "disabled NR clears the route");
   }
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  for (const auto& palette : ui::kThemes) {
+    ui::SetTheme(palette.id);
+    for (bool selected : {false, true}) {
+      for (int state = 0; state < 6; ++state) {
+        // Rest, hover, held mouse, released mouse, keyboard focus, disabled.
+        io.AddMouseButtonEvent(0, false);
+        io.AddMousePosEvent(-100.f, -100.f);
+        for (int tick = 0; tick < 4; ++tick) {
+          ImGui::NewFrame();
+          ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
+          ImGui::SetNextWindowSize(ImVec2(500.f, 250.f));
+          ImGui::Begin("slot colors", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
+          {
+            ui::StyleScope theme;
+            ui::PushPanelTheme(theme);
+            if (state == 4) ImGui::SetKeyboardFocusHere();
+            ImGui::BeginDisabled(state == 5);
+            auto* draw = ImGui::GetWindowDrawList();
+            const int first_vertex = draw->VtxBuffer.Size;
+            ui::ProfileSlotButton("##slot", "Slot", ImVec2(180.f, 0.f), selected);
+            const auto center = ImVec2((ImGui::GetItemRectMin().x + ImGui::GetItemRectMax().x) * 0.5f,
+                                        (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f);
+            const bool hovered = ImGui::IsItemHovered();
+            const bool held = ImGui::IsItemActive() && hovered;
+            const ImU32 text = ImGui::GetColorU32(selected ? palette.on_accent : palette.text_primary);
+            const ImVec4 background = (selected ? (held ? palette.accent_active : hovered ? palette.accent_hover : palette.accent)
+                                                : (held ? palette.bg_control_active : hovered ? palette.bg_control_hover : palette.bg_control));
+            bool has_text = false, has_background = false;
+            for (int vertex = first_vertex; vertex < draw->VtxBuffer.Size; ++vertex) {
+              has_text |= draw->VtxBuffer[vertex].col == text;
+              has_background |= draw->VtxBuffer[vertex].col == ImGui::GetColorU32(background);
+            }
+            if (tick == 3) {
+              check(has_text && has_background, "slot mesh uses matching foreground/background in every theme and interaction state");
+              check(ImGui::GetStyle().Colors[ImGuiCol_Text].x == palette.text_primary.x,
+                    "selected slot restores text before tooltip and context popup");
+              if (state == 1 || state == 2 || state == 3) check(hovered, "slot hover test reaches the real button");
+              if (state == 2) check(held, "slot active test holds the real button");
+              if (state == 4) check(ImGui::IsItemFocused(), "slot accepts keyboard focus");
+            }
+            ImGui::EndDisabled();
+            if (state == 1 || state == 2 || state == 3) io.AddMousePosEvent(center.x, center.y);
+            if (state == 2 && tick == 1) io.AddMouseButtonEvent(0, true);
+          }
+          ImGui::End();
+          ImGui::Render();
+          check(ui::style_depth == 0, "slot interaction restores all theme scopes");
+        }
+      }
+    }
+  }
+  io.AddMouseButtonEvent(0, false);
+  io.AddMousePosEvent(-100.f, -100.f);
   const auto frame = [&](const ui::StatusCard& card, float panel_width, float font,
                          unsigned warnings, bool summary, bool popup) {
     ImGui::GetStyle().FontSizeBase = font;
@@ -334,7 +388,7 @@ int main() {
           "Off summary does not present retained NR submissions or GPU measurements as execution");
     char action[160];
     std::snprintf(action, sizeof(action), ui::Tr(ui::text::kStatusDetails), 0u);
-    check(output.find(action) != std::string::npos, "Off summary preserves its diagnostic action");
+    check(output.find(ui::Tr("Details")) != std::string::npos, "Off summary preserves its details action");
     ImGui::End();
     ImGui::Render();
   }

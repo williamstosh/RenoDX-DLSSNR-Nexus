@@ -39,6 +39,8 @@ namespace renodx::addons::dlss5::ui {
 // the add-on shows a tooltip.
 inline void ItemTooltip(const char* fmt, ...) {
   if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) return;
+  StyleScope tooltip;
+  tooltip.Color(ImGuiCol_Text, CurrentTheme().text_primary);
   ImGui::BeginTooltip();
   ImGui::PushTextWrapPos((std::min)(ImGui::GetFontSize() * 28.f, ImGui::GetIO().DisplaySize.x * 0.65f));
   va_list args;
@@ -121,6 +123,33 @@ inline std::string Ellipsize(const char* text, float width) {
   return shown + "...";
 }
 
+inline bool ProfileSlotButton(const char* id, const char* label, ImVec2 size, bool selected) {
+  StyleScope style;
+  if (selected) {
+    style.Color(ImGuiCol_Button, CurrentTheme().accent)
+        .Color(ImGuiCol_ButtonHovered, CurrentTheme().accent_hover)
+        .Color(ImGuiCol_ButtonActive, CurrentTheme().accent_active)
+        .Color(ImGuiCol_Text, CurrentTheme().on_accent);
+  }
+  bool pressed;
+  {
+    StyleScope hidden;
+    hidden.Color(ImGuiCol_Text, ImVec4(0.f, 0.f, 0.f, 0.f));
+    pressed = ImGui::Button(id, size);
+  }
+  const ImVec2 begin = ImGui::GetItemRectMin();
+  const ImVec2 end = ImGui::GetItemRectMax();
+  const std::string shown = Ellipsize(label, end.x - begin.x - ImGui::GetStyle().FramePadding.x * 2.f);
+  const ImVec2 text = ImGui::CalcTextSize(shown.c_str());
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  draw->PushClipRect(begin, end, true);
+  draw->AddText(ImVec2(begin.x + (end.x - begin.x - text.x) * 0.5f,
+                       begin.y + (end.y - begin.y - text.y) * 0.5f),
+                ImGui::GetColorU32(ImGuiCol_Text), shown.c_str());
+  draw->PopClipRect();
+  return pressed;
+}
+
 struct ProcessingChainLine {
   std::string text;
   ImVec2 size;
@@ -187,15 +216,17 @@ inline bool ProcessingChainButton(const ProcessingChainNode& node, ImVec2 size, 
   return pressed;
 }
 
-// Only this child participates in the settings layout. Full messages, actions
-// and repair steps belong to the Diagnostics page.
-inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count) {
+// Only the compact child participates in settings layout. The caller opens
+// complete runtime details without expanding the summary's default height.
+inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, const char* execution = nullptr) {
   StyleScope frame;
   frame.FontSize(BodyFontSize())
       .Color(ImGuiCol_ChildBg, CurrentTheme().bg_card)
       .Var(ImGuiStyleVar_WindowPadding, ImVec2(tokens::kCardPadding + kStripeWidth, tokens::kCardPadding));
-  const float height = ImGui::GetTextLineHeightWithSpacing() * 2.f
-                       + ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y * 2.f;
+  const bool narrow = ImGui::GetContentRegionAvail().x < ImGui::GetFontSize() * 24.f;
+  const float height = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y
+                       + ImGui::GetTextLineHeightWithSpacing() * (narrow ? 2.f : 1.f)
+                       + ImGui::GetStyle().WindowPadding.y * 2.f;
   bool details = false;
   if (ImGui::BeginChild("##nr_status_summary", ImVec2(0.f, height),
                         ImGuiChildFlags_AlwaysUseWindowPadding,
@@ -206,14 +237,14 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count) {
         ToU32(ToneColor(card.tone)), tokens::kRadiusCard, ImDrawFlags_RoundCornersLeft);
     // A missing measurement still consumes its line. Wrapping is disabled
     // locally even when the surrounding ReShade panel enables it.
-    const auto line = [](const char* value, const ImVec4& color, const char* explanation = nullptr) {
+    const auto line = [](const char* value, const ImVec4& color, float width, const char* explanation = nullptr) {
       StyleScope text;
       text.Color(ImGuiCol_Text, color);
       std::string single_line(value);
       std::replace(single_line.begin(), single_line.end(), '\n', ' ');
       std::replace(single_line.begin(), single_line.end(), '\r', ' ');
       ImGui::PushTextWrapPos(-1.f);
-      ImGui::TextUnformatted(Ellipsize(single_line.c_str(), ImGui::GetContentRegionAvail().x).c_str());
+      ImGui::TextUnformatted(Ellipsize(single_line.c_str(), width).c_str());
       ImGui::PopTextWrapPos();
       if (explanation != nullptr) {
         ItemTooltip("%s\n%s", value, explanation);
@@ -225,43 +256,55 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count) {
     FormatCardTitle(title, sizeof(title), card);
     const std::string heading = std::string(GlyphIcon(card.glyph)) + " " + title;
     const bool off_by_user = card.id == CardId::kOffByUser;
-    line(heading.c_str(), ToneColor(card.tone), off_by_user ? Tr(card.body) : nullptr);
-    char detail[256];
-    if (FormatCardDetail(detail, sizeof(detail), card) == 0) {
-      std::snprintf(detail, sizeof(detail), "%s", Tr(card.body));
-    }
-    char cost[256];
-    if (FormatNrCost(cost, sizeof(cost), card.nr_gpu_ms, card.nr_present_ms, card.frame_ms, true) == 0) {
-      std::snprintf(cost, sizeof(cost), "%s: %s", Tr(text::kNrCost), Tr(text::kNoneYet));
-    }
-    char path[256];
-    if (card.frame_gen_multiplier > 1 || card.fg_declared || card.observed_fg_route != FgRoute::kUnknown) {
-      std::snprintf(path, sizeof(path), Tr(FrameGenText(card)),
-                    card.frame_gen_multiplier);
-    } else {
-      std::snprintf(path, sizeof(path), "%s", Tr(card.path_note != nullptr ? card.path_note : card.body));
-    }
+    const float right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+    const std::string action = std::string(Tr("Details")) + (warning_count != 0 ? " !" : "");
+    const float action_width = ImGui::CalcTextSize(action.c_str()).x + ImGui::GetStyle().FramePadding.x * 2.f;
+    ImGui::AlignTextToFramePadding();
+    line(heading.c_str(), ToneColor(card.tone),
+         (std::max)(1.f, ImGui::GetContentRegionAvail().x - action_width - ImGui::GetStyle().ItemSpacing.x),
+         off_by_user ? Tr(card.body) : nullptr);
+    ImGui::SameLine(right - action_width);
+    details = ImGui::Button((action + "###status_details").c_str());
+    char label[160];
+    std::snprintf(label, sizeof(label), Tr(text::kStatusDetails), warning_count);
+    ItemTooltip("%s", label);
     if (off_by_user) {
       // Reserve the normal detail row so toggling NR never moves the tabs.
       // Session counters and previous GPU samples are not current Off activity.
       ImGui::Dummy(ImVec2(0.f, ImGui::GetTextLineHeight()));
     } else {
-      std::string summary(detail);
-      if (summary != cost) summary += std::string(" | ") + cost;
-      if (summary != path && std::string(detail) != path) summary += std::string(" | ") + path;
-      line(summary.c_str(), CurrentTheme().text_secondary);
-    }
-    char label[160];
-    std::snprintf(label, sizeof(label), Tr(text::kStatusDetails), warning_count);
-    {
-      StyleScope button;
-      if (warning_count != 0) {
-        button.Color(ImGuiCol_Text, CurrentTheme().warn).Color(ImGuiCol_Border, CurrentTheme().warn);
+      char sizes[96];
+      if (card.input_width != 0 && card.output_width != 0) {
+        std::snprintf(sizes, sizeof(sizes), "%ux%u -> %ux%u", card.input_width,
+                      card.input_height, card.output_width, card.output_height);
+      } else {
+        std::snprintf(sizes, sizeof(sizes), "%s", Tr("Resolution unavailable"));
       }
-      const std::string shown = Ellipsize(label, ImGui::GetContentRegionAvail().x - ImGui::GetStyle().FramePadding.x * 2.f);
-      details = ImGui::Button((shown + "###status_details").c_str(), ImVec2(-1.f, 0.f));
+      std::string summary = sizes;
+      if (execution != nullptr) summary += std::string(" | ") + execution;
+      if (card.nr_gpu_ms > 0.f) {
+        char cost[96];
+        std::snprintf(cost, sizeof(cost), Tr("NR GPU %.1f ms"), card.nr_gpu_ms);
+        summary += std::string(" | ") + cost;
+      } else {
+        summary += std::string(" | ") + Tr("NR cost unavailable");
+      }
+      // At narrow widths reserve one extra line, independent of changing values.
+      // Remaining text is accessible both on hover and in the details window.
+      const float width = ImGui::GetContentRegionAvail().x;
+      if (narrow) {
+        auto measured = MeasureProcessingChainNode({summary, "", ""}, width + ImGui::GetStyle().FramePadding.x * 2.f);
+        while (!measured.lines.empty() && measured.lines.back().text.empty()) measured.lines.pop_back();
+        for (size_t row = 0; row < (std::min)(size_t{2}, measured.lines.size()); ++row) {
+          const bool last = row == 1 && measured.lines.size() > 2;
+          std::string shown = measured.lines[row].text;
+          if (last) shown += "...";
+          line(shown.c_str(), CurrentTheme().text_secondary, width, summary.c_str());
+        }
+      } else {
+        line(summary.c_str(), CurrentTheme().text_secondary, width);
+      }
     }
-    ItemTooltip("%s", label);
   }
   ImGui::EndChild();
   return details;
@@ -644,6 +687,8 @@ inline bool RightLink(const char* label, float right) {
 // over a hairline, and at the right end a link that resets the section,
 // shown while `modified`.  Returns true on the frame the link was clicked.
 inline bool SectionCaption(const char* caption, const char* reset_label, bool modified) {
+  StyleScope caption_font;
+  caption_font.FontSize(ModuleFontSize());
   const char* title = Tr(caption);
   reset_label = Tr(reset_label);
   ImGui::Dummy(ImVec2(0.f, tokens::kRowGap * 0.5f));
@@ -655,7 +700,6 @@ inline bool SectionCaption(const char* caption, const char* reset_label, bool mo
   bool clicked = false;
   {
     StyleScope caption_text;
-    caption_text.FontSize(SmallFontSize());
     {
       StyleScope secondary;
       secondary.Color(ImGuiCol_Text, CurrentTheme().text_primary);

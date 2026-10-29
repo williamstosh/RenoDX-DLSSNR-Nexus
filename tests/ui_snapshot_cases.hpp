@@ -27,6 +27,10 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
   std::vector<Scenario> scenarios;
   if (!docs_only) {
     scenarios.push_back({.id = "quality-viewport", .action = "viewport"});
+    scenarios.push_back({.id = "status-details", .action = "status-details"});
+    for (const char* action : {"slot-context", "official-context", "slot-rename", "slot-copy", "slot-export", "slot-import", "slot-clear"}) {
+      scenarios.push_back({.id = action, .action = action});
+    }
     for (int page = 0; page < 4; ++page) {
       for (const char* state : {"expanded", "collapsed"}) {
         scenarios.push_back({.id = std::string(pages[page]) + "-" + state, .page = page, .action = state});
@@ -70,6 +74,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     scenarios.push_back({.id = "gpu-comparison-zh", .page = 2,
                          .action = "gpu-comparison", .language = 14, .doc_role = "gpu-comparison"});
     if (snapshot_mode == "Full") {
+      scenarios.push_back({.id = "status-details-narrow", .action = "status-details", .width = 450.f});
       scenarios.push_back({.id = "pass-cross-stage-collapsed-zh", .page = 1, .action = "cross-stage-collapsed"});
       scenarios.push_back({.id = "pass-render2-upscaled2-zh", .page = 1, .action = "cross-stage-four"});
       scenarios.push_back({.id = "pass-backward-stage-zh", .page = 1, .action = "cross-stage-backward"});
@@ -83,6 +88,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       scenarios.push_back({.id = "issue-report-description", .page = 2, .action = "issue-report-description"});
       // Orthogonal additions reuse the same runner instead of multiplying every axis.
       for (const auto& theme : ui::kThemes) {
+        scenarios.push_back({.id = std::string(theme.slug) + "-slot-hover", .action = "slot-hover", .theme = theme.id});
         for (int page = 0; page < 4; ++page) {
           scenarios.push_back({.id = std::string(theme.slug) + "-" + pages[page], .page = page, .theme = theme.id});
         }
@@ -176,9 +182,17 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     check(!renodx::addons::dlss5::unicode_input::Busy(), "snapshot must not launch native input worker");
   };
   const auto settle = [&]() { frame(); frame(); frame(); };
+  const auto custom_slot_button = [&](int slot) {
+    const auto* window = find("open_presets").window;
+    const auto scope = ImHashStr("nr_profiles", 0, ImHashStr("presets", 0, window->ID));
+    const auto id = ImHashStr("##custom_slot", 0, ImHashData(&slot, sizeof(slot), scope));
+    check(items.contains(id), "snapshot requires the actual fixed-ID custom slot");
+    return Item(items.at(id));
+  };
   for (const auto& scenario : scenarios) {
     if (std::find(registry["expected"].begin(), registry["expected"].end(), scenario.id)
         == registry["expected"].end()) continue;
+    const auto profile_state_before = profile::state;
     if (!ImGui::GetCurrentContext()->OpenPopupStack.empty()) ImGui::ClosePopupToLevel(0, true);
     io.AddMousePosEvent(-100.f, -100.f);
     runtime::ui_theme_choice = scenario.theme;
@@ -196,7 +210,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       runtime::vulkan_present_seen = false;
       runtime::stage_source_rr = false;
     }
-    if (scenario.action == "gpu-pass-diagnostics") {
+    if (scenario.action == "gpu-pass-diagnostics" || scenario.action == "status-details") {
       namespace timers = renodx::addons::dlss5::gpu_timers;
       for (auto& timing : timers::stage_stats) timing = {};
       auto& sample = timers::stage_stats[1];
@@ -372,18 +386,60 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
         .title = "Synthetic diagnostic fixture",
         .body = "Deterministic test state; not a game measurement or runtime failure.",
         .fix = {"Synthetic repair instruction"}, .fix_count = 1};
-    if (scenario.action.starts_with("diagnostics-")) {
+    if (scenario.action == "status-details") {
+      click(find("status_details"));
+      check(!find("status_close").disabled && !find("status_open_diagnostics").disabled,
+            "runtime details must open without changing the selected page");
+      for (const char* id : {"status_close", "status_open_diagnostics"}) {
+        const Item action = find(id);
+        check(action.rect.Min.y >= action.window->InnerRect.Min.y && action.rect.Max.y <= action.window->InnerRect.Max.y,
+              "runtime detail navigation must remain visible outside the scrolling status body");
+      }
+      interaction = "click real runtime details; GPU-complete data is synthetic";
+    } else if (scenario.action.starts_with("diagnostics-")) {
       diagnostic = &card;
       frame(diagnostic); frame(diagnostic); frame(diagnostic);
       interaction = "production DrawRuntimeStatus with explicitly synthetic card";
+    } else if (scenario.action.starts_with("slot-") || scenario.action == "official-context") {
+      const int slot = 3;
+      profile::state.slots[slot].populated = true;
+      profile::state.slots[slot].name = (scenario.language == 14 ? "我的夜景方案（自定义）" : "My night profile");
+      profile::state.slots[slot].snapshot = profile::Snapshot();
+      profile::active = slot;
+      profile::observed_snapshot = profile::Snapshot();
+      profile::state.selected = std::string(profile::data::SLOT_IDS[slot]);
+      settle();
+      Item target = (scenario.action == "official-context" ? find(ui::Tr("NR Lite")) : custom_slot_button(slot));
+      const auto center = target.rect.GetCenter();
+      const int before = profile::active;
+      io.AddMousePosEvent(center.x, center.y);
+      if (scenario.action == "slot-hover") {
+        for (int tick = 0; tick < 45; ++tick) frame();
+      } else {
+        frame();
+        io.AddMouseButtonEvent(ImGuiMouseButton_Right, true); frame();
+        io.AddMouseButtonEvent(ImGuiMouseButton_Right, false); frame(); settle();
+        check(profile::active == before, "right-click snapshot must never switch the selected slot");
+        const Item first_action = find(scenario.action == "official-context" ? "restore_profile" : "Rename slot");
+        check(first_action.window->Size.x >= (std::min)(font_size * 12.f, io.DisplaySize.x - font_size * 2.f),
+              "wrapped slot menus require a readable width rather than an auto-fit feedback collapse");
+        const char* action = nullptr;
+        if (scenario.action == "slot-rename") action = "Rename slot";
+        if (scenario.action == "slot-copy") action = "Copy from official profile";
+        if (scenario.action == "slot-export") action = "Export profile";
+        if (scenario.action == "slot-import") action = "Import profile";
+        if (scenario.action == "slot-clear") action = "Clear slot";
+        if (action != nullptr) {
+          click(find(action));
+          drain_workers(); settle();
+          check(!find("close_slot_operation").disabled, "compact slot task must open without the library");
+        }
+      }
+      interaction = "synthetic populated slot; real right-click/hover and compact task; no file or slot write";
     } else if (scenario.action == "custom-slot-create") {
       const int slot = 3;
       check(!profile::state.slots[slot].populated, "creation snapshot requires an empty synthetic slot");
-      const auto* window = find("open_presets").window;
-      const auto scope = ImHashStr("nr_profiles", 0, ImHashStr("presets", 0, window->ID));
-      const auto id = ImHashStr("##custom_slot", 0, ImHashData(&slot, sizeof(slot), scope));
-      check(items.contains(id), "empty custom slot button missing");
-      click(Item(items.at(id)));
+      click(custom_slot_button(slot));
       check(!find("create_slot_current").disabled && !find("cancel_create_slot").disabled,
             "empty custom slot creation popup did not open");
       interaction = "click real empty Custom 1 slot; no capture/copy/save action";
@@ -719,6 +775,11 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     output.close();
     check(static_cast<bool>(output), "snapshot mesh metadata write failed");
     registry["captures"].push_back(entry);
+    if (scenario.action.starts_with("slot-") || scenario.action == "official-context") {
+      profile::state = profile_state_before;
+      profile::active = -1;
+      profile::observed_snapshot = profile::Snapshot();
+    }
     if (scenario.action == "custom-slot-create") {
       click(find("cancel_create_slot"));
       check(!profile::state.slots[3].populated, "creation snapshot must not populate the slot");

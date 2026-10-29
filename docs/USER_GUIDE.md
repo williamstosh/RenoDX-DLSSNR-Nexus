@@ -27,11 +27,13 @@
 
 0.1.0 包含**画质、叠层、诊断、高级**四页。顶部摘要反映观测状态，点击可进入诊断。绿色表示观测到了 NR 活动，不代表所有帧、资源或画质均已验证。“全部展开／全部收起”作用于当前视图；修改标记和重置箭头表示保存值偏离默认，不表示运行成功。
 
+当前开发源码将“全部展开／全部收起”统一放在各页内容区右上角，窄窗口使用带悬浮说明的 `+`／`-`。顶部摘要通常占两行，窄窗口最多三行；点击“详情”查看完整状态、已有 GPU 完成样本对应的 Stage／Pass、工作与输出尺寸及模型创建请求，也可继续进入诊断。未观测、待确认、过期和 NR 关闭会明确显示；模型创建请求不等于实际内部网络回读。此交互更新尚未随安装包发布。
+
 下文默认值针对全新配置；已有保存值或迁移配置可能不同。一般编辑会即时保存。更换模型、层数、介入点或工作尺寸可能重建 Feature，并短暂重建时序历史，比较前应等待场景和历史稳定。
 
 **配图说明：** 所有配图均为当前生产 ImGui 界面离屏合成的状态示例，用来说明布局与控件，不代表实机画质、FPS 或运行时性能测量。中文章节使用简体中文界面截图与中文图注。顶部版本范围同样适用于本节。
 
-已更新的画质、主题和保存任务配图使用**0.2.0-dev.8 开发源码**，其余仍准确的控件区域图继续保留。任何图片中出现的方案及辅助输入控件均属于开发功能，不包含于已发布的 0.1.0 包。
+本轮更新的画质、叠层、结果、诊断、高级与主题配图使用 **0.2.0-dev.10 开发源码**；仍准确的保存任务区域图继续保留。任何图片中出现的方案及辅助输入控件均属于开发功能，不包含于已发布的 0.1.0 包。
 
 <a id="zh-quality"></a>
 ### 画质：模型、介入点与尺寸
@@ -240,9 +242,11 @@
 
 若目标配置已应用，但随后保存目标方案状态失败，当前运行设置会保留，方案显示为未保存。解决存储错误后重试，或使用撤销；这不是磁盘／GPU 原子事务。
 
-紧凑状态行旁的“方案操作”提供“撤销方案操作”；选中官方方案时还提供“恢复官方默认设置”。撤销回退上一次方案操作，配置撤销保留后续编辑，必要时解除选中关联。官方方案没有个人修改时，恢复不可用；有修改时先弹出确认窗，点“恢复”才清除该方案的个人覆盖值，“取消”、标题栏 X 或 Esc 均可关闭确认。恢复可以撤销，不重置其他方案或游戏兼容项，也不自动覆盖共享库文件。悬停摘要可查看状态详情；“已保存”表示存储状态，不证明 NR 实际执行。
+**左键应用，右键管理**；空自定义方案为**左键创建，右键管理**。官方方案右键可恢复官方默认或导出，导出包含该槽位实际保存的个人修改。自定义方案右键可重命名、从官方原始模板复制、导出、导入或清空。常用操作直接打开小窗口，也可通过可见的“方案操作”及“管理方案”入口访问。按钮整合名称与状态，“已修改”表示偏离官方模板，悬浮说明区分已自动保存、保存中及保存失败，不代表未保存或 NR 实际执行。
 
-进入**管理方案 → 方案库**，展开默认关闭的“我的方案”，即可管理自定义 1–3，保存当前设置或复制含独立覆盖的官方方案。与快速选择区的就地创建不同，这里的复制仅存储，之后另选该方案才应用；替换已有内容或清空前须确认。重命名只改显示文字，不改变固定身份或设置，重名也不合并。清空后方案为空，运行配置保留。“保存或分享此方案”使用已保存快照打开保存任务，不立即生成文件；仅导出启用层的范围可能省略快照中停用层的保存值。
+复制覆盖、导入覆盖、清空及恢复官方默认均须确认；导入仍先验证并显示差异，不直接应用到游戏。重命名只改槽位显示名称，不改稳定 ID 或独立 JSON 文件。清空同时恢复“自定义 N”的名称并解除当前槽位关联，保留运行配置及方案库文件。导出默认指向共享方案库，可浏览文件／目录或输入路径，成功后显示保存位置；选择路径本身不写入。可撤销的方案操作成功后显示“撤销”，导出等操作没有虚假撤销入口。配置撤销仍保留后续编辑，必要时解除选中关联。
+
+完整**管理方案 → 方案库**继续提供不限数量的本地预设搜索、浏览、详情及独立文件的重命名、复制、删除和分享。默认折叠的自定义槽位工具仍可使用；槽位修改不会自动改写方案库中的独立文件。存入自定义槽位后需选择该槽位才应用到游戏；空槽位左键创建流程中的复制则创建后直接应用。
 
 方案按当前游戏身份保存在 `%LOCALAPPDATA%\NR Nexus\Profiles\<32hex-id>\slots.json`。重启只在当前配置与上次应用快照一致时恢复选中关联，绝不自动覆盖当前设置。外部重载使配置变化时解除关联，不将其写为官方覆盖。迁移安装位置或复制 INI 后，若 EXE 路径对应的 owner 不符，会把方案数据复制到新身份并保留当前设置；不支持自动合并不同商店／安装版本。
 
@@ -474,11 +478,13 @@ Open ReShade's overlay and select **NR Nexus**. Installation and runtime prerequ
 
 The 0.1.0 interface has four pages: **Quality**, **Multi-Pass**, **Diagnostics**, and **Advanced**. The summary above them reports observed status; click it to open Diagnostics. A green state means NR activity was observed, not that every frame, every resource or the image quality has been validated. Expand all / Collapse all changes the current view's sections. A changed marker or reset arrow means stored values differ from defaults, not that processing succeeded.
 
+In the current development source, **Expand all / Collapse all** sit at the top right of every page's content area; narrow windows use `+` / `-` with tooltips. The status summary uses two rows, or up to three in a narrow window. **Details** opens the complete status, stages/passes from existing GPU-complete samples, working/output sizes and model creation requests, with an action to continue to Diagnostics. Unobserved, pending, expired and NR-off states are explicit; creation requests do not establish the runtime's internal network. This interaction update has not shipped in an installation package.
+
 Defaults below are for a fresh configuration. Existing saved choices and migrations can retain different values. Settings normally save as you edit them; changing a model, pass count, location or working size may recreate features and briefly rebuild temporal history. Wait for a stable scene after a change before comparing.
 
 **Image note (applies to every image below, including the Chinese section):** these are state examples composed offscreen with the current production ImGui interface. They illustrate controls and layout, and do not represent in-game image quality, FPS, or measured runtime performance. Screenshots and captions match the language of each section.
 
-The refreshed Quality, theme and save-task images show the **0.2.0-dev.8 development source**; other control crops are retained where still accurate. Profile and assisted-input controls visible in any image are development features, outside the published 0.1.0 package.
+The refreshed Quality, Multi-Pass, result, Diagnostics, Advanced and theme images show the **0.2.0-dev.10 development source**; the save-task crop is retained where still accurate. Profile and assisted-input controls visible in any image are development features, outside the published 0.1.0 package.
 
 <a id="en-quality"></a>
 ### Quality: model, location and resolution
@@ -687,9 +693,11 @@ Each official Slot keeps its own **overrides**. Editing one does not change anot
 
 If the target configuration applies but saving its Slot state then fails, the applied game settings remain in place and the Slot is shown as unsaved. Resolve the storage error and retry, or use Undo; this is not an atomic disk/GPU transaction.
 
-Open **Profile actions** beside the compact status line for **Undo profile action** and, when an official profile is selected, **Restore official defaults**. Undo reverses the last profile operation; configuration undo keeps fields edited afterwards and may detach the selected association. Restore is unavailable when that official profile has no personal changes. Otherwise it opens a confirmation window: **Restore** clears only that profile's personal overrides; **Cancel**, the title-bar X or Esc dismisses the confirmation. Restoration can be undone and does not reset the other profiles or the game's compatibility settings. Profile edits never automatically overwrite shared library files. Hover the summary for status details; **Saved** confirms storage, not NR execution.
+**Left-click to apply; right-click to manage.** Empty custom profiles use **left-click to create; right-click to manage**. Official profiles offer restore and export; exports include the slot's actual saved personal changes. Custom profiles offer rename, copy from an original official template, export, import and clear. Common tasks open compact windows directly and remain discoverable through visible **Profile actions** and **Manage profiles** entries. Buttons combine names and state. **Modified** means different from the official template; tooltips distinguish automatically saved, saving and failed states. It does not mean unsaved or prove NR execution.
 
-In **Manage profiles → Profile library**, expand **Custom slots** (closed by default) to manage Custom 1–3. Capture current settings or copy an official profile with its overrides. Unlike creation from the quick selector, copying here stores data without applying it; select the custom profile separately to apply it. Confirm replacement/clearing when that profile is populated. Rename changes only display text, never its fixed identity or settings; duplicate names remain separate profiles. Clear empties that profile and leaves running game settings intact. **Save or share this slot** opens the save task using its saved snapshot; it does not immediately create a file. An enabled-layer export scope can omit saved values of disabled passes.
+Copy/import replacement, clearing and official restoration require confirmation. Imports retain validation and difference preview and do not immediately apply to the game. Rename changes the display name, keeping the stable ID and independent JSON filenames. Clear restores the default Custom N name and detaches the current association, keeping running settings and library files. Export starts in the shared library, supports file/folder browsing or a typed path, and reports the destination after success; choosing a path alone does not write. Successful reversible profile operations offer **Undo**; exports do not advertise undo. Configuration undo still keeps later edits and may detach the selected association.
+
+The full **Manage profiles → Profile library** retains browsing, search, details, rename, duplicate, delete and sharing for any number of independent local files. The folded custom-slot tools remain available. Slot edits never automatically rewrite independent library files. After assigning to a custom slot, select it to apply to the game; copying through an empty quick slot's creation popup applies immediately after creation.
 
 Slots are private to this game's profile identity, under `%LOCALAPPDATA%\NR Nexus\Profiles\<32hex-id>\slots.json`. On restart, association is restored only when current settings match the last applied snapshot; settings are never automatically overwritten. External configuration reloads that change settings detach the association without replacing official overrides. Moving the installation or copying an INI with a different executable-path owner forks the Slot data to a new identity and keeps current settings. Automatic merging across stores/installations is not supported.
 

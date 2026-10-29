@@ -38,7 +38,7 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 | **15 种界面语言** | Auto 自动跟随 ReShade，也可手动选择。显示取决于 ReShade 已加载的字体，语言清单与缺字回退说明见指南。 |
 | **四套界面主题** | Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED 只改变菜单视觉，不影响 NR 图像处理。 |
 | **六个 NR Profile Slot（开发中）** | 每游戏三个官方开发候选及三个自定义 Slot，独立保留覆盖值，可捕获／重命名／清空自定义快照、撤销 Slot 操作或恢复当前官方默认值。编辑自动保存，首次升级保留当前配置，保存失败不切换。 |
-| **本地共享方案（开发中）** | “管理方案”打开可搜索的方案库主页，提供保存方案／导入方案任务，自定义管理默认折叠。保存与导出选项按需展开，读取成功后才显示预览／应用或存入自定义方案。完整备份另行确认，选导出路径不会立即写入。操作见[方案与方案库指南](docs/USER_GUIDE.md#zh-presets)。 |
+| **本地共享方案（开发中）** | 主页面左键应用／创建方案，右键打开槽位管理与紧凑操作窗；“管理方案”保留完整可搜索方案库。导入先验证并预览差异，覆盖须确认；导出可选择目标路径，选择路径不会立即写入。当前源码包含此交互更新，尚未随包发布。操作见[方案与方案库指南](docs/USER_GUIDE.md#zh-presets)。 |
 | **辅助输入（尚未发布）** | 原位 IME 输入异常时，点击字段标题旁的键盘图标按钮（悬停可查看“辅助输入：打开兼容文本编辑窗口，输入中文等文字。”），或右键可编辑的预设字段、Slot 名称或报告文字并选“辅助输入…”，打开同一个可选的 Windows 原生 Unicode 编辑窗。区域提示中的键盘图形仅作说明，不能点击。“应用”将文字带回表单，“取消”丢弃编辑；保存仍需主动执行。此功能不改变原位输入，原生窗口表现仍需在目标游戏中验证。见[指南](docs/USER_GUIDE.md#zh-presets)。 |
 
 Slot 和预设管理仅在当前开发源码中提供，**0.1.0 稳定包不包含这些功能**。官方 Lite 为
@@ -251,7 +251,7 @@ and four menu themes.
 | **Multilingual interface — 15 languages** | Let Auto follow ReShade or choose a language manually. Display depends on ReShade's loaded font; the guide lists languages and explains missing-glyph fallback. |
 | **Four interface themes** | Cyber Neon, Nexus Dark, Fluent Light and Midnight OLED change the menu's appearance, independently of image processing. |
 | **Six NR Profile Slots (development)** | Three official development candidates plus three custom Slots for each game. Keep independent overrides, capture/rename/clear custom snapshots, undo profile actions or restore one official Slot. Slot edits save automatically; first upgrade keeps current game settings and a failed save blocks switching. |
-| **Local, shareable presets (development)** | Manage profiles opens one searchable Profile library home, with Save current profile and Import profile tasks and custom tools folded away. Save/export options appear on demand; successful reads expose preview/apply or assignment to a custom profile. Full backups require confirmation; choosing an export destination alone does not write. See the [profile and preset guide](docs/USER_GUIDE.md#en-presets). |
+| **Local, shareable presets (development)** | Left-click to apply/create quick profiles; right-click for slot management and compact tasks. Manage profiles retains the full searchable library. Imports validate and preview differences before confirmed replacement; exports allow a chosen destination, and choosing a path alone does not write. This interaction update is in current source and has not shipped in a package. See the [profile and preset guide](docs/USER_GUIDE.md#en-presets). |
 | **Assisted input (unreleased)** | When inline IME input is garbled, click the keyboard-icon button beside a field title (hover for “Assisted input: Open the compatibility text editor for Chinese and other text.”), or right-click an editable preset field, Slot name or report text field and choose **Assisted input...**. Both open the same optional native Windows Unicode editor. The icon in the section hint is static and not clickable. **Apply** returns text to the form; **Cancel** discards it, and saving remains explicit. This does not change inline input; native-window behavior still requires validation in the target game. See the [guide](docs/USER_GUIDE.md#en-presets). |
 
 Slots and preset management are available in the current development source;

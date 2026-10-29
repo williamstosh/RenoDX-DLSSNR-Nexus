@@ -23525,6 +23525,42 @@ inline void DrawSkippedReasons(bool player) {
 
 // The alpha44 counters, verbatim: the classic Guides & Diagnostics body and
 // the modern Diagnostics' Raw details.
+// Both status details and raw diagnostics use the existing published samples.
+inline void DrawObservedNrPasses() {
+  const auto samples = [] {
+    RuntimeLock lock(runtime_mutex);
+    return std::array<gpu_timers::Stats, 3>{gpu_timers::stage_stats[0], gpu_timers::stage_stats[1], gpu_timers::stage_stats[2]};
+  }();
+  const auto now = gpu_timers::NowNs();
+  ImGui::TextWrapped("%s", ui::Tr("Model names are resolved creation requests. The runtime's internal network cannot be read back."));
+  for (size_t stage = 0; stage < samples.size(); ++stage) {
+    const auto& timing = samples[stage];
+    const char* name = stage_plan::Name(static_cast<stage_plan::Stage>(stage));
+    ImGui::PushID(static_cast<int>(stage));
+    ui::SubCaption(name);
+    if (!enabled.load()) {
+      ImGui::TextWrapped("%s", ui::Tr("NR is off. Previous samples do not confirm current execution."));
+    } else if (!timing.valid || now - timing.measured_ns > gpu_timers::internal::kSampleAgeNs) {
+      ImGui::TextWrapped("%s", ui::Tr(timing.valid ? "Expired: no recent proven sample" : gpu_timers::StateText(timing.state)));
+    } else {
+      ImGui::TextWrapped(ui::Tr("GPU-complete group: %.3f ms | %u samples"), timing.total_us / 1000.f, timing.samples);
+      for (const auto& pass : timing.passes) {
+        if (pass.id == UINT32_MAX) continue;
+        if (pass.state == gpu_timers::SampleState::VALID) {
+          ImGui::TextWrapped(ui::Tr("Pass %u | %s | %ux%u -> %ux%u | model request %s"),
+                             pass.id + 1, name, pass.width, pass.height, pass.output_width, pass.output_height,
+                             nr_model::PresetName(pass.model));
+          ImGui::TextWrapped(ui::Tr("NGX %.3f ms | Encode %.3f ms | Resolve %.3f ms"),
+                             pass.eval_us / 1000.f, pass.encode_us / 1000.f, pass.resolve_us / 1000.f);
+        } else {
+          ImGui::TextWrapped(ui::Tr("Pass %u: %s"), pass.id + 1, ui::Tr(gpu_timers::StateText(pass.state)));
+        }
+      }
+    }
+    ImGui::PopID();
+  }
+}
+
 inline void DrawSectionDiagnosticsRaw() {
   const auto draw_roi = [](const char* label, int(&roi)[4]) {
     ImGui::PushID(label);
@@ -23918,6 +23954,7 @@ inline void DrawSectionDiagnosticsRaw() {
             : "  Not in Vulkan games: the edit trace is Direct3D 12 only.");
   }
   comparison_ui::Draw();
+  DrawObservedNrPasses();
   {
     RuntimeLock lock(runtime_mutex);
     ImGui::TextWrapped("Pre-FG independent-resolution pair: BLOCKED / NO-GO; retained research, default Off. Render -> Upscaled + FG compatibility is separate.");
@@ -24968,13 +25005,29 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
   ui::fold_scope = ui_menu_page * 8 + (ui_menu_page == 0 ? static_cast<int>(hook_point.load()) : ui_menu_page == 1 ? ui_selected_pass
                                                                                                                    : 0);
   ImGui::PushID(ui_menu_page);
-  const bool expand = ui::ActionButton(ui::Tr(ui::text::kExpandAll), "expand_all");
-  ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr(ui::text::kCollapseAll)).x + ImGui::GetStyle().FramePadding.x * 2.f);
-  const bool collapse = ui::ActionButton(ui::Tr(ui::text::kCollapseAll), "collapse_all");
-  if (expand || collapse) {
-    ui::FoldScope& scope = ui::fold_scopes[ui::fold_scope];
-    ++scope.epoch;
-    scope.target = expand;
+  // Commands share the scroller's right content edge; left space remains free
+  // for page tools without adding inactive controls.
+  {
+    const float padding = ImGui::GetStyle().FramePadding.x * 2.f;
+    const float gap = ImGui::GetStyle().ItemSpacing.x;
+    const float available = ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ScrollbarSize;
+    const float text_width = ImGui::CalcTextSize(ui::Tr(ui::text::kExpandAll)).x
+                             + ImGui::CalcTextSize(ui::Tr(ui::text::kCollapseAll)).x + padding * 2.f + gap;
+    const bool compact = text_width > available;
+    const char* expand_label = (compact ? "+" : ui::Tr(ui::text::kExpandAll));
+    const char* collapse_label = (compact ? "-" : ui::Tr(ui::text::kCollapseAll));
+    const float width = ImGui::CalcTextSize(expand_label).x + ImGui::CalcTextSize(collapse_label).x + padding * 2.f + gap;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (std::max)(0.f, available - width));
+    const bool expand = ImGui::Button((std::string(expand_label) + "###expand_all").c_str());
+    ui::ItemTooltip("%s", ui::Tr(ui::text::kExpandAll));
+    ImGui::SameLine();
+    const bool collapse = ImGui::Button((std::string(collapse_label) + "###collapse_all").c_str());
+    ui::ItemTooltip("%s", ui::Tr(ui::text::kCollapseAll));
+    if (expand || collapse) {
+      ui::FoldScope& scope = ui::fold_scopes[ui::fold_scope];
+      ++scope.epoch;
+      scope.target = expand;
+    }
   }
   if (ImGui::BeginChild("##nr_settings", ImVec2(0.f, 0.f), ImGuiChildFlags_None,
                         ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
@@ -25137,8 +25190,56 @@ inline void DrawPanelBody(reshade::api::effect_runtime* runtime) {
   if (card.present_gaps != 0) {
     ++warnings;
   }
-  if (ui::DrawStatusSummary(card, warnings)) {
-    ui_open_diagnostics = true;
+  std::string execution;
+  if (enabled.load()) {
+    const auto samples = [] {
+      RuntimeLock lock(runtime_mutex);
+      return std::array<gpu_timers::Stats, 3>{gpu_timers::stage_stats[0], gpu_timers::stage_stats[1], gpu_timers::stage_stats[2]};
+    }();
+    const auto now = gpu_timers::NowNs();
+    for (size_t stage = 0; stage < samples.size(); ++stage) {
+      if (samples[stage].valid && now - samples[stage].measured_ns <= gpu_timers::internal::kSampleAgeNs) {
+        if (!execution.empty()) execution += " + ";
+        execution += stage_plan::Name(static_cast<stage_plan::Stage>(stage));
+      }
+    }
+  }
+  if (execution.empty()) execution = ui::Tr("Execution stage pending confirmation");
+  if (ui::DrawStatusSummary(card, warnings, execution.c_str())) {
+    ImGui::OpenPopup("###nr_status_details");
+  }
+  const ImVec2 display = ImGui::GetIO().DisplaySize;
+  const float detail_width = (std::min)(ImGui::GetFontSize() * 44.f, display.x * 0.92f);
+  ImGui::SetNextWindowSize(ImVec2(detail_width, display.y * 0.72f));
+  ImGui::SetNextWindowSizeConstraints(ImVec2((std::min)(detail_width, 240.f), 100.f),
+                                     ImVec2(display.x * 0.96f, display.y * 0.9f));
+  if (ImGui::BeginPopup((std::string(ui::Tr("Runtime details")) + "###nr_status_details").c_str())) {
+    ImGui::PushTextWrapPos(0.f);
+    ui::SectionCaption("Runtime details", nullptr, false);
+    if (ui::ActionButton(ui::Tr("Open Diagnostics"), "status_open_diagnostics")) {
+      ui_open_diagnostics = true;
+      ImGui::CloseCurrentPopup();
+    }
+    ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Close")).x + ImGui::GetStyle().FramePadding.x * 2.f);
+    if (ui::ActionButton(ui::Tr("Close"), "status_close")) ImGui::CloseCurrentPopup();
+    // Keep navigation visible while complete status and long repair messages
+    // scroll in their own bounded region.
+    if (ImGui::BeginChild("##nr_status_detail_body", ImVec2(0.f, 0.f), ImGuiChildFlags_None,
+                          ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
+      ui::StatusCard detail = card;
+      detail.action = ui::CardAction::kNone;
+      ui::DrawStatusCard(detail, enabled.load());
+      DrawObservedNrPasses();
+      ImGui::TextWrapped("%s", ui::Tr("Fallback and compatibility"));
+      ImGui::TextWrapped("%s", ui::Tr(card.path_note != nullptr ? card.path_note : card.body));
+      if (card.fg_declared || card.observed_fg_route != ui::FgRoute::kUnknown) {
+        ImGui::TextWrapped(ui::Tr(ui::FrameGenText(card)), card.frame_gen_multiplier);
+      }
+      DrawHealthIssues();
+    }
+    ImGui::EndChild();
+    ImGui::PopTextWrapPos();
+    ImGui::EndPopup();
   }
   ui::SectionGap();
   if (ui_classic_layout.load()) {

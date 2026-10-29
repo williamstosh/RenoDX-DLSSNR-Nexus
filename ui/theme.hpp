@@ -182,6 +182,7 @@ inline float BaseFontSize() {
   return base > 0.f ? base : 13.f;
 }
 inline float TitleFontSize() { return BaseFontSize() * (15.f / 13.f); }
+inline float ModuleFontSize() { return BaseFontSize() * (14.f / 13.f); }
 inline float BodyFontSize() { return BaseFontSize(); }
 inline float SmallFontSize() { return BaseFontSize() * (12.f / 13.f); }
 
