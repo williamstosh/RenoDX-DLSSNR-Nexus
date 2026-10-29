@@ -25,6 +25,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 #include "declines.hpp"
@@ -35,11 +36,20 @@ namespace renodx::addons::dlss5 {
 inline constexpr uint32_t kDedupePerPresent = 0;
 inline constexpr uint32_t kDedupePerEvaluate = 1;
 
+struct PassResolutionSettings {
+  bool follow_input = false;
+  float scale = 1.f;
+  uint32_t commit_source = 0;
+  uint64_t commit_epoch = 0;
+};
+
 struct StageSourceState {
   static constexpr uint32_t kMaxOutputs = 8;
   const void* plan_handle = nullptr;
   stage_plan::Plan plan;
   uint64_t configuration_generation = 0;
+  std::array<PassResolutionSettings, stage_plan::kMaxPasses> resolutions{};
+  bool resolutions_frozen = false;
   bool render_attempted = false;
   bool render_complete = false;
   bool present_predecessor_attempted = false;

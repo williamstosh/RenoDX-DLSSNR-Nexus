@@ -2676,17 +2676,23 @@ inline bool SubmitPresentGroup(ID3D12CommandQueue* native_queue,
   auto* motion = GetD3D12Resource(&block, NVSDK_NGX_Parameter_MotionVectors);
   auto* depth = GetD3D12Resource(&block, NVSDK_NGX_Parameter_Depth);
   const bool mixed = target.stage_execution_plan != nullptr;
+  target.independent_resolution_pair = target.independent_resolution_pair
+      && stream.fg_multiplier == 1 && present_fg_multiplier.load(std::memory_order_relaxed) == 1
+      && !present_prefg_active.load(std::memory_order_relaxed)
+      && !present_prefg_upscaled_active.load(std::memory_order_relaxed);
+  const bool independent_pair = PresentResolutionPairAllowed(target);
+  const auto* const handle = stream.Handle(neutral_model);
   bool submitted = false;
   NrRecording recording;
   const auto cancel = [&](int*) {
-    if (!mixed || submitted) return;
+    if ((!mixed && !independent_pair) || submitted) return;
     // CPU-side NGX/state ledgers may have advanced even if Close failed.
     // Discard the recording and retire its private state before another try.
     submission::OnCommandListReset(slot->list);
-    if (auto feature = features.find(stream.Handle()); feature != features.end()) {
+    if (auto feature = features.find(handle); feature != features.end()) {
       ReleaseAllNrSlots(feature->second, true);
     }
-    RetireWorkset({stream.Handle(), reinterpret_cast<const ID3D12Resource*>(&stream)});
+    RetireWorkset({handle, reinterpret_cast<const ID3D12Resource*>(&stream)});
     ResetPresentStreamHistory(&stream);
   };
   int cancellation_key = 0;
@@ -2706,7 +2712,7 @@ inline bool SubmitPresentGroup(ID3D12CommandQueue* native_queue,
     const int64_t started_ns = SteadyNowNs();
     const auto previous_capture_serial = screenshot::PendingModelCaptureSerial(slot->list);
     // From here ProcessInline names the terminal.
-    ProcessInline(slot->list, stream.Handle(neutral_model), &block, &touched, &target,
+    ProcessInline(slot->list, handle, &block, &touched, &target,
         mixed ? &recording : nullptr);
     const auto capture_serial = screenshot::PendingModelCaptureSerial(slot->list);
     if (capture_serial != 0 && capture_serial != previous_capture_serial) {
@@ -2766,6 +2772,14 @@ inline bool SubmitPresentGroup(ID3D12CommandQueue* native_queue,
     present_guides_real.fetch_add(1, std::memory_order_relaxed);
   } else {
     present_guides_neutral.fetch_add(1, std::memory_order_relaxed);
+  }
+  if (independent_pair && !signaled) {
+    // Guide read occupancy must be published even when Signal fails: the
+    // list is already on the GPU. Keep its ring value/resources until a
+    // later same-queue signal proves completion; never discard it here.
+    ResetPresentStreamHistory(&stream, kResetRecovery);
+    CountNrDecline(NrDeclineReason::kPresentBusy);
+    return false;
   }
   if (mixed) {
     if (!recording.group_complete || !recording.output_ready || !signaled) {
@@ -4053,6 +4067,12 @@ inline void RunPresentPath(
   // recording and submission. A GPU slot wait releases both locks so the
   // game's NGX calls remain able to make progress.
 
+  target.independent_resolution_pair = !native_passthrough && !auto_fallback
+      && hook_point.load(std::memory_order_relaxed) == kHookPresent && stream.fg_multiplier == 1
+      && present_fg_multiplier.load(std::memory_order_relaxed) == 1
+      && !present_prefg_active.load(std::memory_order_relaxed)
+      && !present_prefg_upscaled_active.load(std::memory_order_relaxed)
+      && stack_passes.load(std::memory_order_relaxed) == 2;
   if (d3d11) {
     // The bridge's own run path, with this block for the game's: it takes
     // runtime_mutex itself and may bring the bridge up (DLLs, the Detours

@@ -29,6 +29,9 @@ int main() {
       text::kPassStage, text::kPreviousStage, text::kPassStageTip,
       text::kRequestedStage, text::kEffectiveStage, text::kStageBlocked, text::kStagePlanNote,
       text::kStagesUnavailable,
+      text::kResolutionInherit, text::kResolutionFixed, text::kPassResolutionTip,
+      text::kStageResolutionNote, text::kStageResolutionBlocked,
+      text::kResolutionBackend, text::kObservedResolution,
       renodx::addons::dlss5::stage_plan::ReasonText(renodx::addons::dlss5::stage_plan::Reason::NONE),
       renodx::addons::dlss5::stage_plan::ReasonText(renodx::addons::dlss5::stage_plan::Reason::BACKWARD_STAGE),
       renodx::addons::dlss5::stage_plan::ReasonText(renodx::addons::dlss5::stage_plan::Reason::UNSUPPORTED_BACKEND),
@@ -307,7 +310,7 @@ int main() {
       }
       const bool model_identifier = std::string_view(english) == "A (Legacy)"
                                     || std::string_view(english) == "B (Small FP8)" || std::string_view(english) == "Multi-Pass";
-      if (matches != 1 || (!model_identifier && std::string_view(translated) == english)) {
+      if (matches != 1 || *translated == '\0' || (!model_identifier && std::string_view(translated) == english)) {
         std::fprintf(stderr, "Translation mismatch: language=%s matches=%d key=%s\n", kLanguages[language].code, matches, english);
         return 5;
       }

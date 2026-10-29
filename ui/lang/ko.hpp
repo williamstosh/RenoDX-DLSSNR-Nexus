@@ -1899,6 +1899,14 @@ inline constexpr Translation kKo[] = {
     {"Present is unavailable; using the existing Upscaled path", "Present를 사용할 수 없어 기존 Upscaled 경로를 사용합니다"},
     {"Invalid stage selection", "잘못된 단계 선택"},
     {"Requested stages are unavailable", "요청한 단계를 사용할 수 없습니다"},
+
+    {"Inherit global resolution", "전역 해상도 상속"},
+    {"Fixed scale", "고정 배율"},
+    {"Working size is independent of Stage, Model, Look and Result. Fixed scale uses this stage's reference size; Match game keeps the guide size and existing limits. Upsampling is shared.", "작업 크기는 단계, 모델, 외형 및 결과 설정과 독립적입니다. 고정 배율은 이 단계의 기준 크기를 사용하며, 게임에 맞추기는 가이드 크기와 기존 제한을 유지합니다. 업샘플링 방식은 공유됩니다."},
+    {"Independent sizes across stage groups use DX11/DX12. Two Render or two Upscaled passes on native DX11 Bridge or DX12 in a chain without Present support different sizes. Two ordinary Present passes on native DX11 Bridge or DX12 also support different sizes, after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains. Groups of 3+ passes require matching sizes; unsupported mismatches skip the group. Inheritance and shared upsampling are unchanged.", "단계 그룹 간 독립 크기는 DX11/DX12를 사용합니다. Present 없는 네이티브 DX11 Bridge 또는 DX12 체인에서 Render 2패스 또는 Upscaled 2패스는 서로 다른 크기를 지원합니다. FG Off 선언이 확인된 네이티브 DX11 Bridge/DX12의 일반 Present 2패스도 지원합니다. 이 Present 기능은 FG 알 수 없음/On, Pre-FG, B1/혼합 체인을 거부합니다. 같은 그룹의 3패스 이상은 크기가 같아야 하며, 지원하지 않는 조합은 그룹을 건너뜁니다. 상속과 공유 업샘플링은 그대로입니다."},
+    {"Group skipped: different sizes require two Render/Upscaled passes on native DX11 Bridge or DX12 without Present, or two ordinary Present passes on native DX11 Bridge or DX12 after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains; groups of 3+ passes require matching sizes.", "그룹 건너뜀: 다른 크기는 Present 없는 네이티브 DX11 Bridge/DX12의 Render/Upscaled 2패스 또는 FG Off 선언이 확인된 네이티브 DX11 Bridge/DX12의 일반 Present 2패스에서만 지원합니다. 이 Present 기능은 FG 알 수 없음/On, Pre-FG, B1/혼합 체인을 거부합니다. 3패스 이상은 크기가 같아야 합니다."},
+    {"Independent pass resolution is unavailable on Vulkan; select Inherit global resolution.", "Vulkan에서는 패스별 독립 해상도를 사용할 수 없습니다. 전역 해상도 상속을 선택하세요."},
+    {"Last observed reference / requested / applied work", "마지막으로 관측된 크기: 기준 / 요청된 작업 크기 / 적용된 작업 크기"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

@@ -1899,6 +1899,14 @@ inline constexpr Translation kSl[] = {
     {"Present is unavailable; using the existing Upscaled path", "Present ni na voljo; uporabi se obstoječa pot Upscaled"},
     {"Invalid stage selection", "Neveljavna izbira faze"},
     {"Requested stages are unavailable", "Zahtevane faze niso na voljo"},
+
+    {"Inherit global resolution", "Podeduj globalno ločljivost"},
+    {"Fixed scale", "Fiksno merilo"},
+    {"Working size is independent of Stage, Model, Look and Result. Fixed scale uses this stage's reference size; Match game keeps the guide size and existing limits. Upsampling is shared.", "Delovna velikost je neodvisna od stopnje, modela, videza in rezultata. Fiksno merilo uporablja referenčno velikost te stopnje; prilagajanje igri ohrani velikost vodilnih podatkov in obstoječe omejitve. Način povečave je skupen."},
+    {"Independent sizes across stage groups use DX11/DX12. Two Render or two Upscaled passes on native DX11 Bridge or DX12 in a chain without Present support different sizes. Two ordinary Present passes on native DX11 Bridge or DX12 also support different sizes, after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains. Groups of 3+ passes require matching sizes; unsupported mismatches skip the group. Inheritance and shared upsampling are unchanged.", "Neodvisne velikosti med skupinami stopenj uporabljajo DX11/DX12. Dva prehoda Render ali dva Upscaled podpirata različne velikosti z izvornim DX11 Bridge ali DX12 v verigi brez Present. Dovoljena sta tudi natanko dva običajna prehoda Present z izvornim DX11 Bridge ali DX12 po potrjeni izjavi FG Off. Ti pari Present zavračajo neznano/On FG, Pre-FG, B1/mešane verige. Skupine s 3 ali več prehodi zahtevajo enake velikosti; nepodprte kombinacije preskočijo skupino. Dedovanje in skupno povečanje ločljivosti ostajata nespremenjena."},
+    {"Group skipped: different sizes require two Render/Upscaled passes on native DX11 Bridge or DX12 without Present, or two ordinary Present passes on native DX11 Bridge or DX12 after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains; groups of 3+ passes require matching sizes.", "Skupina preskočena: različne velikosti zahtevajo dva prehoda Render/Upscaled z izvornim DX11 Bridge ali DX12 brez Present ali dva običajna prehoda Present z izvornim DX11 Bridge ali DX12 po potrjeni izjavi FG Off. Pari Present zavračajo neznano/On FG, Pre-FG, B1/mešane verige; skupine s 3 ali več prehodi zahtevajo enake velikosti."},
+    {"Independent pass resolution is unavailable on Vulkan; select Inherit global resolution.", "Neodvisna ločljivost posameznih prehodov v Vulkanu ni na voljo; izberite Podeduj globalno ločljivost."},
+    {"Last observed reference / requested / applied work", "Nazadnje opažene velikosti: referenčna / zahtevana delovna / uporabljena delovna"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

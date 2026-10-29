@@ -1899,6 +1899,14 @@ inline constexpr Translation kTh[] = {
     {"Present is unavailable; using the existing Upscaled path", "Present ไม่พร้อมใช้งาน ใช้เส้นทาง Upscaled เดิม"},
     {"Invalid stage selection", "การเลือกขั้นตอนไม่ถูกต้อง"},
     {"Requested stages are unavailable", "ขั้นตอนที่ร้องขอไม่พร้อมใช้งาน"},
+
+    {"Inherit global resolution", "สืบทอดความละเอียดส่วนกลาง"},
+    {"Fixed scale", "อัตราส่วนคงที่"},
+    {"Working size is independent of Stage, Model, Look and Result. Fixed scale uses this stage's reference size; Match game keeps the guide size and existing limits. Upsampling is shared.", "ขนาดการประมวลผลเป็นอิสระจากขั้นตอน โมเดล รูปลักษณ์ และผลลัพธ์ อัตราส่วนคงที่ใช้ขนาดอ้างอิงของขั้นตอนนี้ ส่วนการปรับตามเกมจะคงขนาดข้อมูลไกด์และข้อจำกัดเดิมไว้ วิธีการอัปแซมปลิงใช้ร่วมกันทั้งสายการประมวลผล"},
+    {"Independent sizes across stage groups use DX11/DX12. Two Render or two Upscaled passes on native DX11 Bridge or DX12 in a chain without Present support different sizes. Two ordinary Present passes on native DX11 Bridge or DX12 also support different sizes, after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains. Groups of 3+ passes require matching sizes; unsupported mismatches skip the group. Inheritance and shared upsampling are unchanged.", "ขนาดอิสระระหว่างกลุ่ม Stage ใช้ DX11/DX12 สอง Pass ของ Render หรือสอง Pass ของ Upscaled รองรับขนาดต่างกันบน native DX11 Bridge หรือ DX12 ในเชนที่ไม่มี Present รองรับ Present ปกติบน native DX11 Bridge หรือ DX12 จำนวนสอง Pass หลังยืนยันการประกาศ FG Off ความสามารถ Present นี้ปฏิเสธ FG ที่ไม่ทราบสถานะ/On, Pre-FG, B1/เชนผสม กลุ่มที่มี 3 Pass ขึ้นไปต้องมีขนาดเท่ากัน ชุดค่าที่ไม่รองรับจะข้ามกลุ่ม การสืบทอดค่าและการอัปแซมปลิงร่วมไม่เปลี่ยนแปลง"},
+    {"Group skipped: different sizes require two Render/Upscaled passes on native DX11 Bridge or DX12 without Present, or two ordinary Present passes on native DX11 Bridge or DX12 after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains; groups of 3+ passes require matching sizes.", "ข้ามกลุ่ม: ขนาดต่างกันต้องใช้ Render/Upscaled สอง Pass บน native DX11 Bridge หรือ DX12 ที่ไม่มี Present หรือ Present ปกติบน native DX11 Bridge หรือ DX12 สอง Pass หลังยืนยันการประกาศ FG Off Present นี้ปฏิเสธ FG ที่ไม่ทราบสถานะ/On, Pre-FG, B1/เชนผสม กลุ่มที่มี 3 Pass ขึ้นไปต้องมีขนาดเท่ากัน"},
+    {"Independent pass resolution is unavailable on Vulkan; select Inherit global resolution.", "Vulkan ไม่รองรับความละเอียดอิสระรายพาส โปรดเลือกสืบทอดความละเอียดส่วนกลาง"},
+    {"Last observed reference / requested / applied work", "ขนาดที่สังเกตได้ล่าสุด: อ้างอิง / ประมวลผลที่ร้องขอ / ประมวลผลที่ใช้จริง"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

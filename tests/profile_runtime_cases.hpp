@@ -93,6 +93,79 @@ const auto RunProfileRuntimeCases = [&](const std::filesystem::path& outputdir) 
     Check(profile::active == index, "Requested populated Slot becomes active.");
   };
 
+  // Exercise the registry adapters directly; no GPU execution is claimed here.
+  {
+    namespace adapter = runtime::preset_ui;
+    namespace presets = renodx::addons::dlss5::presets;
+    const auto before = adapter::Capture(presets::Scope::FULL, Json::object());
+    Json settings{{"NRPasses", 2u}};
+    for (unsigned pass = 2; pass <= 4; ++pass) {
+      const auto prefix = "NRPass" + std::to_string(pass);
+      const auto mode_key = prefix + "ResolutionMode";
+      const auto scale_key = prefix + "ResolutionScale";
+      const auto* mode = adapter::FindSetting(mode_key);
+      const auto* scale = adapter::FindSetting(scale_key);
+      Check(mode != nullptr && mode->u != nullptr && mode->fallback == 0.f,
+            "Pass resolution mode is registered as uint32 with inherited default.");
+      Check(scale != nullptr && scale->f != nullptr && scale->fallback == 1.f,
+            "Pass resolution scale is registered as float with full-size default.");
+      settings[mode_key] = 2u;
+      settings[scale_key] = 0.67f;
+    }
+    Check(adapter::Apply({.scope = presets::Scope::FULL, .settings = settings}, false, true, &error),
+          "Full preset applies independent resolution settings, including inactive passes.");
+    const auto full = adapter::Capture(presets::Scope::FULL, Json::object());
+    const auto quality = adapter::Capture(presets::Scope::QUALITY, Json::object());
+    const auto multipass = adapter::Capture(presets::Scope::QUALITY_MULTIPASS, Json::object());
+    presets::Document imported;
+    Check(presets::Parse(presets::Serialize(full), &imported) && imported.settings == full.settings,
+          "Independent resolution survives preset export/import without schema change.");
+    for (unsigned pass = 2; pass <= 4; ++pass) {
+      const auto prefix = "NRPass" + std::to_string(pass);
+      for (const auto* suffix : {"ResolutionMode", "ResolutionScale"}) {
+        const auto key = prefix + suffix;
+        Check(full.settings.contains(key) && full.settings[key] == settings[key],
+              "Full backup captures enabled and inactive pass resolution.");
+        Check(!quality.settings.contains(key) && multipass.settings.contains(key) == (pass == 2),
+              "Quality excludes overrides; Quality plus Multi-Pass captures only enabled pass resolution.");
+        Check(profile::Managed(key) && profile::Snapshot()[key] == settings[key],
+              "Slot registry manages resolution settings even for inactive passes.");
+      }
+    }
+    for (const auto* key : {"NRFollowInputRes", "NRResolutionScale", "NRLookUpsample", "NRPass2Stage",
+                            "NRPass2Preset", "NRPass2FollowPass1", "NRPass2LookFollowPass1"}) {
+      Check(full.settings[key] == before.settings[key],
+            "Resolution overrides preserve global resolution, upsampling, Stage, model and inheritance.");
+    }
+    Check(adapter::Undo(&error) && adapter::Capture(presets::Scope::FULL, {}).settings == before.settings,
+          "Undo restores the exact pre-resolution preset snapshot.");
+    Check(adapter::Apply(imported, true, false, &error), "Import restores exported resolution values.");
+    Check(adapter::Apply({.scope = presets::Scope::QUALITY, .settings = {{"NRIntensity", 0.75f}}}, false, false, &error),
+          "Old partial preset remains applicable.");
+    for (const auto& [key, value] : settings.items()) {
+      Check(adapter::ReadSetting(key) == value, "Missing resolution fields preserve current settings.");
+    }
+    for (unsigned pass = 2; pass <= 4; ++pass) {
+      const auto prefix = "NRPass" + std::to_string(pass);
+      const auto* mode_rule = presets::FindRule(prefix + "ResolutionMode");
+      const auto* scale_rule = presets::FindRule(prefix + "ResolutionScale");
+      for (const Json invalid : {Json(-1), Json(3), Json(1.5), Json(true), Json("2")}) {
+        Check(mode_rule != nullptr && !adapter::ValidateValue(*mode_rule, invalid),
+              "Resolution mode rejects invalid range and non-integer types.");
+      }
+      for (const Json invalid : {Json(0.32f), Json(1.01f), Json(true), Json("0.67")}) {
+        Check(scale_rule != nullptr && !adapter::ValidateValue(*scale_rule, invalid),
+              "Resolution scale rejects invalid range and nonnumeric types.");
+      }
+      for (unsigned mode = 0; mode <= 2; ++mode) {
+        Check(mode_rule != nullptr && adapter::ValidateValue(*mode_rule, mode), "All resolution modes are accepted.");
+      }
+      Check(scale_rule != nullptr && adapter::ValidateValue(*scale_rule, 0.33f)
+                && adapter::ValidateValue(*scale_rule, 1.f), "Resolution scale endpoints are accepted.");
+    }
+    Check(adapter::Apply(before, true, false, &error), "Restore fixture after resolution adapter checks.");
+  }
+
   seed();
   const auto initial = profile::Snapshot();
   const auto initial_ini = Bytes();
@@ -135,6 +208,8 @@ const auto RunProfileRuntimeCases = [&](const std::filesystem::path& outputdir) 
     select(index);
     commit(runtime::kSetIntensity, 0.25f + static_cast<float>(index) * 0.125f);
     commit(runtime::kSetPassStage[2], static_cast<float>(index + 1));
+    commit(*runtime::preset_ui::FindSetting("NRPass4ResolutionMode"), static_cast<float>(index));
+    commit(*runtime::preset_ui::FindSetting("NRPass4ResolutionScale"), 0.5f + static_cast<float>(index) * 0.125f);
     settle();
   }
   commit(runtime::kSetIntensity, 0.5625f);
@@ -149,6 +224,9 @@ const auto RunProfileRuntimeCases = [&](const std::filesystem::path& outputdir) 
           "Official switches preserve each Slot's independent override.");
     Check(profile::Snapshot()["NRPass4Stage"] == index + 1,
           "Each official Slot preserves its independent inactive pass stage.");
+    Check(profile::Snapshot()["NRPass4ResolutionMode"] == index
+              && profile::Snapshot()["NRPass4ResolutionScale"] == 0.5f + static_cast<float>(index) * 0.125f,
+          "Each official Slot preserves inactive pass resolution overrides.");
   }
   commit(runtime::kSetStackPasses, 1.f);
   commit(runtime::kSetPassPreset[2], 2.f);
@@ -178,6 +256,9 @@ const auto RunProfileRuntimeCases = [&](const std::filesystem::path& outputdir) 
     select(index);
     Check(profile::Snapshot()["NRPass4Stage"] == (index < 3 ? index + 1 : 3),
           "All six Slots restore their persisted stage selection.");
+    Check(profile::Snapshot()["NRPass4ResolutionMode"] == (index < 3 ? index : 2)
+              && profile::Snapshot()["NRPass4ResolutionScale"] == (index < 3 ? 0.5f + static_cast<float>(index) * 0.125f : 0.75f),
+          "All six Slots restore inactive pass resolution mode and scale.");
   }
   Check(disk().slots[5].snapshot["NRPass4Preset"] == 2, "Real worker persists disabled pass selection.");
 
@@ -208,17 +289,23 @@ const auto RunProfileRuntimeCases = [&](const std::filesystem::path& outputdir) 
   settle();
   select(0);
   commit(runtime::kSetIntensity, 0.25f);
+  commit(*runtime::preset_ui::FindSetting("NRPass4ResolutionMode"), 2.f);
+  commit(*runtime::preset_ui::FindSetting("NRPass4ResolutionScale"), 0.5f);
   settle();
   const auto before_restore = profile::state;
   profile::Request(profile::Action::RESTORE, 0);
   settle();
   Check(profile::state.slots[0].overrides.empty(), "Restore clears current official overrides.");
+  Check(profile::Snapshot()["NRPass4ResolutionMode"] == 0u && profile::Snapshot()["NRPass4ResolutionScale"] == 1.f,
+        "Official restore resets inactive pass resolution to inherited defaults.");
   Check(profile::state.slots[1].overrides == before_restore.slots[1].overrides,
         "Restore leaves another official Slot's override untouched.");
   profile::Request(profile::Action::UNDO);
   settle();
   Check(profile::state.slots[0].overrides == before_restore.slots[0].overrides
             && profile::Snapshot()["NRIntensity"] == 0.25f, "Undo restore recovers personal override and running value.");
+  Check(profile::Snapshot()["NRPass4ResolutionMode"] == 2u && profile::Snapshot()["NRPass4ResolutionScale"] == 0.5f,
+        "Undo restore recovers inactive pass resolution mode and scale.");
 
   seed();
   select(0);

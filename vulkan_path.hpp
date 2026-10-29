@@ -1773,6 +1773,11 @@ inline void SampleScale(reshade::api::command_list* cmd, reshade::api::device* a
 inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
                                  const NVSDK_NGX_Handle* handle,
                                  const NVSDK_NGX_Parameter* parameters) {
+  for (uint32_t pass = 1; pass < std::clamp(stack_passes.load(), 1u, kMaxNrPasses); ++pass) {
+    if (pass_resolution_mode[pass - 1].load() != 0) {
+      return NrDeclineReason::kStageResolutionBackend;
+    }
+  }
   using namespace reshade::api;
   command_list* cmd = nullptr;
   {

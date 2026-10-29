@@ -412,6 +412,18 @@ struct NormStream {
   int64_t last_reset_ns = 0;
 };
 
+struct NrPassResolutionContract {
+  uint32_t input_width = 0;
+  uint32_t input_height = 0;
+  uint32_t output_width = 0;
+  uint32_t debounce_width = 0;
+  uint32_t debounce_height = 0;
+  uint32_t debounce_frames = 0;
+  bool working_resolution_committed = false;
+  uint32_t resolution_commit_source = 0;
+  uint64_t resolution_commit_epoch = 0;
+};
+
 struct FeatureState {
   uint64_t source_generation = 0;
   bool mixed_recording_discarded = false;
@@ -509,6 +521,9 @@ struct FeatureState {
   // evaluation commits immediately instead of running the debounce window on
   // stale stored render dims (the startup double-workset recreation).
   bool working_resolution_committed = false;
+  uint32_t resolution_commit_source = 0;
+  uint64_t resolution_commit_epoch = 0;
+  NrPassResolutionContract second_resolution;
   NrFeatureSlot slots[kMaxNrPasses];
 };
 
@@ -757,6 +772,10 @@ inline DescriptorHandle DescriptorHeapSlot(
 }
 
 struct FinalResources {
+  // Optional second-pass working surfaces. Full-stage images are held by COM
+  // references; this owned child has its own immutable descriptor heap.
+  FinalResources* resolution_tail = nullptr;
+  bool shared_stage_surfaces = false;
   ID3D12Resource* original = nullptr;
   ID3D12Resource* proxy = nullptr;
   ID3D12Resource* nr_output = nullptr;
@@ -981,6 +1000,8 @@ struct PresentTarget {
   uintptr_t swapchain_identity = 0;
   DXGI_FORMAT swapchain_format = DXGI_FORMAT_UNKNOWN;
   bool d3d11_bridge = false;
+  // Granted only by the ordinary Present caller, never by pre-FG/B1.
+  bool independent_resolution_pair = false;
   present_hdr_pedestal::Snapshot hdr_pedestal;
   uint32_t hdr_codec_mode = 0;
   uint32_t hdr_curve = 0;
@@ -2249,6 +2270,9 @@ inline std::atomic_bool chained_temporal_history = defaults::kChainedHistory;
 // avoids the low-res Color contract the signed runtime rejects outright.
 inline std::atomic_bool nr_follow_input_res = defaults::kFollowInputRes;
 inline std::atomic<float> nr_resolution_scale = defaults::kResolutionScale;
+// Pass 1 retains the global controls. Later passes inherit unless opted out.
+inline std::atomic_uint32_t pass_resolution_mode[kMaxNrPasses - 1] = {0u, 0u, 0u};
+inline std::atomic<float> pass_resolution_scale[kMaxNrPasses - 1] = {1.f, 1.f, 1.f};
 // NROutputRect (ini-only, defaults::kOutputRect above): which contract names
 // the DLSS output rect NR reads and writes.
 inline std::atomic<uint32_t> nr_output_rect = defaults::kOutputRect;
@@ -2256,7 +2280,27 @@ inline std::atomic<uint32_t> nr_output_rect = defaults::kOutputRect;
 // new working dimensions immediately, without the kContractDebounceFrames
 // settle window (that window protects against game-driven contract
 // alternation, not deliberate user changes).
-inline std::atomic<bool> nr_resolution_commit_now = false;
+// A commit is acknowledged by every affected session, rather than consumed by
+// the first stage/source evaluated. Slider drags still use the size debounce.
+inline std::atomic_uint64_t nr_resolution_commit_epochs[kMaxNrPasses]{};
+
+inline PassResolutionSettings CurrentPassResolution(uint32_t pass) {
+  const uint32_t mode = (pass == 0 ? 0u : pass_resolution_mode[pass - 1].load());
+  const uint32_t source = (mode == 0 ? 0u : pass);
+  return {
+      .follow_input = (mode == 0 ? nr_follow_input_res.load() : mode == 1),
+      .scale = (mode == 0 ? nr_resolution_scale.load() : pass_resolution_scale[pass - 1].load()),
+      .commit_source = source,
+      .commit_epoch = nr_resolution_commit_epochs[source].load(),
+  };
+}
+
+inline PassResolutionSettings EffectivePassResolution(uint32_t pass) {
+  if (evaluate_chain.depth != 0 && evaluate_chain.resolutions_frozen) {
+    return evaluate_chain.resolutions[pass];
+  }
+  return CurrentPassResolution(pass);
+}
 inline std::atomic_uint32_t depth_mode = defaults::kDepthMode;
 inline std::atomic<float> motion_scale_x_multiplier = defaults::kMvecScale;
 inline std::atomic<float> motion_scale_y_multiplier = defaults::kMvecScale;
@@ -4284,6 +4328,10 @@ inline bool LoadDirectApi() {
 }
 
 inline void ReleaseFinalResources(FinalResources& resources) {
+  if (resources.resolution_tail != nullptr) {
+    ReleaseFinalResources(*resources.resolution_tail);
+    delete resources.resolution_tail;
+  }
   ReleaseCom(resources.descriptors);
   ReleaseCom(resources.block_mean);
   ReleaseCom(resources.decoded_alt);
@@ -4342,24 +4390,31 @@ inline void ReleaseFinalResources(FinalResources& resources) {
 inline const std::vector<const void*>& CollectWorksetGpuObjects(const FinalResources& res) {
   static thread_local std::vector<const void*> objects;
   objects.clear();
-  for (const ID3D12Resource* look_object :
-       {res.look_output, res.look_band_a, res.look_band_b, res.look_band_max_a,
-        res.look_band_max_b, res.look_up_proxy, res.look_up_neural,
-        res.look_trace_histogram, res.look_trace_blocks}) {
-    if (look_object != nullptr) objects.push_back(look_object);
+  for (const FinalResources* current = &res; current != nullptr; current = current->resolution_tail) {
+    const auto& res = *current;
+    for (const ID3D12Resource* look_object :
+         {res.look_output, res.look_band_a, res.look_band_b, res.look_band_max_a,
+          res.look_band_max_b, res.look_up_proxy, res.look_up_neural,
+          res.look_trace_histogram, res.look_trace_blocks}) {
+      if (look_object != nullptr) objects.push_back(look_object);
+    }
+    if (res.proxy != nullptr) objects.push_back(res.proxy);
+    if (res.nr_output != nullptr) objects.push_back(res.nr_output);
+    // A child heap proves its own use of shared images. Listing those images
+    // here would let ongoing parent recordings pin every retired child forever.
+    if (!res.shared_stage_surfaces) {
+      if (res.original != nullptr) objects.push_back(res.original);
+      if (res.decoded != nullptr && res.decoded != res.original) objects.push_back(res.decoded);
+      if (res.decoded_alt != nullptr) objects.push_back(res.decoded_alt);
+      if (res.pre_sr_color != nullptr) objects.push_back(res.pre_sr_color);
+      if (res.block_mean != nullptr) objects.push_back(res.block_mean);
+      if (res.work0 != nullptr) objects.push_back(res.work0);
+      if (res.work_a != nullptr) objects.push_back(res.work_a);
+      if (res.work_b != nullptr) objects.push_back(res.work_b);
+      if (res.norm_scale != nullptr) objects.push_back(res.norm_scale);
+    }
+    if (res.descriptors != nullptr) objects.push_back(res.descriptors);
   }
-  if (res.original != nullptr) objects.push_back(res.original);
-  if (res.proxy != nullptr) objects.push_back(res.proxy);
-  if (res.nr_output != nullptr) objects.push_back(res.nr_output);
-  if (res.decoded != nullptr && res.decoded != res.original) objects.push_back(res.decoded);
-  if (res.decoded_alt != nullptr) objects.push_back(res.decoded_alt);
-  if (res.pre_sr_color != nullptr) objects.push_back(res.pre_sr_color);
-  if (res.block_mean != nullptr) objects.push_back(res.block_mean);
-  if (res.work0 != nullptr) objects.push_back(res.work0);
-  if (res.work_a != nullptr) objects.push_back(res.work_a);
-  if (res.work_b != nullptr) objects.push_back(res.work_b);
-  if (res.norm_scale != nullptr) objects.push_back(res.norm_scale);
-  if (res.descriptors != nullptr) objects.push_back(res.descriptors);
   return objects;
 }
 
@@ -4418,6 +4473,14 @@ inline void RetireWorksetResources(FinalResources&& resources) {
        // retirement, and an unrelated queue's submission can no longer
        // "prove" it).
        queue_tracking_active.load(std::memory_order_relaxed)});
+}
+
+inline void RetireSecondResolutionResources(FinalResources* parent) {
+  auto* tail = std::exchange(parent->resolution_tail, nullptr);
+  if (tail == nullptr) return;
+  parent->allocated_bytes -= tail->allocated_bytes;
+  RetireWorksetResources(std::move(*tail));
+  delete tail;
 }
 
 // Retires one workset's resources on the settle queue (the evaluates that may
@@ -6053,7 +6116,8 @@ inline FinalResources* EnsureWorkset(
     bool create_pre_sr_color = false,
     // The Present hook point's units (PresentTarget): the swapchain's colour
     // space decides them, not the NRSourceEncoding family.
-    const codec::SourceUnits* units_override = nullptr) {
+    const codec::SourceUnits* units_override = nullptr,
+    FinalResources* stage_resources = nullptr) {
   if (device == nullptr || key == nullptr || input_width == 0 || input_height == 0
       || output_width == 0 || output_height == 0) {
     // Bounded by the caller's periodic failure retry, not per-frame.
@@ -6067,7 +6131,7 @@ inline FinalResources* EnsureWorkset(
   }
   const WorksetKey workset_key{owner, key, create_pre_sr_color};
   NormStream* norm_stream = nullptr;
-  if (const auto stream = features.find(owner); stream != features.end()) {
+  if (const auto stream = features.find(owner); stage_resources == nullptr && stream != features.end()) {
     FeatureState* state = &stream->second;
     if (create_pre_sr_color && state->render_session) {
       state = state->render_session.get();
@@ -6107,106 +6171,117 @@ inline FinalResources* EnsureWorkset(
             || (resources.work0 != nullptr && resources.norm_scale != nullptr
                 && resources.norm_commit != nullptr));
   };
-  if (const auto existing = worksets.find(workset_key); existing != worksets.end()) {
-    FinalResources& resources = existing->second;
-    const bool same_contract = contract_matches(resources);
-    if (same_contract) look_alloc |= resources.look_surfaces;
-    if (same_contract && resources.look_surfaces == look_alloc) {
-      MarkWorksetUsed(&resources);
-      return &resources;
-    }
-    // A rebuild of the same stream - stack depth, working resolution, output
-    // format - keeps its committed divisor: the stream's texel (NormStream)
-    // outlives the workset, so a settings change cannot step or re-prime
-    // the normalization.
-    RetireWorkset(workset_key);
-  }
-  // Enforce the pool budget by evicting the least recently used workset. CPU
-  // present age is not proof that the GPU finished a command list, so every
-  // evicted workset enters fence-backed retirement instead of being freed
-  // directly.
-  //
-  // Counted, because until v6.8.0-alpha23 nothing could say whether this loop
-  // had ever run.  Measured across every lane: worksets peak at ONE live (two
-  // created, in `swapchain_rebuild`) against a budget of four, so the loop -
-  // and with it the only path that hands a workset that is still current to
-  // fence-backed retirement, rather than one the game has already stopped
-  // using - was dead in the whole harness.  `worksets[... evicted=N]` is what
-  // the `workset_churn` lane asserts is non-zero.
-  while (worksets.size() >= max_worksets.load()) {
-    auto lru = worksets.begin();
-    auto recyclable = worksets.end();
-    for (auto it = worksets.begin(); it != worksets.end(); ++it) {
-      if (it->second.last_used_generation < lru->second.last_used_generation) {
-        lru = it;
+  if (stage_resources != nullptr) {
+    if (auto* tail = stage_resources->resolution_tail; tail != nullptr) {
+      if (contract_matches(*tail) && tail->original == stage_resources->original
+          && (look_surfaces & ~tail->look_surfaces) == 0) {
+        return tail;
       }
-      if (it->first.handle == owner
-          && it->second.last_used_generation < present_generation
-          && contract_matches(it->second)
-          && (look_surfaces & ~it->second.look_surfaces) == 0u
-          && queue_tracking_active.load(std::memory_order_relaxed)
-          && WorksetRecordingsComplete(it->second)
-          && (recyclable == worksets.end()
-              || it->second.last_used_generation
-                  < recyclable->second.last_used_generation)) {
-        recyclable = it;
-      }
+      look_alloc |= tail->look_surfaces;
+      RetireSecondResolutionResources(stage_resources);
     }
-    // Recycle before evicting (PLAN_REHAB_V7 section 8 item 14).  Every
-    // surface in a workset is the addon's own - `original` is a scratch copy
-    // - except the pre-SR source, which is released below, so a workset of
-    // the same feature and contract that no recording can still reach takes
-    // the new output as it is.  Memory stays at the NRMaxWorksets budget.
-    // Not this present's: the AdmitOutputPass rule lets one feature process
-    // two outputs per present, and those must never share scratch.  When the
-    // tracker cannot prove the workset idle, the eviction below runs exactly
-    // as before.
-    if (recyclable != worksets.end()) {
-      auto node = worksets.extract(recyclable);
-      node.key() = workset_key;
-      FinalResources& recycled = worksets.insert(std::move(node)).position->second;
-      // The pre-SR source is the one game resource a workset holds, and its
-      // views are keyed on the pointer: SetSourceView skips a slot whose
-      // recorded pointer matches.  Carried across the re-key (rc10), the
-      // workset held the OLD color and viewed the new one unheld; a game
-      // that frees that color and allocates the next target at its address
-      // (pooled render targets, transient heaps) then matched the pointer,
-      // skipped the rewrite, and NR read the released memory (LIFE-01:
-      // black frames on the hostile host, a page fault and TDR once the
-      // memory is gone).  WorksetRecordingsComplete just proved that no
-      // recording reaches it, so it is released here with every view of
-      // it; ProcessInlinePreSR takes and views the new color together.
-      if (recycled.pre_sr_source != nullptr) {
-        for (ID3D12Resource*& bound : recycled.bound_sources) {
-          if (bound == recycled.pre_sr_source) bound = nullptr;
+  } else {
+    if (const auto existing = worksets.find(workset_key); existing != worksets.end()) {
+      FinalResources& resources = existing->second;
+      const bool same_contract = contract_matches(resources);
+      if (same_contract) look_alloc |= resources.look_surfaces;
+      if (same_contract && resources.look_surfaces == look_alloc) {
+        MarkWorksetUsed(&resources);
+        return &resources;
+      }
+      // A rebuild of the same stream - stack depth, working resolution, output
+      // format - keeps its committed divisor: the stream's texel (NormStream)
+      // outlives the workset, so a settings change cannot step or re-prime
+      // the normalization.
+      RetireWorkset(workset_key);
+    }
+    // Enforce the pool budget by evicting the least recently used workset. CPU
+    // present age is not proof that the GPU finished a command list, so every
+    // evicted workset enters fence-backed retirement instead of being freed
+    // directly.
+    //
+    // Counted, because until v6.8.0-alpha23 nothing could say whether this loop
+    // had ever run.  Measured across every lane: worksets peak at ONE live (two
+    // created, in `swapchain_rebuild`) against a budget of four, so the loop -
+    // and with it the only path that hands a workset that is still current to
+    // fence-backed retirement, rather than one the game has already stopped
+    // using - was dead in the whole harness.  `worksets[... evicted=N]` is what
+    // the `workset_churn` lane asserts is non-zero.
+    while (worksets.size() >= max_worksets.load()) {
+      auto lru = worksets.begin();
+      auto recyclable = worksets.end();
+      for (auto it = worksets.begin(); it != worksets.end(); ++it) {
+        if (it->second.last_used_generation < lru->second.last_used_generation) {
+          lru = it;
         }
-        ReleaseCom(recycled.pre_sr_source);
+        if (it->first.handle == owner
+            && it->second.last_used_generation < present_generation
+            && contract_matches(it->second)
+            && (look_surfaces & ~it->second.look_surfaces) == 0u
+            && queue_tracking_active.load(std::memory_order_relaxed)
+            && WorksetRecordingsComplete(it->second)
+            && (recyclable == worksets.end()
+                || it->second.last_used_generation
+                    < recyclable->second.last_used_generation)) {
+          recyclable = it;
+        }
       }
-      ++worksets_recycled;
-      MarkWorksetUsed(&recycled);
-      if (!logged_workset_recycle) {
-        logged_workset_recycle = true;
-        Log(reshade::log::level::info,
-            "NR workset pool: the game rotates more outputs than NRMaxWorksets"
-            " holds; an idle workset of the same feature now takes the new"
-            " output instead of being rebuilt (memory stays at the budget)");
+      // Recycle before evicting (PLAN_REHAB_V7 section 8 item 14).  Every
+      // surface in a workset is the addon's own - `original` is a scratch copy
+      // - except the pre-SR source, which is released below, so a workset of
+      // the same feature and contract that no recording can still reach takes
+      // the new output as it is.  Memory stays at the NRMaxWorksets budget.
+      // Not this present's: the AdmitOutputPass rule lets one feature process
+      // two outputs per present, and those must never share scratch.  When the
+      // tracker cannot prove the workset idle, the eviction below runs exactly
+      // as before.
+      if (recyclable != worksets.end()) {
+        auto node = worksets.extract(recyclable);
+        node.key() = workset_key;
+        FinalResources& recycled = worksets.insert(std::move(node)).position->second;
+        // The pre-SR source is the one game resource a workset holds, and its
+        // views are keyed on the pointer: SetSourceView skips a slot whose
+        // recorded pointer matches.  Carried across the re-key (rc10), the
+        // workset held the OLD color and viewed the new one unheld; a game
+        // that frees that color and allocates the next target at its address
+        // (pooled render targets, transient heaps) then matched the pointer,
+        // skipped the rewrite, and NR read the released memory (LIFE-01:
+        // black frames on the hostile host, a page fault and TDR once the
+        // memory is gone).  WorksetRecordingsComplete just proved that no
+        // recording reaches it, so it is released here with every view of
+        // it; ProcessInlinePreSR takes and views the new color together.
+        if (recycled.pre_sr_source != nullptr) {
+          for (ID3D12Resource*& bound : recycled.bound_sources) {
+            if (bound == recycled.pre_sr_source) bound = nullptr;
+          }
+          ReleaseCom(recycled.pre_sr_source);
+        }
+        ++worksets_recycled;
+        MarkWorksetUsed(&recycled);
+        if (!logged_workset_recycle) {
+          logged_workset_recycle = true;
+          Log(reshade::log::level::info,
+              "NR workset pool: the game rotates more outputs than NRMaxWorksets"
+              " holds; an idle workset of the same feature now takes the new"
+              " output instead of being rebuilt (memory stays at the budget)");
+        }
+        return &recycled;
       }
-      return &recycled;
+      RetireWorksetResources(std::move(lru->second));
+      worksets.erase(lru);
+      // A game whose renderer cycles the upscaled target through more distinct
+      // resources than the budget evicts the workset it is about to need
+      // again, and a workset is ~13 committed textures at output resolution
+      // plus a descriptor heap - so it is rebuilt every frame.  Measured on the
+      // T2 `output_churn` lane, a ring of six against the default four: 239
+      // worksets built over 240 frames, 3737 us of NR CPU per evaluate against
+      // 358 us, 39.7 fps against 86.4.  The health ledger's workset_thrash row
+      // says so (TIME-05): evictions per NR frame over a window, where the
+      // one-shot line this replaces compared a session total with presents -
+      // silent for an hour-clean session that starts thrashing, and loud for a
+      // title that runs several evaluates per present.
+      ++worksets_evicted;
     }
-    RetireWorksetResources(std::move(lru->second));
-    worksets.erase(lru);
-    // A game whose renderer cycles the upscaled target through more distinct
-    // resources than the budget evicts the workset it is about to need
-    // again, and a workset is ~13 committed textures at output resolution
-    // plus a descriptor heap - so it is rebuilt every frame.  Measured on the
-    // T2 `output_churn` lane, a ring of six against the default four: 239
-    // worksets built over 240 frames, 3737 us of NR CPU per evaluate against
-    // 358 us, 39.7 fps against 86.4.  The health ledger's workset_thrash row
-    // says so (TIME-05): evictions per NR frame over a window, where the
-    // one-shot line this replaces compared a session total with presents -
-    // silent for an hour-clean session that starts thrashing, and loud for a
-    // title that runs several evaluates per present.
-    ++worksets_evicted;
   }
   // The signed NR runtime consumes FP16/FP32-like color.  Keep that working
   // surface independent from the game's swap/output format; this allows
@@ -6232,6 +6307,7 @@ inline FinalResources* EnsureWorkset(
   }
 
   FinalResources resources;
+  resources.shared_stage_surfaces = stage_resources != nullptr;
   resources.width = output_width;
   resources.height = output_height;
   resources.input_width = input_width;
@@ -6243,13 +6319,26 @@ inline FinalResources* EnsureWorkset(
   resources.with_pre_sr_color = create_pre_sr_color;
   resources.hdr_mode = hdr_mode;
   MarkWorksetUsed(&resources);
+  const auto stage_texture = [&](ID3D12Device* target_device, uint32_t texture_width, uint32_t texture_height,
+                                 DXGI_FORMAT texture_format, D3D12_RESOURCE_FLAGS flags,
+                                 D3D12_RESOURCE_STATES state, ID3D12Resource** target,
+                                 const wchar_t* name, ID3D12Resource* shared) {
+    if (stage_resources != nullptr) {
+      if (shared == nullptr) return false;
+      shared->AddRef();
+      *target = shared;
+      return true;
+    }
+    return CreateScratchTexture(target_device, texture_width, texture_height, texture_format,
+                                flags, state, target, name);
+  };
   // The NR feature runs 1:1 at the working resolution (the low-resolution
   // input contract is rejected by shipped runtimes); the decode stage upscales.
   const uint32_t neural_width = input_width;
   const uint32_t neural_height = input_height;
   // HDR: `original` doubles as `decoded` (the FinalResources note), so it
   // takes decoded's UAV flag.
-  if (!CreateScratchTexture(
+  if (!stage_texture(
           device,
           output_width,
           output_height,
@@ -6257,7 +6346,8 @@ inline FinalResources* EnsureWorkset(
           hdr_mode != 0 ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE,
            D3D12_RESOURCE_STATE_COPY_DEST,
            &resources.original,
-           L"" NR_NEXUS_NAME " original DLSS output")
+           L"" NR_NEXUS_NAME " original DLSS output",
+              (stage_resources != nullptr ? stage_resources->original : nullptr))
       || !CreateScratchTexture(
            device,
            input_width,
@@ -6268,7 +6358,7 @@ inline FinalResources* EnsureWorkset(
           &resources.proxy,
           L"" NR_NEXUS_NAME " SDR proxy")
       || (create_pre_sr_color
-          && !CreateScratchTexture(
+          && !stage_texture(
               device,
               output_width,
               output_height,
@@ -6276,7 +6366,8 @@ inline FinalResources* EnsureWorkset(
               D3D12_RESOURCE_FLAG_NONE,
               D3D12_RESOURCE_STATE_COPY_DEST,
               &resources.pre_sr_color,
-              L"" NR_NEXUS_NAME " pre-SR NR color"))
+              L"" NR_NEXUS_NAME " pre-SR NR color",
+              (stage_resources != nullptr ? stage_resources->pre_sr_color : nullptr)))
       || !CreateScratchTexture(
            device,
            neural_width,
@@ -6287,7 +6378,7 @@ inline FinalResources* EnsureWorkset(
           &resources.nr_output,
           L"" NR_NEXUS_NAME " raw neural output")
       || (hdr_mode == 0
-          && !CreateScratchTexture(
+          && !stage_texture(
               device,
               output_width,
               output_height,
@@ -6295,9 +6386,10 @@ inline FinalResources* EnsureWorkset(
               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
               D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
               &resources.decoded,
-              L"" NR_NEXUS_NAME " decoded DLSS output"))
+              L"" NR_NEXUS_NAME " decoded DLSS output",
+              (stage_resources != nullptr ? stage_resources->decoded : nullptr)))
       || (hdr_mode == 0 && requested_stack > 1
-          && !CreateScratchTexture(
+          && !stage_texture(
               device,
               output_width,
               output_height,
@@ -6305,8 +6397,9 @@ inline FinalResources* EnsureWorkset(
               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
               D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
               &resources.decoded_alt,
-              L"" NR_NEXUS_NAME " decoded DLSS output (stack ping-pong)"))
-      || !CreateScratchTexture(
+              L"" NR_NEXUS_NAME " decoded DLSS output (stack ping-pong)",
+              (stage_resources != nullptr ? stage_resources->decoded_alt : nullptr)))
+      || !stage_texture(
           device,
           (output_width + 31) / 32,
           (output_height + 31) / 32,
@@ -6314,7 +6407,8 @@ inline FinalResources* EnsureWorkset(
           D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
           D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
           &resources.block_mean,
-          L"" NR_NEXUS_NAME " NR block means")) {
+          L"" NR_NEXUS_NAME " NR block means",
+              (stage_resources != nullptr ? stage_resources->block_mean : nullptr))) {
     ReleaseFinalResources(resources);
     return nullptr;
   }
@@ -6331,34 +6425,38 @@ inline FinalResources* EnsureWorkset(
     // The committed divisor is the stream's (NormStream): bound when it
     // exists on this device in these relative units, else created and
     // adopted by the stream once nothing below can fail.
-    const bool shared_commit = norm_stream != nullptr
+    const bool shared_commit = stage_resources != nullptr || (norm_stream != nullptr
         && norm_stream->commit != nullptr && norm_stream->device == device
-        && !current_units.absolute && norm_stream->encoding == current_units.encoding;
+        && !current_units.absolute && norm_stream->encoding == current_units.encoding);
     if (shared_commit) {
-      norm_stream->commit->AddRef();
-      resources.norm_commit = norm_stream->commit;
+      resources.norm_commit = (stage_resources != nullptr ? stage_resources->norm_commit : norm_stream->commit);
+      resources.norm_commit->AddRef();
     }
-    if (!CreateScratchTexture(
+    if (!stage_texture(
             device, output_width, output_height, work_format,
             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            &resources.work0, L"" NR_NEXUS_NAME " v6 linear source")
-        || !CreateScratchTexture(
+            &resources.work0, L"" NR_NEXUS_NAME " v6 linear source",
+              (stage_resources != nullptr ? stage_resources->work0 : nullptr))
+        || !stage_texture(
                device, output_width, output_height, work_format,
                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-               &resources.work_a, L"" NR_NEXUS_NAME " v6 resolve ping-pong A")
+               &resources.work_a, L"" NR_NEXUS_NAME " v6 resolve ping-pong A",
+              (stage_resources != nullptr ? stage_resources->work_a : nullptr))
         || (requested_stack > 1
-            && !CreateScratchTexture(
+            && !stage_texture(
                    device, output_width, output_height, work_format,
                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                   &resources.work_b, L"" NR_NEXUS_NAME " v6 resolve ping-pong B"))
-        || !CreateScratchTexture(
+                   &resources.work_b, L"" NR_NEXUS_NAME " v6 resolve ping-pong B",
+              (stage_resources != nullptr ? stage_resources->work_b : nullptr)))
+        || !stage_texture(
                device, 1, 1, DXGI_FORMAT_R32G32B32A32_FLOAT,
                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-               &resources.norm_scale, L"" NR_NEXUS_NAME " v6 frame scale")
+               &resources.norm_scale, L"" NR_NEXUS_NAME " v6 frame scale",
+              (stage_resources != nullptr ? stage_resources->norm_scale : nullptr))
         || (!shared_commit
             && !CreateScratchTexture(
                    device, 1, 1, DXGI_FORMAT_R32G32B32A32_FLOAT,
@@ -6716,11 +6814,29 @@ inline FinalResources* EnsureWorkset(
         resources.look_up_neural, resources.look_trace_histogram,
         resources.look_trace_blocks}) {
     if (surface == nullptr) continue;
+    if (stage_resources != nullptr
+        && (surface == resources.original || surface == resources.decoded || surface == resources.decoded_alt
+            || surface == resources.pre_sr_color
+            || surface == resources.block_mean || surface == resources.work0 || surface == resources.work_a
+            || surface == resources.work_b || surface == resources.norm_scale || surface == resources.norm_commit)) continue;
     const D3D12_RESOURCE_DESC surface_desc = surface->GetDesc();
     resources.allocated_bytes +=
         device->GetResourceAllocationInfo(0, 1, &surface_desc).SizeInBytes;
   }
   ++worksets_created;
+
+  if (stage_resources != nullptr) {
+    stage_resources->resolution_tail = new FinalResources(std::move(resources));
+    stage_resources->allocated_bytes += stage_resources->resolution_tail->allocated_bytes;
+    uint64_t live_now = 0;
+    for (const auto& [_, pooled] : worksets) live_now += pooled.allocated_bytes;
+    live_bytes_max = (std::max)(live_bytes_max, live_now);
+    Log(reshade::log::level::info,
+        "NR second-pass workset " + std::to_string(stage_resources->resolution_tail->id)
+            + ": working=" + std::to_string(input_width) + "x" + std::to_string(input_height)
+            + "; full-stage images and frame normalization shared, immutable descriptors");
+    return stage_resources->resolution_tail;
+  }
 
   std::ostringstream message;
   message << "created inline NR resources ws" << resources.id << ' '
@@ -9060,6 +9176,13 @@ inline stage_plan::Plan EvaluationStagePlan(const NVSDK_NGX_Handle* handle, bool
     evaluate_chain.plan_handle = handle;
     evaluate_chain.plan = plan;
     evaluate_chain.configuration_generation = configuration_generation.load();
+    {
+      std::shared_lock config_lock(present_restore_configuration.mutex);
+      for (uint32_t pass = 0; pass < kMaxNrPasses; ++pass) {
+        evaluate_chain.resolutions[pass] = CurrentPassResolution(pass);
+      }
+    }
+    evaluate_chain.resolutions_frozen = true;
     evaluate_chain.render_attempted = false;
     evaluate_chain.render_complete = false;
   }
@@ -9087,6 +9210,14 @@ struct LocalResetDiagnostic {
   uint32_t reasons = 0;
 };
 struct StageTelemetry {
+  struct PassResolution {
+    uint32_t requested_width = 0;
+    uint32_t requested_height = 0;
+    uint32_t effective_width = 0;
+    uint32_t effective_height = 0;
+    bool model_recorded = false;
+  };
+  std::array<PassResolution, kMaxNrPasses> pass_resolutions{};
   uint64_t groups = 0;
   uint64_t evaluates = 0;
   uint64_t rebuilds = 0;
@@ -9096,6 +9227,11 @@ struct StageTelemetry {
   uint32_t pass_count = 0;
   uint32_t width = 0;
   uint32_t height = 0;
+  uint32_t requested_work_width = 0;
+  uint32_t requested_work_height = 0;
+  uint32_t work_width = 0;
+  uint32_t work_height = 0;
+  bool resolution_blocked = false;
   std::array<uint32_t, kMaxNrPasses> resolved_requests{};
   uint64_t accepted = 0;
   uint64_t reset_accepted = 0;
@@ -9146,6 +9282,7 @@ inline void ObserveNrEvaluation(stage_plan::Stage stage, const NVSDK_NGX_Handle*
     observed.source_feature = present->diagnostic_source_feature;
   }
   if (api_returned && NVSDK_NGX_SUCCEED(result)) {
+    stats.pass_resolutions[pass].model_recorded = true;
     ++stats.accepted;
     stats.reset_accepted += slot.model_reset;
   }
@@ -9263,12 +9400,14 @@ inline void ComputeNrWorkingResolution(
     uint32_t guide_width,
     uint32_t guide_height,
     uint32_t& nr_width,
-    uint32_t& nr_height) {
-  if (nr_follow_input_res.load() && guide_width != 0 && guide_height != 0) {
+    uint32_t& nr_height,
+    uint32_t pass = 0) {
+  const auto settings = EffectivePassResolution(pass);
+  if (settings.follow_input && guide_width != 0 && guide_height != 0) {
     nr_width = std::min(guide_width, reference_width);
     nr_height = std::min(guide_height, reference_height);
   } else {
-    const float scale = std::clamp(nr_resolution_scale.load(), 0.33f, 1.f);
+    const float scale = std::clamp(settings.scale, 0.33f, 1.f);
     nr_width = std::max(1u, static_cast<uint32_t>(
         std::lround(static_cast<double>(reference_width) * scale)));
     nr_height = std::max(1u, static_cast<uint32_t>(
@@ -9276,24 +9415,71 @@ inline void ComputeNrWorkingResolution(
   }
 }
 
+// One workset owns the proxy/NN surfaces for every pass in a stage group.
+// Reject incompatible sizes before recording any commands with that workset.
+inline bool ComputeNrGroupWorkingResolution(
+    const stage_plan::Group& group,
+    uint32_t reference_width, uint32_t reference_height,
+    uint32_t guide_width, uint32_t guide_height,
+    uint32_t* nr_width, uint32_t* nr_height) {
+  ComputeNrWorkingResolution(reference_width, reference_height, guide_width, guide_height,
+                             *nr_width, *nr_height, group.begin);
+  auto& stats = stage_telemetry[static_cast<size_t>(group.stage)];
+  stats.width = reference_width;
+  stats.height = reference_height;
+  stats.requested_work_width = *nr_width;
+  stats.requested_work_height = *nr_height;
+  for (uint32_t pass = group.begin; pass < group.begin + group.count; ++pass) {
+    auto& observed = stats.pass_resolutions[pass];
+    observed = {};
+    ComputeNrWorkingResolution(reference_width, reference_height, guide_width, guide_height,
+                               observed.requested_width, observed.requested_height, pass);
+  }
+  for (uint32_t pass = group.begin + 1; pass < group.begin + group.count; ++pass) {
+    uint32_t width = 0, height = 0;
+    ComputeNrWorkingResolution(reference_width, reference_height, guide_width, guide_height,
+                               width, height, pass);
+    if (width == *nr_width && height == *nr_height) continue;
+    CountNrDecline(NrDeclineReason::kStageResolutionMismatch);
+    if (!stats.resolution_blocked) {
+      Log(reshade::log::level::warning,
+          std::string("NR ") + stage_plan::Name(group.stage)
+              + " group declined: passes within one stage must use the same working size; pass "
+              + std::to_string(group.begin + 1) + "=" + std::to_string(*nr_width) + "x" + std::to_string(*nr_height)
+              + ", pass " + std::to_string(pass + 1) + "=" + std::to_string(width) + "x" + std::to_string(height)
+              + "; shared proxy/NN workset cannot change size between passes");
+    }
+    stats.resolution_blocked = true;
+    return false;
+  }
+  stats.resolution_blocked = false;
+  return true;
+}
+
 // Contract debounce shared by both insertion points: a NEW working-resolution
 // contract commits only after it has held for kContractDebounceFrames
 // consecutive frames - or immediately when the user committed a change from
-// the overlay (nr_resolution_commit_now).  Until commit, nr_width/height are
+// the overlay. Until commit, nr_width/height are
 // snapped back to the applied contract so the frame evaluates consistently.
 // Titles that alternate contracts per frame never trigger a rebuild at all -
 // the documented recreate-storm/VRAM-churn failure mode.  Returns true when
 // the new contract commits this frame.
+template <typename Contract>
 inline bool CommitNrResolution(
-    FeatureState& feature,
+    Contract& feature,
     uint32_t& nr_width,
-    uint32_t& nr_height) {
+    uint32_t& nr_height,
+    uint32_t pass = 0) {
+  const auto settings = EffectivePassResolution(pass);
+  const bool explicit_commit = feature.resolution_commit_source != settings.commit_source
+      || feature.resolution_commit_epoch != settings.commit_epoch;
+  feature.resolution_commit_source = settings.commit_source;
+  feature.resolution_commit_epoch = settings.commit_epoch;
   if (feature.output_width == 0) return false;
   if (feature.input_width == nr_width && feature.input_height == nr_height) {
-    // An armed overlay commit whose dims are already applied is satisfied -
-    // consume it here so it cannot skip the settle window for a later,
+    // A commit whose dims are already applied is acknowledged by this session
+    // so it cannot skip the settle window for a later,
     // unrelated game-driven change.
-    nr_resolution_commit_now.exchange(false);
     feature.debounce_width = 0;
     feature.debounce_height = 0;
     feature.debounce_frames = 0;
@@ -9319,7 +9505,7 @@ inline bool CommitNrResolution(
             + std::to_string(nr_width) + "x" + std::to_string(nr_height));
     return true;
   }
-  if (nr_resolution_commit_now.exchange(false)) {
+  if (explicit_commit) {
     feature.debounce_width = 0;
     feature.debounce_height = 0;
     feature.debounce_frames = 0;
@@ -9755,6 +9941,19 @@ struct NrRecording {
   bool group_complete = false;
 };
 
+inline bool PresentResolutionPairAllowed(const PresentTarget& present) {
+  return present.independent_resolution_pair
+      && (!present.d3d11_bridge || Dx11NativeRoute())
+      && present.stage_execution_plan == nullptr && present.source_color == nullptr
+      && present.domain == present_restore_scope::Domain::FINAL_PRESENT
+      && native_fg_public_off.load(std::memory_order_acquire)
+      && native_fg_declaration.load(std::memory_order_relaxed) == NativeFgDeclaration::kOff
+      && !native_fg_owns.load(std::memory_order_acquire)
+      && !fg::xefg::Enabled() && !fg::xefg::OwnsStream()
+      && !auto_fg_fallback_active.load(std::memory_order_relaxed)
+      && hook_point.load(std::memory_order_relaxed) == kHookPresent;
+}
+
 inline bool ProcessInline(
     ID3D12GraphicsCommandList* command_list,
     const NVSDK_NGX_Handle* handle,
@@ -10100,24 +10299,58 @@ inline bool ProcessInline(
   // which sidesteps the low-res Color contract the signed runtime rejects.
   uint32_t nr_input_width = width;
   uint32_t nr_input_height = height;
-  ComputeNrWorkingResolution(
-      width, height, current.input_width, current.input_height,
-      nr_input_width, nr_input_height);
+  const bool independent_pair = group.count == 2
+      && (present == nullptr || PresentResolutionPairAllowed(*present));
+  if (independent_pair) {
+    ComputeNrWorkingResolution(width, height, current.input_width, current.input_height,
+                               nr_input_width, nr_input_height, group.begin);
+    stage_stats.resolution_blocked = false;
+    stage_stats.requested_work_width = nr_input_width;
+    stage_stats.requested_work_height = nr_input_height;
+  } else if (!ComputeNrGroupWorkingResolution(group, width, height, current.input_width, current.input_height,
+                                              &nr_input_width, &nr_input_height)) {
+    for (auto& slot : feature.slots) {
+      slot.pending_reset = true;
+      slot.pending_reset_reasons |= kResetRecovery;
+    }
+    device->Release();
+    return false;
+  }
   const uint32_t requested_stack = group.count;
   stage_stats.width = width;
   stage_stats.height = height;
   const bool dims_committed =
-      CommitNrResolution(feature, nr_input_width, nr_input_height);
+      CommitNrResolution(feature, nr_input_width, nr_input_height, group.begin);
+  std::array<uint32_t, kMaxNrPasses> pass_widths{}, pass_heights{};
+  bool second_dims_committed = false;
+  for (uint32_t pass = 0; pass < requested_stack; ++pass) {
+    auto& observed = stage_stats.pass_resolutions[group.begin + pass];
+    observed = {};
+    ComputeNrWorkingResolution(width, height, current.input_width, current.input_height,
+                               observed.requested_width, observed.requested_height, group.begin + pass);
+    pass_widths[pass] = nr_input_width;
+    pass_heights[pass] = nr_input_height;
+    if (independent_pair && pass == 1) {
+      auto& contract = feature.second_resolution;
+      if (contract.output_width == 0) {
+        contract.input_width = observed.requested_width;
+        contract.input_height = observed.requested_height;
+        contract.output_width = width;
+      }
+      pass_widths[pass] = observed.requested_width;
+      pass_heights[pass] = observed.requested_height;
+      second_dims_committed = CommitNrResolution(contract, pass_widths[pass], pass_heights[pass], group.begin + pass);
+      contract.input_width = pass_widths[pass];
+      contract.input_height = pass_heights[pass];
+    }
+    observed.effective_width = pass_widths[pass];
+    observed.effective_height = pass_heights[pass];
+  }
+  stage_stats.work_width = nr_input_width;
+  stage_stats.work_height = nr_input_height;
   LogNrWorkingResolutionReduced(width, height, nr_input_width, nr_input_height);
-  // The game's MVecScale goes to NR unchanged at every working resolution
-  // (PLAN_FEED_V2.md F8). The runtime reads MV x MVecScale in pixels of the
-  // MVec subrect it is given - the render grid here - and maps that onto its
-  // own grid itself. Measured in the e2e host (853x480 -> 1280x720, 3 output
-  // px/frame pan, MVLowRes) by sweeping NRMVecScaleX: at 100%, 75% and 50%
-  // working resolution the sharpest output and the smallest edit sit at an
-  // effective factor of 1.0. Through rc3 this multiplied by the applied
-  // working-res fraction, which shortened every vector below 100%, and the
-  // field reported flicker on pans below ~85%.
+  // The runtime maps motion vectors from the provided MVec grid to its own
+  // working grid, so preserve the game's MVecScale when changing NR resolution.
   const bool dimensions_changed = dims_committed;
   const bool configuration_changed = feature.slots[0].handle != nullptr
       && feature.slots[0].configuration_generation
@@ -10131,9 +10364,11 @@ inline bool ProcessInline(
       [flags = NrCreateFlags(feature.create_flags, hdr_mode != 0)](const NrFeatureSlot& slot) {
         return slot.handle != nullptr && slot.nr_create_flags != flags;
       });
-  if (dimensions_changed || configuration_changed || hdr_changed || create_flags_changed) {
+  if (dimensions_changed || second_dims_committed || configuration_changed || hdr_changed || create_flags_changed) {
     ++stage_stats.rebuilds;
-    // Contract-level change: every stack pass's feature must be recreated.
+    // A shared create contract recreates the stack. A two-pass size edit only
+    // recreates the changed model; changing upstream input resets downstream
+    // History without discarding an unchanged downstream Feature.
     // Deliberately NOT triggered by a null slot-0 handle: after a failure the
     // handle is released but the failure latch must survive so the bounded
     // retry interval holds (EnsureNrFeature recreates the handle in-loop).
@@ -10141,9 +10376,22 @@ inline bool ProcessInline(
     // overlay's RecreateFeatures call.  The recreated slots reset themselves
     // via pending_reset; this stream's contract change must not advance the
     // global reset epoch (other streams' histories are unaffected).
-    ReleaseAllNrSlots(feature, true);
-    for (auto& slot : feature.slots) {
-      slot.pending_reset_reasons |= (dimensions_changed ? kResetDimensions : 0u)
+    const bool local_dimensions = independent_pair && !configuration_changed && !hdr_changed && !create_flags_changed;
+    if (local_dimensions) {
+      if (dimensions_changed) {
+        ReleaseNrSlot(feature, 0, true);
+        feature.slots[1].pending_reset = true;
+        feature.slots[1].pending_reset_reasons |= kResetDimensions;
+        feature.slots[1].look_history.valid = false;
+      }
+      if (second_dims_committed) ReleaseNrSlot(feature, 1, true);
+    } else {
+      ReleaseAllNrSlots(feature, true);
+    }
+    for (uint32_t slot_index = 0; slot_index < kMaxNrPasses; ++slot_index) {
+      if (local_dimensions && ((slot_index == 0 && !dimensions_changed) || slot_index > 1)) continue;
+      auto& slot = feature.slots[slot_index];
+      slot.pending_reset_reasons |= ((dimensions_changed || second_dims_committed) ? kResetDimensions : 0u)
           | (configuration_changed ? kResetConfiguration : 0u)
           | ((hdr_changed || create_flags_changed) ? kResetContract : 0u);
       slot.failed = false;
@@ -10151,7 +10399,7 @@ inline bool ProcessInline(
     }
     ObserveLocalHistoryReset(execution_stage,
         present != nullptr ? present->diagnostic_source_generation : feature.source_generation,
-        feature.slots[0].pending_reset_reasons);
+        feature.slots[second_dims_committed && !dimensions_changed ? 1 : 0].pending_reset_reasons);
   }
 
   feature.input_width = nr_input_width;
@@ -10202,7 +10450,7 @@ inline bool ProcessInline(
     for (uint32_t pass = 0; pass < requested_stack; ++pass) {
       prepared &= EnsureNrFeature(command_list, feature, pass,
                                   FinalResources{.hdr_mode = hdr_mode},
-                                  nr_input_width, nr_input_height, nr_input_width, nr_input_height);
+                                  pass_widths[pass], pass_heights[pass], pass_widths[pass], pass_heights[pass]);
     }
     if (command_list_touched != nullptr) {
       *command_list_touched = true;
@@ -10225,12 +10473,16 @@ inline bool ProcessInline(
           true, present != nullptr && present->diagnostic.bypass_host_look, group.begin),
       .motion_scale = {current.motion_scale_x, current.motion_scale_y},
   };
+  std::array<uint32_t, kMaxNrPasses> pass_look_wanted{};
   if (codec_ok) {
     for (uint32_t pass = 0; pass < requested_stack; ++pass) {
-      look_chain.wanted |= LookSurfacesWanted(
-          device, look_chain.settings[pass], nr_input_width, nr_input_height, width, height);
+      pass_look_wanted[pass] = LookSurfacesWanted(
+          device, look_chain.settings[pass], pass_widths[pass], pass_heights[pass], width, height);
+      look_chain.wanted |= pass_look_wanted[pass];
     }
   }
+  const bool split_working_sizes = independent_pair
+      && (pass_widths[1] != nr_input_width || pass_heights[1] != nr_input_height);
   FinalResources* workset = codec_ok
                                 ? EnsureWorkset(
                                       device,
@@ -10243,13 +10495,22 @@ inline bool ProcessInline(
                                       output_desc.Format,
                                       hdr_mode,
                                       requested_stack,
-                                      look_chain.wanted,
+                                      split_working_sizes ? pass_look_wanted[0] : look_chain.wanted,
                                       false,
                                       present != nullptr ? &present->units : nullptr)
                                 : nullptr;
   // The NR features themselves are ensured per stack pass inside the chain
   // below; this gate covers the codec pipeline and the scratch surfaces only.
-  const bool setup_ok = workset != nullptr;
+  FinalResources* second_workset = nullptr;
+  if (workset != nullptr && split_working_sizes) {
+    second_workset = EnsureWorkset(device, handle, output, pass_widths[1], pass_heights[1], width, height,
+                                   output_desc.Format, hdr_mode, requested_stack, pass_look_wanted[1],
+                                   false, &workset->units, workset);
+  } else if (workset != nullptr && workset->resolution_tail != nullptr) {
+    RetireSecondResolutionResources(workset);
+  }
+  const bool setup_ok = workset != nullptr && (!independent_pair
+      || (pass_widths[1] == nr_input_width && pass_heights[1] == nr_input_height) || second_workset != nullptr);
   if (setup_ok && present_snapshot.has_value()) {
     auto& snapshot = *present_snapshot;
     snapshot.restore_decision = present_restore_scope::Decide(snapshot.restore_scope, snapshot.domain);
@@ -10377,8 +10638,9 @@ inline bool ProcessInline(
     // EnsureWorkset's failure sites log their own reason and descriptor.
     CountNrDecline(NrDeclineReason::kWorksetSetupFailed);
     device->Release();
-    feature.slots[0].failed = true;
-    feature.slots[0].failed_ns = SteadyNowNs();
+    auto& failed_slot = feature.slots[split_working_sizes && workset != nullptr ? 1 : 0];
+    failed_slot.failed = true;
+    failed_slot.failed_ns = SteadyNowNs();
     return false;
   }
   FinalResources& res = *workset;
@@ -10692,6 +10954,12 @@ inline bool ProcessInline(
     // work surfaces instead: work0 for pass 0, the previous pass's work
     // output after (odd passes read work_a, even passes work_b - the fixed
     // set fill's parity).
+    FinalResources& res = (pass == 1 && second_workset != nullptr ? *second_workset : *workset);
+    FinalResources& stage_res = *workset;
+    const uint32_t nr_input_width = pass_widths[pass];
+    const uint32_t nr_input_height = pass_heights[pass];
+    const uint32_t feature_out_width = nr_input_width;
+    const uint32_t feature_out_height = nr_input_height;
     ID3D12Resource* const decode_ref =
         res.hdr_mode != 0
             ? (pass == 0 ? res.work0
@@ -10699,10 +10967,10 @@ inline bool ProcessInline(
             : (pass == 0 ? res.original : stack_surfaces[(pass - 1) & 1]);
     D3D12_RESOURCE_STATES* const ref_state =
         res.hdr_mode != 0
-            ? (pass == 0 ? &res.work0_state
-                         : ((pass & 1) != 0 ? &res.work_a_state
-                                            : &res.work_b_state))
-            : (pass == 0 ? &res.original_state
+            ? (pass == 0 ? &stage_res.work0_state
+                         : ((pass & 1) != 0 ? &stage_res.work_a_state
+                                            : &stage_res.work_b_state))
+            : (pass == 0 ? &stage_res.original_state
                          : stack_states[(pass - 1) & 1]);
     ID3D12Resource* const write_surface =
         res.hdr_mode != 0 ? work_out_surfaces[pass & 1]
@@ -11080,9 +11348,10 @@ inline bool ProcessInline(
   // the write-back off - the failure path below retains the game output.
   if (executed >= 0 && !NVSDK_NGX_FAILED(stack_failure)) {
     if (executed + 1 == static_cast<int32_t>(requested_stack) && last_model_pass >= 0) {
+      const auto& model_resources = (last_model_pass == 1 && second_workset != nullptr ? *second_workset : res);
       screenshot::CaptureModelPair(
-          device, command_list, res.proxy, res.proxy_state, res.nr_output,
-          res.nr_output_state, present_generation, path_name,
+          device, command_list, model_resources.proxy, model_resources.proxy_state, model_resources.nr_output,
+          model_resources.nr_output_state, present_generation, path_name,
           static_cast<uint32_t>(last_model_pass), requested_stack);
     }
     if (res.hdr_mode != 0) {
@@ -11469,24 +11738,25 @@ inline bool ProcessInline(
   }
   device->Release();
   if (NVSDK_NGX_FAILED(stack_failure)) {
+    FinalResources& failed_resources = (failed_pass == 1 && second_workset != nullptr ? *second_workset : res);
     // Park the tracked states: the proxy is post-encode (SRV-readable) and
     // returns to its UAV resting state; nr_output is already parked; the
     // pass's reference surface stays SRV-readable with its tracked state, so
     // every next-frame transition remains valid.  The game DLSS output was
     // never modified - the image is unchanged.
     Transition(
-        command_list, res.proxy,
-        res.proxy_state,
+        command_list, failed_resources.proxy,
+        failed_resources.proxy_state,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    res.proxy_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    failed_resources.proxy_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     // Tracked transition (no-op when the evaluate failed after the pre-
     // evaluate UAV transition already landed): nr_output can also break here
     // from a slot-create failure while still in its SRV resting state.
     Transition(
-        command_list, res.nr_output,
-        res.nr_output_state,
+        command_list, failed_resources.nr_output,
+        failed_resources.nr_output_state,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    res.nr_output_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    failed_resources.nr_output_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     NrFeatureSlot& failed_slot = feature.slots[failed_pass];
     failed_slot.failed = true;
     failed_slot.failed_ns = SteadyNowNs();
@@ -11885,41 +12155,104 @@ inline bool ProcessInlinePreSR(
   // guide/color arrangement, and the same F8 rule, as the after path.
   uint32_t nr_input_width = width;
   uint32_t nr_input_height = height;
-  ComputeNrWorkingResolution(
-      width, height, current.input_width, current.input_height,
-      nr_input_width, nr_input_height);
+  const bool independent_pair = group.count == 2;
+  if (independent_pair) {
+    ComputeNrWorkingResolution(width, height, current.input_width, current.input_height,
+                               nr_input_width, nr_input_height, group.begin);
+    stage_stats.resolution_blocked = false;
+    stage_stats.requested_work_width = nr_input_width;
+    stage_stats.requested_work_height = nr_input_height;
+  } else if (!ComputeNrGroupWorkingResolution(group, width, height, current.input_width, current.input_height,
+                                              &nr_input_width, &nr_input_height)) {
+    for (auto& slot : feature.slots) {
+      slot.pending_reset = true;
+      slot.pending_reset_reasons |= kResetRecovery;
+    }
+    device->Release();
+    return false;
+  }
   const bool dims_committed =
-      CommitNrResolution(feature, nr_input_width, nr_input_height);
+      CommitNrResolution(feature, nr_input_width, nr_input_height, group.begin);
+  std::array<uint32_t, kMaxNrPasses> pass_widths{}, pass_heights{};
+  bool second_dims_committed = false;
+  for (uint32_t pass = 0; pass < requested_stack; ++pass) {
+    auto& observed = stage_stats.pass_resolutions[group.begin + pass];
+    observed = {};
+    ComputeNrWorkingResolution(width, height, current.input_width, current.input_height,
+                               observed.requested_width, observed.requested_height, group.begin + pass);
+    pass_widths[pass] = nr_input_width;
+    pass_heights[pass] = nr_input_height;
+    if (independent_pair && pass == 1) {
+      auto& contract = feature.second_resolution;
+      if (contract.output_width == 0) {
+        contract.input_width = observed.requested_width;
+        contract.input_height = observed.requested_height;
+        contract.output_width = width;
+      }
+      pass_widths[pass] = observed.requested_width;
+      pass_heights[pass] = observed.requested_height;
+      second_dims_committed = CommitNrResolution(contract, pass_widths[pass], pass_heights[pass], group.begin + pass);
+      contract.input_width = pass_widths[pass];
+      contract.input_height = pass_heights[pass];
+    }
+    observed.effective_width = pass_widths[pass];
+    observed.effective_height = pass_heights[pass];
+  }
+  stage_stats.work_width = nr_input_width;
+  stage_stats.work_height = nr_input_height;
   LogNrWorkingResolutionReduced(width, height, nr_input_width, nr_input_height);
+  // The runtime maps motion vectors from the provided MVec grid to its own
+  // working grid, so preserve the game's MVecScale when changing NR resolution.
   const bool dimensions_changed = dims_committed;
   const bool configuration_changed = feature.slots[0].handle != nullptr
       && feature.slots[0].configuration_generation
           != configuration_generation.load();
+  // The NR features are created with the HDR/AutoExposure create flags baked
+  // in; recreate them all if the HDR mode changes so the flags match the
+  // content (stack passes share one HDR mode).
   const bool hdr_changed = feature.slots[0].handle != nullptr
       && feature.slots[0].nr_hdr_mode != hdr_mode;
   const bool create_flags_changed = std::ranges::any_of(feature.slots,
       [flags = NrCreateFlags(feature.create_flags, hdr_mode != 0)](const NrFeatureSlot& slot) {
         return slot.handle != nullptr && slot.nr_create_flags != flags;
       });
-  if (dimensions_changed || configuration_changed || hdr_changed || create_flags_changed) {
+  if (dimensions_changed || second_dims_committed || configuration_changed || hdr_changed || create_flags_changed) {
     ++stage_stats.rebuilds;
-    // Contract-level change: every stack pass's feature must be recreated,
-    // and slots beyond the current stack depth are freed (via the overlay's
-    // RecreateFeatures on pass-count changes).  A null slot-0 handle after a
-    // failure must NOT trigger this: the failure latch has to survive so the
-    // bounded retry interval holds.  As on the post-SR path, the recreated
-    // slots reset themselves via pending_reset without advancing the global
-    // reset epoch.
-    ReleaseAllNrSlots(feature, true);
-    for (auto& slot : feature.slots) {
-      slot.pending_reset_reasons |= (dimensions_changed ? kResetDimensions : 0u)
+    // A shared create contract recreates the stack. A two-pass size edit only
+    // recreates the changed model; changing upstream input resets downstream
+    // History without discarding an unchanged downstream Feature.
+    // Deliberately NOT triggered by a null slot-0 handle: after a failure the
+    // handle is released but the failure latch must survive so the bounded
+    // retry interval holds (EnsureNrFeature recreates the handle in-loop).
+    // Lowering the pass count frees the retired passes' handles through the
+    // overlay's RecreateFeatures call.  The recreated slots reset themselves
+    // via pending_reset; this stream's contract change must not advance the
+    // global reset epoch (other streams' histories are unaffected).
+    const bool local_dimensions = independent_pair && !configuration_changed && !hdr_changed && !create_flags_changed;
+    if (local_dimensions) {
+      if (dimensions_changed) {
+        ReleaseNrSlot(feature, 0, true);
+        feature.slots[1].pending_reset = true;
+        feature.slots[1].pending_reset_reasons |= kResetDimensions;
+        feature.slots[1].look_history.valid = false;
+      }
+      if (second_dims_committed) ReleaseNrSlot(feature, 1, true);
+    } else {
+      ReleaseAllNrSlots(feature, true);
+    }
+    for (uint32_t slot_index = 0; slot_index < kMaxNrPasses; ++slot_index) {
+      if (local_dimensions && ((slot_index == 0 && !dimensions_changed) || slot_index > 1)) continue;
+      auto& slot = feature.slots[slot_index];
+      slot.pending_reset_reasons |= ((dimensions_changed || second_dims_committed) ? kResetDimensions : 0u)
           | (configuration_changed ? kResetConfiguration : 0u)
           | ((hdr_changed || create_flags_changed) ? kResetContract : 0u);
       slot.failed = false;
       slot.fail_count = 0;
     }
-    ObserveLocalHistoryReset(stage_plan::Stage::RENDER, feature.source_generation, feature.slots[0].pending_reset_reasons);
+    ObserveLocalHistoryReset(stage_plan::Stage::RENDER, feature.source_generation,
+        feature.slots[second_dims_committed && !dimensions_changed ? 1 : 0].pending_reset_reasons);
   }
+
   feature.input_width = nr_input_width;
   feature.input_height = nr_input_height;
   feature.output_width = nr_input_width;
@@ -11958,12 +12291,16 @@ inline bool ProcessInlinePreSR(
       .settings = LookSettingsSnapshots(false, false, group.begin),
       .motion_scale = {current.motion_scale_x, current.motion_scale_y},
   };
+  std::array<uint32_t, kMaxNrPasses> pass_look_wanted{};
   if (codec_ok) {
     for (uint32_t pass = 0; pass < requested_stack; ++pass) {
-      look_chain.wanted |= LookSurfacesWanted(
-          device, look_chain.settings[pass], nr_input_width, nr_input_height, width, height);
+      pass_look_wanted[pass] = LookSurfacesWanted(
+          device, look_chain.settings[pass], pass_widths[pass], pass_heights[pass], width, height);
+      look_chain.wanted |= pass_look_wanted[pass];
     }
   }
+  const bool split_working_sizes = independent_pair
+      && (pass_widths[1] != nr_input_width || pass_heights[1] != nr_input_height);
   FinalResources* workset = codec_ok
                                 ? EnsureWorkset(
                                       device,
@@ -11976,17 +12313,26 @@ inline bool ProcessInlinePreSR(
                                       color_desc.Format,
                                       hdr_mode,
                                       requested_stack,
-                                      look_chain.wanted,
+                                      split_working_sizes ? pass_look_wanted[0] : look_chain.wanted,
                                       true)
                                 : nullptr;
-  if (!workset) {
+  FinalResources* second_workset = nullptr;
+  if (workset != nullptr && split_working_sizes) {
+    second_workset = EnsureWorkset(device, handle, color, pass_widths[1], pass_heights[1], width, height,
+                                   color_desc.Format, hdr_mode, requested_stack, pass_look_wanted[1],
+                                   true, &workset->units, workset);
+  } else if (workset != nullptr && workset->resolution_tail != nullptr) {
+    RetireSecondResolutionResources(workset);
+  }
+  if (workset == nullptr || (split_working_sizes && second_workset == nullptr)) {
     if (!codec_ok) {
       LogCodecPipelineFailure("pre-SR");
     }
     // EnsureWorkset's failure sites log their own reason and descriptor.
     CountNrDecline(NrDeclineReason::kWorksetSetupFailed);
-    feature.slots[0].failed = true;
-    feature.slots[0].failed_ns = SteadyNowNs();
+    auto& failed_slot = feature.slots[split_working_sizes && workset != nullptr ? 1 : 0];
+    failed_slot.failed = true;
+    failed_slot.failed_ns = SteadyNowNs();
     device->Release();
     return false;
   }
@@ -12218,6 +12564,10 @@ inline bool ProcessInlinePreSR(
     // v6 HDR swaps the linear work surfaces in (work0 for pass 0, the
     // previous pass's work output after - the fixed set fill's parity);
     // SDR keeps the game color / decoded ping-pong arrangement.
+    FinalResources& res = (pass == 1 && second_workset != nullptr ? *second_workset : *workset);
+    FinalResources& stage_res = *workset;
+    const uint32_t nr_input_width = pass_widths[pass];
+    const uint32_t nr_input_height = pass_heights[pass];
     ID3D12Resource* const decode_ref =
         res.hdr_mode != 0
             ? (pass == 0 ? res.work0
@@ -12227,9 +12577,9 @@ inline bool ProcessInlinePreSR(
     // (NGX reads it as an SRV by contract); every other surface is tracked.
     D3D12_RESOURCE_STATES* const ref_state =
         res.hdr_mode != 0
-            ? (pass == 0 ? &res.work0_state
-                         : ((pass & 1) != 0 ? &res.work_a_state
-                                            : &res.work_b_state))
+            ? (pass == 0 ? &stage_res.work0_state
+                         : ((pass & 1) != 0 ? &stage_res.work_a_state
+                                            : &stage_res.work_b_state))
             : (pass == 0 ? nullptr : stack_states[(pass - 1) & 1]);
     ID3D12Resource* const write_surface =
         res.hdr_mode != 0 ? work_out_surfaces[pass & 1]
@@ -12577,18 +12927,19 @@ inline bool ProcessInlinePreSR(
     // transitioned it), so it is parked the same tracked way - the next
     // attempt's transitions must stay valid.  Reference surfaces carry
     // consistent tracked states.
+    FinalResources& failed_resources = (failed_pass == 1 && second_workset != nullptr ? *second_workset : res);
     Transition(
         command_list,
-        res.proxy,
-        res.proxy_state,
+        failed_resources.proxy,
+        failed_resources.proxy_state,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    res.proxy_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    failed_resources.proxy_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     Transition(
         command_list,
-        res.nr_output,
-        res.nr_output_state,
+        failed_resources.nr_output,
+        failed_resources.nr_output_state,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    res.nr_output_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    failed_resources.nr_output_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     NrFeatureSlot& failed_slot = feature.slots[failed_pass];
     failed_slot.failed = true;
     failed_slot.failed_ns = SteadyNowNs();
@@ -12639,9 +12990,10 @@ inline bool ProcessInlinePreSR(
   }
 
   if (executed + 1 == static_cast<int32_t>(requested_stack) && last_model_pass >= 0) {
+    const auto& model_resources = (last_model_pass == 1 && second_workset != nullptr ? *second_workset : res);
     screenshot::CaptureModelPair(
-        device, command_list, res.proxy, res.proxy_state, res.nr_output,
-        res.nr_output_state, present_generation, "preSR",
+        device, command_list, model_resources.proxy, model_resources.proxy_state, model_resources.nr_output,
+        model_resources.nr_output_state, present_generation, "preSR",
         static_cast<uint32_t>(last_model_pass), requested_stack);
   }
 
@@ -18022,6 +18374,8 @@ inline constexpr const char* kSkipReasonText[] = {
     "The game ran DLSS on a second Vulkan device",
     "Requested stages are unavailable",
     "Warm-up after a start or a settings change",
+    ui::text::kStageResolutionBlocked,
+    ui::text::kResolutionBackend,
 };
 // i18n: end
 // A new eligible decline without a player phrase fails the build: the panel
@@ -19535,6 +19889,9 @@ inline void EmitTelemetry(int64_t now_ns, bool force = false) {
          << " range=" << stats.pass_begin + 1 << '+' << stats.pass_count
          << " groups=" << stats.groups << " evals=" << stats.evaluates
          << " dimensions=" << stats.width << 'x' << stats.height
+         << " requested_work=" << stats.requested_work_width << 'x' << stats.requested_work_height
+         << " applied_work=" << stats.work_width << 'x' << stats.work_height
+         << " resolution_blocked=" << stats.resolution_blocked
          << " rebuilds=" << stats.rebuilds << " resets=" << stats.resets << " skipped=" << stats.skipped
          << " gpu_us=";
     if (gpu.valid) {
@@ -19548,6 +19905,13 @@ inline void EmitTelemetry(int64_t now_ns, bool force = false) {
         line << ',';
       }
       line << pass + 1 << ':' << stats.resolved_requests[pass];
+    }
+    line << " pass_work_contracts=";
+    for (uint32_t pass = stats.pass_begin; pass < stats.pass_begin + stats.pass_count; ++pass) {
+      const auto& resolution = stats.pass_resolutions[pass];
+      line << pass + 1 << ':' << resolution.requested_width << 'x' << resolution.requested_height
+           << "->" << resolution.effective_width << 'x' << resolution.effective_height
+           << "/model_recorded=" << resolution.model_recorded << ';';
     }
     line << " internal_network=unconfirmed counter_basis=attempts/reset_parameters"
          << " ngx_accepted=" << stats.accepted << " reset_ngx_accepted=" << stats.reset_accepted << ']';
@@ -20793,6 +21157,11 @@ struct Setting {
     } else {
       b->store(value != 0.f);
     }
+    for (uint32_t pass = 1; pass < kMaxNrPasses; ++pass) {
+      if (u == &pass_resolution_mode[pass - 1]) {
+        ++nr_resolution_commit_epochs[pass];
+      }
+    }
   }
   // Always to the global config file, as PersistConfig explains.
   void Persist() const {
@@ -20912,6 +21281,14 @@ inline constexpr Setting kSetFollowInputRes{
 inline constexpr Setting kSetResolutionScale{
     "NRResolutionScale", &nr_resolution_scale, defaults::kResolutionScale,
     SettingEffect::kNone};
+inline constexpr Setting kSetPassResolutionMode[] = {
+    {"NRPass2ResolutionMode", &pass_resolution_mode[0], 0u, SettingEffect::kNone},
+    {"NRPass3ResolutionMode", &pass_resolution_mode[1], 0u, SettingEffect::kNone},
+    {"NRPass4ResolutionMode", &pass_resolution_mode[2], 0u, SettingEffect::kNone}};
+inline constexpr Setting kSetPassResolutionScale[] = {
+    {"NRPass2ResolutionScale", &pass_resolution_scale[0], 1.f, SettingEffect::kNone},
+    {"NRPass3ResolutionScale", &pass_resolution_scale[1], 1.f, SettingEffect::kNone},
+    {"NRPass4ResolutionScale", &pass_resolution_scale[2], 1.f, SettingEffect::kNone}};
 
 // Lowering the pass count must free the retired passes' NR feature handles;
 // raising it starts the new passes from clean temporal state.  The per-pass
@@ -21390,6 +21767,8 @@ inline constexpr const Setting* kHookPointSettings[] = {
 inline constexpr const Setting* kPerformanceSettings[] = {
     &kSetFollowInputRes, &kSetResolutionScale, &kSetLookUpsample};
 inline constexpr const Setting* kStackingSettings[] = {
+    &kSetPassResolutionMode[0], &kSetPassResolutionMode[1], &kSetPassResolutionMode[2],
+    &kSetPassResolutionScale[0], &kSetPassResolutionScale[1], &kSetPassResolutionScale[2],
     &kSetPassStage[0], &kSetPassStage[1], &kSetPassStage[2],
     &kSetPassPreset[0], &kSetPassPreset[1], &kSetPassPreset[2],
     &kSetStackPasses,     &kSetPassIntensity[0], &kSetPassIntensity[1],
@@ -22059,15 +22438,20 @@ inline void DrawSectionLookResult(const ui::PanelText& text, uint32_t pass = 0, 
 }
 
 // A discrete working-resolution change (the classic mode combo, the modern
-// presets): persists NRFollowInputRes and NRResolutionScale as they now
-// stand, and the next evaluation applies the new working dimensions at once,
+// presets): publishes both values and their commit under the snapshot lock,
+// and the next evaluation applies the new working dimensions at once,
 // skipping the game-driven contract debounce.  `mode` is the classic combo's
 // index (0 native, 1 follow render resolution, 2 scaled), which the frozen
 // log line below names.
-inline void CommitResolutionMode(int mode) {
+inline void CommitResolutionMode(int mode, bool follow, float scale) {
+  {
+    std::unique_lock config_lock(present_restore_configuration.mutex);
+    nr_follow_input_res = follow;
+    nr_resolution_scale = scale;
+    ++nr_resolution_commit_epochs[0];
+  }
   kSetFollowInputRes.Persist();
   kSetResolutionScale.Persist();
-  nr_resolution_commit_now = true;
   Log(
       reshade::log::level::info,
       "NR working resolution mode " + std::to_string(mode)
@@ -22080,9 +22464,7 @@ inline void CommitResolutionMode(int mode) {
 inline void ResolutionResetButton(const char* id) {
   if ((kSetFollowInputRes.Modified() || kSetResolutionScale.Modified())
       && ui::ResetButton(id, ui::text::kResolutionLabels[0])) {
-    nr_follow_input_res = false;
-    nr_resolution_scale = 1.f;
-    CommitResolutionMode(0);
+    CommitResolutionMode(0, false, 1.f);
   }
 }
 
@@ -22311,21 +22693,20 @@ inline void DrawResolutionControls(const ui::PanelText& text) {
   // them, and the modern layout keeps its presets at the top of the panel.
   int ui_res_mode = nr_follow_input_res.load() ? 1
                                                : (nr_resolution_scale.load() < 0.999f ? 2 : 0);
-  bool resolution_changed = false;
   if (!text.modern) {
     ImGui::TextUnformatted("NR working resolution");  // i18n: skip (Developer view)
     constexpr const char* kResModes[] = {
         "Native (100%)", "Follow render resolution", "Scaled"};                                   // i18n: skip (Developer view)
     if (ImGui::Combo(ui::ControlLabel("Resolution mode").c_str(), &ui_res_mode, kResModes, 3)) {  // i18n: skip (Developer view)
-      resolution_changed = true;
-      nr_follow_input_res = ui_res_mode == 1;
+      float scale = nr_resolution_scale.load();
       if (ui_res_mode == 0) {
-        nr_resolution_scale = 1.f;
-      } else if (ui_res_mode == 2 && nr_resolution_scale.load() >= 0.999f) {
+        scale = 1.f;
+      } else if (ui_res_mode == 2 && scale >= 0.999f) {
         // Entering Scaled from Native snaps to a meaningful starting point so
         // the mode change has an immediate visible effect.
-        nr_resolution_scale = 0.66f;
+        scale = 0.66f;
       }
+      CommitResolutionMode(ui_res_mode, ui_res_mode == 1, scale);
     }
   }
   constexpr const char* kScaleTip =
@@ -22349,7 +22730,7 @@ inline void DrawResolutionControls(const ui::PanelText& text) {
     ui_res_pct = std::clamp(ui_res_pct, 33.f, 100.f);
     const float live_scale = ui_res_pct / 100.f;
     if (live_scale != nr_resolution_scale.load()) {
-      nr_resolution_scale = live_scale;
+      kSetResolutionScale.Store(live_scale);
       kSetResolutionScale.Persist();
     }
   } else if (text.modern) {
@@ -22357,7 +22738,6 @@ inline void DrawResolutionControls(const ui::PanelText& text) {
     ImGui::TextDisabled("%s", ui::Tr("follows the game (Match game)"));
   }
   if (text.modern) ResolutionResetButton("resolution_scale_reset");
-  if (resolution_changed) CommitResolutionMode(ui_res_mode);
   // Beside the resolution since rc5, independent of Adjust NR's look: it is how
   // a reduced working resolution's edit reaches the output.
   // Indexed by the stored value, look::kUpsample* (Auto took over 0 in v8.0.2).
@@ -22509,6 +22889,8 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
               &kModelSteering[pass].auto_mask, &kModelSteering[pass].ui_correction};
           const size_t result_count = std::size(kPassLookResultSettings) / (kMaxNrPasses - 1);
           const bool modified = AnyModified({node_settings})
+                                || (pass != 0 && (kSetPassResolutionMode[pass - 1].Modified()
+                                                  || kSetPassResolutionScale[pass - 1].Modified()))
                                 || (pass != 0 && AnyModified({SettingGroup(kPassLookResultSettings).subspan((pass - 1) * result_count, result_count)}))
                                 || (pass != 0 && kSetPassFollow[pass - 1].Modified())
                                 || (pass == 0 && (kSetSkinIndependent.Modified() || AnyModified({kLookResultSettings})));
@@ -22583,6 +22965,52 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
     ImGui::TextWrapped("%s: %s", text.Tr(ui::text::kEffectiveStage),
                        text.Tr(editor_plan.valid ? stage_plan::Name(editor_plan.effective[pass]) : ui::text::kStageBlocked));
     ImGui::TextWrapped("%s", text.Tr(ui::text::kStagePlanNote));
+    if (pass == 0) {
+      DrawResolutionControls(text);
+    } else {
+      const char* resolution_choices[] = {ui::text::kResolutionInherit, "Match game", ui::text::kResolutionFixed};
+      ChoiceSetting(text, kSetPassResolutionMode[pass - 1], ui::text::kWorkingResolution,
+                    resolution_choices, ui::text::kPassResolutionTip);
+      if (pass_resolution_mode[pass - 1].load() == 2) {
+        float percentage = pass_resolution_scale[pass - 1].load() * 100.f;
+        if (text.modern) {
+          ui::RowLabel("Resolution scale", ui::text::kPassResolutionTip);
+          ui::Slider("##pass_resolution_scale", &percentage, 33.f, 100.f, "%.0f%%", ui::text::kPassResolutionTip);
+        } else {
+          ImGui::SliderFloat(ui::ControlLabel("Resolution scale").c_str(), &percentage, 33.f, 100.f, "%.0f%%");
+        }
+        const float scale = std::clamp(percentage / 100.f, 0.33f, 1.f);
+        if (scale != pass_resolution_scale[pass - 1].load()) {
+          kSetPassResolutionScale[pass - 1].Store(scale);
+          kSetPassResolutionScale[pass - 1].Persist();
+        }
+      }
+      if ((kSetPassResolutionMode[pass - 1].Modified() || kSetPassResolutionScale[pass - 1].Modified())
+          && ui::ResetButton("pass_resolution_reset", ui::text::kResolutionInherit)) {
+        kSetPassResolutionMode[pass - 1].Commit(0.f);
+        kSetPassResolutionScale[pass - 1].Commit(1.f);
+      }
+    }
+    ImGui::TextWrapped("%s", text.Tr(ui::text::kStageResolutionNote));
+    StageTelemetry resolution_observed;
+    {
+      RuntimeLock lock(runtime_mutex);
+      resolution_observed = stage_telemetry[static_cast<size_t>(editor_plan.effective[pass])];
+    }
+    if (vulkan_present_seen.load() && pass != 0 && pass_resolution_mode[pass - 1].load() != 0) {
+      ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionBackend));
+    } else if (resolution_observed.groups != 0
+               && pass >= resolution_observed.pass_begin
+               && pass < resolution_observed.pass_begin + resolution_observed.pass_count) {
+      const auto& pass_resolution = resolution_observed.pass_resolutions[pass];
+      ImGui::TextWrapped("%s: %ux%u / %ux%u / %ux%u", text.Tr(ui::text::kObservedResolution),
+          resolution_observed.width, resolution_observed.height,
+          pass_resolution.requested_width, pass_resolution.requested_height,
+          pass_resolution.effective_width, pass_resolution.effective_height);
+      if (resolution_observed.resolution_blocked) {
+        ImGui::TextWrapped("%s", text.Tr(ui::text::kStageResolutionBlocked));
+      }
+    }
     const int editor_columns = (ImGui::GetContentRegionAvail().x >= ImGui::GetFontSize() * ui::tokens::kWideEm ? 2 : 1);
     ui::StyleScope editor_spacing;
     if (text.modern) {
@@ -23388,6 +23816,12 @@ inline void DrawSectionDiagnosticsRaw() {
       } else {
         ImGui::Text("  pass_begin=%u (zero-based) count=%u size=%ux%u",
                     observed.pass_begin, observed.pass_count, observed.width, observed.height);
+        for (uint32_t pass = observed.pass_begin; pass < observed.pass_begin + observed.pass_count; ++pass) {
+          const auto& resolution = observed.pass_resolutions[pass];
+          ImGui::Text("  Pass %u work: requested=%ux%u effective=%ux%u model_recorded=%d GPU=unverified",
+                      pass + 1, resolution.requested_width, resolution.requested_height,
+                      resolution.effective_width, resolution.effective_height, resolution.model_recorded);
+        }
         ImGui::Text("  resolved_requests=[%u, %u, %u, %u] (internal network unconfirmed)",
                     observed.resolved_requests[0], observed.resolved_requests[1],
                     observed.resolved_requests[2], observed.resolved_requests[3]);
@@ -23889,6 +24323,8 @@ inline std::string BuildSupportReport() {
          << last_output_width.load() << "x" << last_output_height.load() << "\n";
   for (uint32_t pass = 1; pass < kMaxNrPasses; ++pass) {
     const PassLookResult& result = pass_look_result[pass - 1];
+    report << "pass[" << pass + 1 << "].resolution_configuration: mode=" << pass_resolution_mode[pass - 1].load()
+           << " scale=" << pass_resolution_scale[pass - 1].load() << " upsampling=shared\n";
     report << "pass[" << pass << "].result_configuration: inherit=" << result.follow.load()
            << " enabled=" << result.mode.load() << " strength=" << result.strength.load()
            << " stabilize=" << result.stabilize.load() << " stabilize_ms=" << result.stabilize_ms.load()
@@ -24147,9 +24583,7 @@ inline void ApplyNrPlacement(const NrPlacement& to) {
   if (to.hook != hook_point.load()) kSetHookPoint.Commit(static_cast<float>(to.hook));
   if (to.follow != nr_follow_input_res.load()
       || std::abs(to.scale - nr_resolution_scale.load()) >= 0.005f) {
-    nr_follow_input_res = to.follow;
-    nr_resolution_scale = to.scale;
-    CommitResolutionMode(to.follow ? 1 : to.scale < 0.999f ? 2 : 0);
+    CommitResolutionMode(to.follow ? 1 : to.scale < 0.999f ? 2 : 0, to.follow, to.scale);
   }
 }
 
@@ -24162,6 +24596,9 @@ inline void ApplyNrPlacement(const NrPlacement& to) {
 inline void DrawFasterPresets() {
   // These estimates assume every pass uses one global placement/size.
   if (RequestedStagePlan().mixed) return;
+  for (uint32_t pass = 1; pass < std::clamp(stack_passes.load(), 1u, kMaxNrPasses); ++pass) {
+    if (pass_resolution_mode[pass - 1].load() != 0) return;
+  }
   static NrPlacement undo;
   static bool undo_armed = false;
   const float gpu_ms = nr_cost_gpu_ms.load(std::memory_order_relaxed);
@@ -24434,9 +24871,7 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
             ui::text::kResolutionTip, ui::text::kResolutionTips);
         if (clicked >= 0 && clicked != preset) {
           const ResolutionPreset& chosen = kResolutionPresets[clicked];
-          nr_follow_input_res = chosen.follow;
-          if (!chosen.follow) nr_resolution_scale = chosen.scale;
-          CommitResolutionMode(chosen.mode);
+          CommitResolutionMode(chosen.mode, chosen.follow, chosen.follow ? scale : chosen.scale);
         }
         ResolutionResetButton("resolution_reset");
         if (preset < 0) {
@@ -25044,6 +25479,8 @@ inline void LoadConfiguration() {
   uint32_t saved_preset = defaults::kPreset;
   uint32_t saved_pass_presets[kMaxNrPasses - 1] = {};
   uint32_t saved_pass_stages[kMaxNrPasses - 1] = {};
+  uint32_t saved_pass_resolution_modes[kMaxNrPasses - 1] = {};
+  float saved_pass_resolution_scales[kMaxNrPasses - 1] = {1.f, 1.f, 1.f};
   uint32_t saved_style = defaults::kStyle;
   float saved_intensity = defaults::kIntensity;
   float saved_local_tone = defaults::kLocalTone;
@@ -25302,6 +25739,8 @@ inline void LoadConfiguration() {
     const std::string prefix = "NRPass" + std::to_string(pass + 1);
     reshade::get_config_value(nullptr, kConfigSection, (prefix + "Preset").c_str(), saved_pass_presets[pass - 1]);
     reshade::get_config_value(nullptr, kConfigSection, (prefix + "Stage").c_str(), saved_pass_stages[pass - 1]);
+    reshade::get_config_value(nullptr, kConfigSection, (prefix + "ResolutionMode").c_str(), saved_pass_resolution_modes[pass - 1]);
+    reshade::get_config_value(nullptr, kConfigSection, (prefix + "ResolutionScale").c_str(), saved_pass_resolution_scales[pass - 1]);
     reshade::get_config_value(
         nullptr, kConfigSection, (prefix + "Intensity").c_str(),
         saved_pass_values[pass - 1][0]);
@@ -25679,6 +26118,10 @@ inline void LoadConfiguration() {
                                           kSetPassPreset[pass - 1].key);
     pass_stage[pass - 1] = SanitizeEnumKey(saved_pass_stages[pass - 1], 0u, 0u, 3u,
                                          kSetPassStage[pass - 1].key);
+    pass_resolution_mode[pass - 1] = SanitizeEnumKey(saved_pass_resolution_modes[pass - 1], 0u, 0u, 2u,
+                                                   kSetPassResolutionMode[pass - 1].key);
+    pass_resolution_scale[pass - 1] = SanitizeFloatKey(saved_pass_resolution_scales[pass - 1], 1.f, 0.33f, 1.f,
+                                                     kSetPassResolutionScale[pass - 1].key);
     pass_intensity[pass - 1] = SanitizeFloatKey(
         saved_pass_values[pass - 1][0], defaults::kPassStrength, 0.f, 2.f,
         kSetPassIntensity[pass - 1].key);

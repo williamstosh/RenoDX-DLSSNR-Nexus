@@ -67,6 +67,7 @@ struct Evaluation {
   const NVSDK_NGX_Handle* handle = nullptr;
   int reset = -1;
   Snapshot input;
+  Snapshot output;
   float intensity = 0.f;
   uint32_t style = 0;
   float tone = 0.f;
@@ -75,6 +76,7 @@ struct Evaluation {
 };
 inline std::vector<Evaluation> evaluations;
 inline std::map<const NVSDK_NGX_Handle*, uint32_t> presets;
+inline bool capture_model_output = false;
 using ConstantsFn = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, UINT, UINT, const void*, UINT);
 inline ConstantsFn real_constants = nullptr;
 inline bool observe_constants = false;
@@ -148,15 +150,18 @@ NVSDK_NGX_Result NVSDK_CONV Evaluate(ID3D12GraphicsCommandList* list, const NVSD
   list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
   model_gpu->Transition(input, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
   model_gpu->Transition(output, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  if (capture_model_output) {
+    evaluations.back().output = Capture(*model_gpu, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  }
   return result;
 }
 
-int Run() {
+int Run(bool resolution_only = false, bool hardware = false, bool mixed_pair_only = false) {
   try {
     reshade::internal::get_reshade_module_handle(GetModuleHandleW(nullptr));
     ComPtr<ID3D12Debug> debug;
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) debug->EnableDebugLayer();
-    Gpu gpu;
+    Gpu gpu(hardware);
     model_gpu = &gpu;
     ComPtr<ID3D12InfoQueue> info;
     gpu.device.As(&info);
@@ -215,11 +220,366 @@ int Run() {
     // Dedicated boundary cases keep the SDR matrix's byte oracle unchanged.
     // First is DLAA with Color == Output; second is managed-exposure HDR.
     ConstantsObserver constants_observer(gpu);
+    if (resolution_only) {
+      capture_model_output = true;
+      native::gpu_timers_enabled.store(true);
+      {
+        // Three independent sources, each with a Render session and inherited Upscaled session.
+        std::array<std::array<native::FeatureState, 2>, 3> sources;
+        native::pass_resolution_mode[0].store(0);
+        for (auto& sessions : sources) {
+          for (uint32_t stage = 0; stage < 2; ++stage) {
+            auto& session = sessions[stage];
+            session.input_width = session.input_height = 8;
+            session.output_width = session.output_height = (stage == 0 ? 8u : 16u);
+            uint32_t width = 8, height = 8;
+            Check(!native::CommitNrResolution(session, width, height, stage), "initialize per-session commit epoch");
+          }
+        }
+        ++native::nr_resolution_commit_epochs[0];
+        for (auto& sessions : sources) {
+          for (uint32_t stage = 0; stage < 2; ++stage) {
+            uint32_t width = 5, height = 5;
+            Check(native::CommitNrResolution(sessions[stage], width, height, stage) && width == 5 && height == 5,
+                "one global discrete epoch immediately reaches every source and both inherited stage sessions");
+            sessions[stage].input_width = sessions[stage].input_height = 5;
+          }
+        }
+        for (auto& sessions : sources) {
+          for (uint32_t stage = 0; stage < 2; ++stage) {
+            uint32_t width = 4, height = 4;
+            Check(!native::CommitNrResolution(sessions[stage], width, height, stage) && width == 5 && height == 5,
+                "consumed epoch is local to each session and subsequent slider edits debounce");
+          }
+        }
+        std::cout << "PASS stage-resolution global-commit sources=3 stages=2 (production contract CPU checks)\n";
+        native::nr_resolution_scale.store(1.f);
+        native::pass_resolution_mode[0].store(1);
+        uint32_t width = 0, height = 0;
+        native::ComputeNrWorkingResolution(16, 16, 8, 8, width, height, 1);
+        Check(width == 8 && height == 8, "independent follow mode uses guide dimensions");
+        native::ComputeNrWorkingResolution(8, 8, 16, 16, width, height, 1);
+        Check(width == 8 && height == 8, "independent follow mode caps guides at stage dimensions");
+        native::pass_resolution_mode[0].store(2);
+        native::pass_resolution_scale[0].store(.67f);
+        Check(!native::ComputeNrGroupWorkingResolution(
+                  {.stage = addon::stage_plan::Stage::UPSCALED, .begin = 0, .count = 2},
+                  16, 16, 8, 8, &width, &height)
+                  && native::stage_telemetry[1].resolution_blocked,
+              "different actual sizes in one stage explicitly decline with blocked telemetry");
+        native::pass_resolution_mode[0].store(0);
+        Check(native::ComputeNrGroupWorkingResolution(
+                  {.stage = addon::stage_plan::Stage::UPSCALED, .begin = 0, .count = 2},
+                  16, 16, 8, 8, &width, &height)
+                  && !native::stage_telemetry[1].resolution_blocked,
+              "restoring inheritance clears the unsupported-size status");
+      }
+      uint32_t completed = 0;
+      for (const bool hdr : {false, true}) {
+        for (const uint32_t scenario : {0u, 1u, 2u}) {
+          const bool mixed = scenario != 2;
+          const uint32_t output_size = 16;
+          const auto format = (hdr ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM);
+          auto source = texture(8, format, false);
+          auto output = texture(output_size, format, true);
+          gpu.Transition(source.Get(), D3D12_RESOURCE_STATE_COMMON, NATIVE_INPUT_STATE);
+          gpu.Transition(output.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+          const auto write_source = [&](uint8_t sdr, uint16_t half) {
+            const auto desc = source->GetDesc();
+            D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+            uint64_t bytes = 0;
+            gpu.device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, nullptr, nullptr, &bytes);
+            auto upload = gpu.Buffer(bytes, D3D12_HEAP_TYPE_UPLOAD);
+            uint8_t* mapped = nullptr;
+            Check(SUCCEEDED(upload->Map(0, nullptr, reinterpret_cast<void**>(&mapped))), "resolution upload map");
+            std::memset(mapped, 0, static_cast<size_t>(bytes));
+            for (uint32_t y = 0; y < 8; ++y) {
+              auto* row = mapped + footprint.Offset + y * footprint.Footprint.RowPitch;
+              if (hdr) {
+                for (uint32_t x = 0; x < 32; ++x) std::memcpy(row + x * 2, &half, 2);
+              } else {
+                std::memset(row, sdr, 32);
+              }
+            }
+            upload->Unmap(0, nullptr);
+            gpu.Transition(source.Get(), NATIVE_INPUT_STATE, D3D12_RESOURCE_STATE_COPY_DEST);
+            const D3D12_TEXTURE_COPY_LOCATION from{.pResource = upload.Get(),
+                .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, .PlacedFootprint = footprint};
+            const D3D12_TEXTURE_COPY_LOCATION to{.pResource = source.Get(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+            gpu.list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+            gpu.Transition(source.Get(), D3D12_RESOURCE_STATE_COPY_DEST, NATIVE_INPUT_STATE);
+            gpu.uploads.push_back(upload);
+          };
+          native::hook_point.store(mixed ? native::kHookRender : native::kHookUpscaled);
+          native::stack_passes.store(2);
+          native::preset.store(scenario == 1 ? 2u : 1u);
+          native::pass_preset[0].store(scenario == 1 ? 1u : 2u);
+          native::pass_stage[0].store(mixed ? 2u : 0u);
+          native::pass_follow[0].store(true);
+          native::codec_mode.store(hdr ? 1u : 0u);
+          native::feed_mode.store(0);
+          native::nr_resolution_scale.store(scenario == 0 ? 1.f : .67f);
+          for (uint32_t pass = 0; pass < 3; ++pass) {
+            native::pass_resolution_mode[pass].store(0);
+            native::pass_resolution_scale[pass].store(1.f);
+          }
+          if (mixed) {
+            native::pass_resolution_mode[0].store(2);
+            native::pass_resolution_scale[0].store(scenario == 0 ? .67f : 1.f);
+          }
+          addon::bridge::OwnedParameters parameters;
+          parameters.Set(NVSDK_NGX_Parameter_Color, source.Get());
+          parameters.Set(NVSDK_NGX_Parameter_Output, output.Get());
+          parameters.Set(NVSDK_NGX_Parameter_Depth, depth.Get());
+          parameters.Set(NVSDK_NGX_Parameter_MotionVectors, motion.Get());
+          parameters.Set(NVSDK_NGX_Parameter_Width, 8u);
+          parameters.Set(NVSDK_NGX_Parameter_Height, 8u);
+          parameters.Set(NVSDK_NGX_Parameter_OutWidth, output_size);
+          parameters.Set(NVSDK_NGX_Parameter_OutHeight, output_size);
+          parameters.Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, 8u);
+          parameters.Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, 8u);
+          parameters.Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,
+              static_cast<uint32_t>(NVSDK_NGX_DLSS_Feature_Flags_MVLowRes
+                  | (hdr ? NVSDK_NGX_DLSS_Feature_Flags_IsHDR : 0)));
+          parameters.Set(NVSDK_NGX_Parameter_MV_Scale_X, 1.f);
+          parameters.Set(NVSDK_NGX_Parameter_MV_Scale_Y, 1.f);
+          parameters.Set(NVSDK_NGX_Parameter_Reset, 0u);
+          const auto* handle = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0x5E000} + completed++);
+          native::RegisterCreatedFeatureLocked(handle, native::kFeatureDlss, &parameters);
+          std::array<const NVSDK_NGX_Handle*, 2> resident{};
+          // Change only the Upscaled contract, then restore it, without a global invalidation.
+          for (uint32_t phase = 0; phase < (mixed ? 3u : 1u); ++phase) {
+            if (mixed) {
+              native::pass_resolution_scale[0].store(phase == 1 ? .5f : (scenario == 0 ? .67f : 1.f));
+            }
+            const uint32_t render_size = (scenario == 0 ? 8u : 5u);
+            const uint32_t post_size = (mixed ? (phase == 1 ? 8u : (scenario == 0 ? 11u : 16u)) : 11u);
+            const auto timer_start = addon::gpu_timers::measured_total_us;
+            const auto samples_start = addon::gpu_timers::published_segments;
+            uint32_t steady = 0;
+            bool contract_observed = false;
+            bool reset_observed = false;
+            uint64_t live_bytes = 0;
+            const auto initial_workset = native::worksets.find({handle, output.Get(), false});
+            uint32_t previous_workset = (initial_workset == native::worksets.end() ? 0u : initial_workset->second.id);
+            std::vector<uint32_t> replaced_worksets;
+            for (uint32_t attempt = 0; attempt < native::kContractDebounceFrames + 24 && steady < 2; ++attempt) {
+              evaluations.clear();
+              write_source(96, 0x3800);
+              Snapshot before_sr, after_sr;
+              bool swapped = false;
+              {
+                const addon::EvaluateChainScope outer;
+                native::PreSrSwap swap;
+                if (mixed) native::ProcessInlinePreSR(gpu.list.Get(), handle, &parameters, swap);
+                auto* consumed = native::GetD3D12Resource(&parameters, NVSDK_NGX_Parameter_Color);
+                swapped = swap.result != nullptr;
+                if (swapped) {
+                  Check(consumed == swap.result && consumed->GetDesc().Width == 8,
+                        "SR consumes full-stage decoded Render result despite reduced NR size");
+                  before_sr = Capture(gpu, consumed, native::kPreSrReadable);
+                }
+                const auto state = (swapped ? native::kPreSrReadable : NATIVE_INPUT_STATE);
+                gpu.Transition(consumed, state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                gpu.Transition(output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
+                const D3D12_TEXTURE_COPY_LOCATION from{.pResource = consumed, .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+                const D3D12_TEXTURE_COPY_LOCATION to{.pResource = output.Get(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+                for (uint32_t y = 0; y < output_size; y += 8) {
+                  for (uint32_t x = 0; x < output_size; x += 8) gpu.list->CopyTextureRegion(&to, x, y, 0, &from, nullptr);
+                }
+                gpu.Transition(consumed, D3D12_RESOURCE_STATE_COPY_SOURCE, state);
+                gpu.Transition(output.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                after_sr = Capture(gpu, output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                native::RestorePreSrColor(&parameters, swap);
+                write_source(208, 0x3a00);
+                const auto global_scale = native::nr_resolution_scale.load();
+                const auto pass_scale = native::pass_resolution_scale[0].load();
+                if (mixed && swapped) {
+                  native::nr_resolution_scale.store(.33f);
+                  native::pass_resolution_scale[0].store(.33f);
+                }
+                native::ProcessInline(gpu.list.Get(), handle, &parameters);
+                native::nr_resolution_scale.store(global_scale);
+                native::pass_resolution_scale[0].store(pass_scale);
+              }
+              const auto final = Capture(gpu, output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+              const auto work = native::worksets.find({handle, output.Get(), false});
+              if (work != native::worksets.end()) {
+                if (previous_workset != 0 && previous_workset != work->second.id) replaced_worksets.push_back(previous_workset);
+                previous_workset = work->second.id;
+              }
+              gpu.Submit();
+              addon::gpu_timers::Poll(true, false);
+              native::DrainRetiredResources(true);
+              if (evaluations.size() != 2 || (mixed && !swapped)) continue;
+              if (evaluations[0].input.width != (mixed ? render_size : post_size)
+                  || evaluations[1].input.width != post_size) continue;
+              const auto sr_pixels = after_sr.Pixels();
+              if (mixed) {
+                const auto decoded = before_sr.Pixels();
+                for (uint32_t y = 0; y < output_size; ++y) {
+                  for (uint32_t x = 0; x < output_size; ++x) {
+                    Check(std::memcmp(sr_pixels.data() + (y * output_size + x) * after_sr.pixel_bytes,
+                              decoded.data() + ((y % 8) * 8 + x % 8) * before_sr.pixel_bytes, after_sr.pixel_bytes) == 0,
+                          "GPU SR readback contains the actual preceding full-size decode");
+                  }
+                }
+              }
+              const auto final_pixels = final.Pixels();
+              std::vector<float> final_row(output_size * 4), sr_row(output_size * 4);
+              for (uint32_t y = 0; y < output_size; ++y) {
+                Check(addon::screenshot::internal::DecodeDiagnosticRow(final_pixels.data() + y * output_size * final.pixel_bytes,
+                          output_size, final.format, final_row.data()), "resolution final pixels decode");
+                Check(addon::screenshot::internal::DecodeDiagnosticRow(sr_pixels.data() + y * output_size * after_sr.pixel_bytes,
+                          output_size, after_sr.format, sr_row.data()), "resolution SR pixels decode");
+                for (uint32_t x = 0; x < output_size; ++x) {
+                  for (uint32_t channel = 0; channel < 3; ++channel) {
+                    Check(std::isfinite(final_row[x * 4 + channel]) && sr_row[x * 4 + channel] > .01f
+                              && std::abs(final_row[x * 4 + channel] - sr_row[x * 4 + channel]) < .02f,
+                          "cross-size output follows SR pixels rather than overwritten source Color");
+                  }
+                }
+              }
+              for (uint32_t pass = 0; pass < 2; ++pass) {
+                const auto& call = evaluations[pass];
+                const auto size = (mixed && pass == 0 ? render_size : post_size);
+                Check(call.input.height == size && call.output.width == size && call.output.height == size,
+                      "actual GPU NR input/output contracts have the requested group size");
+                Check(call.input.Pixels() == call.output.Pixels(), "GPU identity NR result matches this pass input");
+                if (pass == 1) reset_observed |= call.reset == 1;
+                if (phase > 0 && pass == 0) {
+                  Check(call.handle == resident[0] && call.reset == 0, "Upscaled-only resize preserves Render Feature/history");
+                }
+                if (steady > 0) Check(call.handle == resident[pass] && call.reset == 0, "steady contracts preserve both histories");
+              }
+              if (phase > 0 && !contract_observed) Check(evaluations[1].handle != resident[1], "resized group rebuilds its Feature");
+              contract_observed = true;
+              resident = {evaluations[0].handle, evaluations[1].handle};
+              if (evaluations[0].reset == 0 && evaluations[1].reset == 0) ++steady;
+              live_bytes = 0;
+              for (const auto& [key, resources] : native::worksets) {
+                if (key.handle == handle) live_bytes += resources.allocated_bytes;
+              }
+            }
+            Check(steady == 2, "resolution case reaches two steady frames within bounded debounce/warmup");
+            Check(reset_observed, "new or resized Upscaled Feature begins with History Reset");
+            Check(native::stage_telemetry[1].requested_work_width == post_size
+                      && native::stage_telemetry[1].requested_work_height == post_size
+                      && native::stage_telemetry[1].work_width == post_size
+                      && native::stage_telemetry[1].work_height == post_size
+                      && !native::stage_telemetry[1].resolution_blocked,
+                "telemetry reports requested and applied Upscaled work dimensions");
+            for (const auto id : replaced_worksets) {
+              for (const auto& retired : native::retired_final_resources) {
+                Check(retired.resources.id != id, "superseded workset drains after actual GPU completion and recording reset");
+              }
+            }
+            const auto vram = addon::telemetry::QueryVideoMemory(native::direct_device);
+            uint64_t retired_bytes = 0;
+            for (const auto& retired : native::retired_final_resources) {
+              retired_bytes += retired.resources.allocated_bytes;
+            }
+            std::cout << "PASS stage-resolution hdr=" << hdr << " mixed=" << mixed << " scenario=" << scenario
+                      << " phase=" << phase << " render=" << (mixed ? render_size : 0) << " post=" << post_size
+                      << " live_workset_bytes=" << live_bytes
+                      << " retired_workset_bytes=" << retired_bytes
+                      << " dxgi_valid=" << vram.valid
+                      << " dxgi_local_usage_bytes=" << vram.local_usage
+                      << " dxgi_local_budget_bytes=" << vram.local_budget
+                      << " dxgi_nonlocal_usage_bytes=" << vram.nonlocal_usage
+                      << " timer_segments=" << addon::gpu_timers::published_segments - samples_start
+                      << " timer_total_us=" << addon::gpu_timers::measured_total_us - timer_start
+                      << " timer_available=" << (addon::gpu_timers::published_segments != samples_start)
+                      << " timer_scope=warmup-and-readback-instrumented-standins"
+                      << " dxgi_scope=process-all-gpu-objects-not-worksets-only\n";
+          }
+          native::ForgetSourceHandleLocked(handle);
+          gpu.Submit();
+          native::DrainRetiredResources(true);
+        }
+      }
+      {
+        // Isolate the two retirement gates using an empty recording and a controlled receipt.
+        // No uncompleted synthetic command list is submitted to the real GPU queue.
+        const auto* owner = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0x5EF00});
+        const native::WorksetKey key{owner, color.Get(), false};
+        ComPtr<ID3D12CommandAllocator> allocator;
+        ComPtr<ID3D12GraphicsCommandList> list;
+        ComPtr<ID3D12Fence> receipt;
+        Check(SUCCEEDED(gpu.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                  IID_PPV_ARGS(&allocator))), "resolution retirement allocator");
+        Check(SUCCEEDED(gpu.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                  allocator.Get(), nullptr, IID_PPV_ARGS(&list))), "resolution retirement recording");
+        Check(SUCCEEDED(gpu.device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
+                  IID_PPV_ARGS(&receipt))), "resolution retirement controlled receipt");
+        auto* old = native::EnsureWorkset(gpu.device.Get(), owner, color.Get(), 8, 8, 8, 8,
+            DXGI_FORMAT_R8G8B8A8_UNORM, 0, 1, 0, false);
+        Check(old != nullptr, "resolution retirement initial workset");
+        const auto old_id = old->id;
+        auto* old_scratch = old->proxy;
+        auto* old_heap = old->descriptors;
+        native::TrackWorksetRecording(list.Get(), *old);
+        Check(SUCCEEDED(list->Close()), "resolution retirement close recording");
+        ID3D12CommandList* lists[]{list.Get()};
+        const auto pending = submission::BeginSubmission(1, lists);
+        Check(pending.size() == 1, "resolution retirement reserves exact submission");
+        submission::CompleteSubmission(pending, receipt.Get(), 1);
+        auto* current = native::EnsureWorkset(gpu.device.Get(), owner, color.Get(), 5, 5, 8, 8,
+            DXGI_FORMAT_R8G8B8A8_UNORM, 0, 1, 0, false);
+        Check(current != nullptr && current->id != old_id && current->proxy != old_scratch
+                  && current->descriptors != old_heap, "working-size change replaces scratch and immutable descriptors");
+        const auto retained = [&] {
+          for (const auto& retired : native::retired_final_resources) {
+            if (retired.resources.id == old_id) {
+              Check(retired.tracker_proof, "resolution retirement uses exact tracker proof");
+              return true;
+            }
+          }
+          return false;
+        };
+        native::DrainRetiredResources(true);
+        Check(retained(), "resized workset survives pending submission receipt");
+        Check(SUCCEEDED(receipt->Signal(1)), "complete controlled resolution receipt");
+        native::DrainRetiredResources(true);
+        Check(retained(), "completed replayable recording still owns old workset");
+        const auto replay = submission::BeginSubmission(1, lists);
+        Check(replay.size() == 1, "resolution retirement reserves replay");
+        submission::CompleteSubmission(replay, receipt.Get(), 2);
+        Check(SUCCEEDED(list->Reset(allocator.Get(), nullptr)), "discard resolution recording");
+        submission::OnCommandListReset(list.Get());
+        Check(SUCCEEDED(list->Close()), "close discarded resolution recording");
+        native::DrainRetiredResources(true);
+        Check(retained(), "reset recording cannot retire a pending replay");
+        Check(SUCCEEDED(receipt->Signal(2)), "complete controlled resolution replay");
+        native::DrainRetiredResources(true);
+        Check(!retained() && submission::ResourceReleasable(old_scratch)
+                  && submission::ResourceReleasable(old_heap), "old scratch retires only after both gates release");
+        submission::OnCommandListDestroyed(list.Get());
+        native::RetireWorkset(key);
+        native::DrainRetiredResources(true);
+        std::cout << "PASS stage-resolution retirement working-size/replay/reset/receipt (controlled tracker proof)\n";
+      }
+      if (info != nullptr) {
+        for (UINT64 index = 0; index < info->GetNumStoredMessages(); ++index) {
+          SIZE_T bytes = 0;
+          info->GetMessage(index, nullptr, &bytes);
+          std::vector<uint8_t> storage(bytes);
+          auto* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
+          Check(SUCCEEDED(info->GetMessage(index, message, &bytes)), "resolution debug message");
+          Check(message->Severity != D3D12_MESSAGE_SEVERITY_ERROR
+                    && message->Severity != D3D12_MESSAGE_SEVERITY_CORRUPTION, message->pDescription);
+        }
+      }
+      std::cout << "PASS stage-resolution cases=" << completed << " hardware=" << hardware
+                << " NVIDIA-SR/NR=substituted; allocation statistics exclude vendor model memory; no performance claim\n";
+      return 0;
+    }
     uint32_t boundary_cases = 0;
     uint32_t partial_warmups = 0;
     uint32_t failed_predecessors = 0;
     for (const bool hdr : {false, true}) {
-      const uint32_t count = (hdr ? 2u : 4u);
+      if (mixed_pair_only && !hdr) continue;
+      const uint32_t count = (mixed_pair_only ? 3u : (hdr ? 2u : 4u));
       const uint32_t render_count = (hdr ? 1u : 2u);
       const auto format = (hdr ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM);
       auto source = texture(8, format, true);
@@ -288,6 +648,13 @@ int Run() {
         native::pass_transfer_strength[pass - 1].store(0.25f * (pass + 1));
         native::pass_color_strength[pass - 1].store(0.25f * (pass + 1));
       }
+      if (mixed_pair_only) {
+        native::nr_resolution_scale.store(1.f);
+        for (uint32_t pass = 0; pass < 3; ++pass) native::pass_resolution_mode[pass].store(0);
+        native::pass_resolution_mode[1].store(2);
+        native::pass_resolution_scale[1].store(.67f);
+        capture_model_output = true;
+      }
       addon::bridge::OwnedParameters parameters;
       parameters.Set(NVSDK_NGX_Parameter_Color, source.Get());
       parameters.Set(NVSDK_NGX_Parameter_Output, output.Get());
@@ -318,6 +685,7 @@ int Run() {
       const auto creates_before = next_handle;
       for (uint32_t attempt = 0; attempt < 20 && steady < 2; ++attempt) {
         evaluations.clear();
+        Snapshot render_delivery, sr_delivery;
         if (hdr) {
           write_float(source.Get(), true);
         } else {
@@ -335,6 +703,7 @@ int Run() {
           if (swap.result != nullptr) {
             Check(native::GetD3D12Resource(&parameters, NVSDK_NGX_Parameter_Color) == swap.result,
                   "boundary SR consumes the swapped Color even with Color == Output");
+            if (mixed_pair_only) render_delivery = Capture(gpu, swap.result, native::kPreSrReadable);
             gpu.Transition(swap.result, native::kPreSrReadable, D3D12_RESOURCE_STATE_COPY_SOURCE);
             gpu.Transition(output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
             const D3D12_TEXTURE_COPY_LOCATION from{.pResource = swap.result, .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
@@ -342,6 +711,7 @@ int Run() {
             gpu.list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
             gpu.Transition(swap.result, D3D12_RESOURCE_STATE_COPY_SOURCE, native::kPreSrReadable);
             gpu.Transition(output.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            if (mixed_pair_only) sr_delivery = Capture(gpu, output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
           }
           native::RestorePreSrColor(&parameters, swap);
           const auto before_post = model_calls;
@@ -364,6 +734,17 @@ int Run() {
         if (!hdr) gpu.Transition(output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NATIVE_INPUT_STATE);
         gpu.Submit();
         if (evaluations.size() != count) continue;
+        if (mixed_pair_only) {
+          Check(render_delivery.readback != nullptr && sr_delivery.readback != nullptr
+                    && render_delivery.Pixels() == sr_delivery.Pixels(),
+                "mixed three-pass GPU SR consumer copies the real full-stage Render NR result");
+          for (uint32_t pass = 0; pass < count; ++pass) {
+            const auto size = (pass == 2 ? 5u : 8u);
+            Check(evaluations[pass].input.width == size && evaluations[pass].input.height == size
+                      && evaluations[pass].output.width == size && evaluations[pass].output.height == size,
+                  "mixed three-pass actual model contracts are Render8, Upscaled8, Upscaled5");
+          }
+        }
         auto& root = native::features.at(handle);
         Check(root.render_session != nullptr, "boundary has an independent Render session");
         bool reset = false;
@@ -450,6 +831,23 @@ int Run() {
                 << " model_parameters=logical-pass look_constants=logical-pass"
                 << (hdr ? " norm_commits=distinct-and-retained output=finite-nonblack"
                         : " result_constants=logical-pass") << '\n';
+      if (mixed_pair_only) {
+        native::DrainRetiredResources(true);
+        if (info != nullptr) {
+          for (UINT64 index = 0; index < info->GetNumStoredMessages(); ++index) {
+            SIZE_T bytes = 0;
+            info->GetMessage(index, nullptr, &bytes);
+            std::vector<uint8_t> storage(bytes);
+            auto* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
+            Check(SUCCEEDED(info->GetMessage(index, message, &bytes)), "mixed-pair debug message");
+            Check(message->Severity != D3D12_MESSAGE_SEVERITY_ERROR
+                      && message->Severity != D3D12_MESSAGE_SEVERITY_CORRUPTION, message->pDescription);
+          }
+        }
+        std::cout << "PASS same-stage-mixed-pair HDR Render1(100)->SR->Upscaled2(100)->Upscaled3(67)"
+                     " logical-model-look-IDs=verified SR-GPU-handoff=equal hardware=" << hardware << '\n';
+        return 0;
+      }
     }
     Check(partial_warmups > 0 && failed_predecessors == 1,
           "partial warmup and model failure predecessor gates were both exercised");

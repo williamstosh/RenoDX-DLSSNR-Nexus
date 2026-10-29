@@ -200,6 +200,8 @@ enum class NrDeclineReason : uint8_t {
   kVkOwnerMismatch,
   kStagePlanUnavailable,
   kStagePredecessorIncomplete,
+  kStageResolutionMismatch,
+  kStageResolutionBackend,
   kCount,
 };
 inline std::atomic_uint64_t nr_decline_counts[
@@ -273,6 +275,8 @@ inline const char* const kNrDeclineNames[
     " to the first device until it is destroyed",
     "the requested stage plan is invalid or unavailable; saved choices are preserved",
     "a preceding stage was incomplete or the configuration changed across SR",
+    "passes in one stage require the same working size (shared proxy/NN workset)",
+    "independent pass working resolution requires the DX11/DX12 path",
 };
 // Short tags for the periodic telemetry line (same order).
 inline const char* const kNrDeclineTags[
@@ -289,6 +293,7 @@ inline const char* const kNrDeclineTags[
     "present_prefg",
     "vk_extension_missing", "vk_nr_pending",
     "screenshot_wait", "vk_owner_mismatch", "stage_plan", "stage_predecessor",
+    "stage_resolution", "stage_resolution_backend",
 };
 // A split chain still belongs to one source SR evaluate. Preserve per-group
 // observations separately and publish one terminal when its outer call ends.

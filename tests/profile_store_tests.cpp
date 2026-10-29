@@ -18,6 +18,7 @@
 #include <string_view>
 #include <thread>
 
+#include "preset_fields.hpp"
 #include "profile_templates.hpp"
 
 namespace {
@@ -34,6 +35,11 @@ void Check(bool condition, std::string_view message) {
 }
 
 bool Validate(std::string_view key, const Json& value) {
+  for (unsigned pass = 2; pass <= 4; ++pass) {
+    const auto prefix = "NRPass" + std::to_string(pass);
+    if (key == prefix + "ResolutionMode") return value.is_number_integer() && value >= 0 && value <= 2;
+    if (key == prefix + "ResolutionScale") return value.is_number() && value >= 0.33f && value <= 1;
+  }
   if (key == "NRFollowInputRes") return value.is_boolean();
   if (key == "NRResolutionScale") return value.is_number() && value >= 0.25 && value <= 2.0;
   if (key == "NRIntensity") return value.is_number() && value >= 0 && value <= 1;
@@ -92,6 +98,15 @@ int wmain(int argc, wchar_t** argv) {
       Check(restored.revision == 2 && restored.selected == "custom_slot_2", "Fresh process revision and selection");
       Check(restored.slots[4].name == "Renamed 2" && restored.slots[4].snapshot["NRIntensity"] == 0.7, "Fresh process data");
       Check(restored.slots[3].name == restored.slots[5].name, "Duplicate display names retain separate IDs");
+      for (std::size_t index = 0; index < restored.slots.size(); ++index) {
+        const auto& settings = (index < 3 ? restored.slots[index].overrides : restored.slots[index].snapshot);
+        for (unsigned pass = 2; pass <= 4; ++pass) {
+          const auto prefix = "NRPass" + std::to_string(pass);
+          Check(settings[prefix + "ResolutionMode"] == static_cast<unsigned>((index + pass) % 3)
+                    && settings[prefix + "ResolutionScale"] == 0.5f + 0.0625f * static_cast<float>(index),
+                "Fresh process restores every pass resolution for all six Slots");
+        }
+      }
       std::cout << checks << " fresh process checks passed\n";
       return 0;
     }
@@ -123,6 +138,12 @@ int wmain(int argc, wchar_t** argv) {
         state.slots[index].populated = true;
         state.slots[index].snapshot = {{"NRIntensity", 0.1 * static_cast<double>(index + 1)}};
       }
+      auto& settings = (index < 3 ? state.slots[index].overrides : state.slots[index].snapshot);
+      for (unsigned pass = 2; pass <= 4; ++pass) {
+        const auto prefix = "NRPass" + std::to_string(pass);
+        settings[prefix + "ResolutionMode"] = static_cast<unsigned>((index + pass) % 3);
+        settings[prefix + "ResolutionScale"] = 0.5f + 0.0625f * static_cast<float>(index);
+      }
     }
     state.slots[3].name = state.slots[5].name = "Same name";
     state.slots[4].snapshot["NRIntensity"] = 0.7;
@@ -141,8 +162,19 @@ int wmain(int argc, wchar_t** argv) {
     Check(state.slots[4].snapshot == read.slots[4].snapshot, "Rename independent of snapshot and ID");
     Reject(path, read, "Stale revision rejected");
 
-    const Json defaults{{"NRHookPoint", 0u}, {"NRPasses", 4u}, {"NRPreset", 0u}, {"NRPass2Preset", 0u},
+    Json defaults{{"NRHookPoint", 0u}, {"NRPasses", 4u}, {"NRPreset", 0u}, {"NRPass2Preset", 0u},
                         {"NRFollowInputRes", false}, {"NRResolutionScale", 0.5}, {"NRIntensity", 0.9}};
+    for (unsigned pass = 2; pass <= 4; ++pass) {
+      const auto prefix = "NRPass" + std::to_string(pass);
+      const auto* mode_rule = presets::FindRule(prefix + "ResolutionMode");
+      const auto* scale = presets::FindRule(prefix + "ResolutionScale");
+      Check(mode_rule != nullptr && mode_rule->category == presets::FieldRule::MULTIPASS && mode_rule->pass == pass
+                && mode_rule->minimum == 0 && mode_rule->maximum == 2, "Resolution mode allowlist and pass identity");
+      Check(scale != nullptr && scale->category == presets::FieldRule::MULTIPASS && scale->pass == pass
+                && scale->minimum == 0.33f && scale->maximum == 1, "Resolution scale allowlist and bounds");
+      defaults[prefix + "ResolutionMode"] = 0u;
+      defaults[prefix + "ResolutionScale"] = 1.f;
+    }
     const auto defaults_before = defaults;
     const auto lite = profiles::Template(0, defaults);
     const auto balanced = profiles::Template(1, defaults);
@@ -154,6 +186,11 @@ int wmain(int argc, wchar_t** argv) {
     for (std::size_t index = 0; index < 3; ++index) {
       const auto candidate = profiles::Template(index, defaults);
       Check(candidate["NRResolutionScale"] == 1.0 && candidate["NRIntensity"] == 0.9, "Only candidate fields override defaults");
+      for (unsigned pass = 2; pass <= 4; ++pass) {
+        const auto prefix = "NRPass" + std::to_string(pass);
+        Check(candidate[prefix + "ResolutionMode"] == 0u && candidate[prefix + "ResolutionScale"] == 1.f,
+              "Official templates inherit global resolution by default, including inactive passes");
+      }
       const auto resolved = profiles::Resolve(index, state.slots[index], defaults, Validate);
       Check(resolved["NRIntensity"] == state.slots[index].overrides["NRIntensity"], "Official overrides isolated");
     }

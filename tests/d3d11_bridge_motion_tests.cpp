@@ -95,9 +95,12 @@ struct ModelObservation {
   float tone;
   uint64_t id;
   uint32_t evaluation;
+  uint32_t width;
+  uint32_t height;
 };
 std::vector<ModelObservation> model_observations;
 uint32_t fail_model_call = 0;
+std::array<unsigned short, 2> model_stamps{0x3400, 0x3800};
 NVSDK_NGX_Handle* source_create_result = nullptr;
 NVSDK_NGX_Result NVSDK_CONV MotionCreateSource(ID3D11DeviceContext*, NVSDK_NGX_Feature,
     NVSDK_NGX_Parameter*, NVSDK_NGX_Handle** handle) {
@@ -124,10 +127,15 @@ NVSDK_NGX_Result NVSDK_CONV MotionEvaluateModel(ID3D12GraphicsCommandList* list,
   model_presets.push_back(model->preset);
   model_observations.push_back({native::GetInt(parameters, "DLSSNR.Reset"),
       native::GetFloat(parameters, "DLSSNR.Intensity"), native::GetUInt(parameters, "DLSSNR.Style"),
-      native::GetFloat(parameters, "DLSSNR.LocalToneStrength"), model->id, ++model->evaluations});
+      native::GetFloat(parameters, "DLSSNR.LocalToneStrength"), model->id, ++model->evaluations,
+      static_cast<uint32_t>(native::GetD3D12Resource(parameters, "DLSSNR.Color")->GetDesc().Width),
+      native::GetD3D12Resource(parameters, "DLSSNR.Color")->GetDesc().Height});
   if (model_calls == fail_model_call) return NVSDK_NGX_Result_Fail;
   auto* output = native::GetD3D12Resource(parameters, "DLSSNR.Output");
   Check(output != nullptr, "model output is a real D3D12 resource");
+  const auto input_desc = native::GetD3D12Resource(parameters, "DLSSNR.Color")->GetDesc();
+  Check(input_desc.Width == output->GetDesc().Width && input_desc.Height == output->GetDesc().Height,
+      "bridge NR input and output have equal actual working dimensions");
   auto* device = native::bridge.device12;
   const auto desc = output->GetDesc();
   D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
@@ -145,7 +153,7 @@ NVSDK_NGX_Result NVSDK_CONV MotionEvaluateModel(ID3D12GraphicsCommandList* list,
   std::memset(mapped, 0, static_cast<size_t>(bytes));
   Check(desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT, "model output fixture format");
   // Distinct finite model results make both stages observable even at 1:1.
-  const unsigned short model_pixel = (model_presets.back() == 2 ? 0x3800 : 0x3400);
+  const unsigned short model_pixel = model_stamps[model_presets.back() == 2 ? 1 : 0];
   for (UINT y = 0; y < desc.Height; ++y) {
     auto* row = reinterpret_cast<unsigned short*>(static_cast<unsigned char*>(mapped) + footprint.Offset + size_t(y) * footprint.Footprint.RowPitch);
     for (UINT x = 0; x < desc.Width * 4; ++x) row[x] = model_pixel;
@@ -231,11 +239,16 @@ std::vector<unsigned char> Read12(ID3D12Resource* texture, UINT pixel_bytes,
   return result;
 }
 }
+#include "d3d11_present_stage_resolution_cases.hpp"
 int main(int argc, char** argv) {
   try {
     bool warp = false;
     bool dlaa_only = false;
     bool sr_only = false;
+    bool stage_resolution = false;
+    bool same_stage_resolution = false;
+    bool render_stage_resolution = false;
+    bool present_stage_resolution = false;
     for (int arg = 1; arg < argc; ++arg) {
       if (std::strcmp(argv[arg], "--warp") == 0) {
         warp = true;
@@ -243,6 +256,17 @@ int main(int argc, char** argv) {
         dlaa_only = true;
       } else if (std::strcmp(argv[arg], "--sr") == 0) {
         sr_only = true;
+      } else if (std::strcmp(argv[arg], "--stage-resolution") == 0) {
+        stage_resolution = true;
+      } else if (std::strcmp(argv[arg], "--same-stage-resolution") == 0) {
+        stage_resolution = true;
+        same_stage_resolution = true;
+      } else if (std::strcmp(argv[arg], "--present-stage-resolution") == 0) {
+        present_stage_resolution = true;
+      } else if (std::strcmp(argv[arg], "--render-stage-resolution") == 0) {
+        stage_resolution = true;
+        same_stage_resolution = true;
+        render_stage_resolution = true;
       } else {
         Check(false, "known GPU fixture argument");
       }
@@ -294,6 +318,9 @@ int main(int argc, char** argv) {
       Check(SUCCEEDED(device->CreateTexture2D(&desc, data ? &initial : nullptr, &texture)), "input texture");
       return texture;
     };
+    if (present_stage_resolution) {
+      return d3d11_present_stage_resolution_cases::Run(context.Get(), make_texture);
+    }
     // Non-multiples of eight exercise dispatch edges; selected values cannot survive a float16 detour.
     constexpr UINT width = 13, height = 9;
     const float values[]{0.f, -0.f, 0.1f, -0.375f, 65537.f, -131071.25f, 1.234567f, -8388607.f};
@@ -309,6 +336,203 @@ int main(int argc, char** argv) {
     auto rg16 = make_texture(width, height, DXGI_FORMAT_R16G16_FLOAT, D3D11_BIND_SHADER_RESOURCE, rg16_pixels.data(), width * 4);
     std::vector<float> depth_pixels(width * height, 0.375f);
     auto depth_direct = make_texture(width, height, DXGI_FORMAT_R32_FLOAT, D3D11_BIND_SHADER_RESOURCE, depth_pixels.data(), width * 4);
+    if (stage_resolution) {
+      native::d3d11_swapchain_seen.store(true);
+      native::dx11_route.store(native::kDx11RouteNative);
+      native::direct_runtime_requirements.dual_models = true;
+      native::dedupe_mode.store(renodx::addons::dlss5::kDedupePerEvaluate);
+      native::nr_follow_input_res.store(false);
+      native::gpu_timers_enabled.store(true);
+      native::ngx_loader_staging.nr_ready = true;
+      native::ngx_loader_staging.core_ready = true;
+      native::PublishNgxLoaderSymbols();
+      for (const uint32_t scenario : {0u, 1u, 2u}) {
+        const bool mixed = !same_stage_resolution && scenario != 2;
+        native::hook_point.store((mixed || render_stage_resolution) ? native::kHookRender : native::kHookUpscaled);
+        native::stack_passes.store(2);
+        native::preset.store(scenario == 1 ? 2u : 1u);
+        native::pass_preset[0].store(scenario == 1 ? 1u : 2u);
+        native::pass_stage[0].store(mixed ? 2u : 0u);
+        native::pass_follow[0].store(true);
+        native::pass_transfer_strength[0].store(1.f);
+        native::pass_color_strength[0].store(1.f);
+        native::pass_look_result[0].follow.store(true);
+        native::nr_resolution_scale.store(scenario == 0 ? 1.f : .67f);
+        for (uint32_t pass = 0; pass < 3; ++pass) {
+          native::pass_resolution_mode[pass].store(0);
+          native::pass_resolution_scale[pass].store(1.f);
+        }
+        if (mixed || (same_stage_resolution && scenario != 2)) {
+          native::pass_resolution_mode[0].store(2);
+          native::pass_resolution_scale[0].store(scenario == 0 ? .67f : 1.f);
+        }
+        params::OwnedParameters parameters;
+        parameters.Set(NVSDK_NGX_Parameter_Width, width);
+        parameters.Set(NVSDK_NGX_Parameter_Height, height);
+        parameters.Set(NVSDK_NGX_Parameter_OutWidth, 17u);
+        parameters.Set(NVSDK_NGX_Parameter_OutHeight, 11u);
+        parameters.Set(NVSDK_NGX_Parameter_Color, static_cast<ID3D11Resource*>(color.Get()));
+        parameters.Set(NVSDK_NGX_Parameter_Output, static_cast<ID3D11Resource*>(output.Get()));
+        parameters.Set(NVSDK_NGX_Parameter_Depth, static_cast<ID3D11Resource*>(depth_direct.Get()));
+        parameters.Set(NVSDK_NGX_Parameter_MotionVectors, static_cast<ID3D11Resource*>(rg16.Get()));
+        parameters.Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,
+            int(NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes));
+        parameters.Set(NVSDK_NGX_Parameter_MV_Scale_X, 1.f);
+        parameters.Set(NVSDK_NGX_Parameter_MV_Scale_Y, 1.f);
+        const auto* handle = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xD500} + scenario);
+        const params::ParameterView create_view(&parameters, nullptr);
+        native::RegisterCreatedFeatureLocked(handle, native::kFeatureDlss, &create_view);
+        const auto timer_start = renodx::addons::dlss5::gpu_timers::measured_total_us;
+        const auto samples_start = renodx::addons::dlss5::gpu_timers::published_segments;
+        std::array<uint64_t, 2> resident{};
+        uint32_t steady = 0;
+        for (uint32_t attempt = 0; attempt < native::kContractDebounceFrames + 24 && steady < 2; ++attempt) {
+          ++native::present_generation;
+          context->UpdateSubresource(color.Get(), 0, nullptr, color_pixels.data(), width * 8, 0);
+          context->UpdateSubresource(output.Get(), 0, nullptr, output_pixels.data(), 17 * 8, 0);
+          const auto before = model_calls;
+          std::vector<unsigned char> sr_pixels;
+          std::vector<unsigned char> sr_input;
+          bool redirected = false;
+          const auto result = native::Ngx11Evaluate(0, "stage resolution", context.Get(), handle, &parameters, [&] {
+            auto* input = params::GetD3D11Resource(&parameters, NVSDK_NGX_Parameter_Color);
+            redirected = input != color.Get();
+            if (render_stage_resolution) {
+              ComPtr<ID3D11Texture2D> input_texture;
+              Check(SUCCEEDED(input->QueryInterface(IID_PPV_ARGS(&input_texture))), "Render SR consumer receives texture");
+              sr_input = Read11(input_texture.Get(), 8);
+              const auto original = Read11(color.Get(), 8);
+              Check(std::memcmp(original.data(), color_pixels.data(), original.size()) == 0,
+                  "Render chain protects original Color before native SR");
+            }
+            const D3D11_BOX region{0, 0, 0, width, height, 1};
+            context->CopySubresourceRegion(output.Get(), 0, 0, 0, 0, input, 0, &region);
+            sr_pixels = Read11(output.Get(), 8);
+            // The subsequent group must snapshot SR output rather than this changed Color.
+            std::vector<unsigned short> stale(width * height * 4, 0x3a00);
+            if (!render_stage_resolution) {
+              context->UpdateSubresource(color.Get(), 0, nullptr, stale.data(), width * 8, 0);
+            }
+            return NVSDK_NGX_Result_Success;
+          });
+          Check(NVSDK_NGX_SUCCEED(result), "resolution bridge preserves SR success");
+          if (native::bridge_submitted_value.load()) {
+            WaitForGpu(native::bridge.fence_done12, native::bridge_submitted_value.load());
+          }
+          Check(params::GetD3D11Resource(&parameters, NVSDK_NGX_Parameter_Color) == color.Get()
+                    && params::GetD3D11Resource(&parameters, NVSDK_NGX_Parameter_Output) == output.Get()
+                    && params::GetD3D11Resource(&parameters, NVSDK_NGX_Parameter_Depth) == depth_direct.Get()
+                    && params::GetD3D11Resource(&parameters, NVSDK_NGX_Parameter_MotionVectors) == rg16.Get()
+                    && native::GetFloat(&parameters, NVSDK_NGX_Parameter_MV_Scale_X) == 1.f
+                    && native::GetFloat(&parameters, NVSDK_NGX_Parameter_MV_Scale_Y) == 1.f,
+              "resolution bridge restores Color/Output and preserves game guide parameters");
+          renodx::addons::dlss5::gpu_timers::Poll(native::queue_tracking_active.load(), false);
+          if (model_calls - before != 2 || ((mixed || render_stage_resolution) && !redirected)) continue;
+          const auto& first = model_observations[before];
+          const auto& second = model_observations[before + 1];
+          const uint32_t first_width = ((mixed || render_stage_resolution) ? (scenario == 0 ? width : 9u)
+              : (same_stage_resolution && scenario == 0 ? 17u : 11u));
+          const uint32_t first_height = ((mixed || render_stage_resolution) ? (scenario == 0 ? height : 6u)
+              : (same_stage_resolution && scenario == 0 ? 11u : 7u));
+          const uint32_t last_width = (render_stage_resolution ? (scenario == 1 ? width : 9u) : (scenario == 1 ? 17u : 11u));
+          const uint32_t last_height = (render_stage_resolution ? (scenario == 1 ? height : 6u) : (scenario == 1 ? 11u : 7u));
+          Check(first.width == first_width && first.height == first_height
+                    && second.width == last_width && second.height == last_height,
+              "bridge model inputs use independent stage reference dimensions");
+          const auto& sets = native::bridge_sets.at(handle);
+          const auto& post = native::worksets.at({handle,
+              (render_stage_resolution ? sets[1].color12 : sets[0].output12), render_stage_resolution});
+          if (same_stage_resolution && scenario != 2) {
+            Check(post.resolution_tail != nullptr && post.resolution_tail->shared_stage_surfaces
+                      && post.resolution_tail->work0 == post.work0
+                      && post.resolution_tail->work_a == post.work_a
+                      && post.resolution_tail->work_b == post.work_b
+                      && post.resolution_tail->proxy != post.proxy
+                      && post.resolution_tail->descriptors != post.descriptors,
+                  "Bridge reuses full-stage images with distinct working textures and immutable descriptors");
+            if (render_stage_resolution) {
+              Check(post.resolution_tail->pre_sr_color == post.pre_sr_color,
+                  "Render tail borrows root pre-SR delivery surface without a second allocation");
+            }
+          }
+          if (render_stage_resolution) {
+            Check(sr_input == Read11(sets[1].color11, 8)
+                      && sr_input == Read12(post.pre_sr_color, 8, post.pre_sr_color_state),
+                "SR consumes exact full-size final Render result through substituted Color");
+            Check(std::memcmp(sr_input.data(), color_pixels.data(), sr_input.size()) != 0,
+                "Render result differs from original Color");
+            for (uint32_t y = 0; y < height; ++y) {
+              Check(std::memcmp(sr_input.data() + y * width * 8, sr_pixels.data() + y * 17 * 8, width * 8) == 0,
+                  "SR consumer GPU readback contains final Render pixels");
+            }
+            Check(Read11(output.Get(), 8) == sr_pixels,
+                "Render-only chain leaves native SR result intact");
+            const auto original = Read11(color.Get(), 8);
+            Check(std::memcmp(original.data(), color_pixels.data(), original.size()) == 0,
+                "Render-only success preserves original Color bytes");
+          } else {
+            Check(Read12(post.work0, 8, post.work0_state) == sr_pixels,
+                "GPU readback proves Upscaled consumes SR output instead of changed Color");
+            Check(Read11(output.Get(), 8) == Read11(sets[0].output11, 8),
+                "bridge delivers full-size Upscaled decode to game Output");
+          }
+          if (mixed) {
+            Check(sets[1].last_value < sets[0].last_value, "bridge Render submission precedes Upscaled");
+            const auto decoded = Read11(sets[1].color11, 8);
+            for (uint32_t y = 0; y < height; ++y) {
+              Check(std::memcmp(decoded.data() + y * width * 8, sr_pixels.data() + y * 17 * 8, width * 8) == 0,
+                  "SR GPU output contains preceding full-size Render decode");
+            }
+          }
+          if (steady > 0) Check(first.id == resident[0] && second.id == resident[1]
+                                    && first.reset == 0 && second.reset == 0,
+              "steady resolution bridge retains independent Feature/history");
+          resident = {first.id, second.id};
+          if (first.reset == 0 && second.reset == 0) ++steady;
+        }
+        Check(steady == 2, "resolution bridge reaches two steady frames");
+        if (render_stage_resolution) {
+          ++native::present_generation;
+          const auto before = model_calls;
+          fail_model_call = before + 2;
+          bool failed_redirected = false;
+          std::vector<unsigned char> failed_sr;
+          const auto result = native::Ngx11Evaluate(0, "Render tail failure", context.Get(), handle, &parameters, [&] {
+            auto* input = params::GetD3D11Resource(&parameters, NVSDK_NGX_Parameter_Color);
+            failed_redirected = input != color.Get();
+            const D3D11_BOX region{0, 0, 0, width, height, 1};
+            context->CopySubresourceRegion(output.Get(), 0, 0, 0, 0, input, 0, &region);
+            failed_sr = Read11(output.Get(), 8);
+            return NVSDK_NGX_Result_Success;
+          });
+          fail_model_call = 0;
+          Check(NVSDK_NGX_SUCCEED(result) && model_calls - before == 2 && !failed_redirected,
+              "partial Render failure passes original Color to native SR");
+          Check(params::GetD3D11Resource(&parameters, NVSDK_NGX_Parameter_Color) == color.Get()
+                    && params::GetD3D11Resource(&parameters, NVSDK_NGX_Parameter_Output) == output.Get(),
+              "failed Render chain restores game Color/Output parameters");
+          Check(Read11(output.Get(), 8) == failed_sr, "failed Render chain preserves native SR output");
+          const auto original = Read11(color.Get(), 8);
+          Check(std::memcmp(original.data(), color_pixels.data(), original.size()) == 0,
+              "partial Render failure preserves original Color bytes");
+        }
+        uint64_t bytes = 0;
+        for (const auto& [key, resources] : native::worksets) {
+          if (key.handle == handle) bytes += resources.allocated_bytes;
+        }
+        std::printf("PASS bridge-%s-resolution scenario=%u mixed=%u live_workset_bytes=%llu timer_segments=%llu timer_total_us=%llu GPU=standins timer_scope=warmup-readbacks-model-upload-and-failure\n",
+            render_stage_resolution ? "render-stage" : (same_stage_resolution ? "same-stage" : "stage"),
+            scenario, unsigned(mixed), static_cast<unsigned long long>(bytes),
+            static_cast<unsigned long long>(renodx::addons::dlss5::gpu_timers::published_segments - samples_start),
+            static_cast<unsigned long long>(renodx::addons::dlss5::gpu_timers::measured_total_us - timer_start));
+        native::ForgetSourceHandleLocked(handle);
+        native::RetireBridgeSetLocked(handle);
+      }
+      Check(native::DrainBridgeQueue(), "resolution bridge final drain");
+      native::ReleaseBridge();
+      Check(native::bridge_retired.empty(), "completed bridge resources safely retire");
+      return 0;
+    }
     auto depth_planar = make_texture(width, height, DXGI_FORMAT_R32G8X24_TYPELESS, D3D11_BIND_DEPTH_STENCIL, nullptr, 0);
     D3D11_DEPTH_STENCIL_VIEW_DESC dsv_desc{.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT,
         .ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D};

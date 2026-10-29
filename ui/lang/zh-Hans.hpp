@@ -1908,6 +1908,14 @@ inline constexpr Translation kZhHans[] = {
     {"Present is unavailable; using the existing Upscaled path", "Present 不可用；使用现有 Upscaled 路径"},
     {"Invalid stage selection", "无效的阶段选择"},
     {"Requested stages are unavailable", "请求的阶段不可用"},
+
+    {"Inherit global resolution", "继承全局分辨率"},
+    {"Fixed scale", "固定比例"},
+    {"Working size is independent of Stage, Model, Look and Result. Fixed scale uses this stage's reference size; Match game keeps the guide size and existing limits. Upsampling is shared.", "工作尺寸独立于阶段、模型、外观和结果。固定比例以本阶段参考尺寸为基准；跟随游戏沿用 Guide 尺寸及现有上限。上采样方式全链共享。"},
+    {"Independent sizes across stage groups use DX11/DX12. Two Render or two Upscaled passes on native DX11 Bridge or DX12 in a chain without Present support different sizes. Two ordinary Present passes on native DX11 Bridge or DX12 also support different sizes, after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains. Groups of 3+ passes require matching sizes; unsupported mismatches skip the group. Inheritance and shared upsampling are unchanged.", "DX11/DX12 支持跨阶段组独立尺寸。不含 Present 的原生 DX11 Bridge／DX12 链支持两个 Render 或两个 Upscaled Pass 使用不同尺寸。普通原生 DX11 Bridge／DX12 Present 双 Pass，必须获得已确认 FG Off 声明；该 Present 能力拒绝 FG 未知／On、Pre-FG、B1／混合链。同组 3 层以上仍要求尺寸一致；不支持的尺寸组合跳过该组。继承和共享上采样不变。"},
+    {"Group skipped: different sizes require two Render/Upscaled passes on native DX11 Bridge or DX12 without Present, or two ordinary Present passes on native DX11 Bridge or DX12 after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains; groups of 3+ passes require matching sizes.", "已跳过该组：不同尺寸仅支持不含 Present 的原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass，或 获得已确认 FG Off 声明的普通原生 DX11 Bridge／DX12 Present 双 Pass。该 Present 能力拒绝 FG 未知／On、Pre-FG、B1／混合链；同组 3 层以上仍要求尺寸一致。"},
+    {"Independent pass resolution is unavailable on Vulkan; select Inherit global resolution.", "Vulkan 不支持逐 Pass 独立分辨率；请选择“继承全局分辨率”。"},
+    {"Last observed reference / requested / applied work", "最近观测尺寸：参考 / 请求工作尺寸 / 实际工作尺寸"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

@@ -1899,6 +1899,14 @@ inline constexpr Translation kZhHant[] = {
     {"Present is unavailable; using the existing Upscaled path", "Present 無法使用；使用現有 Upscaled 路徑"},
     {"Invalid stage selection", "無效的階段選擇"},
     {"Requested stages are unavailable", "要求的階段無法使用"},
+
+    {"Inherit global resolution", "繼承全域解析度"},
+    {"Fixed scale", "固定比例"},
+    {"Working size is independent of Stage, Model, Look and Result. Fixed scale uses this stage's reference size; Match game keeps the guide size and existing limits. Upsampling is shared.", "工作尺寸獨立於階段、模型、外觀和結果。固定比例以本階段參考尺寸為基準；跟隨遊戲沿用 Guide 尺寸及現有上限。升頻方式全鏈共用。"},
+    {"Independent sizes across stage groups use DX11/DX12. Two Render or two Upscaled passes on native DX11 Bridge or DX12 in a chain without Present support different sizes. Two ordinary Present passes on native DX11 Bridge or DX12 also support different sizes, after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains. Groups of 3+ passes require matching sizes; unsupported mismatches skip the group. Inheritance and shared upsampling are unchanged.", "DX11/DX12 支援跨階段組獨立尺寸。不含 Present 的原生 DX11 Bridge／DX12 鏈支援兩個 Render 或兩個 Upscaled Pass 使用不同尺寸。一般原生 DX11 Bridge／DX12 Present 雙 Pass，必須取得已確認 FG Off 宣告；此 Present 能力拒絕 FG 未知／On、Pre-FG、B1／混合鏈。同組 3 層以上仍要求尺寸一致；不支援的尺寸組合會跳過該組。繼承和共用升採樣不變。"},
+    {"Group skipped: different sizes require two Render/Upscaled passes on native DX11 Bridge or DX12 without Present, or two ordinary Present passes on native DX11 Bridge or DX12 after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains; groups of 3+ passes require matching sizes.", "已跳過該組：不同尺寸僅支援不含 Present 的原生 DX11 Bridge／DX12 Render／Upscaled 雙 Pass，或 取得已確認 FG Off 宣告的一般原生 DX11 Bridge／DX12 Present 雙 Pass。此 Present 能力拒絕 FG 未知／On、Pre-FG、B1／混合鏈；同組 3 層以上仍要求尺寸一致。"},
+    {"Independent pass resolution is unavailable on Vulkan; select Inherit global resolution.", "Vulkan 不支援逐 Pass 獨立解析度；請選擇「繼承全域解析度」。"},
+    {"Last observed reference / requested / applied work", "最近觀測尺寸：參考 / 要求的工作尺寸 / 實際工作尺寸"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

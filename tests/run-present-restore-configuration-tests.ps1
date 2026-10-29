@@ -1,4 +1,5 @@
 param(
+    [string[]]$Case = @(),
     [string]$SourceRoot = (Split-Path $PSScriptRoot -Parent),
     [string]$HostRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) '.local/renodx'),
     [string]$ShaderIncludeDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) 'build/dlss5.include'),
@@ -135,7 +136,14 @@ try {
         'pre8-malformed-sdr-version', 'pre8-future-sdr-version', 'pre8-fail-sdr-bypass', 'v8-legacy-key', 'reset',
         'nr-model-default', 'nr-model-explicit', 'nr-model-invalid', 'nr-model-legacy',
         'nr-stage-default', 'nr-stage-explicit', 'nr-stage-invalid',
-        'pass-result-default', 'pass-result-custom', 'pass-result-invalid', 'presets')
+        'pass-result-default', 'pass-result-custom', 'pass-result-invalid', 'presets',
+        'nr-resolution-default', 'nr-resolution-explicit', 'nr-resolution-invalid', 'profiles')
+    if ($Case.Count) {
+        foreach ($requested in $Case) {
+            if ($requested -notin $cases) { throw "Unknown configuration case: $requested" }
+        }
+        $cases = $Case
+    }
     $totalChecks = 0
     $totalFailures = 0
     $failedCases = @()
@@ -177,15 +185,17 @@ try {
             throw "PENDING: input changed during runtime checks: $inputPath; results invalidated."
         }
     }
-    $inventoryPath = Join-Path $outputDirectory 'presets/preset-field-inventory.json'
-    $inventory = Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json
-    if (-not $inventory.fields.Count) { throw 'Preset field inventory is empty.' }
-    foreach ($field in $inventory.fields) {
-        foreach ($name in @('key', 'type', 'default', 'range', 'category', 'pass', 'effect', 'environment')) {
-            if ($field.PSObject.Properties.Name -notcontains $name) { throw "Missing inventory field: $name" }
+    if ($cases -contains 'presets') {
+        $inventoryPath = Join-Path $outputDirectory 'presets/preset-field-inventory.json'
+        $inventory = Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json
+        if (-not $inventory.fields.Count) { throw 'Preset field inventory is empty.' }
+        foreach ($field in $inventory.fields) {
+            foreach ($name in @('key', 'type', 'default', 'range', 'category', 'pass', 'effect', 'environment')) {
+                if ($field.PSObject.Properties.Name -notcontains $name) { throw "Missing inventory field: $name" }
+            }
         }
+        Add-RunLine "preset_field_inventory=$inventoryPath fields=$($inventory.fields.Count)"
     }
-    Add-RunLine "preset_field_inventory=$inventoryPath fields=$($inventory.fields.Count)"
     Add-RunLine "check_summary=$totalChecks checks, $totalFailures failures"
     if ($failedCases.Count -gt 0 -or $totalFailures -gt 0) {
         throw "Actual configuration checks failed: $($failedCases -join ', '); $totalFailures assertion failures."

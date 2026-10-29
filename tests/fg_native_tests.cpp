@@ -682,10 +682,20 @@ int RunNativeRequiredMenuTest() {
 }
 
 #include "stage_execution_cases.hpp"
+#include "same_stage_resolution_cases.hpp"
+#include "present_stage_resolution_cases.hpp"
 #include "feature_switch_cases.hpp"
 #include "present_chain_cases.hpp"
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--present-stage-resolution") == 0) return present_stage_resolution_cases::Run(false);
+  if (argc == 2 && std::strcmp(argv[1], "--present-stage-resolution-hardware") == 0) return present_stage_resolution_cases::Run(true);
+  if (argc == 2 && std::strcmp(argv[1], "--render-stage-resolution") == 0) return same_stage_resolution_cases::Run(false, false, true);
+  if (argc == 2 && std::strcmp(argv[1], "--render-stage-resolution-hardware") == 0) return same_stage_resolution_cases::Run(true, false, true);
+  if (argc == 2 && std::strcmp(argv[1], "--same-stage-model-pair") == 0) return same_stage_resolution_cases::Run(true, true);
+  if (argc == 2 && std::strcmp(argv[1], "--same-stage-mixed-pair") == 0) return stage_execution_cases::Run(false, true, true);
+  if (argc == 2 && std::strcmp(argv[1], "--same-stage-resolution") == 0) return same_stage_resolution_cases::Run(false);
+  if (argc == 2 && std::strcmp(argv[1], "--same-stage-resolution-hardware") == 0) return same_stage_resolution_cases::Run(true);
   if (argc == 2 && std::strcmp(argv[1], "--source-lifecycle") == 0) return feature_switch_cases::RunLifecycleBoundaries();
   if (argc == 2 && std::strcmp(argv[1], "--feature-switch") == 0) return feature_switch_cases::Run(false);
   if (argc == 2 && std::strcmp(argv[1], "--feature-switch-hardware") == 0) return feature_switch_cases::Run(true);
@@ -798,6 +808,8 @@ int main(int argc, char** argv) {
     }
   }
   if (argc == 2 && std::strcmp(argv[1], "--stage-chain") == 0) return stage_execution_cases::Run();
+  if (argc == 2 && std::strcmp(argv[1], "--stage-resolution") == 0) return stage_execution_cases::Run(true);
+  if (argc == 2 && std::strcmp(argv[1], "--stage-resolution-hardware") == 0) return stage_execution_cases::Run(true, true);
   if (argc == 2 && std::strcmp(argv[1], "--native-required-menu") == 0) return RunNativeRequiredMenuTest();
   if (argc == 2 && std::strcmp(argv[1], "--native-owner-idle") == 0) return RunNativeOwnerIdleTest();
   if (argc == 2 && std::strcmp(argv[1], "--native-options-resume") == 0) return RunNativeOptionsResumeTest();

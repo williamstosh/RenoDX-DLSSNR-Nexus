@@ -178,6 +178,13 @@ inline constexpr const char* kEffectiveStage = "Effective stage";
 inline constexpr const char* kStageBlocked = "Plan blocked";
 inline constexpr const char* kStagesUnavailable = "Requested stages are unavailable";
 inline constexpr const char* kStagePlanNote = "Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.";
+inline constexpr const char* kResolutionInherit = "Inherit global resolution";
+inline constexpr const char* kResolutionFixed = "Fixed scale";
+inline constexpr const char* kPassResolutionTip = "Working size is independent of Stage, Model, Look and Result. Fixed scale uses this stage's reference size; Match game keeps the guide size and existing limits. Upsampling is shared.";
+inline constexpr const char* kStageResolutionNote = "Independent sizes across stage groups use DX11/DX12. Two Render or two Upscaled passes on native DX11 Bridge or DX12 in a chain without Present support different sizes. Two ordinary Present passes on native DX11 Bridge or DX12 also support different sizes, after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains. Groups of 3+ passes require matching sizes; unsupported mismatches skip the group. Inheritance and shared upsampling are unchanged.";
+inline constexpr const char* kStageResolutionBlocked = "Group skipped: different sizes require two Render/Upscaled passes on native DX11 Bridge or DX12 without Present, or two ordinary Present passes on native DX11 Bridge or DX12 after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains; groups of 3+ passes require matching sizes.";
+inline constexpr const char* kResolutionBackend = "Independent pass resolution is unavailable on Vulkan; select Inherit global resolution.";
+inline constexpr const char* kObservedResolution = "Last observed reference / requested / applied work";
 inline constexpr const char* kModelNote =
     "This build does not read the runtime's actual network. Resolved models describe configuration only.";
 inline constexpr const char* kResourceNote = "Observed this session; the selected resource policy is not proof of availability.";

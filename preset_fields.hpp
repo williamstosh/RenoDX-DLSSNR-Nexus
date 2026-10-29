@@ -31,6 +31,8 @@ inline const std::vector<FieldRule>& FieldRules() {
 // every additional pass exactly the same field set without owning strings.
 #define RENODX_DLSS5_PRESET_PASS_RULES(PASS) \
     {.key = "NRPass" #PASS "Stage", .label = "Hook stage", .group = "Hook", .minimum = 0, .maximum = 3, .category = FieldRule::MULTIPASS, .pass = PASS}, \
+    {.key = "NRPass" #PASS "ResolutionMode", .label = "Working resolution", .group = "Resolution", .minimum = 0, .maximum = 2, .category = FieldRule::MULTIPASS, .pass = PASS}, \
+    {.key = "NRPass" #PASS "ResolutionScale", .label = "Resolution scale", .group = "Resolution", .minimum = 0.33f, .maximum = 1, .category = FieldRule::MULTIPASS, .pass = PASS}, \
     {.key = "NRPass" #PASS "Preset", .label = "NR model", .group = "Model", .minimum = 0, .maximum = 2, .category = FieldRule::MULTIPASS, .pass = PASS}, \
     {.key = "NRPass" #PASS "Intensity", .label = "Model strength", .group = "Model", .minimum = 0, .maximum = 2, .category = FieldRule::MULTIPASS, .pass = PASS}, \
     {.key = "NRPass" #PASS "Transfer", .label = "HDR transfer", .group = "Model", .minimum = 0, .maximum = 1, .category = FieldRule::MULTIPASS, .pass = PASS}, \

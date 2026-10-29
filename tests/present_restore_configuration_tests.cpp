@@ -245,6 +245,18 @@ int main(int argc, char** argv) {
         } else if (test_case == "pass-result-invalid") {
           addon += "NRPass2LookFollowPass1=0\r\nNRPass2LookMode=1\r\nNRPass2LookStrength=nan\r\nNRPass2LookHalo=99\r\nNRPass2LookDetailRadius=-1\r\nNRPass2LookStabilize=9\r\nNRPass2LookStabilizeMs=9999\r\nNRPass2DetailStability=9\r\n";
         }
+      } else if (test_case.starts_with("nr-resolution-") || test_case == "profiles") {
+        addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\n"
+                 "NRFollowInputRes=0\r\nNRResolutionScale=0.58\r\n";
+        if (test_case == "nr-resolution-explicit") {
+          addon += "NRPass2ResolutionMode=2\r\nNRPass2ResolutionScale=0.67\r\n"
+                   "NRPass3ResolutionMode=1\r\nNRPass3ResolutionScale=0.5\r\n"
+                   "NRPass4ResolutionMode=0\r\nNRPass4ResolutionScale=0.33\r\n";
+        } else if (test_case == "nr-resolution-invalid") {
+          addon += "NRPass2ResolutionMode=99\r\nNRPass2ResolutionScale=nan\r\n"
+                   "NRPass3ResolutionMode=99\r\nNRPass3ResolutionScale=2\r\n"
+                   "NRPass4ResolutionMode=99\r\nNRPass4ResolutionScale=0.1\r\n";
+        }
       } else if (test_case.starts_with("nr-stage-")) {
         addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\nNRHookPoint=1\r\nNRPreset=1\r\nNRPass2Preset=2\r\nNRPass2FollowPass1=1\r\nNRPass2LookFollowPass1=1\r\n";
         if (test_case == "nr-stage-explicit") {
@@ -283,6 +295,28 @@ int main(int argc, char** argv) {
     if (test_case == "fail-sdr-version") failed_key = "NRPresentSdrRestoreConfigVersion";
     if (test_case == "fail-hdr-version") failed_key = "NRPresentHdrPedestalConfigVersion";
     runtime::LoadConfiguration();
+    if (test_case.starts_with("nr-resolution-")) {
+      const bool explicit_values = test_case == "nr-resolution-explicit";
+      for (uint32_t pass = 1; pass < runtime::kMaxNrPasses; ++pass) {
+        Check(runtime::pass_resolution_mode[pass - 1].load() == (explicit_values ? (pass == 1 ? 2u : pass == 2 ? 1u : 0u) : 0u),
+              "INI resolution mode defaults to inheritance and loads each pass independently");
+        const float expected = (explicit_values ? (pass == 1 ? .67f : pass == 2 ? .5f : .33f)
+                                               : (test_case == "nr-resolution-invalid" && pass == 3 ? .33f : 1.f));
+        Check(std::abs(runtime::pass_resolution_scale[pass - 1].load() - expected) < .0001f,
+              "INI resolution scale is independent, bounded and defaults to one");
+        uint32_t width = 0, height = 0;
+        runtime::ComputeNrWorkingResolution(1920, 1080, 1280, 720, width, height, pass);
+        Check(width == (explicit_values ? (pass == 1 ? 1286u : pass == 2 ? 1280u : 1114u) : 1114u)
+                  && height == (explicit_values ? (pass == 1 ? 724u : pass == 2 ? 720u : 626u) : 626u),
+              "effective settings preserve the original global reference and rounding rules");
+      }
+      Check(!runtime::nr_follow_input_res.load() && std::abs(runtime::nr_resolution_scale.load() - .58f) < .0001f,
+            "pass overrides do not change global resolution");
+    }
+    if (test_case == "profiles") {
+#include "profile_runtime_cases.hpp"
+      RunProfileRuntimeCases(base_directory / "profile-runtime-cases");
+    }
     if (test_case == "presets") {
 #include "profile_runtime_cases.hpp"
       RunProfileRuntimeCases(base_directory / "profile-runtime-cases");
@@ -1101,7 +1135,8 @@ int main(int argc, char** argv) {
         if (event.key == "ConfigVersion") Check(event.pair_present_at_global, "reset verifies restore defaults before stamp");
       }
       Check(Read("UnregisteredPersistentKnob") == "42", "reset preserves unregistered key");
-    } else if (test_case.starts_with("nr-model-") || test_case.starts_with("nr-stage-") || test_case.starts_with("pass-result-")) {
+    } else if (test_case.starts_with("nr-model-") || test_case.starts_with("nr-stage-") || test_case.starts_with("pass-result-")
+               || test_case.starts_with("nr-resolution-") || test_case == "profiles") {
       CheckPair("1");
       Check(!Configuration().inherited && Configuration().scope == scope::Scope::FINAL_PRESENT_AND_PRE_FG,
             "model selection leaves explicit restore scope unchanged");

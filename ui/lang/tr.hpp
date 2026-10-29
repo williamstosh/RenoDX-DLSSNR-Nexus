@@ -1899,6 +1899,14 @@ inline constexpr Translation kTr[] = {
     {"Present is unavailable; using the existing Upscaled path", "Present kullanılamıyor; mevcut Upscaled yolu kullanılıyor"},
     {"Invalid stage selection", "Geçersiz aşama seçimi"},
     {"Requested stages are unavailable", "İstenen aşamalar kullanılamıyor"},
+
+    {"Inherit global resolution", "Genel çözünürlüğü devral"},
+    {"Fixed scale", "Sabit ölçek"},
+    {"Working size is independent of Stage, Model, Look and Result. Fixed scale uses this stage's reference size; Match game keeps the guide size and existing limits. Upsampling is shared.", "Çalışma boyutu aşama, model, görünüm ve sonuç ayarlarından bağımsızdır. Sabit ölçek bu aşamanın referans boyutunu kullanır; oyuna uyarlama, kılavuz boyutunu ve mevcut sınırları korur. Üst örnekleme yöntemi ortaktır."},
+    {"Independent sizes across stage groups use DX11/DX12. Two Render or two Upscaled passes on native DX11 Bridge or DX12 in a chain without Present support different sizes. Two ordinary Present passes on native DX11 Bridge or DX12 also support different sizes, after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains. Groups of 3+ passes require matching sizes; unsupported mismatches skip the group. Inheritance and shared upsampling are unchanged.", "Aşama grupları arasındaki bağımsız boyutlar DX11/DX12 kullanır. Present içermeyen yerel DX11 Bridge veya DX12 zincirinde iki Render ya da iki Upscaled geçişi farklı boyutları destekler. Onaylanmış bir FG Off bildiriminin ardından yerel DX11 Bridge veya DX12 üzerinde tam iki normal Present geçişine de izin verilir. Bu Present çiftleri bilinmeyen/On FG, Pre-FG, B1/karma zincirler için reddedilir. 3 veya daha fazla geçişli gruplar aynı boyutları gerektirir; desteklenmeyen birleşimler grubu atlar. Kalıtım ve ortak üst örnekleme değişmez."},
+    {"Group skipped: different sizes require two Render/Upscaled passes on native DX11 Bridge or DX12 without Present, or two ordinary Present passes on native DX11 Bridge or DX12 after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains; groups of 3+ passes require matching sizes.", "Grup atlandı: farklı boyutlar için Present içermeyen yerel DX11 Bridge/DX12 üzerinde iki Render/Upscaled geçişi veya onaylanmış bir FG Off bildiriminin ardından yerel DX11 Bridge veya DX12 üzerinde iki normal Present geçişi gerekir. Present çiftleri bilinmeyen/On FG, Pre-FG, B1/karma zincirler için reddedilir; 3 veya daha fazla geçişli gruplar aynı boyutları gerektirir."},
+    {"Independent pass resolution is unavailable on Vulkan; select Inherit global resolution.", "Vulkan üzerinde geçiş başına bağımsız çözünürlük kullanılamaz; Genel çözünürlüğü devral seçeneğini seçin."},
+    {"Last observed reference / requested / applied work", "Son gözlemlenen boyutlar: referans / istenen çalışma / uygulanan çalışma"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

@@ -409,7 +409,12 @@ inline bool Apply(const presets::Document& document, bool compatibility, bool re
   }
   for (const auto& row : changes) {
     if (row.key == "NRFollowInputRes" || row.key == "NRResolutionScale") {
-      nr_resolution_commit_now = true;
+      ++nr_resolution_commit_epochs[0];
+    }
+    for (uint32_t pass = 1; pass < kMaxNrPasses; ++pass) {
+      if (row.key == kSetPassResolutionScale[pass - 1].key) {
+        ++nr_resolution_commit_epochs[pass];
+      }
     }
     if (const auto* setting = FindSetting(row.key)) {
       setting->StoreLocked(row.after.is_boolean() ? (row.after.get<bool>() ? 1.f : 0.f) : row.after.get<float>());

@@ -1398,6 +1398,7 @@ inline bool RunBridge(ID3D11DeviceContext* context,
   bool completed = false;
   bool touched = false;
   bool issued = false;
+  bool independent_present_pair = false;
   const auto name = [&named](NrDeclineReason reason) {
     CountNrDecline(reason);
     named = true;
@@ -1504,6 +1505,10 @@ inline bool RunBridge(ID3D11DeviceContext* context,
                     " the bridge serves the first one");
       return;
     }
+    independent_present_pair = present != nullptr && present->d3d11_bridge && !pre
+        && !plan.mixed && plan.pass_count == 2 && plan.At(stage_plan::Stage::PRESENT).count == 2
+        && textures[at(ResourceKey::kColor)] == output && PresentResolutionPairAllowed(*present);
+    const bool strict_delivery = plan.mixed || independent_present_pair;
     const uint64_t done = bridge.fence_done12->GetCompletedValue();
     if (done == UINT64_MAX
         || bridge_device_removed.load(std::memory_order_acquire)) {
@@ -1577,9 +1582,9 @@ inline bool RunBridge(ID3D11DeviceContext* context,
       WorksetKey key;
       const bool* touched;
       const bool* issued;
-      bool mixed;
+      bool strict_delivery;
       ~RecordingScope() {
-        if (!mixed || !*touched || *issued) return;
+        if (!strict_delivery || !*touched || *issued) return;
         submission::OnCommandListReset(list);
         RetireWorkset(key);
         if (auto state = features.find(key.handle); state != features.end()) {
@@ -1596,8 +1601,9 @@ inline bool RunBridge(ID3D11DeviceContext* context,
     // the Output twin after upscaling and reads the Color twin before it.
     ID3D12Resource* const nr_twin = pre ? set->color12 : set->output12;
     const RecordingScope recording_scope{
-        .list = slot.list, .key = {handle, nr_twin, pre},
-        .touched = &touched, .issued = &issued, .mixed = plan.mixed};
+        .list = slot.list,
+        .key = {handle, (independent_present_pair ? present->workset_key : nr_twin), pre},
+        .touched = &touched, .issued = &issued, .strict_delivery = strict_delivery};
     const D3D12_RESOURCE_STATES nr_twin_state =
         pre ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
             : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -1646,6 +1652,8 @@ inline bool RunBridge(ID3D11DeviceContext* context,
         // does, not in PRESENT.
         PresentTarget at_present = present != nullptr ? *present : PresentTarget{};
         at_present.output_state = nr_twin_state;
+        at_present.d3d11_bridge = true;
+        at_present.independent_resolution_pair = independent_present_pair;
         completed = ProcessInline(slot.list, handle, &view, &touched,
                                   present != nullptr ? &at_present : nullptr);
       }
@@ -1763,7 +1771,7 @@ inline bool RunBridge(ID3D11DeviceContext* context,
     slot.value = value;
     set->last_value = value;
     bridge_submitted_value.store(value, std::memory_order_release);
-    if (plan.mixed) bridge_pending_delivery_value = value;
+    if (strict_delivery) bridge_pending_delivery_value = value;
     if (measure_cpu) {
       cpu.submit_ns += SteadyNowNs() - cpu_start;
     }
@@ -1777,7 +1785,7 @@ inline bool RunBridge(ID3D11DeviceContext* context,
       if (plan.mixed) decline(NrDeclineReason::kBridgeLost, "the D3D12 stage submission failed");
       return;
     }
-    if (plan.mixed) {
+    if (strict_delivery) {
       // `out` is also a watchdog escape hatch. Only the private GPU-only
       // done fence proves the texture can be consumed. Inputs were flushed
       // before this wait, so completion needs no further D3D11 submission.
@@ -1813,6 +1821,9 @@ inline bool RunBridge(ID3D11DeviceContext* context,
         CountNrDecline(NrDeclineReason::kStagePredecessorIncomplete);
         return;
       }
+      // Options callbacks can revoke public FG Off during the completion
+      // wait. The finished private image must not acquire a new output route.
+      if (independent_present_pair && !PresentResolutionPairAllowed(*present)) return;
     }
     if (measure_cpu) {
       cpu_start = SteadyNowNs();
@@ -1838,6 +1849,17 @@ inline bool RunBridge(ID3D11DeviceContext* context,
       cpu.return_ns += SteadyNowNs() - cpu_start;
     }
   });
+  if (independent_present_pair && !delivered) {
+    const BridgeDeviceLock device_lock(context);
+    RuntimeLock lock(runtime_mutex);
+    if (auto state = features.find(handle); state != features.end()) {
+      for (auto& slot : state->second.slots) {
+        slot.pending_reset = true;
+        slot.pending_reset_reasons |= kResetRecovery;
+        slot.look_history.valid = false;
+      }
+    }
+  }
   if (!named) CountNrDecline(NrDeclineReason::kBridgeDown);
   if (plan.mixed) {
     // Zero-strength Render is a valid no-op. Any recorded stage instead

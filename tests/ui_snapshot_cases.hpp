@@ -45,6 +45,22 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
                          .action = "cross-stage", .language = 1});
     scenarios.push_back({.id = "pass-render-a-upscaled-b-zh", .page = 1,
                          .action = "cross-stage", .language = 14});
+    scenarios.push_back({.id = "pass-resolution-67", .page = 1,
+                         .action = "cross-stage-resolution", .language = 1});
+    scenarios.push_back({.id = "pass-resolution-67-zh", .page = 1,
+                         .action = "cross-stage-resolution", .language = 14});
+    scenarios.push_back({.id = "same-stage-resolution", .page = 1,
+                         .action = "same-stage-resolution", .language = 1});
+    scenarios.push_back({.id = "same-stage-resolution-zh", .page = 1,
+                         .action = "same-stage-resolution", .language = 14});
+    scenarios.push_back({.id = "render-stage-resolution", .page = 1,
+                         .action = "render-stage-resolution", .language = 1});
+    scenarios.push_back({.id = "render-stage-resolution-zh", .page = 1,
+                         .action = "render-stage-resolution", .language = 14});
+    scenarios.push_back({.id = "present-stage-resolution", .page = 1,
+                         .action = "present-stage-resolution", .language = 1});
+    scenarios.push_back({.id = "present-stage-resolution-zh", .page = 1,
+                         .action = "present-stage-resolution", .language = 14});
     if (snapshot_mode == "Full") {
       scenarios.push_back({.id = "pass-cross-stage-collapsed-zh", .page = 1, .action = "cross-stage-collapsed"});
       scenarios.push_back({.id = "pass-render2-upscaled2-zh", .page = 1, .action = "cross-stage-four"});
@@ -167,8 +183,14 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     for (uint32_t pass = 0; pass < 3; ++pass) {
       runtime::pass_stage[pass] = 0;
       runtime::pass_preset[pass] = 0;
+      runtime::pass_resolution_mode[pass] = 0;
+      runtime::pass_resolution_scale[pass] = 1.f;
     }
-    const bool cross_stage = scenario.action.starts_with("cross-stage");
+    const bool render_stage_resolution = scenario.action == "render-stage-resolution";
+    const bool present_stage_resolution = scenario.action == "present-stage-resolution";
+    const bool same_stage_resolution = scenario.action == "same-stage-resolution"
+        || render_stage_resolution || present_stage_resolution;
+    const bool cross_stage = scenario.action.starts_with("cross-stage") || same_stage_resolution;
     const bool collapsed = scenario.action == "collapsed" || scenario.action.ends_with("-collapsed")
         || scenario.action.starts_with("preset-") || scenario.action.starts_with("auxiliary-");
     if (cross_stage) {
@@ -177,6 +199,17 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       runtime::preset = 1;
       runtime::pass_stage[0] = 2;
       runtime::pass_preset[0] = 2;
+      if (scenario.action == "cross-stage-resolution" || same_stage_resolution) {
+        runtime::pass_resolution_mode[0] = 2;
+        runtime::pass_resolution_scale[0] = .67f;
+      }
+      if (same_stage_resolution) {
+        runtime::hook_point = (render_stage_resolution ? runtime::kHookRender : runtime::kHookUpscaled);
+        if (present_stage_resolution) runtime::hook_point = runtime::kHookPresent;
+        runtime::pass_stage[0] = 0;
+        runtime::nr_follow_input_res = false;
+        runtime::nr_resolution_scale = 1.f;
+      }
       if (scenario.action == "cross-stage-four") {
         runtime::stack_passes = 4;
         runtime::pass_stage[0] = 0;
@@ -197,6 +230,13 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
         check(!plan.valid && plan.reason == (scenario.action == "cross-stage-backward"
                   ? stages::Reason::BACKWARD_STAGE : stages::Reason::MIXED_PRESENT),
               "unsupported snapshot plan must preserve and explain the requested configuration");
+      } else if (same_stage_resolution) {
+        check(plan.valid && !plan.mixed && plan.group_count == 1 && plan.groups[0].count == 2,
+              "same-stage resolution snapshot keeps one group and two logical passes");
+        const auto expected_stage = (present_stage_resolution ? stages::Stage::PRESENT
+            : (render_stage_resolution ? stages::Stage::RENDER : stages::Stage::UPSCALED));
+        check(plan.groups[0].stage == expected_stage,
+              "same-stage resolution editor preserves the requested stage");
       } else {
         check(plan.valid && plan.mixed && plan.group_count == 2,
               "representative cross-stage snapshot requires a valid two-stage plan");
@@ -226,6 +266,14 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     const bool long_page = scenario.action == "expanded" || scenario.action == "collapsed"
         || scenario.action == "pass-independent" || scenario.action == "pass-first" || scenario.action == "doc-default"
         || cross_stage;
+    if (scenario.action == "cross-stage-resolution" || same_stage_resolution) {
+      check(items.contains(find("##pass_resolution_scale").id), "independent pass resolution slider is drawn");
+      check(runtime::pass_resolution_mode[0].load() == 2
+                && std::abs(runtime::pass_resolution_scale[0].load() - .67f) < .0001f,
+            "drawing the resolution editor preserves its independent mode and scale");
+      check(runtime::pass_stage[0].load() == (same_stage_resolution ? 0u : 2u) && runtime::pass_preset[0].load() == 2,
+            "resolution editor preserves Stage and Model selection");
+    }
     ImGuiWindow* settings = nullptr;
     if (long_page) {
       bool fitted = false;

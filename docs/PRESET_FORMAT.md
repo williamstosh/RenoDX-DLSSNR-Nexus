@@ -29,10 +29,10 @@ JSON 与插件内部文本使用 UTF-8，Windows 文件操作使用宽路径；�
 | `scope` | 包含内容 |
 | --- | --- |
 | `quality` | `QUALITY`：基础模型强度、模型、style/tone/structure/skin/mask/model UI correction、基础层的全局 Look 结果，以及介入点、跟随输入尺寸、共同分辨率比例和上采样 |
-| `quality-multipass` | 上述画质，加 `MULTIPASS`：`NRPasses`（含基础层的总数）以及当前启用层的模型、强度、Transfer/Color、steering、独立结果和两组继承开关 |
+| `quality-multipass` | 上述画质，加 `MULTIPASS`：`NRPasses`（含基础层的总数）以及当前启用层的阶段、工作分辨率模式／比例、模型、强度、Transfer/Color、steering、独立结果和两组继承开关 |
 | `full` | 所有非 `EXCLUDED` 字段，包括未启用层保存的独立值、`COMPATIBILITY` 和 `GENERAL`；仅已接入读取／应用入口的字段能够实际恢复 |
 
-`NRHookPoint`（整数 `0..2`）、`NRFollowInputRes`（boolean）、`NRResolutionScale`（数值 `0.33..1`）、`NRLookUpsample`（整数 `0..3`）现在归 `QUALITY`。这是既有 schema 1 的字段分类扩展，不升 schema；旧文件缺少这些字段时保留当前值。画质范围不包含 HDR、运动／深度、FG 策略、界面偏好、快捷键或诊断；`NRUICorrection` 仅指模型的图像 UI correction。基础 `NRTransferStrength`／`NRColorStrength` 归 `QUALITY`，附加层 `Transfer`／`Color` 归 `MULTIPASS`。分辨率和上采样仍为全链设置，没有独立 pass 分辨率。
+`NRHookPoint`（整数 `0..2`）、`NRFollowInputRes`（boolean）、`NRResolutionScale`（数值 `0.33..1`）、`NRLookUpsample`（整数 `0..3`）现在归 `QUALITY`。这是既有 schema 1 的字段分类扩展，不升 schema；旧文件缺少这些字段时保留当前值。画质范围不包含 HDR、运动／深度、FG 策略、界面偏好、快捷键或诊断；`NRUICorrection` 仅指模型的图像 UI correction。基础 `NRTransferStrength`／`NRColorStrength` 归 `QUALITY`，附加层 `Transfer`／`Color` 归 `MULTIPASS`。上述全局分辨率键保留，上采样仍全链共享；开发源码的逐层分辨率覆盖范围见下文。
 
 开发源码新增 `MULTIPASS` 字段 `NRPass2Stage`、`NRPass3Stage`、`NRPass4Stage`：整数 `0..3`，`0` 与上一层相同、`1` Render、`2` Upscaled、`3` Present；默认 `0`。`NRHookPoint` 保持旧映射，继续表示第 1 层。Stage 与模型、外观和结果继承独立；导入缺失字段不重置当前值，Full 包含未启用层，Quality + Multi-Pass 仅包含启用层。倒序或不可用组合保留请求并停用执行，由 Planner／诊断说明原因，不在持久化时改写请求。NR 模型选择及旧 Runtime 回退格式不变。
 
@@ -56,6 +56,8 @@ JSON 与插件内部文本使用 UTF-8，Windows 文件操作使用宽路径；�
 
 | 后缀 | loader 数值范围／类型 |
 | --- | --- |
+| `ResolutionMode` | uint32 整数 `0..2`；默认 `0` 继承全局，`1` 跟随游戏 Guide，`2` 固定比例 |
+| `ResolutionScale` | float `0.33..1`；默认 `1`，与分辨率模式分别保存 |
 | `Preset` | 整数 `0..2`；`0` 继承主模型，与 steering／结果继承独立 |
 | `Intensity`、`LocalTone`、`Structure` | 数值 `0..2` |
 | `Transfer`、`Color` | 数值 `0..1` |
@@ -63,6 +65,24 @@ JSON 与插件内部文本使用 UTF-8，Windows 文件操作使用宽路径；�
 | `Skin` | 数值 `-1..1` |
 | `FollowPass1`、`AutoMask`、`UICorrection`、`LookFollowPass1` | boolean；继承不删除保存的独立值 |
 | `LookMode` 至 `DetailStability` 的结果字段 | 与上表对应基础层字段同类型、同范围；没有逐层 `LookUpsample` |
+
+## 工作分辨率覆盖 / Working-resolution overrides
+
+**简体中文：** 开发源码新增六个 `MULTIPASS` 键：`NRPass2ResolutionMode`、`NRPass3ResolutionMode`、`NRPass4ResolutionMode`，以及对应的 `NRPass{2,3,4}ResolutionScale`；不升级 schema，已发布 dev.8 不含此能力。模式 `0` 同时继承全局 `NRFollowInputRes` 和 `NRResolutionScale`，忽略本层保存的比例；模式 `1` 跟随有效游戏 Guide，沿用既有尺寸上限和无有效 Guide 时的比例回退规则；模式 `2` 使用本层固定比例。固定比例参考本层 Stage 的完整尺寸：Render 为 Color 有效区域，Upscaled 为游戏 DLSS 输出，而非上一层的缩小工作尺寸。第 1 层继续使用全局设置，不改变游戏 DLSS SR 的输入／输出分辨率。Stage、Model Preset、Look、Result 继承均独立于这些设置；`NRLookUpsample` 仍全链共享。
+
+当前 0.2.0-dev.9 开发源码保留跨 StageGroup 独立尺寸，例如 `Render A 100% → 游戏 DLSS SR → Upscaled B 67%` 或反向比例，并支持不含 Present 的原生 DX11 Bridge／DX12 链中，同一 Render 或 Upscaled StageGroup 的两个 Pass 使用不同工作尺寸，例如 `Upscaled A 100% → B 67%` 或反向比例。当前 0.2.0-dev.9 开发源码还允许普通原生 DX11 Bridge／DX12 Present 双 Pass 使用不同工作尺寸，前提是已收到成功的进程级公共 FG Off 声明。没有该成功声明时，即使未观测到 FG 活动，仍拒绝该双 Pass 异尺寸组合；该声明作用于进程，不区分各个 viewport。该 Present 能力拒绝 FG 未知／On、Pre-FG 及 B1／混合链，不改变既有 Render／Upscaled 支持。新增 DX11 Present 双 Pass 已通过 WARP／硬件定向 GPU 自动化；真实游戏、NVIDIA 网络及性能收益未验收。同组 3 层以上仍要求实际工作尺寸一致；不支持的尺寸组合会明确拒绝该组并保留请求。不同模式／比例若解析为相同工作尺寸，不因配置值不同而判冲突。Upscaled 同阶段实现已通过定向 WARP／硬件 GPU 自动化；Render 双层的 DX12／Bridge 核心已实现，Bridge 本轮三组 HDR 场景及 DX12 本轮八场景／二十阶段均已通过 WARP／硬件 GPU 自动化，真实网络、实机画质及性能收益未验收；配置字段、继承默认值、schema 和共享上采样不变。
+
+新增独立模式仅限 native DX11/DX12。Vulkan 旧执行器不消费工作尺寸，因此明确拒绝 `ResolutionMode=1/2`；默认 `0` 保留旧行为，不声称已实现 Vulkan 独立工作分辨率。
+
+Quality 不携带这六个覆盖键；Quality + Multi-Pass 只导出启用层，Full 和六 Slot 快照包含未启用层。模式切回继承仍保留独立比例。导入只更改文件包含的字段；旧文件缺少新键时保留当前值，新配置默认 `Mode=0`、`Scale=1`。撤销复用现有批量快照恢复。保存请求不证明执行或 GPU 完成。
+
+**English:** The development source adds six `MULTIPASS` keys: `NRPass{2,3,4}ResolutionMode` (uint32 integer `0..2`, default `0`) and `NRPass{2,3,4}ResolutionScale` (float `0.33..1`, default `1`). Schema 1 is unchanged; the published dev.8 package does not include this capability. Mode `0` inherits both global `NRFollowInputRes` and `NRResolutionScale`, ignoring the saved local scale. Mode `1` follows valid game guides with the existing size caps and scale fallback when guides are unavailable. Mode `2` uses the local fixed scale relative to the Stage's full reference: the valid Render Color region or the game's Upscaled DLSS output, never the previous pass's reduced working size. Pass 1 keeps the global controls. Game DLSS SR input/output resolution is unchanged. Stage, Model Preset, Look and Result inheritance are independent; `NRLookUpsample` stays shared.
+
+The current v0.2.0-dev.9 development source retains independent dimensions across StageGroups, such as `Render A 100% → game DLSS SR → Upscaled B 67%`, or the reverse scales. It also supports separate working sizes for two passes in one Render or Upscaled StageGroup on native DX11 Bridge or DX12 in a chain without Present, such as `Upscaled A 100% → B 67%`, or the reverse scales. The current v0.2.0-dev.9 development source also permits exactly two ordinary Present passes on native DX11 Bridge or DX12 with different working sizes, after a successful public FG Off declaration for the process. Without that successful declaration, the pair remains rejected, even if no FG activity is observed. The declaration applies to the process, not to individual viewports. This Present capability rejects unknown/On FG, Pre-FG and B1/mixed chains, without changing existing Render/Upscaled support. The new DX11 Present pair passed targeted WARP/hardware GPU automation; game operation, the NVIDIA network and performance gains remain unverified. Groups of 3+ passes still require matching actual sizes; unsupported mismatches explicitly reject the group while preserving the request. Different settings that resolve to identical dimensions do not conflict. The Upscaled implementation passed targeted WARP/hardware GPU automation; the DX12/Bridge Render two-pass core is implemented, with three HDR Bridge cases and eight DX12 scenarios/twenty phases passing WARP/hardware GPU automation; actual neural-network behavior, game visuals and performance gains have not been accepted. Configuration fields, inherited defaults, schema and shared upsampling are unchanged.
+
+Independent modes require native DX11/DX12. The existing Vulkan executor does not consume working dimensions and explicitly rejects `ResolutionMode=1/2`; the default `0` preserves its old behavior. Independent working resolution on Vulkan is not implemented.
+
+Quality excludes these six overrides; Quality + Multi-Pass exports enabled passes only, while Full and all six Slot snapshots retain inactive passes too. Returning to inherited mode preserves the local scale. Import changes only fields present in the file: older files keep current values, and new configurations default to `Mode=0`, `Scale=1`. Undo uses the existing batch snapshot restoration. A saved request is not evidence of execution or GPU completion.
 
 ## 完整备份分类
 
@@ -128,7 +148,7 @@ JSON 与插件内部文本使用 UTF-8，Windows 文件操作使用宽路径；�
 
 ## 当前游戏的六 Slot（开发源码）
 
-Slot 不是共享预设 schema 的扩展。独立文件为 `%LOCALAPPDATA%\NR Nexus\Profiles\<32hex-id>\slots.json`，实现见 [profile_store.hpp](../profile_store.hpp)、[profile_templates.hpp](../profile_templates.hpp) 和 [profile_runtime.hpp](../profile_runtime.hpp)。0.1.0 包不包含此功能；当前 0.2.0-dev.8 源码已通过 Release／Debug 构建及受影响自动化检查，实机交互与画质仍待验收。
+Slot 不是共享预设 schema 的扩展。独立文件为 `%LOCALAPPDATA%\NR Nexus\Profiles\<32hex-id>\slots.json`，实现见 [profile_store.hpp](../profile_store.hpp)、[profile_templates.hpp](../profile_templates.hpp) 和 [profile_runtime.hpp](../profile_runtime.hpp)。0.1.0 包不包含此功能；当前 0.2.0-dev.9 源码已通过 Release／Debug 构建及受影响自动化检查，实机交互与画质仍待验收。
 
 manifest 严格包含 `format="nr-nexus-profiles"`、`schema_version=1`、无符号 64 位 `revision`、`owner`、`selected`、`last_applied` 和 `slots`。`slots` 恰好六个固定 ID：`official_lite`、`official_balanced`、`official_max`、`custom_slot_1`、`custom_slot_2`、`custom_slot_3`；显示名称不是 ID。每项包含 `name`（最多 128 UTF-8 字节）、`populated`、`template_version`（正 uint32）、`overrides`、`snapshot`。官方初始 populated，自定义初始为空；未选择时 `selected` 为空字符串。
 

@@ -1899,6 +1899,14 @@ inline constexpr Translation kJa[] = {
     {"Present is unavailable; using the existing Upscaled path", "Present を利用できないため、既存の Upscaled 経路を使用します"},
     {"Invalid stage selection", "無効な段階選択"},
     {"Requested stages are unavailable", "要求された段階を利用できません"},
+
+    {"Inherit global resolution", "グローバル解像度を継承"},
+    {"Fixed scale", "固定倍率"},
+    {"Working size is independent of Stage, Model, Look and Result. Fixed scale uses this stage's reference size; Match game keeps the guide size and existing limits. Upsampling is shared.", "処理解像度はステージ、モデル、外観、結果の設定から独立しています。固定倍率はこのステージの基準サイズに適用されます。ゲームに合わせる場合は、ガイドのサイズと既存の上限を維持します。アップサンプリング方式は共通です。"},
+    {"Independent sizes across stage groups use DX11/DX12. Two Render or two Upscaled passes on native DX11 Bridge or DX12 in a chain without Present support different sizes. Two ordinary Present passes on native DX11 Bridge or DX12 also support different sizes, after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains. Groups of 3+ passes require matching sizes; unsupported mismatches skip the group. Inheritance and shared upsampling are unchanged.", "ステージグループ間の独立サイズは DX11/DX12 に対応します。Present を含まないネイティブ DX11 Bridge／DX12 チェーンでは、Render または Upscaled の 2 パスで異なるサイズを使用できます。FG Off 宣言が確認されたネイティブ DX11 Bridge／DX12 の通常 Present 2 パスにも対応します。この Present 機能は FG 不明／On、Pre-FG、B1／混合チェーン を拒否します。同一グループの 3 パス以上は同じサイズが必要で、未対応の組み合わせはグループをスキップします。継承と共有アップサンプリングは変わりません。"},
+    {"Group skipped: different sizes require two Render/Upscaled passes on native DX11 Bridge or DX12 without Present, or two ordinary Present passes on native DX11 Bridge or DX12 after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains; groups of 3+ passes require matching sizes.", "グループをスキップ：異なるサイズには、Present を含まないネイティブ DX11 Bridge／DX12 の Render／Upscaled 2 パス、または FG Off 宣言が確認されたネイティブ DX11 Bridge／DX12 の通常 Present 2 パスが必要です。この Present 機能は FG 不明／On、Pre-FG、B1／混合チェーン を拒否します。3 パス以上は同じサイズが必要です。"},
+    {"Independent pass resolution is unavailable on Vulkan; select Inherit global resolution.", "Vulkan ではパスごとに独立した解像度を使用できません。「グローバル解像度を継承」を選択してください。"},
+    {"Last observed reference / requested / applied work", "最後に観測したサイズ：基準 / 要求された処理サイズ / 適用された処理サイズ"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

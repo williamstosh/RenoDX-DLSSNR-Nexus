@@ -51,7 +51,16 @@ Slot 自动保存与共享库文件、ReShade 正常设置分别处理，强退�
 
 模型外观控制 NR 生成什么，结果编辑则塑造每层模型已经返回的改变量。模型选择、外观继承、
 结果继承彼此独立，附加层既可沿用第 1 层，也可保留各自保存的编辑。第 1 层选择起始介入点，
-后续层可继承或选择合法的后续阶段。工作分辨率和上采样仍全链共享，“独立皮肤”也是全链设置；
+后续层可继承或选择合法的后续阶段。**当前 0.2.0-dev.9 开发源码：独立工作分辨率（阶段性支持）**：
+第 2–4 层可继承全局、跟随游戏 Guide 或使用 33–100% 固定比例，例如
+`Render A 100% → 游戏 DLSS SR → Upscaled B 67%`。不改游戏 DLSS SR 分辨率；
+不含 Present 的原生 DX11 Bridge／DX12 链中，同一 Render 或 Upscaled StageGroup 的两个 Pass 可使用各自工作尺寸，例如
+`Upscaled A 100% → B 67%` 或反向比例；Render 双层同样支持两方向，例如
+`Render A 100% → Render B 67% → 游戏 DLSS SR`。当前 0.2.0-dev.9 开发源码还允许普通原生 DX11 Bridge／DX12 Present 双 Pass 使用不同工作尺寸，前提是已收到成功的进程级公共 FG Off 声明。没有该成功声明时，即使未观测到 FG 活动，仍拒绝该双 Pass 异尺寸组合；该声明作用于进程，不区分各个 viewport。该 Present 能力拒绝 FG 未知／On、Pre-FG 及 B1／混合链，不改变既有 Render／Upscaled 支持。新增 DX11 Present 双 Pass 已通过 WARP／硬件定向 GPU 自动化；真实游戏、NVIDIA 网络及性能收益未验收。同组 3 层以上仍要求
+实际工作尺寸一致；不支持的尺寸组合会明确拒绝该组并保留设置。Upscaled 同阶段实现已通过定向 WARP／硬件 GPU 自动化；Render 双层的 DX12／Bridge 核心已实现，Bridge 本轮三组 HDR 场景及 DX12 本轮八场景／二十阶段均已通过 WARP／硬件 GPU 自动化，
+真实网络、实机画质及性能收益未验收。
+新增独立模式仅限 native DX11/DX12；Vulkan 明确拒绝非继承模式，默认继承保留旧行为。
+默认继承全局；上采样和“独立皮肤”仍全链共享。该新增能力不包含在已发布的 dev.8 包中；
 结果控件有各自的开关及资源前提。
 
 参数值、依赖、继承和配置示例见[玩家指南](docs/USER_GUIDE.md)。
@@ -256,8 +265,24 @@ Model-look controls steer what NR generates; result editing reshapes the change
 returned by each pass. Model choice, look inheritance and result inheritance are
 separate, so additional layers can follow Pass 1 or keep their own saved edits.
 Pass 1 selects the initial processing location; later passes can inherit or
-select a legal later stage. Working-resolution and upsampling controls remain
-shared across the chain, as does Independent skin. Result controls have enable and resource
+select a legal later stage. **Current development source (v0.2.0-dev.9): independent working
+resolution (partial support)**. Passes 2–4 can inherit
+global settings, follow game guides or use a fixed 33–100% scale, for example
+`Render A 100% → game DLSS SR → Upscaled B 67%`. This leaves game DLSS SR
+resolution unchanged. In a native DX11 Bridge or DX12 chain without Present, two passes in one Render or Upscaled StageGroup can use
+separate working sizes, such as `Upscaled A 100% → B 67%`, or the reverse scales. Render supports both directions too,
+for example `Render A 100% → Render B 67% → game DLSS SR`.
+The current v0.2.0-dev.9 development source also permits exactly two ordinary Present passes on native DX11 Bridge or DX12 with different working sizes, after a successful public FG Off declaration for the process. Without that successful declaration, the pair remains rejected, even if no FG activity is observed. The declaration applies to the process, not to individual viewports. This Present capability rejects unknown/On FG, Pre-FG and B1/mixed chains, without changing existing Render/Upscaled support. The new DX11 Present pair passed targeted WARP/hardware GPU automation; game operation, the NVIDIA network and performance gains remain unverified.
+Groups of 3+ passes still require matching actual sizes;
+unsupported mismatches explicitly reject the group and retain settings.
+The Upscaled implementation passed targeted WARP/hardware GPU automation.
+The DX12/Bridge Render two-pass core is implemented. Its three HDR Bridge cases and eight DX12 scenarios/twenty phases passed WARP/hardware GPU automation.
+actual neural-network behavior, game visuals and performance gains are not established.
+Independent modes require native DX11/DX12; Vulkan
+explicitly rejects non-inherited modes, while inherited defaults keep its old behavior.
+The default inherits global settings. Upsampling and
+Independent skin remain shared. This addition is not in the published dev.8 package.
+Result controls have enable and resource
 requirements.
 
 See the [User Guide](docs/USER_GUIDE.md) for values, dependencies, inheritance
