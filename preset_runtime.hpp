@@ -10,6 +10,7 @@ namespace preset_ui {
 using Json = presets::Json;
 
 inline const Setting kExtraSettings[] = {
+    kSetDebugHdrPedestal,
     {"NRPresentWhiteSource", &present_white_source, defaults::kPresentWhiteSource, SettingEffect::kHistory},
     {"NRPresentPreFg", &present_pre_fg, defaults::kPresentPreFg, SettingEffect::kRecreate},
     {"NRPresentPreFgContract", &present_pre_fg_contract, defaults::kPresentPreFgContract, SettingEffect::kRecreate},
@@ -209,7 +210,61 @@ struct Difference {
   std::optional<ScopeSnapshot> scope_before;
 };
 
-inline std::vector<Difference> Preview(const presets::Document& document, bool compatibility) {
+// Page ownership follows the stored field, not every place that edits it.
+// Pass 1 shares Quality fields; stack reset owns only structure and Pass 2-4.
+inline presets::Document DefaultsDocument(int target) {
+  presets::Document document{.metadata = {{"name", "Built-in defaults"}},
+                             .scope = presets::Scope::FULL, .settings = Json::object()};
+  for (const auto& rule : presets::FieldRules()) {
+    const std::string_view key(rule.key);
+    if (key == "EnableHooks" || key == "DX11Source" || key == "ForeignNr"
+        || key == "NRSdrBlackRestore") continue;
+    const auto* setting = FindSetting(key);
+    bool owned = false;
+    if (target == 0) {
+      owned = rule.category == presets::FieldRule::QUALITY || key == "NeuralUplift";
+    } else if (target == 1) {
+      owned = rule.category == presets::FieldRule::MULTIPASS;
+    } else if (target == 2) {
+      const bool runtime_policy = key == "NRMaxWorksets" || key == "NRWorksetFreePolicy"
+          || key == "NRDisableRelease" || key == "NRShutdownQuiesce" || key == "NRVkStateRestore"
+          || key == "DedupeMode" || key == "ListStateMode";
+      owned = !runtime_policy && key != "NeuralUplift" && (rule.category == presets::FieldRule::COMPATIBILITY
+          || (rule.category == presets::FieldRule::GENERAL && std::string_view(rule.group) != "Diagnostics"));
+    } else if (target == 3) {
+      owned = setting != nullptr || key == "UiTheme" || key == "UiLanguage" || key == "UiMode"
+          || key == "DedupeMode" || key == "ListStateMode"
+          || key == "NRPresentHdrPedestalPolicy" || key == "NRPresentRestoreScope";
+    }
+    if (!owned) continue;
+    if (setting != nullptr) {
+      if (setting->b != nullptr) {
+        document.settings[key] = setting->fallback != 0.f;
+      } else if (setting->u != nullptr) {
+        document.settings[key] = static_cast<uint32_t>(setting->fallback);
+      } else {
+        document.settings[key] = setting->fallback;
+      }
+    } else if (key == "UiTheme") {
+      document.settings[key] = ui::GetTheme(ui::ThemeId::CYBER_NEON).slug;
+    } else if (key == "UiLanguage") {
+      document.settings[key] = "auto";
+    } else if (key == "UiMode") {
+      document.settings[key] = "modern";
+    } else if (key == "NRPresentHdrPedestalPolicy") {
+      document.settings[key] = static_cast<uint32_t>(present_hdr_pedestal::DEFAULT_POLICY);
+    } else if (key == "NRPresentRestoreScope") {
+      document.settings[key] = static_cast<uint32_t>(present_restore_scope::Scope::FINAL_PRESENT_AND_PRE_FG);
+    } else if (key == "DedupeMode") {
+      document.settings[key] = defaults::kDedupeMode;
+    } else if (key == "ListStateMode") {
+      document.settings[key] = defaults::kListStateMode;
+    }
+  }
+  return document;
+}
+
+inline std::vector<Difference> Preview(const presets::Document& document, bool compatibility, bool builtin_reset = false) {
   RuntimeLock lock(runtime_mutex);
   std::vector<Difference> differences;
   unsigned passes = stack_passes.load();
@@ -230,7 +285,7 @@ inline std::vector<Difference> Preview(const presets::Document& document, bool c
     if (rule == nullptr || (row.before.is_null() && !startup)
         || (startup && !row.before.is_null() && !ValidateValue(*rule, row.before))) {
       row.status = "Unsupported";
-    } else if (!InScope(*rule, document.scope, passes)) {
+    } else if (!builtin_reset && !InScope(*rule, document.scope, passes)) {
       row.status = "Skipped (outside scope)";
     } else if (!ValidateValue(*rule, value)) {
       row.status = "Invalid value";
@@ -275,9 +330,9 @@ inline std::string notice;
 // ReShade's setters update its configuration cache. Verify them before
 // publishing any runtime values; this is not a disk/GPU atomic transaction.
 inline bool Apply(const presets::Document& document, bool compatibility, bool remember, std::string* error,
-                  bool restore_missing = false, const ScopeSnapshot* restore_scope = nullptr) {
+                  bool restore_missing = false, const ScopeSnapshot* restore_scope = nullptr, bool builtin_reset = false) {
   SettleSlider(true);
-  auto differences = Preview(document, compatibility);
+  auto differences = Preview(document, compatibility, builtin_reset);
   if (restore_missing) {
     for (auto& row : differences) {
       const bool scope_restore = row.key == "NRPresentRestoreScope" && restore_scope != nullptr;
@@ -288,8 +343,9 @@ inline bool Apply(const presets::Document& document, bool compatibility, bool re
     }
   }
   for (const auto& row : differences) {
-    if (std::string_view(row.status) == "Invalid value") {
-      *error = "Invalid value";
+    if (std::string_view(row.status) == "Invalid value"
+        || (builtin_reset && row.after != row.before && !row.apply)) {
+      *error = (builtin_reset ? "Invalid or unsupported reset value. Current settings were kept." : "Invalid value");
       return false;
     }
   }

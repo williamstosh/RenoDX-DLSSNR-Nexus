@@ -61,6 +61,8 @@ inline bool save_failed = false;
 inline std::string game_id;
 inline std::filesystem::path storage_path;
 inline std::string notice;
+inline std::string reset_notice;
+inline std::string reset_error;
 inline uint64_t serial = 0;
 inline uint64_t observed_epoch = 0;
 inline uint64_t observed_reload_epoch = 0;
@@ -75,7 +77,56 @@ enum class SlotTask { NONE, RENAME, COPY, IMPORT, EXPORT, CLEAR, RESTORE };
 inline SlotTask slot_task = SlotTask::NONE;
 inline int task_index = -1;
 
+enum class ResetPhase { NONE, FLUSH, STORE, ROLLBACK };
+struct ResetTransaction {
+  ResetPhase phase = ResetPhase::NONE;
+  int target = -1;
+  data::State before;
+  data::State detached;
+  UndoState previous_undo;
+  int previous_active = -1;
+  presets::Document document;
+  Json configuration = Json::object();
+  uint64_t reload_epoch = 0;
+  uint64_t commit_epoch = 0;
+  std::string error;
+  bool recovery_failed = false;
+};
+inline ResetTransaction reset;
+
+inline bool Resetting() {
+  return reset.phase != ResetPhase::NONE;
+}
+
+// Read through the host cache, never the filesystem on the overlay thread.
+// Include excluded diagnostics and raw key presence to detect external edits.
+inline Json ResetConfiguration() {
+  RuntimeLock lock(runtime_mutex);
+  Json result = Json::object();
+  for (const auto& rule : presets::FieldRules()) {
+    const auto raw = ReadPresentRestoreRaw(rule.key);
+    result[rule.key] = {{"value", preset_ui::ReadSetting(rule.key)},
+                        {"raw", (raw ? Json(*raw) : Json(nullptr))}};
+  }
+  for (const auto* key : {"ProfileGameId", "ConfigVersion", "NRPresentRestoreScopeConfigVersion",
+                          "NRPresentSdrRestoreConfigVersion", "NRPresentHdrPedestalConfigVersion"}) {
+    const auto raw = ReadPresentRestoreRaw(key);
+    result[key] = (raw ? Json(*raw) : Json(nullptr));
+  }
+  return result;
+}
+
+inline bool ResetWritable() {
+  std::shared_lock config_lock(present_restore_configuration.mutex);
+  std::shared_lock policy_lock(hdr_pedestal_policy_state.mutex);
+  return loaded && writable && present_restore_configuration.global_writable
+         && present_restore_configuration.scope.writable
+         && present_sdr_restore_config_writable.load()
+         && hdr_pedestal_policy_state.configuration.writable;
+}
+
 inline void OpenSlotTask(SlotTask task, int index) {
+  if (Resetting() || reset.recovery_failed) return;
   if (index < 0 || index >= 6)
     return;
   slot_task = task;
@@ -227,8 +278,14 @@ inline bool Busy() {
 }
 
 inline void Schedule(bool urgent = false) {
-  if (!loaded || !writable || !dirty) return;
+  if (reset.recovery_failed) return;
+  if (!loaded || !dirty) return;
+  if (!writable && reset.phase != ResetPhase::ROLLBACK) return;
   {
+    std::shared_lock lock(worker.mutex);
+    if (worker.ready || worker.loading || (Resetting() && reset.phase != ResetPhase::FLUSH && worker.busy)) return;
+  }
+  if (reset.phase != ResetPhase::ROLLBACK) {
     std::shared_lock lock(present_restore_configuration.mutex);
     if (!present_restore_configuration.global_writable) {
       notice = "Newer or invalid game configuration is read-only.";
@@ -237,11 +294,13 @@ inline void Schedule(bool urgent = false) {
     }
   }
   // Persist the private identity only on an explicit profile edit/selection.
-  reshade::set_config_value(nullptr, kConfigSection, "ProfileGameId", game_id.c_str());
-  if (ReadPresentRestoreRaw("ProfileGameId") != game_id) {
-    notice = "Could not save the game profile identity. Changes remain unsaved.";
-    save_failed = true;
-    return;
+  if (reset.phase != ResetPhase::ROLLBACK) {
+    reshade::set_config_value(nullptr, kConfigSection, "ProfileGameId", game_id.c_str());
+    if (ReadPresentRestoreRaw("ProfileGameId") != game_id) {
+      notice = "Could not save the game profile identity. Changes remain unsaved.";
+      save_failed = true;
+      return;
+    }
   }
   std::unique_lock lock(worker.mutex);
   if (worker.ready || worker.loading) return;
@@ -284,6 +343,7 @@ inline void Changed(bool urgent = false) {
 }
 
 inline void Observe() {
+  if (Resetting() || reset.recovery_failed) return;
   const auto reloaded = profile_reload_epoch.load(std::memory_order_relaxed);
   if (loaded && reloaded != observed_reload_epoch) {
     observed_reload_epoch = reloaded;
@@ -436,6 +496,7 @@ inline void ExecuteAction() {
 }
 
 inline void Request(Action action, int index = -1) {
+  if (Resetting() || reset.recovery_failed) return;
   if (!loaded || !writable || pending_action != Action::NONE) return;
   SettleSlider(true);
   Observe();
@@ -450,6 +511,43 @@ inline void Request(Action action, int index = -1) {
     Schedule(true);
     if (save_failed) pending_action = Action::NONE;
   } else ExecuteAction();
+}
+
+inline void RequestReset(int target) {
+  if (reset.recovery_failed) return;
+  if (Resetting() || pending_action != Action::NONE) {
+    reset_notice = "Another profile action is pending. Reset was not started.";
+    return;
+  }
+  if (target < 0 || target > 3 || !ResetWritable()) {
+    reset_error.clear();
+    reset_notice = "Reset unavailable: profile storage or game configuration is read-only.";
+    return;
+  }
+  SettleSlider(true);
+  Observe();
+  reset = {.phase = ResetPhase::FLUSH, .target = target};
+  reset_error.clear();
+  reset_notice = "Reset pending: saving previous profile changes.";
+  if (dirty || Busy()) {
+    Schedule(true);
+  }
+  reset.configuration = ResetConfiguration();
+  reset.reload_epoch = profile_reload_epoch.load();
+  reset.commit_epoch = profile_commit_epoch.load();
+}
+
+inline void RetryResetRecovery() {
+  if (!reset.recovery_failed || Resetting() || Busy() || !loaded) return;
+  const auto revision = state.revision;
+  state = reset.before;
+  state.revision = revision;
+  reset.recovery_failed = false;
+  reset.phase = ResetPhase::ROLLBACK;
+  reset_notice = "Recovering previous profiles...";
+  reset_error.clear();
+  save_failed = false;
+  Changed(true);
 }
 
 inline void Tick() {
@@ -490,6 +588,139 @@ inline void Tick() {
       worker.wake = presets::internal::Handle();
     }
   }
+  if (Resetting()) {
+    if (reset.phase != ResetPhase::ROLLBACK && reset.error.empty()
+        && (profile_reload_epoch.load() != reset.reload_epoch
+            || profile_commit_epoch.load() != reset.commit_epoch
+            || ResetConfiguration() != reset.configuration || !ResetWritable())) {
+      reset.error = "Game configuration changed during reset. Reset was cancelled.";
+    }
+    if (Busy()) return;
+    const auto finish = [&](bool restored) {
+      if (restored) {
+        const auto revision = state.revision;
+        state = reset.before;
+        state.revision = revision;
+        active = (Snapshot() == state.last_applied ? reset.previous_active : -1);
+        undo = reset.previous_undo;
+        dirty = false;
+      }
+      observed_snapshot = Snapshot();
+      observed_epoch = profile_commit_epoch.load();
+      observed_reload_epoch = profile_reload_epoch.load();
+      reset.phase = ResetPhase::NONE;
+    };
+    if (reset.phase == ResetPhase::FLUSH) {
+      if (save_failed || !reset.error.empty()) {
+        reset_notice = (reset.error.empty() ? "Reset failed: previous profile changes could not be saved." : reset.error);
+        if (save_failed) {
+          reset_error = notice;
+        }
+        if (!reset.error.empty()) {
+          active = -1;
+          observed_snapshot = Snapshot();
+          observed_epoch = profile_commit_epoch.load();
+          observed_reload_epoch = profile_reload_epoch.load();
+        }
+        reset.phase = ResetPhase::NONE;
+        return;
+      }
+      if (dirty) {
+        Schedule(true);
+        return;
+      }
+      reset.before = state;
+      reset.previous_active = active;
+      reset.previous_undo = undo;
+      try {
+        reset.document = preset_ui::DefaultsDocument(reset.target);
+        reset.detached = state;
+        reset.detached.selected.clear();
+        reset.detached.last_applied = Snapshot();
+        for (const auto& [key, value] : reset.document.settings.items()) {
+          if (Managed(key)) {
+            reset.detached.last_applied[key] = value;
+          }
+        }
+        if (reset.target == 3) {
+          for (int index = 0; index < 3; ++index) {
+            auto& slot = reset.detached.slots[index];
+            slot.overrides = Json::object();
+            slot.snapshot = data::Template(index, defaults_snapshot);
+            slot.template_version = data::TEMPLATE_VERSION;
+          }
+        }
+      } catch (const std::exception& exception) {
+        reset_notice = "Reset failed.";
+        reset_error = exception.what();
+        reset.phase = ResetPhase::NONE;
+        return;
+      }
+      active = -1;
+      undo.available = false;
+      state = reset.detached;
+      reset.phase = ResetPhase::STORE;
+      Changed(true);
+      // Schedule owns and verifies this private binding. Its first successful
+      // write is transaction metadata, not an external configuration edit.
+      if (ReadPresentRestoreRaw("ProfileGameId") == game_id) {
+        reset.configuration["ProfileGameId"] = game_id;
+      }
+      return;
+    }
+    if (reset.phase == ResetPhase::ROLLBACK) {
+      if (save_failed) {
+        // Retain both snapshots for recovery; do not let autosave overwrite the
+        // proven detached document with an unconfirmed restoration.
+        state = reset.detached;
+        active = -1;
+        dirty = false;
+        reset.recovery_failed = true;
+        reset_notice = "Profile rollback failed. Detached profiles and recovery snapshot were kept.";
+        if (!reset_error.empty()) {
+          reset_error += "\n";
+        }
+        reset_error += notice;
+        finish(false);
+      } else if (!dirty) {
+        reset_notice = "Reset cancelled or failed. Previous profiles restored.";
+        finish(true);
+      }
+      return;
+    }
+    if (save_failed) {
+      reset_notice = "Reset failed: profile storage was not changed.";
+      reset_error = notice;
+      finish(true);
+      return;
+    }
+    if (dirty) return;
+    reset.detached = state;
+    if (reset.error.empty()) {
+      std::string error;
+      if (!preset_ui::Apply(reset.document, true, false, &error, false, nullptr, true)) {
+        reset.error = "Reset failed.";
+        reset_error = error;
+      } else if (Snapshot() != state.last_applied) {
+        reset.error = "Reset failed: applied settings did not match the saved reset snapshot.";
+      } else {
+        reset_notice = "Defaults restored; custom profiles were kept.";
+        finish(false);
+        return;
+      }
+    }
+    if (reset_error.empty()) {
+      reset_error = reset.error;
+    }
+    const auto revision = state.revision;
+    state = reset.before;
+    state.revision = revision;
+    reset.phase = ResetPhase::ROLLBACK;
+    save_failed = false;
+    Changed(true);
+    return;
+  }
+  if (reset.recovery_failed) return;
   Observe();
   if (pending_action != Action::NONE && !dirty && !Busy()) ExecuteAction();
   if (dirty && writable && !save_failed && !Busy()) Schedule();
@@ -531,6 +762,7 @@ inline std::string Name(int index) {
 }
 
 inline void Assign(int index, const Json& settings, bool select = false) {
+  if (Resetting() || reset.recovery_failed) return;
   if (!loaded || !writable || index < 3 || index >= 6) return;
   for (const auto& [key, value] : settings.items()) {
     if (!Validate(key, value)) {
@@ -616,6 +848,7 @@ inline void DrawSlotMenu(int index) {
 }
 
 inline void RenameSlot(int index, const std::string& value) {
+  if (Resetting() || reset.recovery_failed) return;
   if (!loaded || !writable || index < 3 || index >= 6 ||
       !state.slots[index].populated)
     return;
@@ -636,6 +869,7 @@ inline void RenameSlot(int index, const std::string& value) {
 }
 
 inline void ClearSlot(int index) {
+  if (Resetting() || reset.recovery_failed) return;
   if (!loaded || !writable || index < 3 || index >= 6 ||
       !state.slots[index].populated)
     return;

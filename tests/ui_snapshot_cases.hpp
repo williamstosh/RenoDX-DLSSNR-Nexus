@@ -26,6 +26,23 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
   const char* pages[] = {"quality", "multipass", "diagnostics", "advanced"};
   std::vector<Scenario> scenarios;
   if (!docs_only) {
+    scenarios.push_back({.id = "r2-quality", .action = "r2-quality"});
+    scenarios.push_back({.id = "r2-quality-wide-en", .action = "r2-quality", .language = 1, .width = 1400.f});
+    scenarios.push_back({.id = "r2-quality-follow", .action = "r2-follow"});
+    scenarios.push_back({.id = "r2-pass1", .page = 1, .action = "r2-pass1"});
+    scenarios.push_back({.id = "r2-pass2", .page = 1, .action = "r2-pass2"});
+    scenarios.push_back({.id = "r2-pass3", .page = 1, .action = "r2-pass3"});
+    scenarios.push_back({.id = "r2-pass4-blocked", .page = 1, .action = "r2-pass4"});
+    for (const auto& theme : ui::kThemes) {
+      scenarios.push_back({.id = std::string("r2-") + theme.slug + "-narrow", .action = "r2-follow",
+                           .theme = theme.id, .width = 450.f});
+    }
+    for (int page : {0, 1, 3}) {
+      scenarios.push_back({.id = std::string("r2-reset-") + pages[page], .page = page, .action = "r2-reset-confirm"});
+    }
+    scenarios.push_back({.id = "restore-all-confirmation", .page = 3, .action = "restore-all-confirmation"});
+    scenarios.push_back({.id = "restore-all-confirmation-en-narrow", .page = 3,
+                         .action = "restore-all-confirmation", .language = 1, .width = 450.f});
     scenarios.push_back({.id = "quality-viewport", .action = "viewport"});
     scenarios.push_back({.id = "status-details", .action = "status-details"});
     for (const char* action : {"slot-context", "official-context", "slot-rename", "slot-copy", "slot-export", "slot-import", "slot-clear"}) {
@@ -84,7 +101,6 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
                              "preset-export-actions"}) {
         scenarios.push_back({.id = id, .action = id});
       }
-      scenarios.push_back({.id = "restore-all-confirmation", .page = 3, .action = "restore-all-confirmation"});
       scenarios.push_back({.id = "issue-report-description", .page = 2, .action = "issue-report-description"});
       // Orthogonal additions reuse the same runner instead of multiplying every axis.
       for (const auto& theme : ui::kThemes) {
@@ -149,7 +165,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
                                   "Native file dialogs, compatibility editor and IME candidates require their existing native tests.",
                                   "Rename is an inline editor and delete uses an inline consent checkbox; neither is a modal in the production UI.",
                                   "Snapshot scenarios do not execute file rename/delete, preset apply, or custom-slot writes.",
-                                  "Restore-all confirmation and the report description wizard are inline production UI, not modal windows.",
+                                  "Reset confirmations are production modals; the report description wizard remains inline.",
                                   "Report collection, screenshot capture, attachments, ZIP saving, upload and browser submission are not executed or captured."}}};
   for (const auto& scenario : scenarios) {
     if (filters.empty() || std::ranges::any_of(filters, [&](const auto& filter) {
@@ -198,7 +214,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     runtime::ui_theme_choice = scenario.theme;
     runtime::ui_language_choice = scenario.language;
     runtime::ui_menu_page = scenario.page;
-    runtime::ui_selected_pass = (scenario.action == "pass-first" ? 0 : 1);
+    runtime::ui_selected_pass = ((scenario.action == "pass-first" || scenario.action == "r2-pass1") ? 0 : 1);
     runtime::hook_point = runtime::kHookPresent;
     runtime::stack_passes = 4;
     runtime::preset = 0;
@@ -239,6 +255,33 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       runtime::pass_preset[pass] = 0;
       runtime::pass_resolution_mode[pass] = 0;
       runtime::pass_resolution_scale[pass] = 1.f;
+    }
+    if (scenario.action.starts_with("r2-")) {
+      runtime::nr_follow_input_res = scenario.action == "r2-follow";
+      runtime::nr_resolution_scale = .67f;
+      runtime::hook_point = runtime::kHookRender;
+      for (auto& observed : runtime::stage_telemetry) observed = {};
+      for (auto& timing : renodx::addons::dlss5::gpu_timers::stage_stats) timing = {};
+      if (scenario.action == "r2-pass2" || scenario.action == "r2-pass4") {
+        runtime::pass_stage[0] = 2;
+        runtime::pass_resolution_mode[0] = 2;
+        runtime::pass_resolution_scale[0] = .58f;
+      }
+      if (scenario.action == "r2-pass4") {
+        runtime::ui_selected_pass = 3;
+        auto& observed = runtime::stage_telemetry[1];
+        observed.groups = 1;
+        observed.pass_begin = 1;
+        observed.pass_count = 3;
+        observed.width = 3840;
+        observed.height = 2160;
+        observed.resolution_blocked = true;
+        observed.pass_resolutions[3].requested_width = 2573;
+        observed.pass_resolutions[3].requested_height = 1447;
+      }
+      if (scenario.action == "r2-pass3") {
+        runtime::ui_selected_pass = 2;
+      }
     }
     const bool render_stage_resolution = scenario.action == "render-stage-resolution";
     const bool present_stage_resolution = scenario.action == "present-stage-resolution";
@@ -319,7 +362,8 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     settle();
     const bool long_page = scenario.action == "expanded" || scenario.action == "collapsed"
         || scenario.action == "pass-independent" || scenario.action == "pass-first" || scenario.action == "doc-default"
-        || cross_stage || scenario.action == "gpu-pass-diagnostics" || scenario.action == "gpu-comparison";
+        || cross_stage || scenario.action == "gpu-pass-diagnostics" || scenario.action == "gpu-comparison"
+        || (scenario.action.starts_with("r2-") && scenario.action != "r2-reset-confirm");
     if (scenario.action == "cross-stage-resolution" || same_stage_resolution) {
       check(items.contains(find("##pass_resolution_scale").id), "independent pass resolution slider is drawn");
       check(runtime::pass_resolution_mode[0].load() == 2
@@ -386,7 +430,11 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
         .title = "Synthetic diagnostic fixture",
         .body = "Deterministic test state; not a game measurement or runtime failure.",
         .fix = {"Synthetic repair instruction"}, .fix_count = 1};
-    if (scenario.action == "status-details") {
+    if (scenario.action == "r2-reset-confirm") {
+      click(find("reset_page"));
+      check(!find("cancel_page_reset").disabled, "shared page reset confirmation is accessible");
+      interaction = "real reset-page command; confirmation only, no persistence or reset";
+    } else if (scenario.action == "status-details") {
       click(find("status_details"));
       check(!find("status_close").disabled && !find("status_open_diagnostics").disabled,
             "runtime details must open without changing the selected page");
@@ -451,10 +499,9 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
         }
       }
       settle();
-      click(find(ui::Tr(ui::text::kRestoreAll)));
-      check(!find(ui::Tr("Restore")).disabled && !find(ui::Tr("Cancel")).disabled,
-            "restore-all inline confirmation did not open");
-      interaction = "click restore-all action inside expanded section; no restore";
+      click(find("open_reset_all"));
+      check(!find("cancel_page_reset").disabled, "restore-all protected confirmation did not open");
+      interaction = "click restore-all action and open shared confirmation; no restore";
     } else if (scenario.action == "issue-report-description") {
       click(find(ui::Tr("I'm having issues...")));
       check(runtime::issue_report::step.load() == runtime::issue_report::Step::kDescribe
@@ -780,11 +827,15 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       profile::active = -1;
       profile::observed_snapshot = profile::Snapshot();
     }
+    if (scenario.action.starts_with("r2-")) {
+      runtime::nr_follow_input_res = false;
+      runtime::nr_resolution_scale = 1.f;
+    }
     if (scenario.action == "custom-slot-create") {
       click(find("cancel_create_slot"));
       check(!profile::state.slots[3].populated, "creation snapshot must not populate the slot");
     } else if (scenario.action == "restore-all-confirmation") {
-      click(find(ui::Tr("Cancel")));
+      click(find("cancel_page_reset"));
     } else if (scenario.action == "issue-report-description") {
       runtime::CloseIssueReport();
       check(runtime::issue_report::step.load() == runtime::issue_report::Step::kClosed

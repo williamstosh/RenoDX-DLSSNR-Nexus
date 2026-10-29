@@ -49,10 +49,12 @@ Release／Debug 构建及受影响自动化检查已通过，Runtime 兼容门�
 Slot 自动保存与共享库文件、ReShade 正常设置分别处理，强退可能丢失待保存的 Slot 编辑；
 只读／损坏保护、迁移及 revision 冲突恢复见指南。
 
+当前开发源码的页面恢复按字段归属执行：画质包含共用的第 1 层字段，叠层只恢复层数及第 2–4 层独立字段，高级恢复兼容性与通用设置并保留诊断控件；先保存待处理的编辑、解除当前 Slot 关联，保留全部六槽。全量恢复另清本游戏三个官方 Slot 的个人覆盖，并将主题恢复为 Cyber Neon；保留自定义槽、方案库、其他游戏、加载时支持策略及兼容例外，不修改官方模板。范围见[恢复说明](docs/USER_GUIDE.md#zh-start)。
+
 模型外观控制 NR 生成什么，结果编辑则塑造每层模型已经返回的改变量。模型选择、外观继承、
 结果继承彼此独立，附加层既可沿用第 1 层，也可保留各自保存的编辑。第 1 层选择起始介入点，
 后续层可继承或选择合法的后续阶段。**当前 0.2.0-dev.10 开发源码：独立工作分辨率（阶段性支持）**：
-第 2–4 层可继承全局、跟随游戏 Guide 或使用 33–100% 固定比例，例如
+第 2–4 层可继承基础分辨率（非上一层）、选择 Follow input 或使用 33–100% 固定比例，例如
 `Render A 100% → 游戏 DLSS SR → Upscaled B 67%`。不改游戏 DLSS SR 分辨率；
 不含 Present 的原生 DX11 Bridge／DX12 链中，同一 Render 或 Upscaled StageGroup 的两个 Pass 可使用各自工作尺寸，例如
 `Upscaled A 100% → B 67%` 或反向比例；Render 双层同样支持两方向，例如
@@ -60,8 +62,10 @@ Slot 自动保存与共享库文件、ReShade 正常设置分别处理，强退�
 实际工作尺寸一致；不支持的尺寸组合会明确拒绝该组并保留设置。Upscaled 同阶段实现已通过定向 WARP／硬件 GPU 自动化；Render 双层的 DX12／Bridge 核心已实现，Bridge 本轮三组 HDR 场景及 DX12 本轮八场景／二十阶段均已通过 WARP／硬件 GPU 自动化，
 真实网络、实机画质及性能收益未验收。
 新增独立模式仅限 native DX11/DX12；Vulkan 明确拒绝非继承模式，默认继承保留旧行为。
-默认继承全局；上采样和“独立皮肤”仍全链共享。该新增能力不包含在已发布的 dev.8 包中；
+默认继承基础值；上采样和“独立皮肤”仍全链共享。该新增能力不包含在已发布的 dev.8 包中；
 结果控件有各自的开关及资源前提。
+
+当前开发菜单中，画质与第 1 层共用常驻的 100／67／58／50%／Follow input 五档、33–100% 滑条及共享上采样；跟随时禁用滑条并保留保存比例，有效 Guide 与 Stage 参考尺寸逐轴取较小值，无有效 Guide 则使用保存比例。Hook 按 Render → Upscaled → Present 显示，默认不变。尺寸的最后记录属于历史，当前编辑仍可能待确认；Guide 来源未知时不据配置或尺寸宣称已确认。详见[工作分辨率](docs/USER_GUIDE.md#zh-quality)。
 
 **原生 Pre-FG Present 双 Pass 异尺寸：研究保留，BLOCKED／NO-GO。** `NRExperimentalNativePreFgResolution`（INI `[RenoDX.DLSS5]`）在源码与测试中保留并默认关闭；本轮已结束该研究，不建议玩家开启，也不属于正式支持。原研究范围仅为单平面原生 DX12 NGX DLSS FG/MFG、纯 Present 的两个 Pass：`A 100% → B 67%` 或反向比例；要求有效真实引导，并排除 HUDLess／UI／UIAlpha、XeFG、DX11、B1／B2 与最终 Present（Final FG）。实验原设定要求每个 producer 录制代次精确提交一次。当前 `BackbufferFrameID` 数值 Get 失败；指针 Get 虽成功，但对象身份及真实帧语义未证；MFG replay 行为和 HUDLess／UI 一致性也未证，因此无法证明实验所需的帧身份及提交条件。该 Pre-FG 路径为 BLOCKED／NO-GO，本轮不再继续研究或测试。此结论只针对原生 Pre-FG 双 Pass 异尺寸；已有 Render → Upscaled 与原生 DLSS FG／XeFG 并用是独立路径，仍受各自既有输入、资源、所有权及实验门控约束。详见[研究范围与状态](docs/USER_GUIDE.md#zh-native-prefg-resolution)。
 
@@ -265,13 +269,15 @@ Slot autosave is separate from shared-library files and ReShade's normal setting
 force-closing may lose pending Slot edits. See the guide for read-only/corrupt-file
 protection, migration and revision-conflict recovery.
 
+In current development source, page resets follow field ownership: Quality includes shared Pass 1 fields; Multi-Pass resets only count and independent Pass 2–4 fields; Advanced resets compatibility/general settings while keeping diagnostic controls. Pending edits save before the current Slot association is detached, and all six saved Slots remain. Full reset also clears this game's three official Slot overrides and restores Cyber Neon, keeping custom Slots, library files, other games, attach-time support policies and compatibility exceptions. Official templates are unchanged. See [reset scope](docs/USER_GUIDE.md#en-start).
+
 Model-look controls steer what NR generates; result editing reshapes the change
 returned by each pass. Model choice, look inheritance and result inheritance are
 separate, so additional layers can follow Pass 1 or keep their own saved edits.
 Pass 1 selects the initial processing location; later passes can inherit or
 select a legal later stage. **Current development source (v0.2.0-dev.10): independent working
 resolution (partial support)**. Passes 2–4 can inherit
-global settings, follow game guides or use a fixed 33–100% scale, for example
+the base resolution (not the preceding pass), choose Follow input or use a fixed 33–100% scale, for example
 `Render A 100% → game DLSS SR → Upscaled B 67%`. This leaves game DLSS SR
 resolution unchanged. In a native DX11 Bridge or DX12 chain without Present, two passes in one Render or Upscaled StageGroup can use
 separate working sizes, such as `Upscaled A 100% → B 67%`, or the reverse scales. Render supports both directions too,
@@ -284,10 +290,12 @@ The DX12/Bridge Render two-pass core is implemented. Its three HDR Bridge cases 
 actual neural-network behavior, game visuals and performance gains are not established.
 Independent modes require native DX11/DX12; Vulkan
 explicitly rejects non-inherited modes, while inherited defaults keep its old behavior.
-The default inherits global settings. Upsampling and
+The default inherits base values. Upsampling and
 Independent skin remain shared. This addition is not in the published dev.8 package.
 Result controls have enable and resource
 requirements.
+
+In the current development menu, Quality and Pass 1 share always-visible 100/67/58/50%/Follow input choices, a 33–100% slider and shared upsampling. Follow input disables the slider while retaining its saved scale; it uses the per-axis minimum of valid guides and the Stage reference, or the saved scale without valid guides. Hook choices display Render → Upscaled → Present, with the default unchanged. Last recorded sizes are historical; current edits can remain pending, and unknown Guide sources are not confirmed by configuration or size. See [working resolution](docs/USER_GUIDE.md#en-quality).
 
 **Native Pre-FG Present pair with different pass sizes: research retained, BLOCKED/NO-GO.** `NRExperimentalNativePreFgResolution` (INI `[RenoDX.DLSS5]`) remains in source and tests, default-off. This round has ended the research; do not enable it as a player option. It is not formally supported. The retained research scope is single-plane native DX12 NGX DLSS FG/MFG, exactly two pure-Present passes, `A 100% → B 67%` or the reverse; it requires valid real guides and excludes HUDLess/UI/UIAlpha, XeFG, DX11, B1/B2 and final Present (Final FG). The experiment also required each producer recording generation to be submitted exactly once. `BackbufferFrameID` numeric Get fails; pointer Get succeeds, but the returned object's identity and real-frame meaning are unverified. MFG replay behavior and HUDLess/UI consistency are also unverified, so the required frame identity and submission conditions are not established. This Pre-FG path is BLOCKED/NO-GO; no further research or testing is planned in this round. This applies only to the native Pre-FG pair with different sizes. The existing Render → Upscaled path can still run alongside native DLSS FG/XeFG under its own existing input, resource, ownership and experimental gates. See the [research scope and status](docs/USER_GUIDE.md#en-native-prefg-resolution).
 

@@ -474,8 +474,9 @@ int main() {
     };
     const auto click = [&](const Item& item) {
       ImVec2 center = item.rect.GetCenter();
-      if (item.window != nullptr && (center.y < item.window->InnerRect.Min.y || center.y > item.window->InnerRect.Max.y)) {
-        ImGui::SetScrollY(item.window, item.window->Scroll.y + center.y - item.window->InnerRect.GetCenter().y);
+      for (int attempt = 0; item.window != nullptr && attempt < 4
+           && (center.y < item.window->InnerClipRect.Min.y + 1.f || center.y >= item.window->InnerClipRect.Max.y - 1.f); ++attempt) {
+        ImGui::SetScrollY(item.window, item.window->Scroll.y + center.y - item.window->InnerClipRect.GetCenter().y);
         frame();
         frame();
         check(items.contains(item.id), "scrolling lost the target control");
@@ -491,8 +492,8 @@ int main() {
     };
     const auto hover = [&](const Item& item, const char* expected, const char* excluded) {
       ImVec2 center = item.rect.GetCenter();
-      if (center.y < item.window->InnerRect.Min.y || center.y > item.window->InnerRect.Max.y) {
-        ImGui::SetScrollY(item.window, item.window->Scroll.y + center.y - item.window->InnerRect.GetCenter().y);
+      if (center.y < item.window->InnerClipRect.Min.y + 1.f || center.y >= item.window->InnerClipRect.Max.y - 1.f) {
+        ImGui::SetScrollY(item.window, item.window->Scroll.y + center.y - item.window->InnerClipRect.GetCenter().y);
         frame();
         frame();
         center = items.at(item.id).rect.GetCenter();
@@ -683,8 +684,25 @@ int main() {
       const Item collapse = find("collapse_all");
       check(std::abs(expand.rect.Min.y - collapse.rect.Min.y) <= 0.5f,
             "page tools share one row");
-      const auto* window = collapse.window;
-      check(std::abs(collapse.rect.Max.x - (window->WorkRect.Max.x - ImGui::GetStyle().ScrollbarSize)) <= 1.f,
+      Item last = collapse;
+      if (page != 2) {
+        last = find("reset_page");
+        check(std::abs(last.rect.Min.y - collapse.rect.Min.y) <= 0.5f, "page reset shares the fold toolbar row");
+        click(last);
+        check(!find("cancel_page_reset").disabled, "three pages share an accessible reset confirmation");
+        io.AddKeyEvent(ImGuiKey_Escape, true);
+        frame();
+        io.AddKeyEvent(ImGuiKey_Escape, false);
+        frame();
+        check(!runtime::profile_ui::Resetting(), "Escape started a page reset");
+        click(find("reset_page"));
+        click(find("cancel_page_reset"));
+      } else {
+        check(std::ranges::none_of(items, [](const auto& entry) { return entry.second.label.ends_with("###reset_page"); }),
+              "Diagnostics has no page reset command");
+      }
+      const auto* window = last.window;
+      check(std::abs(last.rect.Max.x - (window->WorkRect.Max.x - ImGui::GetStyle().ScrollbarSize)) <= 1.f,
             "all page tools align to the right scroller content edge");
     }
     runtime::ui_menu_page = 0;
@@ -792,7 +810,14 @@ int main() {
 
     // Main zero means Auto; changing the UI must retain legacy stored values.
     for (const auto& [label, value] : {std::pair{"A", 1.f}, {"B", 2.f}, {"Auto", 0.f}}) {
-      click(find(label));
+      const auto model_row = find("A").rect.Min.y;
+      for (const auto& [id, item] : items) {
+        if (item.label == label && std::abs(item.rect.Min.y - model_row) < 1.f) {
+          const Item choice = item;
+          click(choice);
+          break;
+        }
+      }
       check(runtime::kSetPreset.Get() == value, "main segmented model selection failed");
     }
     runtime::kSetPreset.Store(3.f);
@@ -819,11 +844,11 @@ int main() {
     };
     runtime::kLookResult[0].max_brighten.Store(0.6f);
     click(find("expand_all"));
-    check(fold_open(ui::text::kResolutionFine) && fold_open(ui::text::kResultLimits),
+    check(fold_open(ui::text::kResultLimits),
           "expand all did not reach nested Quality groups");
     click(find("collapse_all"));
     frame();
-    check(!fold_open(ui::text::kResolutionFine) && !fold_open(ui::text::kResultLimits),
+    check(!fold_open(ui::text::kResultLimits),
           "changed parameters reopened a manually collapsed group");
     click(find(ui::text::kResultLimits));
     check(fold_open(ui::text::kResultLimits), "one-shot collapse prevents later manual opening");
@@ -844,16 +869,74 @@ int main() {
     runtime::kLookResult[0].max_brighten.Store(0.f);
     click(find("collapse_all"));
 
-    click(find("Balanced"));
-    hover(find("Balanced"), ui::text::kResBalancedTip, ui::text::kResQualityTip);
+    click(find("nr_resolution_balanced"));
+    hover(find("nr_resolution_balanced"), ui::text::kResBalancedTip, ui::text::kResQualityTip);
     check(!runtime::nr_follow_input_res.load() && std::abs(runtime::nr_resolution_scale.load() - 0.58f) < 0.001f,
           "resolution preset did not select its original parameter pair");
-    click(find("Match game"));
-    check(runtime::nr_follow_input_res.load(), "Match game did not select follow-input mode");
+    click(find("nr_resolution_follow"));
+    check(runtime::nr_follow_input_res.load() && runtime::nr_resolution_scale.load() == .58f,
+          "Follow input did not retain the saved scale");
+    check(find("##resolution_scale").disabled, "Follow input leaves the saved scale editable");
+    for (const auto& theme : ui::kThemes) {
+      runtime::StoreUiTheme(theme.id);
+      panel_width = 450.f;
+      frame(); frame();
+      for (const auto& text : rendered_text) {
+        if (text.text != ui::Tr(ui::text::kResolutionSavedScale)) continue;
+        for (const auto& [id, item] : items) {
+          if (item.window == text.window && item.label == ui::icons::kUndo) {
+            check(!item.rect.Overlaps(text.rect), "resolution reset overlaps the wrapped follow-input explanation");
+          }
+        }
+      }
+    }
+    panel_width = 1000.f;
+    frame(); frame();
+    click(find("##resolution_scale"));
+    check(runtime::nr_resolution_scale.load() == .58f, "disabled follow slider changed the saved scale");
     runtime::nr_follow_input_res = false;
     runtime::nr_resolution_scale = 0.75f;
     frame();
     check(runtime::nr_resolution_scale.load() == 0.75f, "drawing custom resolution changed its saved scale");
+    check(!find("##resolution_scale").disabled, "fixed scale slider remains disabled");
+    // Both editors must use the same storage without a navigation-triggered commit.
+    runtime::stack_passes = 2;
+    runtime::ui_selected_pass = 0;
+    runtime::ui_menu_page = 1;
+    const auto navigation_epoch = runtime::profile_commit_epoch.load();
+    frame();
+    frame();
+    check(runtime::nr_resolution_scale.load() == .75f && runtime::profile_commit_epoch.load() == navigation_epoch,
+          "Pass 1 navigation rewrites the shared resolution");
+    check(!find("##resolution_scale").disabled, "Pass 1 does not expose the shared scale");
+    runtime::nr_resolution_scale = .6705f;
+    frame();
+    click(find("nr_resolution_quality"));
+    check(runtime::nr_resolution_scale.load() == .67f, "Pass 1 preset is not shared with Quality");
+    runtime::ui_selected_pass = 1;
+    runtime::pass_resolution_mode[0] = 2;
+    runtime::pass_resolution_scale[0] = .58f;
+    frame();
+    check(find("##pass_resolution_scale").id != 0 && runtime::nr_resolution_scale.load() == .67f,
+          "independent Pass 2 scale changes the base scale");
+    runtime::ui_menu_page = 0;
+    frame();
+    check(runtime::nr_resolution_scale.load() == .67f, "Quality does not retain the Pass 1 edit");
+    const Item render_choice = find("Render");
+    const Item upscaled_choice = find("Upscaled");
+    const Item present_choice = find("Present");
+    check(render_choice.rect.Min.x < upscaled_choice.rect.Min.x && upscaled_choice.rect.Min.x < present_choice.rect.Min.x,
+          "Hook Point display order is not Render, Upscaled, Present");
+    for (const auto& [label, stored] : {std::pair{"Render", 1u}, {"Upscaled", 0u}, {"Present", 2u}}) {
+      click(find(label));
+      check(runtime::hook_point.load() == stored, "Hook Point UI changed historical storage encoding");
+      click(find("nr_resolution_follow"));
+      check(runtime::nr_follow_input_res.load(), "Follow input is unavailable at a supported Hook Point");
+    }
+    runtime::pass_resolution_mode[0] = 0;
+    runtime::pass_resolution_scale[0] = 1.f;
+    runtime::stack_passes = 1;
+    runtime::nr_follow_input_res = false;
     runtime::nr_resolution_scale = 1.f;
 
     // A diagnostic shortcut must select the real Present controls, not a popup.
@@ -960,8 +1043,47 @@ int main() {
     hover(chain_nodes().at(3), chain_tip.c_str(), nullptr);
     click(chain_nodes().at(1));
     check(runtime::ui_selected_pass == 1, "pass navigation failed");
-    check(has_text(ui::text::kPassStage) && has_text(ui::text::kStagePlanNote),
+    check(has_text(ui::text::kPassStage) && has_text(ui::text::kResolutionCurrentPending),
           "pass editor separates stage selection from model and execution evidence");
+    {
+      const auto historical_hook = runtime::hook_point.load();
+      runtime::hook_point = runtime::kHookUpscaled;
+      auto& observed = runtime::stage_telemetry[1];
+      const auto old_observed = observed;
+      auto& sample = renodx::addons::dlss5::gpu_timers::stage_stats[1];
+      const auto old_sample = sample;
+      observed = {};
+      observed.groups = 1;
+      observed.pass_begin = 0;
+      observed.pass_count = 4;
+      observed.width = 1920;
+      observed.height = 1080;
+      observed.resolved_requests[1] = 2;
+      observed.pass_resolutions[1] = {.requested_width = 1286, .requested_height = 724,
+                                    .effective_width = 1286, .effective_height = 724, .model_recorded = true};
+      sample = {};
+      sample.valid = true;
+      sample.measured_ns = runtime::SteadyNowNs();
+      sample.passes[1] = {.id = 1, .model = 2, .width = 1286, .height = 724,
+                         .state = renodx::addons::dlss5::gpu_timers::SampleState::VALID};
+      frame();
+      const char* historical = "Recent completed GPU sample: 1286x724 (historical; current settings unconfirmed).";
+      check(has_text(historical) && has_text(ui::text::kResolutionCurrentPending),
+            "recent GPU completion is not distinguished from current configuration");
+      runtime::kSetPassResolutionScale[0].Commit(.73456f);
+      frame();
+      check(has_text(historical) && has_text(ui::text::kResolutionCurrentPending),
+            "editing settings falsely certifies a recent historical GPU sample");
+      sample.measured_ns = runtime::SteadyNowNs() - 3000000000ll;
+      frame();
+      check(!has_text(historical), "expired GPU sample is still shown as recent");
+      observed.resolution_blocked = true;
+      frame();
+      check(has_text(ui::text::kStageResolutionBlocked), "same-stage size rejection is hidden");
+      observed = old_observed;
+      sample = old_sample;
+      runtime::hook_point = historical_hook;
+    }
     const auto saved_hook = runtime::hook_point.load();
     runtime::hook_point = runtime::kHookPresent;
     runtime::kSetPassStage[0].Commit(1.f);
@@ -1045,12 +1167,22 @@ int main() {
     check(runtime::ui_menu_page == 2 && !runtime::ui_open_diagnostics, "status action cannot reach Diagnostics");
     click(find("Advanced"));
     click(find(ui::Tr(ui::text::kRestoreAll) + std::string("###") + ui::text::kRestoreAll));
-    click(find(ui::text::kRestoreAll));
-    click(find("Restore"));
+    click(find("open_reset_all"));
+    click(find("confirm_page_reset"));
+    {
+      const auto deadline = GetTickCount64() + 10000;
+      while (runtime::profile_ui::Resetting() || runtime::profile_ui::Busy()) {
+        runtime::profile_ui::Tick();
+        if (GetTickCount64() > deadline) throw std::runtime_error("UI reset did not settle.");
+        Sleep(1);
+      }
+      check(!runtime::profile_ui::save_failed, "UI reset must finish its protected persistence");
+      frame(); frame();
+    }
     check(runtime::stack_passes.load() == 1 && runtime::kSetPassPreset[0].Get() == 0.f,
           "confirmed restore defaults did not reset pass settings");
-    check(runtime::ui_theme_choice.load() == ui::ThemeId::FLUENT_LIGHT,
-          "global quality reset changed the selected theme");
+    check(runtime::ui_theme_choice.load() == ui::ThemeId::CYBER_NEON,
+          "restore all resets interface preferences to the built-in theme");
     runtime::stack_passes = 4;
 
     click(find("developer_view"));

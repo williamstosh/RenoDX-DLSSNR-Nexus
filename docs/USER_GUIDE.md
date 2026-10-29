@@ -27,6 +27,8 @@
 
 0.1.0 包含**画质、叠层、诊断、高级**四页。顶部摘要反映观测状态，点击可进入诊断。绿色表示观测到了 NR 活动，不代表所有帧、资源或画质均已验证。“全部展开／全部收起”作用于当前视图；修改标记和重置箭头表示保存值偏离默认，不表示运行成功。
 
+**当前开发源码：页面恢复默认按字段归属执行。** 画质页恢复 NR 主开关、基础模型、介入点、分辨率／共享上采样、模型风格与结果设置，包括叠层页共用的第 1 层字段；叠层页只恢复层数与第 2–4 层独立字段，不重置这些第 1 层共用值；高级页恢复兼容性、HDR／深度／运动、快捷键、截图及界面偏好，保留画质、独立层及诊断控件。确认后先保存待处理的 Slot 编辑，再解除当前 Slot 关联；保留全部六槽保存内容及方案库文件，避免将重置值自动写回原槽。全量恢复的范围与保留项见[高级设置](#zh-advanced)。
+
 当前开发源码将“全部展开／全部收起”统一放在各页内容区右上角，窄窗口使用带悬浮说明的 `+`／`-`。顶部摘要通常占两行，窄窗口最多三行；点击“详情”查看完整状态、已有 GPU 完成样本对应的 Stage／Pass、工作与输出尺寸及模型创建请求，也可继续进入诊断。未观测、待确认、过期和 NR 关闭会明确显示；模型创建请求不等于实际内部网络回读。此交互更新尚未随安装包发布。
 
 下文默认值针对全新配置；已有保存值或迁移配置可能不同。一般编辑会即时保存。更换模型、层数、介入点或工作尺寸可能重建 Feature，并短暂重建时序历史，比较前应等待场景和历史稳定。
@@ -81,9 +83,11 @@
 
 | 选项 | 输入与适用性 |
 | --- | --- |
-| **Upscaled**（默认） | 在游戏 DLSS 输出之后、后续游戏处理与 HUD 之前运行。依赖可用的被截获 DLSS 资源。 |
 | **Render** | 在 DLSS 放大之前处理游戏颜色，使用渲染尺寸的深度和运动矢量，可能降低成本。使用 Ray Reconstruction 时，因重建前输入仍有噪声，保持兼容的 Upscaled 路径。 |
+| **Upscaled**（默认） | 在游戏 DLSS 输出之后、后续游戏处理与 HUD 之前运行。依赖可用的被截获 DLSS 资源。 |
 | **Present** | 请求处理游戏后处理与 HUD 完成后的呈现帧，位于 ReShade 效果与覆盖层之前。兼容的 Pre-FG 路径可改为在帧生成前服务 NR；实际路径看诊断。 |
+
+当前开发菜单按 **Render → Upscaled → Present** 显示，默认仍为 Upscaled，已有配置含义不变。
 
 **Present 并非在所有情况下都要求游戏已开启 DLSS。** 普通 Present 的 Optional／Never 可在缺少匹配 DLSS 捕获时使用中性资源，但仍须满足运行时、设备、帧和格式检查。Required 需要匹配深度与运动，缺失即跳过。Upscaled／Render 依赖游戏 DLSS 求值链路。并非所有 API／集成都支持 Present，不支持时可能回退 Upscaled；选中某介入点不等于证明该路径已运行。
 
@@ -106,13 +110,15 @@
 
 | 预设 | 单轴比例 | 含义 |
 | --- | --- | --- |
-| **Full／完整**（默认） | **100%** | 完整参考尺寸，不会选择 DLAA 或更改游戏 DLSS 设置。 |
-| Quality／质量 | **67%** | 降低 NR 工作尺寸。 |
-| Balanced／平衡 | **58%** | 进一步降低尺寸。 |
-| Performance／性能 | **50%** | 宽高各半，约为参考像素数四分之一，不保证 GPU 时间也降至四分之一。 |
-| Match game／跟随游戏 | 跟随游戏渲染尺寸 | 仅在取得有效引导尺寸时跟随，且不超过参考尺寸；缺失时使用先前保存的比例，不是固定比例预设。 |
+| **100%**（默认） | **100%** | 完整比例基准尺寸，不会选择 DLAA 或更改游戏 DLSS 设置。 |
+| 67% | **67%** | 降低 NR 工作尺寸。 |
+| 58% | **58%** | 进一步降低尺寸。 |
+| 50% | **50%** | 宽高各半，约为基准像素数四分之一，不保证 GPU 时间也降至四分之一。 |
+| Follow input／跟随输入 | 有效 Guide 与参考尺寸逐轴取较小值 | 缺少有效 Guide 时使用先前保存的比例；选择跟随不会改写该比例，也不会更改游戏 DLSS 模式。 |
 
-参考尺寸通常为 Upscaled 的 DLSS 输出、Render 的输入颜色、Present 的呈现帧。“实际工作尺寸”显示最近观测值。未跟随游戏时，精调范围为 **33–100%**，非预设值显示自定义。预设在下次求值应用，连续拖动可能稳定后才重建；实际尺寸仍受参考与兼容资源契约约束。
+当前开发源码中，五档、**33–100%** 比例滑条和共享上采样常驻显示；画质页与叠层页第 1 层复用同一套控件，编辑的是同一份基础值。Follow input 时滑条禁用但保留比例，并显示原因；非固定档比例不高亮为某个固定档。预设在下次求值应用，连续拖动可能稳定后才重建；实际尺寸仍受参考与兼容资源契约约束。
+
+比例以**当前有效 Stage** 为基准：Render 为 Color／Motion／Depth 的公共裁切区域（通常为 DLSS 输入），Upscaled 为 DLSS 输出矩形，Present 为有效呈现帧。**Last recorded／最后记录**的参考、请求及模型工作尺寸属于历史数据，不能证明当前编辑已执行；模型未录制或缺少数据时显示不可用，当前设置仍可处于待确认。最近完成的 GPU 样本也不自动证明修改后的配置已生效。Guide 的真实来源与时效无法回读时明确为未知，不能从尺寸或 Hook 选择确认；普通 Present 可能使用全尺寸中性引导，Required 缺少有效引导则拒绝，Pre-FG 另有门控。
 
 | 上采样选项 | NR 低于输出尺寸时的行为 |
 | --- | --- |
@@ -173,7 +179,7 @@
 
 **开发源码：逐层阶段。** 第 1 层沿用画质页的介入点；第 2–4 层新增**阶段：与上一层相同／Render／Upscaled／Present**，与模型、外观及结果继承分别独立。默认保持旧版单阶段链。阶段必须按 `Render → Upscaled → Present` 前进；倒退请求会停用整链并保留选择。原生 DX12 和原生 DX11 Bridge DLSS SR/DLAA 可以拆分 Render 和 Upscaled 分组，例如 `第 1 层 · Render · A → 游戏 DLSS SR → 第 2 层 · Upscaled · B`。A/B 组合不受阶段限制。Render 的结果作为游戏 SR 的真实输入，Upscaled 读取游戏 SR 输出。DX11 需要 immediate context、共享 Fence 支持及同适配器私有 DX12 设备；混合链每阶段通过有界事件等待确认 GPU 完成，会增加同步成本。Render 交付或游戏 SR 失败时跳过后组并重置 NR 历史。
 
-**当前 0.2.0-dev.10 开发源码：独立工作分辨率（阶段性支持）。** 在现有第 2–4 层编辑区域选择分辨率模式：默认继承全局 `NRFollowInputRes` 与 `NRResolutionScale`；跟随游戏模式沿用有效 Guide、尺寸上限与缺失 Guide 时的比例回退规则；固定比例使用本层保存的 **33–100%** 比例，默认 **100%**。固定比例参考该 Stage 的完整尺寸：Render 使用 Color 有效区域，Upscaled 使用游戏 DLSS 输出。第 1 层仍使用画质页全局控件，不改变游戏 DLSS SR 分辨率。可配置 `Render A 100% → 游戏 DLSS SR → Upscaled B 67%`，也可互换为 Render 67%、Upscaled 100%。返回继承模式会保留本层独立比例；模式与 Stage、Model Preset、Look、Result 分别独立，上采样仍共享。
+**当前 0.2.0-dev.10 开发源码：独立工作分辨率（阶段性支持）。** 第 2–4 层默认**继承基础分辨率**（`NRFollowInputRes` 与 `NRResolutionScale`），不是继承上一层比例；也可选择 **Follow input／跟随输入**，或使用本层保存的 **33–100%** 固定比例，默认 **100%**。跟随时使用有效 Guide 与本层 Stage 参考尺寸的逐轴较小值，缺失有效 Guide 时回退保存比例。固定比例同样以本层有效 Stage 为基准，定义见画质页。第 1 层与画质页共用同一套基础控件，不改变游戏 DLSS SR 分辨率。可配置 `Render A 100% → 游戏 DLSS SR → Upscaled B 67%`，也可互换为 Render 67%、Upscaled 100%。返回继承模式会保留本层独立比例；模式与 Stage、Model Preset、Look、Result 分别独立，上采样全链共享，第 2–4 层只显示共享提示。编辑标题集中显示所选 Pass、有效 Stage 与模型请求名称，不代表实际执行确认。
 
 不含 Present 的原生 DX11 Bridge／DX12 链中，同一 Render 或 Upscaled StageGroup 的两个 Pass 支持不同工作尺寸：`Upscaled Pass 1 · A 100% → Pass 2 · B 67%`，也可反向设置为 A 67%、B 100%；Render 双层对应 `Render A 100% → Render B 67% → 游戏 DLSS SR` 及反向比例，不改变游戏 SR 内部渲染尺寸；各层比例仍参考完整 Stage 尺寸。当前 0.2.0-dev.10 开发源码还允许普通原生 DX11 Bridge／DX12 Present 双 Pass 使用不同工作尺寸，前提是已收到成功的进程级公共 FG Off 声明。没有该成功声明时，即使未观测到 FG 活动，仍拒绝该双 Pass 异尺寸组合；该声明作用于进程，不区分各个 viewport。该 Present 能力拒绝 FG 未知／On、Pre-FG 及 B1／混合链，不改变既有 Render／Upscaled 支持。DX11 Present 双 Pass 增加有界 GPU 完成等待及同步成本。新增 DX11 Present 双 Pass 已通过 WARP／硬件定向 GPU 自动化；真实游戏、NVIDIA 网络及性能收益未验收。同组 3 层以上仍要求实际工作尺寸相同；不支持的尺寸组合会明确拒绝该组并由界面说明原因，保留设置供修正，不静默忽略覆盖。同组模式或比例不同但实际尺寸相同不构成冲突。**此为双 Pass 阶段性实现；Upscaled 已通过定向 WARP／硬件 GPU 自动化，Render 双层的 DX12／Bridge 核心已实现，Bridge 本轮三组 HDR 场景及 DX12 本轮八场景／二十阶段均已通过 WARP／硬件 GPU 自动化；真实网络、实机画质及性能收益未验收。**新增独立模式仅限 native DX11/DX12；Vulkan 旧执行器不消费工作尺寸，因此明确拒绝非继承模式（1/2），默认继承（0）保留旧行为。最近观测的真实工作尺寸以诊断为准，配置百分比不证明实际执行或性能改善；既有截图未展示新增控件。
 
@@ -188,7 +194,7 @@
 | 第 2–4 层控件 | 默认 | 继承内容 |
 | --- | --- | --- |
 | 阶段（开发源码） | **与上一层相同** | 上一层请求的阶段；与模型、外观和结果独立。 |
-| 工作分辨率（开发源码） | **继承全局**；独立比例 **100%** | 继承全局／跟随游戏 Guide／固定比例；固定比例 **33–100%**，不受 Stage、模型、外观或结果继承控制。 |
+| 工作分辨率（开发源码） | **继承基础分辨率**；独立比例 **100%** | 继承基础值（非上一层）／Follow input／固定比例；固定比例 **33–100%**，不受 Stage、模型、外观或结果继承控制。 |
 | NR 模型：继承主模型／A／B | **继承主模型** | 主模型选择，包括自动解析与回退；与另外两种继承独立。 |
 | 继承第 1 层外观（Same as pass 1） | **开** | 仅模型风格参数：风格、局部色调、模型结构、人物／皮肤、人物遮罩、UI 修正。不继承模型选择、模型强度、HDR 传递、Color 或结果。独立皮肤仍是全链设置。 |
 | 继承第 1 层结果设置 | **开** | 结果开关、强度、基础／限制／细节／光晕、稳定设置与细节稳定。关闭后可编辑本层结果；上采样仍全链共用。 |
@@ -343,13 +349,15 @@
 | 设置 | 默认／选项 | 作用范围 |
 | --- | --- | --- |
 | 界面主题 | 全新安装 **Cyber Neon**；另有 Nexus Dark／Fluent Light／Midnight OLED | 只改变 NR Nexus 界面颜色，按游戏保存，不改变游戏调色或 NR 画质。已有配置缺少主题项时保留 Nexus Dark。 |
-| 恢复默认主题 | Cyber Neon | 与恢复画质／设置分开；“恢复全部默认”不会重置主题偏好。 |
+| 恢复默认主题 | Cyber Neon | 仅恢复主题；当前开发源码的高级页恢复与全量恢复也将主题恢复为 Cyber Neon，画质／叠层页恢复不改主题。 |
 | 语言 | **Auto** 或 15 种语言 | 英、德、法、西、意、葡萄牙语（巴西）、俄、保加利亚、斯洛文尼亚、土耳其、泰、日、韩、简中、繁中。Auto 跟随 ReShade 的语言，后者未手动选择时跟随 Windows；未匹配的语言回退英文。选择名称保留英文便于找回。ReShade 为自身语言加载字体；插件检测到缺字会保持英文并在 `ReShade.log` 警告，需同时在 ReShade 选择对应语言，并检查自定义字体覆盖。 |
 | 通知 | **开** | 控制游戏内启用／失败／健康提示；关闭仍可看覆盖层状态和诊断。 |
 | 提示 HUD 位置 X／Y | **50%／0%**；各 **0–100%** | 插件通知位置，不是游戏 HUD 位置。 |
 | 开发者视图 | **关**，默认现代视图 | 切换经典平铺布局，含英文技术／原始控件，共用同一配置，同一按钮可返回。 |
-| 恢复全部默认 | 两步恢复／取消 | 重置覆盖的强度、编解码、尺寸、叠层、快捷键、语言、布局、提示位置等并重建 Feature；主题另行恢复，加载时的 Hook 支持配置不重置。 |
+| 恢复全部默认 | 确认恢复／取消 | 当前开发源码恢复本游戏受管理的 NR、兼容性、快捷键、界面及诊断设置；主题恢复 Cyber Neon。Slot 与支持例外见下文。 |
 | 版本与关于 | 只读 | 显示插件版本、已加载 NR 运行时版本、游戏可执行文件名；插件与运行时版本独立。 |
+
+**全量恢复**先保存待处理的 Slot 编辑并解除当前关联，再清除本游戏三个官方 Slot 的个人覆盖，使其回到各自官方默认值；保留三个自定义 Slot（名称与快照）、独立方案库及其他游戏数据，不修改官方模板。加载时支持策略 `EnableHooks`／`DX11Source`／`ForeignNr`、兼容例外 `NRSdrBlackRestore` 和未识别键保留。页面恢复则保留全部六槽，字段边界见[认识菜单](#zh-start)。
 
 ![四套界面主题](images/ui/themes-zh.webp)
 
@@ -426,7 +434,7 @@ Pre-FG service ROI、单个 HDR 样本、120 次 HDR Present、单个 P0 样本�
 4. **确认 NR 与 FG 协同。** 保持游戏预期的原生 FG 或 XeFG 配置，分别读取 FG 活动、实际倍率和 NR 路径，观察近期 Pre-FG 提交及稳定路径；倍率未知不等于 FG 关闭。若显示 Present／Upscaled 回退或混合执行，先查原因再判断成本和生成帧一致性。
 5. **设置 Present 深度与运动策略。** 从可选资源和保留 HUD 开始，确认实际使用真实还是中性资源。仅在捕获资源不可靠且可接受中性数据时尝试从不；必须真实资源则用必需，并接受缺失时跳过。中性资源不会重建真实场景运动，部分兼容 Present 可不依赖 DLSS，不代表所有游戏都可如此运行。
 6. **排查异常、闪烁或性能下降。** 退回一层并比较 Off／On，改参数前先看跳过原因和实测 NR GPU 时间。过度变色、压暗或光晕可调结果及非零柔性限制；精细细节不等于模型结构。运动不稳时核对资源与细节稳定／Stabilize 依赖。固定其他条件后再降低工作尺寸或比较模型，加速／撤销估计需实测；任何预设都不承诺修复已知 XeFG 闪烁。
-7. **恢复默认，再逐项重启。** 备份该游戏 ReShade 设置，在高级→恢复全部默认中确认恢复；主题由单独的恢复默认主题控制，不随画质重置。重新确认 Runtime 和实际活动后，按需逐项启用介入点、模型、附加层、独立编辑及 FG 配置。问题复现时查看诊断或审查本地报告，不把自动化工具失败当作某项设置已修复或插件故障的证明。
+7. **恢复默认，再逐项重启。** 备份该游戏 ReShade 设置，在高级→恢复全部默认中确认恢复；当前开发源码也恢复 Cyber Neon，并清除本游戏三个官方 Slot 的个人覆盖，保留自定义槽、方案库、其他游戏及上述支持例外。重新确认 Runtime 和实际活动后，按需逐项启用介入点、模型、附加层、独立编辑及 FG 配置。问题复现时查看诊断或审查本地报告，不把自动化工具失败当作某项设置已修复或插件故障的证明。
 
 <a id="zh-status"></a>
 ### 状态→原因→操作
@@ -477,6 +485,8 @@ Pre-FG service ROI、单个 HDR 样本、120 次 HDR Present、单个 P0 样本�
 Open ReShade's overlay and select **NR Nexus**. Installation and runtime prerequisites are in the [README](../README.md). This guide starts with the add-on already installed. “Model” means the DLSS NR model; it does not select the game's DLSS Super Resolution preset or enable Frame Generation (FG).
 
 The 0.1.0 interface has four pages: **Quality**, **Multi-Pass**, **Diagnostics**, and **Advanced**. The summary above them reports observed status; click it to open Diagnostics. A green state means NR activity was observed, not that every frame, every resource or the image quality has been validated. Expand all / Collapse all changes the current view's sections. A changed marker or reset arrow means stored values differ from defaults, not that processing succeeded.
+
+**Current development source: page resets follow field ownership.** Quality restores the NR master switch, base model, location, resolution/shared upsampling, styling and results, including Pass 1 fields shared with Multi-Pass. Multi-Pass restores only pass count and independent Pass 2–4 fields, keeping those shared Pass 1 values. Advanced restores compatibility, HDR/depth/motion, hotkeys, screenshots and interface preferences, keeping Quality, independent passes and diagnostic controls. After confirmation, pending Slot edits save before the current association is detached; all six saved Slots and library files are kept, so reset values are not autosaved into the former Slot. See [Advanced](#en-advanced) for full-reset scope and exceptions.
 
 In the current development source, **Expand all / Collapse all** sit at the top right of every page's content area; narrow windows use `+` / `-` with tooltips. The status summary uses two rows, or up to three in a narrow window. **Details** opens the complete status, stages/passes from existing GPU-complete samples, working/output sizes and model creation requests, with an action to continue to Diagnostics. Unobserved, pending, expired and NR-off states are explicit; creation requests do not establish the runtime's internal network. This interaction update has not shipped in an installation package.
 
@@ -532,9 +542,11 @@ These controls steer what the model creates. Changes restart temporal history. T
 
 | Choice | Input / applicability |
 | --- | --- |
-| **Upscaled** (default) | NR processes the game's DLSS output, before later game processing and HUD. Requires usable intercepted DLSS resources. |
 | **Render** | NR processes the game colour before DLSS upscales it, using game depth and motion at render resolution. Can reduce cost. With Ray Reconstruction, NR stays on the compatible Upscaled path because the pre-RR input is still noisy. |
+| **Upscaled** (default) | NR processes the game's DLSS output, before later game processing and HUD. Requires usable intercepted DLSS resources. |
 | **Present** | Requests processing of the finished presented frame, after game post-processing and HUD, before ReShade effects and overlay. A compatible Pre-FG route can instead serve NR before FG. Check the observed route in Diagnostics. |
+
+The current development menu displays **Render → Upscaled → Present**. Upscaled remains the default; existing stored selections keep their meaning.
 
 **Present is not a switch that requires DLSS to be enabled in every case.** On ordinary Present, Optional or Never can use neutral guides when no matching DLSS capture exists, subject to runtime, device, frame and format checks. Required needs matching depth and motion and skips without them. Upscaled and Render depend on the game's DLSS evaluation path. Present is not supported by every API/integration; an unsupported Present route may fall back to Upscaled. Follow Diagnostics rather than treating the selected location as proof of execution.
 
@@ -557,13 +569,15 @@ When NR runs on every present, FG can multiply the number of full NR chains. Gam
 
 | Preset | Per-axis scale | Meaning |
 | --- | --- | --- |
-| **Full** (default) | **100%** | Uses the full reference size. Does not enable DLAA or change the game's DLSS setting. |
-| Quality | **67%** | Reduced NR working size. |
-| Balanced | **58%** | Further reduced NR working size. |
-| Performance | **50%** | Half width and height: roughly one quarter of the reference pixel count, not a guaranteed quarter of GPU time. |
-| Match game | Follows game render resolution | Follows valid guide dimensions, capped at the reference size; otherwise uses the previously saved scale. It does not select a fixed percentage. |
+| **100%** (default) | **100%** | Uses the full reference size. Does not enable DLAA or change the game's DLSS setting. |
+| 67% | **67%** | Reduced NR working size. |
+| 58% | **58%** | Further reduced NR working size. |
+| 50% | **50%** | Half width and height: roughly one quarter of the reference pixel count, not a guaranteed quarter of GPU time. |
+| Follow input | Per-axis minimum of valid guides and reference size | Without valid guides, uses the saved scale. Selecting Follow input preserves that scale and does not change the game's DLSS mode. |
 
-The reference is normally DLSS output size on Upscaled, the input colour size on Render, or the presented frame on Present. **Working at** reports the last observed NR dimensions. Fine tuning offers **33–100%** when not following the game; values between presets display as Custom. Preset changes apply on the next evaluation; continuous scale dragging can settle before a rebuild. Reference sizes and compatible resource contracts still govern the result.
+In the current development source, the five choices, **33–100%** scale slider and shared upsampling stay visible. Quality and Multi-Pass Pass 1 reuse the same controls and edit the same base values. Follow input disables the slider while retaining its scale and showing why; a custom scale does not highlight a fixed preset. Preset changes apply on the next evaluation; continuous scale dragging can settle before a rebuild. Reference sizes and compatible resource contracts still govern the result.
+
+The reference follows the **effective Stage**: the common cropped Color/Motion/Depth region on Render (normally the DLSS input), the DLSS output rectangle on Upscaled, and the effective presented frame on Present. **Last recorded** reference, requested and model working sizes are historical, not proof that current edits ran. Missing data or an unrecorded model is shown as unavailable; current settings can remain pending confirmation. Even a recently completed GPU sample does not automatically confirm a subsequently edited configuration. Guide source and freshness remain unknown when readback cannot establish them; neither size nor Hook selection confirms them. Ordinary Present may use full-size neutral guides, while Required rejects frames without valid guides; Pre-FG has separate gates.
 
 | Upsampling choice | Behaviour below output size |
 | --- | --- |
@@ -624,7 +638,7 @@ Each pass processes the preceding result. These are not parallel alternatives an
 
 **Development source: per-pass stages.** Pass 1 keeps the Quality page's Hook Point. Passes 2–4 add **Stage: Same as previous / Render / Upscaled / Present**, independently of model, styling and result inheritance. The default keeps the old single-stage chain. Stages must move in order `Render → Upscaled → Present`; a backward request disables the chain and preserves your choices. Native DX12 and native DX11 Bridge DLSS SR/DLAA can split Render and Upscaled groups, for example `Pass 1 · Render · A → game DLSS SR → Pass 2 · Upscaled · B`. A/B combinations remain independent of stage. Render consumes the render image and supplies its result as the game's SR input; Upscaled consumes the game's SR output. The DX11 path requires an immediate context, shared-fence support and a private DX12 device on the same adapter. Each mixed-stage delivery waits for proven GPU completion with a bounded event wait, adding synchronization cost; failed Render delivery or failed game SR skips the following group and resets NR history.
 
-**Current development source (v0.2.0-dev.10): independent working resolution (partial support).** In the existing Passes 2–4 editor, choose a resolution mode: inherit global `NRFollowInputRes` and `NRResolutionScale` (default), follow game guides with the existing caps and scale fallback when guides are missing, or use the saved fixed scale of **33–100%** (default **100%**). Fixed scales refer to that Stage's full dimensions: the valid Render Color region or the game's Upscaled DLSS output. Pass 1 still uses the global Quality controls. Game DLSS SR resolution is unchanged. Examples include `Render A 100% → game DLSS SR → Upscaled B 67%`, or Render 67% and Upscaled 100%. Returning to inherited mode retains the local scale. Resolution is independent of Stage, Model Preset, Look and Result; upsampling remains shared.
+**Current development source (v0.2.0-dev.10): independent working resolution (partial support).** Passes 2–4 default to **Inherit base resolution** (`NRFollowInputRes` and `NRResolutionScale`), rather than inheriting the preceding pass's scale. They can instead use **Follow input** or a saved fixed scale of **33–100%** (default **100%**). Follow input takes the per-axis minimum of valid guides and this pass's Stage reference; without valid guides it falls back to the saved scale. Fixed scale also uses this pass's effective Stage reference, defined under Quality. Pass 1 reuses the same base controls as Quality. Game DLSS SR resolution is unchanged. Examples include `Render A 100% → game DLSS SR → Upscaled B 67%`, or Render 67% and Upscaled 100%. Returning to inherited mode retains the local scale. Resolution is independent of Stage, Model Preset, Look and Result; upsampling remains shared across the chain, with a shared-setting hint on Passes 2–4. The editor title combines the selected Pass, effective Stage and model request name; it does not confirm execution.
 
 In a native DX11 Bridge or DX12 chain without Present, two passes in one Render or Upscaled StageGroup support different working sizes: `Upscaled Pass 1 · A 100% → Pass 2 · B 67%`, or A 67% and B 100%. Render uses `Render A 100% → Render B 67% → game DLSS SR` or the reverse scales, preserving the game SR internal render dimensions. Each scale still refers to the full Stage size. The current v0.2.0-dev.10 development source also permits exactly two ordinary Present passes on native DX11 Bridge or DX12 with different working sizes, after a successful public FG Off declaration for the process. Without that successful declaration, the pair remains rejected, even if no FG activity is observed. The declaration applies to the process, not to individual viewports. This Present capability rejects unknown/On FG, Pre-FG and B1/mixed chains, without changing existing Render/Upscaled support. The DX11 Present pair adds a bounded GPU-completion wait and synchronization cost. The new DX11 Present pair passed targeted WARP/hardware GPU automation; game operation, the NVIDIA network and performance gains remain unverified. Groups of 3+ passes still require matching actual sizes; unsupported mismatches explicitly reject the group, with a UI explanation and saved settings retained for correction. Overrides are never silently ignored. Different settings that resolve to the same dimensions do not conflict. **This is a partial two-pass implementation. Upscaled passed targeted WARP/hardware GPU automation; the DX12/Bridge Render two-pass core is implemented, with three HDR Bridge cases and eight DX12 scenarios/twenty phases passing WARP/hardware GPU automation; actual neural-network behavior, game visuals and performance gains have not been accepted.** Independent modes require native DX11/DX12. The existing Vulkan executor does not consume working dimensions, so it explicitly rejects non-inherited modes (1/2); inherited defaults (0) preserve its old behavior. Diagnostics report the last observed dimensions; percentages do not prove execution or performance gains. Existing screenshots do not show these new controls.
 
@@ -639,7 +653,7 @@ Pass 1 shares the base Quality controls, including its result settings. Editing 
 | Passes 2–4 control | Default | What is inherited |
 | --- | --- | --- |
 | Stage (development) | **Same as previous** | The preceding pass's requested stage; independent of model, styling and results. |
-| Working resolution (development source) | **Inherit global**; local scale **100%** | Inherit global / follow game guides / fixed scale **33–100%**. Independent of Stage, model, styling and result inheritance. |
+| Working resolution (development source) | **Inherit base resolution**; local scale **100%** | Base values (not the preceding pass) / Follow input / fixed scale **33–100%**. Independent of Stage, model, styling and result inheritance. |
 | NR model: Inherit Main Model / A / B | **Inherit Main Model** | The main model selection, including Auto resolution and fallback. Independent of the other inheritance switches. |
 | Same as pass 1 | **On** | Model steering only: Style, Local tone, Model structure, Character / skin, Character mask, UI correction. It does not inherit model choice, model strength, HDR transfer, Color or result settings. Independent skin remains a chain-wide setting. |
 | Inherit Pass 1 result settings | **On** | Result enable, strength, all shaping/limit/detail/halo settings, Stabilize settings and Detail stability. Turn off to edit this pass's own result controls. Shared upsampling remains shared. |
@@ -794,13 +808,15 @@ Saving a local ZIP, authorizing upload to the displayed temporary hosts, includi
 | Setting | Default / options | Scope |
 | --- | --- | --- |
 | Interface theme | Fresh installation: **Cyber Neon**; Nexus Dark / Fluent Light / Midnight OLED also available | Changes NR Nexus interface colours only, saved for this game. Does not grade the game image or change NR quality. Existing configurations without a theme retain Nexus Dark. |
-| Restore default theme | Cyber Neon | Separate action from restoring picture/settings defaults. Restore all does not reset the theme preference. |
+| Restore default theme | Cyber Neon | Restores only the theme. In current development source, Advanced and full resets also restore Cyber Neon; Quality and Multi-Pass page resets keep the theme. |
 | Language | **Auto**, or one of 15 languages | English, German, French, Spanish, Italian, Portuguese (Brazil), Russian, Bulgarian, Slovenian, Turkish, Thai, Japanese, Korean, Chinese (Simplified), Chinese (Traditional). Auto follows ReShade's language, which follows Windows unless selected there; an unmatched language falls back to English. Choices remain readable in English. ReShade loads fonts for its own language; if the add-on detects missing glyphs, it stays in English and warns in `ReShade.log`. Select the corresponding language in ReShade too, and check any custom font override. |
 | Notifications | **On** | Controls gameplay activation/failure/health notices. Turning it off retains the overlay status and Diagnostics. |
 | HUD position X / Y | **50% / 0%**, **0–100%** each | Position of the add-on's notification HUD, not the game's HUD. |
 | Developer view | **Off** (modern view) | Switches to the classic flat layout, with technical/raw English controls. Same underlying settings. Use the same button to return. |
-| Restore all defaults | Two-step Restore / Cancel | Resets the covered settings, including strengths, codec, resolution, passes, hotkeys, language, layout and notification position; recreates NR features. Theme has its own reset. Attach-time hook support configuration is not reset. |
+| Restore all defaults | Confirm restore / Cancel | Current development source restores this game's managed NR, compatibility, hotkey, interface and diagnostic settings, including the Cyber Neon theme. See Slot and support exceptions below. |
 | Version & about | Readout | Shows the add-on version, loaded NR runtime version and game executable name. Runtime and add-on versions are independent. |
+
+**Full reset** saves pending Slot edits and detaches the current association, then clears personal overrides in this game's three official Slots, returning each to its official defaults. It keeps all three custom Slots (names and snapshots), independent library files and other games' data, without changing official templates. Attach-time support policies `EnableHooks` / `DX11Source` / `ForeignNr`, the `NRSdrBlackRestore` compatibility exception and unknown keys are preserved. Page resets keep all six saved Slots; field ownership is described under [Getting oriented](#en-start).
 
 ![Theme choices](images/ui/themes.webp)
 
@@ -877,7 +893,7 @@ Pre-FG service ROI, one HDR sample, 120 HDR Presents and one P0 sample are bound
 4. **Confirm NR with FG.** Keep the game's intended native FG or XeFG setup. Read FG activity, observed multiplier and NR route separately. Look for recent Pre-FG submissions and a consistent route; an unknown multiplier is not FG Off. If Present/Upscaled fallback or mixed execution is reported, read its reason before assessing cost or generated-frame consistency.
 5. **Set Present depth and motion policy.** Start with Optional and Keep the HUD On. Confirm whether real or neutral guides are actually used. Try Never only when captured guides are unreliable and neutral data is acceptable; use Required when real guides are essential and accept skips when missing. Neutral guides do not recreate true scene motion, and compatible Present operation without DLSS is not a universal game promise.
 6. **Troubleshoot artifacts, flicker or cost.** Return to one pass and compare Off/On. Read skipped reasons and measured NR GPU time before changing controls. For excessive colour/darkening/halos, tune result edits and nonzero soft limits; Fine detail differs from Model structure. For motion instability, inspect guides and Detail stability/Stabilize dependencies. Reduce working size or compare models only after holding other settings fixed; Faster/Undo estimates need an actual check. The known XeFG flicker is not a promised fix from any preset.
-7. **Restore defaults, then re-enable one feature at a time.** Back up the game's ReShade settings, open Advanced → Restore all defaults and confirm Restore. Theme has its own Restore default theme action and is not reset with picture settings. Recheck runtime and actual activity, then re-enable the intended location, model, additional passes, independent edits and FG setup one change at a time. Use diagnostics or a reviewed local report if the problem returns; do not infer a setting fix from a tool failure.
+7. **Restore defaults, then re-enable one feature at a time.** Back up the game's ReShade settings, open Advanced → Restore all defaults and confirm. Current development source also restores Cyber Neon and clears this game's three official Slot overrides, keeping custom Slots, library files, other games and the support exceptions above. Recheck runtime and actual activity, then re-enable the intended location, model, additional passes, independent edits and FG setup one change at a time. Use diagnostics or a reviewed local report if the problem returns; do not infer a setting fix from a tool failure.
 
 <a id="en-status"></a>
 ### Status → reason → action

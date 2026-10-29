@@ -44,7 +44,7 @@ const auto RunProfileRuntimeCases = [&](const std::filesystem::path& outputdir) 
     const auto deadline = GetTickCount64() + 10000;
     for (;;) {
       profile::Tick();
-      if (!profile::Busy() && profile::pending_action == profile::Action::NONE
+      if (!profile::Busy() && !profile::Resetting() && profile::pending_action == profile::Action::NONE
           && (!profile::dirty || profile::save_failed)) return;
       if (GetTickCount64() >= deadline) throw std::runtime_error("Profile worker did not settle within 10 seconds.");
       Sleep(1);
@@ -485,6 +485,8 @@ const auto RunProfileRuntimeCases = [&](const std::filesystem::path& outputdir) 
   Check(profile::active == -1 && profile::state.selected.empty(), "External configuration reload detaches active profile.");
   Check(profile::state.slots[0].overrides == before_external, "External reload does not rewrite official overrides.");
   settle();
+
+  #include "profile_reset_cases.hpp"
 
   // Finish all real writes before restoring fixture configuration/environment.
   profile::active = -1;

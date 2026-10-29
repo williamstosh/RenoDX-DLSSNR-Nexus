@@ -63,6 +63,7 @@ try {
         (Join-Path $addonDirectory 'profile_store.hpp'),
         (Join-Path $addonDirectory 'profile_templates.hpp'),
         (Join-Path $PSScriptRoot 'profile_runtime_cases.hpp'),
+        (Join-Path $PSScriptRoot 'profile_reset_cases.hpp'),
         (Join-Path $ShaderIncludeDirectory 'embed/shaders.h'))
     $hashes = @{}
     foreach ($inputPath in $inputs) {

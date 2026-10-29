@@ -328,6 +328,33 @@ int main(int argc, char** argv) {
       }
       Check(!runtime::nr_follow_input_res.load() && std::abs(runtime::nr_resolution_scale.load() - .58f) < .0001f,
             "pass overrides do not change global resolution");
+      const auto saved_hook = runtime::hook_point.load();
+      runtime::nr_follow_input_res = true;
+      for (const unsigned hook : {1u, 0u, 2u}) {
+        runtime::hook_point = hook;
+        uint32_t width = 0, height = 0;
+        runtime::ComputeNrWorkingResolution(1920, 1080, 1280, 720, width, height);
+        Check(width == 1280 && height == 720, "Follow calculation uses Guide dimensions at every configured stage without reinterpreting Hook storage.");
+        runtime::ComputeNrWorkingResolution(1920, 1080, 0, 0, width, height);
+        Check(width == 1114 && height == 626, "Missing Guide dimensions retain the saved scale fallback instead of inventing a followed size.");
+      }
+      runtime::hook_point = saved_hook;
+      runtime::nr_follow_input_res = false;
+      runtime::nr_resolution_scale = 1.f;
+      runtime::pass_resolution_mode[0] = 2;
+      runtime::pass_resolution_scale[0] = .67f;
+      runtime::pass_resolution_mode[1] = 0;
+      renodx::addons::dlss5::stage_plan::Group group{.stage = renodx::addons::dlss5::stage_plan::Stage::UPSCALED,
+                                                    .begin = 0, .count = 3};
+      uint32_t width = 0, height = 0;
+      Check(!runtime::ComputeNrGroupWorkingResolution(group, 1920, 1080, 1280, 720, &width, &height),
+            "Three-pass shared resources reject incompatible actual sizes without changing other pass settings.");
+      Check(runtime::pass_resolution_mode[0].load() == 2 && runtime::pass_resolution_scale[0].load() == .67f,
+            "Rejecting incompatible dimensions retains the user's independent request.");
+      runtime::pass_resolution_scale[0] = 1.f;
+      Check(runtime::ComputeNrGroupWorkingResolution(group, 1920, 1080, 1280, 720, &width, &height),
+            "Different modes with matching actual pixels do not create a false resolution conflict.");
+      runtime::LoadConfiguration();
     }
     if (test_case == "profiles") {
 #include "profile_runtime_cases.hpp"
@@ -1134,11 +1161,29 @@ int main(int argc, char** argv) {
                 && runtime::debug_bypass_sdr_restore.load() && runtime::debug_bypass_hdr_pedestal.load(),
             "reset starts from explicit diagnostic choices");
       Check(runtime::features.empty(), "reset host has no GPU features to release");
-      const auto generation = runtime::configuration_generation.load();
+      namespace profile = runtime::profile_ui;
+      namespace data = renodx::addons::dlss5::profiles;
+      profile::loaded = profile::writable = true;
+      profile::dirty = profile::save_failed = false;
+      profile::active = -1;
+      profile::game_id = std::string(32, 'a');
+      profile::storage_path = base_directory / "reset-profiles" / "slots.json";
+      std::filesystem::create_directories(profile::storage_path.parent_path());
+      profile::state = data::EmptyState(std::string(64, 'a'));
+      profile::defaults_snapshot = profile::Snapshot(true);
+      profile::observed_snapshot = profile::Snapshot();
+      profile::observed_epoch = runtime::profile_commit_epoch.load();
+      profile::observed_reload_epoch = runtime::profile_reload_epoch.load();
       writes.clear();
-      runtime::ResetToDefaults(nullptr);
-      Check(runtime::configuration_generation.load() == generation + 1,
-            "real ResetToDefaults executed real RecreateFeatures");
+      profile::Initialize();
+      profile::RequestReset(3);
+      const auto deadline = GetTickCount64() + 10000;
+      while (profile::Resetting() || profile::Busy()) {
+        profile::Tick();
+        if (GetTickCount64() > deadline) throw std::runtime_error("Reset did not settle.");
+        Sleep(1);
+      }
+      Check(!profile::save_failed && profile::active == -1, "asynchronous reset completes with detached profiles");
       CheckPair("1");
       Check(!Configuration().inherited && Configuration().scope == scope::Scope::FINAL_PRESENT_AND_PRE_FG,
             "reset publishes explicit scope1");
@@ -1146,7 +1191,7 @@ int main(int argc, char** argv) {
             "reset persists SDR Off and HDR Off");
       Check(Read("NRDebugBypassSdrRestore") == "0" && Read("NRDebugBypassHdrPedestal") == "0",
             "reset persists false restore bypass flags");
-      Check(Read("ConfigVersion") == "8" && WasWritten("ConfigVersion"), "reset persists schema8");
+      Check(Read("ConfigVersion") == "8", "reset preserves the current schema8 stamp");
       for (const auto& event : writes) {
         if (event.key == "ConfigVersion") Check(event.pair_present_at_global, "reset verifies restore defaults before stamp");
       }

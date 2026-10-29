@@ -1620,7 +1620,7 @@ inline std::atomic_uint64_t queue_submit_entries{0};
 
 // Built-in defaults - the single source of truth for every user setting.  The
 // setting atomics below initialize from these, LoadConfiguration falls back
-// to them, and PersistConfig/ResetToDefaults write them.  kConfigVersion (at
+// to them, and configuration persistence/reset write them.  kConfigVersion (at
 // the top of this file) makes changed defaults reach existing installs: a
 // stored config with an older marker is reset instead of silently shadowing
 // the new values.  Deliberately game-agnostic: stock/neutral NR model
@@ -21985,7 +21985,6 @@ inline bool ApplyPresentRestoreDefaults() {
       || !present_restore_configuration.scope.writable
       || !present_sdr_restore_config_writable.load()
       || !hdr_pedestal_policy_state.configuration.writable) return false;
-
   auto scope = present_restore_configuration.scope;
   present_restore_configuration.scope.initialize_new = false;
   if (!diagnostics::PersistRestoreScope(&scope,
@@ -21998,12 +21997,8 @@ inline bool ApplyPresentRestoreDefaults() {
       {"NRPresentSdrRestoreConfigVersion", present_sdr_restore::CONFIG_VERSION},
       {"NRPresentHdrPedestalPolicy", static_cast<uint32_t>(present_hdr_pedestal::DEFAULT_POLICY)},
       {"NRPresentHdrPedestalConfigVersion", present_hdr_pedestal::CONFIG_VERSION},
-      {"NRDebugBypassSdrRestore", 0u},
-      {"NRDebugBypassHdrPedestal", 0u},
-  };
-  for (const auto& [key, value] : values) {
-    WritePresentRestoreValue(key, value);
-  }
+      {"NRDebugBypassSdrRestore", 0u}, {"NRDebugBypassHdrPedestal", 0u}};
+  for (const auto& [key, value] : values) WritePresentRestoreValue(key, value);
   for (const auto& [key, value] : values) {
     const auto actual = ReadPresentRestoreRaw(key);
     if (!actual || *actual != std::to_string(value)) return false;
@@ -22053,40 +22048,6 @@ inline void PersistConfig(bool persist_present_restore = true) {
   StoreUiLanguage(ui_language_choice.load());
   reshade::set_config_value(nullptr, kConfigSection, "UiHudX", hud_position_x.load());
   reshade::set_config_value(nullptr, kConfigSection, "UiHudY", hud_position_y.load());
-}
-
-// Config breaker: every user setting back to the defaults namespace,
-// persisted, with NR feature/workset state recreated so the new settings
-// start from clean temporal state.  EnableHooks is deliberately untouched -
-// it is a per-game support knob that applies at attach, not a user setting.
-// Profile association observes the committed values like any other user edit.
-inline void ResetToDefaults(reshade::api::effect_runtime* runtime) {
-  if (!ApplyPresentRestoreDefaults()) {
-    Log(reshade::log::level::warning, "Restore defaults could not be saved; settings were not reset");
-    return;
-  }
-  for (const SettingGroup& section : kSettingSections) {
-    for (const Setting* setting : section) setting->Store(setting->fallback);
-  }
-  max_worksets = kDefaultMaxWorksets;
-  workset_free_policy.store(kDefaultWorksetFreePolicy, std::memory_order_relaxed);
-  disable_release_mode.store(kDefaultDisableRelease, std::memory_order_relaxed);
-  shutdown_quiesce_enabled.store(true, std::memory_order_relaxed);
-  shutdown_quiesce_latched.store(false, std::memory_order_relaxed);
-  ui_classic_layout = false;
-  ui_language_choice = 0;
-  hud_position_x = 50.f;
-  hud_position_y = 0.f;
-  RecreateFeatures();
-  PersistConfig();
-  {
-    std::lock_guard<std::mutex> lock(ini_issues_mutex);
-    ini_issues.clear();
-    ini_issue_count.store(0, std::memory_order_relaxed);
-  }
-  Log(
-      reshade::log::level::info,
-      "all settings restored to the built-in defaults");
 }
 
 // The test-only panel capture (U0): see OnUiCapturePresent.
@@ -22198,15 +22159,28 @@ inline void SliderSetting(const ui::PanelText& text, const Setting& setting,
   ImGui::PopID();
 }
 
-// A setting whose stored value is the index of its choice: a dropdown in
-// the classic layout, segments in the modern one (a dropdown there too when
-// the row is too narrow for the labels).
+// Choices use their index unless a display-to-storage mapping is supplied.
+// Narrow rows and the classic layout use the same choices in a dropdown.
 inline void ChoiceSetting(const ui::PanelText& text, const Setting& setting,
                           const char* label, std::span<const char* const> items,
-                          const char* tooltip, std::span<const char* const> option_tips = {}) {
+                          const char* tooltip, std::span<const char* const> option_tips = {},
+                          std::span<const uint32_t> stored_values = {}) {
   ImGui::PushID(setting.key);
   int index = static_cast<int>(setting.Get());
   const int count = static_cast<int>(items.size());
+  int fallback_index = static_cast<int>(setting.fallback);
+  if (!stored_values.empty()) {
+    index = -1;
+    fallback_index = -1;
+    for (int i = 0; i < count; ++i) {
+      if (stored_values[i] == static_cast<uint32_t>(setting.Get())) {
+        index = i;
+      }
+      if (stored_values[i] == static_cast<uint32_t>(setting.fallback)) {
+        fallback_index = i;
+      }
+    }
+  }
   bool changed = false;
   if (text.modern) {
     ui::RowLabel(label, tooltip);
@@ -22228,9 +22202,11 @@ inline void ChoiceSetting(const ui::PanelText& text, const Setting& setting,
       index = clicked;
     }
   }
-  if (changed) setting.Commit(static_cast<float>(index));
+  if (changed) {
+    setting.Commit(static_cast<float>(stored_values.empty() ? index : stored_values[index]));
+  }
   if (text.modern && setting.Modified()
-      && ui::ResetButton("reset", items[static_cast<size_t>(setting.fallback)])) {
+      && ui::ResetButton("reset", fallback_index >= 0 && fallback_index < count ? items[fallback_index] : nullptr)) {
     setting.Commit(setting.fallback);
   }
   ImGui::PopID();
@@ -22760,7 +22736,8 @@ inline void DrawSectionHookPoint(const ui::PanelText& text, bool present_details
   // NR runs on the swapchain's back buffer at the present event, after the
   // game's own post-processing and UI and before ReShade's effects and
   // overlay (present_path.hpp).
-  constexpr const char* kHookPoints[] = {"Upscaled", "Render", "Present"};
+  constexpr const char* kHookPoints[] = {"Render", "Upscaled", "Present"};
+  constexpr uint32_t kHookValues[] = {1, 0, 2};
   ChoiceSetting(
       text, kSetHookPoint, text.hook_point, kHookPoints,
       "Where Neural Rendering runs.  Upscaled: on the game's DLSS output."
@@ -22769,7 +22746,7 @@ inline void DrawSectionHookPoint(const ui::PanelText& text, bool present_details
       " input is still noisy).  Present: on the finished frame the game"
       " presents, after its own post-processing and HUD, before ReShade's"
       " effects.",
-      ui::text::kHookTips);
+      ui::text::kHookTips, kHookValues);
   const auto plan = RequestedStagePlan();
   if (!plan.valid || plan.requested[0] != plan.effective[0]) {
     ImGui::TextWrapped("%s: %s", text.Tr(ui::text::kRequestedStage),
@@ -22783,54 +22760,102 @@ inline void DrawSectionHookPoint(const ui::PanelText& text, bool present_details
   }
 }
 
-inline void DrawResolutionObserved(const ui::PanelText& text) {
-  if (last_input_width.load() != 0) {
-    if (text.modern) {
-      ui::RowLabel("Working at");
-      ImGui::Text("%ux%u", last_input_width.load(), last_input_height.load());
-    } else {
-      ImGui::Text(
-          "Applied NR working resolution: %ux%u",  // i18n: skip (Developer view)
-          last_input_width.load(),
-          last_input_height.load());
-    }
-  } else if (text.modern) {
-    ui::RowLabel("Working at");
-    ImGui::TextUnformatted(ui::Tr(ui::text::kNoneYet));
+inline void DrawResolutionObserved(const ui::PanelText& text, uint32_t pass = 0) {
+  const auto plan = RequestedStagePlan();
+  const auto stage = plan.effective[pass];
+  const char* reference = ui::text::kResolutionReferenceUpscaled;
+  switch (stage) {
+    case stage_plan::Stage::RENDER: reference = ui::text::kResolutionReferenceRender; break;
+    case stage_plan::Stage::UPSCALED: break;
+    case stage_plan::Stage::PRESENT: reference = ui::text::kResolutionReferencePresent; break;
   }
+  ImGui::TextWrapped("%s", text.Tr(reference));
+  ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionGuideUnknown));
+  if (stage == stage_plan::Stage::PRESENT) {
+    ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionPresentGuides));
+  }
+  StageTelemetry observed;
+  gpu_timers::Stats gpu;
+  {
+    RuntimeLock lock(runtime_mutex);
+    observed = stage_telemetry[static_cast<size_t>(stage)];
+    gpu = gpu_timers::stage_stats[static_cast<size_t>(stage)];
+  }
+  if (observed.groups != 0 && pass >= observed.pass_begin
+      && pass < observed.pass_begin + observed.pass_count && observed.width != 0 && observed.height != 0
+      && observed.pass_resolutions[pass].requested_width != 0 && observed.pass_resolutions[pass].requested_height != 0) {
+    const auto& size = observed.pass_resolutions[pass];
+    ImGui::TextWrapped("%s: %ux%u / %ux%u", text.Tr(ui::text::kObservedResolution),
+                       observed.width, observed.height, size.requested_width, size.requested_height);
+    if (size.model_recorded && size.effective_width != 0 && size.effective_height != 0) {
+      ImGui::TextWrapped(text.Tr(ui::text::kResolutionEffective), size.effective_width, size.effective_height);
+    } else {
+      ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionEffectiveUnknown));
+    }
+    if (observed.resolution_blocked) {
+      ImGui::TextWrapped("%s", text.Tr(ui::text::kStageResolutionBlocked));
+    }
+    const int64_t age = SteadyNowNs() - gpu.measured_ns;
+    if (gpu.valid && age >= 0 && age <= gpu_timers::internal::kSampleAgeNs) {
+      for (const auto& sample : gpu.passes) {
+        if (sample.id == pass && sample.state == gpu_timers::SampleState::VALID
+            && size.model_recorded && sample.model == observed.resolved_requests[pass]
+            && sample.width == size.effective_width && sample.height == size.effective_height) {
+          // Timer publication has no settings identity. Even a recent exact
+          // completion cannot prove that subsequently edited settings ran.
+          ImGui::TextWrapped(text.Tr(ui::text::kResolutionCompletedSample), sample.width, sample.height);
+          break;
+        }
+      }
+    }
+  } else {
+    ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionUnavailable));
+  }
+  ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionCurrentPending));
 }
 
+// Shared by the Quality editor and Pass 1; the stored fractions are unchanged.
+struct ResolutionPreset {
+  bool follow;
+  float scale;
+  int mode;
+};
+inline constexpr ResolutionPreset kResolutionPresets[] = {
+    {.follow = false, .scale = 1.00f, .mode = 0},
+    {.follow = false, .scale = 0.67f, .mode = 2},
+    {.follow = false, .scale = 0.58f, .mode = 2},
+    {.follow = false, .scale = 0.50f, .mode = 2},
+    {.follow = true, .scale = 1.00f, .mode = 1}};
+static_assert(std::size(kResolutionPresets) == std::size(ui::text::kResolutionLabels));
+
 inline void DrawResolutionControls(const ui::PanelText& text) {
-  // NR working resolution (v5.1).  One control for both insertion points:
-  // native, following the game's render (guide) resolution, or a scaled
-  // fraction of the reference - the DLSS output for the after path, the NGX
-  // color for pre-SR.  The NR feature always runs 1:1 at the working
-  // resolution; the decode stage upscales, motion vectors pass unchanged (F8).
-  // The on-disk settings stay NRFollowInputRes / NRResolutionScale; the
-  // classic combo and the modern presets only derive their selection from
-  // them, and the modern layout keeps its presets at the top of the panel.
-  int ui_res_mode = nr_follow_input_res.load() ? 1
-                                               : (nr_resolution_scale.load() < 0.999f ? 2 : 0);
-  if (!text.modern) {
-    ImGui::TextUnformatted("NR working resolution");  // i18n: skip (Developer view)
-    constexpr const char* kResModes[] = {
-        "Native (100%)", "Follow render resolution", "Scaled"};                                   // i18n: skip (Developer view)
-    if (ImGui::Combo(ui::ControlLabel("Resolution mode").c_str(), &ui_res_mode, kResModes, 3)) {  // i18n: skip (Developer view)
-      float scale = nr_resolution_scale.load();
-      if (ui_res_mode == 0) {
-        scale = 1.f;
-      } else if (ui_res_mode == 2 && scale >= 0.999f) {
-        // Entering Scaled from Native snaps to a meaningful starting point so
-        // the mode change has an immediate visible effect.
-        scale = 0.66f;
-      }
-      CommitResolutionMode(ui_res_mode, ui_res_mode == 1, scale);
+  const bool follow = nr_follow_input_res.load();
+  const float scale = nr_resolution_scale.load();
+  int preset = -1;
+  std::array<std::string, std::size(kResolutionPresets)> labels;
+  std::array<const char*, std::size(kResolutionPresets)> items;
+  constexpr const char* kIds[] = {"###nr_resolution_full", "###nr_resolution_quality",
+                                "###nr_resolution_balanced", "###nr_resolution_performance", "###nr_resolution_follow"};
+  for (size_t i = 0; i < std::size(kResolutionPresets); ++i) {
+    const auto& candidate = kResolutionPresets[i];
+    if (candidate.follow ? follow : (!follow && std::abs(scale - candidate.scale) <= 1e-6f)) {
+      preset = static_cast<int>(i);
     }
+    labels[i] = std::string(text.Tr(ui::text::kResolutionLabels[i])) + kIds[i];
+    items[i] = labels[i].c_str();
   }
+  ui::RowLabel(ui::text::kResolution, ui::text::kResolutionTip);
+  const int clicked = ui::Segmented("##resolution", items.data(), static_cast<int>(items.size()), preset,
+                                    ui::text::kResolutionTip, ui::text::kResolutionTips, nullptr, !text.modern);
+  if (clicked >= 0 && clicked != preset) {
+    const auto& chosen = kResolutionPresets[clicked];
+    CommitResolutionMode(chosen.mode, chosen.follow, chosen.follow ? scale : chosen.scale);
+  }
+  ResolutionResetButton("resolution_reset");
   constexpr const char* kScaleTip =
       "The working resolution as a share of the full one.  Lower costs less"
       " GPU time.";
-  if (text.modern ? !nr_follow_input_res.load() : ui_res_mode == 2) {
+  {
     // Written LIVE on every change: the value settles through the
     // present-path contract debounce, so a drag costs exactly one rebuild
     // once the value holds for kContractDebounceFrames (~0.5 s). Deliberately
@@ -22838,24 +22863,28 @@ inline void DrawResolutionControls(const ui::PanelText& text) {
     // not reliably deliver them for drags, which silently pinned the slider
     // to its entry value. Per-tick rebuilds remain impossible because the
     // debounce counter resets while the dragged dims keep changing.
-    float ui_res_pct = nr_resolution_scale.load() * 100.f;
+    const float original_pct = nr_resolution_scale.load() * 100.f;
+    float ui_res_pct = original_pct;
+    const bool following = nr_follow_input_res.load();
+    ImGui::BeginDisabled(following);
     if (text.modern) {
       ui::RowLabel("Resolution scale", kScaleTip);
       ui::Slider("##resolution_scale", &ui_res_pct, 33.f, 100.f, "%.0f%%", kScaleTip);
     } else {
       ImGui::SliderFloat(ui::ControlLabel("Resolution scale").c_str(), &ui_res_pct, 33.f, 100.f, "%.0f%%");
     }
-    ui_res_pct = std::clamp(ui_res_pct, 33.f, 100.f);
-    const float live_scale = ui_res_pct / 100.f;
-    if (live_scale != nr_resolution_scale.load()) {
-      kSetResolutionScale.Store(live_scale);
+    ImGui::EndDisabled();
+    if (!following && ui_res_pct != original_pct) {
+      kSetResolutionScale.Store(std::clamp(ui_res_pct, 33.f, 100.f) / 100.f);
       kSetResolutionScale.Persist();
     }
-  } else if (text.modern) {
-    ui::RowLabel("Resolution scale", kScaleTip);
-    ImGui::TextDisabled("%s", ui::Tr("follows the game (Match game)"));
+    if (text.modern) {
+      ResolutionResetButton("resolution_scale_reset");
+    }
+    if (following) {
+      ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionSavedScale));
+    }
   }
-  if (text.modern) ResolutionResetButton("resolution_scale_reset");
   // Beside the resolution since rc5, independent of Adjust NR's look: it is how
   // a reduced working resolution's edit reaches the output.
   // Indexed by the stored value, look::kUpsample* (Auto took over 0 in v8.0.2).
@@ -22864,14 +22893,14 @@ inline void DrawResolutionControls(const ui::PanelText& text) {
   ChoiceSetting(
       text, kSetLookUpsample, "Upsampling", kUpsampleModes,
       "How Neural Rendering's change reaches the screen when it works below"
-      " the output resolution, including Match game (no effect when it works"
+      " the output resolution, including Follow input (no effect when it works"
       " at the output resolution).  Auto and Edge-aware keep the change on"
       " the edges it belongs to and the full-resolution detail under it, and"
       " sample the nearest SDR pixel for NR.  Edge-aware (area input)"
       " averages SDR pixels before NR; this can change NR's look.  Classic shows NR's own"
       " lower-resolution pixels, which look blocky.",
       ui::text::kUpsampleTips);
-  if (!text.modern) DrawResolutionObserved(text);
+  DrawResolutionObserved(text);
 }
 
 inline void DrawSectionStackingResolution(const ui::PanelText& text) {
@@ -23059,75 +23088,75 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
        ++pass) {
     if (text.modern && pass != static_cast<uint32_t>(ui_selected_pass)) continue;
     ImGui::PushID(static_cast<int>(pass));
-    char caption[64];
-    if (text.modern && pass == 0) {
-      std::snprintf(caption, sizeof(caption), "%s", ui::Tr("Pass 1"));
-    } else {
-      std::snprintf(caption, sizeof(caption), text.Tr("Pass %u"), pass + 1);
-    }
+    const auto title_plan = RequestedStagePlan();
+    const auto model_request = static_cast<uint32_t>((pass == 0 ? kSetPreset : kSetPassPreset[pass - 1]).Get());
+    const char* model_name = (model_request == 0 ? (pass == 0 ? "Auto" : ui::text::kInheritModel)
+                              : model_request == 1 ? "A (Legacy)"
+                              : model_request == 2 ? "B (Small FP8)" : "Custom");
+    char caption[512];
+    std::snprintf(caption, sizeof(caption), text.Tr(ui::text::kEditingPass), pass + 1,
+                  text.Tr(title_plan.valid ? stage_plan::Name(title_plan.effective[pass]) : ui::text::kStageBlocked),
+                  text.Tr(model_name));
     if (text.modern) {
       ui::SubCaption(caption);
     } else {
       ImGui::TextUnformatted(caption);
     }
-    constexpr const char* kFirstStages[] = {"Upscaled", "Render", "Present"};
+    constexpr const char* kFirstStages[] = {"Render", "Upscaled", "Present"};
+    constexpr uint32_t kFirstStageValues[] = {1, 0, 2};
     const char* stage_choices[] = {ui::text::kPreviousStage, "Render", "Upscaled", "Present"};
     if (pass == 0) {
-      ChoiceSetting(text, kSetHookPoint, ui::text::kPassStage, kFirstStages, ui::text::kPassStageTip);
+      ChoiceSetting(text, kSetHookPoint, ui::text::kPassStage, kFirstStages, ui::text::kPassStageTip,
+                    ui::text::kHookTips, kFirstStageValues);
     } else {
       ChoiceSetting(text, kSetPassStage[pass - 1], ui::text::kPassStage, stage_choices, ui::text::kPassStageTip);
     }
     const auto editor_plan = RequestedStagePlan();
-    ImGui::TextWrapped("%s: %s", text.Tr(ui::text::kRequestedStage),
-                       text.Tr(stage_plan::Name(editor_plan.requested[pass])));
-    ImGui::TextWrapped("%s: %s", text.Tr(ui::text::kEffectiveStage),
-                       text.Tr(editor_plan.valid ? stage_plan::Name(editor_plan.effective[pass]) : ui::text::kStageBlocked));
-    ImGui::TextWrapped("%s", text.Tr(ui::text::kStagePlanNote));
+    if (!editor_plan.valid || editor_plan.requested[pass] != editor_plan.effective[pass]) {
+      ImGui::TextWrapped("%s: %s", text.Tr(ui::text::kRequestedStage),
+                         text.Tr(stage_plan::Name(editor_plan.requested[pass])));
+      ImGui::TextWrapped("%s", text.Tr(stage_plan::ReasonText(editor_plan.reason)));
+    }
     if (pass == 0) {
       DrawResolutionControls(text);
     } else {
-      const char* resolution_choices[] = {ui::text::kResolutionInherit, "Match game", ui::text::kResolutionFixed};
+      const char* resolution_choices[] = {ui::text::kResolutionInherit, ui::text::kResolutionFollow, ui::text::kResolutionFixed};
       ChoiceSetting(text, kSetPassResolutionMode[pass - 1], ui::text::kWorkingResolution,
                     resolution_choices, ui::text::kPassResolutionTip);
       if (pass_resolution_mode[pass - 1].load() == 2) {
-        float percentage = pass_resolution_scale[pass - 1].load() * 100.f;
+        const float original_percentage = pass_resolution_scale[pass - 1].load() * 100.f;
+        float percentage = original_percentage;
         if (text.modern) {
           ui::RowLabel("Resolution scale", ui::text::kPassResolutionTip);
           ui::Slider("##pass_resolution_scale", &percentage, 33.f, 100.f, "%.0f%%", ui::text::kPassResolutionTip);
         } else {
           ImGui::SliderFloat(ui::ControlLabel("Resolution scale").c_str(), &percentage, 33.f, 100.f, "%.0f%%");
         }
-        const float scale = std::clamp(percentage / 100.f, 0.33f, 1.f);
-        if (scale != pass_resolution_scale[pass - 1].load()) {
-          kSetPassResolutionScale[pass - 1].Store(scale);
+        if (percentage != original_percentage) {
+          kSetPassResolutionScale[pass - 1].Store(std::clamp(percentage, 33.f, 100.f) / 100.f);
           kSetPassResolutionScale[pass - 1].Persist();
         }
       }
-      if ((kSetPassResolutionMode[pass - 1].Modified() || kSetPassResolutionScale[pass - 1].Modified())
+      if (pass_resolution_mode[pass - 1].load() == 2
           && ui::ResetButton("pass_resolution_reset", ui::text::kResolutionInherit)) {
         kSetPassResolutionMode[pass - 1].Commit(0.f);
         kSetPassResolutionScale[pass - 1].Commit(1.f);
       }
+      if (pass_resolution_mode[pass - 1].load() != 2) {
+        const auto inherited = EffectivePassResolution(pass);
+        if (inherited.follow_input) {
+          ImGui::TextWrapped("%s: %s", text.Tr(ui::text::kWorkingResolution), text.Tr(ui::text::kResolutionFollow));
+          ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionSavedScale));
+        } else {
+          ImGui::TextWrapped("%s: %.2f%%", text.Tr("Resolution scale"), inherited.scale * 100.f);
+        }
+      }
+      ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionSharedUpsample));
+      DrawResolutionObserved(text, pass);
     }
     ImGui::TextWrapped("%s", text.Tr(ui::text::kStageResolutionNote));
-    StageTelemetry resolution_observed;
-    {
-      RuntimeLock lock(runtime_mutex);
-      resolution_observed = stage_telemetry[static_cast<size_t>(editor_plan.effective[pass])];
-    }
     if (vulkan_present_seen.load() && pass != 0 && pass_resolution_mode[pass - 1].load() != 0) {
       ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionBackend));
-    } else if (resolution_observed.groups != 0
-               && pass >= resolution_observed.pass_begin
-               && pass < resolution_observed.pass_begin + resolution_observed.pass_count) {
-      const auto& pass_resolution = resolution_observed.pass_resolutions[pass];
-      ImGui::TextWrapped("%s: %ux%u / %ux%u / %ux%u", text.Tr(ui::text::kObservedResolution),
-          resolution_observed.width, resolution_observed.height,
-          pass_resolution.requested_width, pass_resolution.requested_height,
-          pass_resolution.effective_width, pass_resolution.effective_height);
-      if (resolution_observed.resolution_blocked) {
-        ImGui::TextWrapped("%s", text.Tr(ui::text::kStageResolutionBlocked));
-      }
     }
     const int editor_columns = (ImGui::GetContentRegionAvail().x >= ImGui::GetFontSize() * ui::tokens::kWideEm ? 2 : 1);
     ui::StyleScope editor_spacing;
@@ -24034,33 +24063,6 @@ inline void DrawSectionDiagnosticsRaw() {
 }
 
 // i18n: begin - display strings (tools/i18n/ui_strings.py catalog)
-// Config breaker (two-step confirm): every setting back to the built-in
-// defaults, including hotkeys; NR feature/workset state is recreated.
-inline void DrawSectionRestoreDefaults(reshade::api::effect_runtime* runtime,
-                                       const ui::PanelText& text) {
-  static bool confirm_restore_defaults = false;
-  if (!confirm_restore_defaults) {
-    if (ui::ActionButton(text.Tr(text.Pick("Restore all settings to defaults", ui::text::kRestoreAll)))) {
-      confirm_restore_defaults = true;
-    }
-  } else {
-    ImGui::PushTextWrapPos(0.f);
-    ImGui::TextUnformatted(text.Tr(text.Pick(
-        "Restore erases every setting for this game - strengths, codec,"
-        " resolution, passes, and hotkeys.",
-        ui::text::kRestoreConfirm)));
-    ImGui::PopTextWrapPos();
-    if (ui::ActionButton(text.Tr(text.Pick("Confirm: restore defaults", "Restore")))) {
-      ResetToDefaults(runtime);
-      confirm_restore_defaults = false;
-    }
-    ui::SameLineIfFits(ImGui::CalcTextSize(text.Tr("Cancel")).x + ImGui::GetStyle().FramePadding.x * 2.f);
-    if (ui::ActionButton(text.Tr("Cancel"))) {
-      confirm_restore_defaults = false;
-    }
-  }
-}
-
 // The hotkeys are edge-polled once per frame: by RunLifecycleTick (present,
 // or NGX evaluate while presents starve) during gameplay, and by
 // OnOverlayHotkeys while the overlay is open; the buttons below are the
@@ -24693,24 +24695,23 @@ inline void DrawDiagnostics(const NrVerdict& verdict) {
   }
 }
 
-// The modern Resolution row: presets over the same two keys the classic
-// mode combo writes (NRFollowInputRes, NRResolutionScale).  "Match game"
-// leaves the stored scale alone, as the combo's follow mode does.  A stored
-// pair no preset names reads as Custom.
-struct ResolutionPreset {
-  bool follow;
-  float scale;
-  int mode;  // the classic combo index CommitResolutionMode logs
-};
-inline constexpr ResolutionPreset kResolutionPresets[] = {
-    {false, 1.00f, 0}, {false, 0.67f, 2}, {false, 0.58f, 2},
-    {false, 0.50f, 2}, {true, 1.00f, 1}};
-static_assert(std::size(kResolutionPresets) == std::size(ui::text::kResolutionLabels));
-
 // i18n: end
 // The issue report (rc11): BeginIssueReport and the panel's steps.
 #include "report_flow.hpp"
 #include "preset_runtime.hpp"
+
+inline int ui_reset_target = -1;
+inline bool ui_reset_open = false;
+
+inline void DrawSectionRestoreDefaults(reshade::api::effect_runtime* runtime,
+                                      const ui::PanelText& text) {
+  if (ui::ActionButton(text.Tr(text.Pick("Restore all settings to defaults", ui::text::kRestoreAll)), "open_reset_all")) {
+    ui_reset_target = 3;
+    ui_reset_open = true;
+  }
+}
+
+
 
 // ---- Faster (rc11): NR's cheaper settings, one click each ------------------
 // A player measured 57 fps with another NR add-on and 38 with this one, and
@@ -25013,10 +25014,18 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
     const float available = ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ScrollbarSize;
     const float text_width = ImGui::CalcTextSize(ui::Tr(ui::text::kExpandAll)).x
                              + ImGui::CalcTextSize(ui::Tr(ui::text::kCollapseAll)).x + padding * 2.f + gap;
-    const bool compact = text_width > available;
+    const bool can_reset_page = ui_menu_page != 2;
+    const float reset_width = (can_reset_page ? ImGui::CalcTextSize(ui::Tr("Restore page defaults")).x + padding + gap : 0.f);
+    const bool compact = text_width + reset_width > available;
     const char* expand_label = (compact ? "+" : ui::Tr(ui::text::kExpandAll));
     const char* collapse_label = (compact ? "-" : ui::Tr(ui::text::kCollapseAll));
-    const float width = ImGui::CalcTextSize(expand_label).x + ImGui::CalcTextSize(collapse_label).x + padding * 2.f + gap;
+    const float compact_width = ImGui::CalcTextSize(expand_label).x + ImGui::CalcTextSize(collapse_label).x + padding * 3.f + gap * 2.f;
+    const char* reset_label = ui::Tr(compact ? "Reset page" : "Restore page defaults");
+    if (can_reset_page && compact && ImGui::CalcTextSize(reset_label).x + compact_width > available) {
+      reset_label = ui::icons::kUndo;
+    }
+    const float width = ImGui::CalcTextSize(expand_label).x + ImGui::CalcTextSize(collapse_label).x + padding * 2.f + gap
+                        + (can_reset_page ? ImGui::CalcTextSize(reset_label).x + padding + gap : 0.f);
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (std::max)(0.f, available - width));
     const bool expand = ImGui::Button((std::string(expand_label) + "###expand_all").c_str());
     ui::ItemTooltip("%s", ui::Tr(ui::text::kExpandAll));
@@ -25027,6 +25036,14 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
       ui::FoldScope& scope = ui::fold_scopes[ui::fold_scope];
       ++scope.epoch;
       scope.target = expand;
+    }
+    if (can_reset_page) {
+      ImGui::SameLine();
+      if (ImGui::Button((std::string(reset_label) + "###reset_page").c_str())) {
+        ui_reset_target = (ui_menu_page == 3 ? 2 : ui_menu_page);
+        ui_reset_open = true;
+      }
+      ui::ItemTooltip("%s", ui::Tr("Restore page defaults"));
     }
   }
   if (ImGui::BeginChild("##nr_settings", ImVec2(0.f, 0.f), ImGuiChildFlags_None,
@@ -25047,37 +25064,7 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
         DrawSectionNrCore(text);
         DrawNrModelSetting(text, kSetPreset, false);
         ui::SectionCaption(ui::text::kNrResolution, nullptr, false);
-        const bool follow = nr_follow_input_res.load();
-        const float scale = nr_resolution_scale.load();
-        int preset = -1;
-        for (int i = 0; i < static_cast<int>(std::size(kResolutionPresets)); ++i) {
-          const ResolutionPreset& candidate = kResolutionPresets[i];
-          if (candidate.follow ? follow
-                               : !follow && std::abs(scale - candidate.scale) < 0.005f) {
-            preset = i;
-            break;
-          }
-        }
-        ui::RowLabel(ui::text::kResolution, ui::text::kResolutionTip);
-        const int clicked = ui::Segmented(
-            "##resolution", ui::text::kResolutionLabels,
-            static_cast<int>(std::size(ui::text::kResolutionLabels)), preset,
-            ui::text::kResolutionTip, ui::text::kResolutionTips);
-        if (clicked >= 0 && clicked != preset) {
-          const ResolutionPreset& chosen = kResolutionPresets[clicked];
-          CommitResolutionMode(chosen.mode, chosen.follow, chosen.follow ? scale : chosen.scale);
-        }
-        ResolutionResetButton("resolution_reset");
-        if (preset < 0) {
-          ui::RowLabel("");
-          ImGui::TextDisabled(ui::Tr(ui::text::kCustomResolution), scale * 100.f);
-        }
-
-        DrawResolutionObserved(text);
-        if (ui::TreeNode("resolution_details", ui::Tr(ui::text::kResolutionFine), 0, preset < 0)) {
-          DrawResolutionControls(text);
-          ImGui::TreePop();
-        }
+        DrawResolutionControls(text);
         ImGui::TableNextColumn();
         ui::SectionCaption(ui::text::kProcessingLocation, nullptr, false);
         DrawSectionHookPoint(text);
@@ -25094,8 +25081,8 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
     } else if (ui_menu_page == 1) {
       preset_ui::DrawEntry(true);
       if (ui::SectionCaption(ui::text::kMenuPages[1], ui::text::kResetPerformance,
-                             AnyModified({kPerformanceSettings, kStackingSettings, kPassLookResultSettings}))) {
-        ResetSettings({kPerformanceSettings, kStackingSettings, kPassLookResultSettings});
+                             AnyModified({kStackingSettings, kPassLookResultSettings}))) {
+        ResetSettings({kStackingSettings, kPassLookResultSettings});
       }
       DrawSectionStackingResolution(text);
       DrawFasterPresets();
@@ -25242,10 +25229,60 @@ inline void DrawPanelBody(reshade::api::effect_runtime* runtime) {
     ImGui::EndPopup();
   }
   ui::SectionGap();
+  if (profile_ui::Resetting()) {
+    ImGui::TextWrapped("%s", ui::Tr("Saving profiles and restoring defaults..."));
+  } else if (!profile_ui::reset_notice.empty()) {
+    ImGui::TextWrapped("%s", ui::Tr(profile_ui::reset_notice.c_str()));
+    if (!profile_ui::reset_error.empty()) {
+      ImGui::TextWrapped("%s", ui::Tr(profile_ui::reset_error.c_str()));
+    }
+  }
+  if (profile_ui::reset.recovery_failed && ui::ActionButton(ui::Tr("Retry profile recovery"), "retry_reset_recovery")) {
+    profile_ui::RetryResetRecovery();
+  }
+  ImGui::BeginDisabled(profile_ui::Resetting() || profile_ui::reset.recovery_failed);
   if (ui_classic_layout.load()) {
     DrawClassicLayout(runtime, card);
   } else {
     DrawModernLayout(runtime, verdict, card);
+  }
+  ImGui::EndDisabled();
+  if (ui_reset_open) {
+    ImGui::OpenPopup("###nr_reset_confirm");
+    ui_reset_open = false;
+  }
+  const char* titles[] = {"Restore Quality defaults?", "Restore Multi-Pass defaults?",
+                          "Restore Advanced defaults?", "Restore all defaults?"};
+  const char* descriptions[] = {
+      "Restore this game's Quality settings, including shared Pass 1 controls. Independent Pass 2-4 settings and other pages are kept.",
+      "Restore pass count and independent Pass 2-4 settings. Shared Pass 1 model, stage, resolution, steering and result settings are kept.",
+      "Restore compatibility, HDR/depth/motion, hotkeys, screenshots and interface preferences. Quality, independent passes and diagnostic controls are kept.",
+      "Restore this game's NR settings, compatibility, hotkeys, interface and diagnostics. Clear personal changes in the three official profiles; keep all custom profiles, library files and other games. Attach-time support policies and unknown keys are kept."};
+  const int target = std::clamp(ui_reset_target, 0, 3);
+  const auto reset_display = ImGui::GetIO().DisplaySize;
+  const float width = (std::max)(1.f, (std::min)(ImGui::GetFontSize() * 34.f, reset_display.x * 0.94f));
+  ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.f), ImVec2(width, reset_display.y * 0.9f));
+  bool open = true;
+  if (ImGui::BeginPopupModal((std::string(ui::Tr(titles[target])) + "###nr_reset_confirm").c_str(), &open,
+                             ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+    ImGui::PushTextWrapPos(0.f);
+    ImGui::TextWrapped("%s", ui::Tr(descriptions[target]));
+    if (target != 3) {
+      ImGui::TextWrapped("%s", ui::Tr("All six saved profiles and library files are kept. The current profile association will be detached before resetting."));
+    }
+    if (ui::ActionButton(ui::Tr("Cancel"), "cancel_page_reset") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+      ImGui::CloseCurrentPopup();
+    }
+    const char* confirm_label = ui::Tr(target == 3 ? "Restore all defaults" : "Confirm restore");
+    ui::SameLineIfFits(ImGui::CalcTextSize(confirm_label).x + ImGui::GetStyle().FramePadding.x * 2.f);
+    ImGui::BeginDisabled(!profile_ui::loaded || !profile_ui::writable || profile_ui::Resetting() || profile_ui::reset.recovery_failed);
+    if (ui::ActionButton(confirm_label, "confirm_page_reset")) {
+      profile_ui::RequestReset(target);
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::PopTextWrapPos();
+    ImGui::EndPopup();
   }
 }
 

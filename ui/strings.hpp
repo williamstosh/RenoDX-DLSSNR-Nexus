@@ -111,7 +111,7 @@ inline constexpr const char* kResFullTip = "NR works at 100 percent of the refer
 inline constexpr const char* kResQualityTip = "NR works at 67 percent of the reference resolution. Changes NR working resolution only, not the game DLSS mode.";
 inline constexpr const char* kResBalancedTip = "NR works at 58 percent of the reference resolution. Changes NR working resolution only.";
 inline constexpr const char* kResPerformanceTip = "NR works at 50 percent of the reference resolution. Changes NR working resolution only.";
-inline constexpr const char* kResFollowTip = "Follow the game input/render resolution instead of the saved scale. Does not change game resolution or its DLSS mode.";
+inline constexpr const char* kResFollowTip = "Follow DLSS input. Use min(valid guide size, stage reference size); without valid guides use the saved scale. Does not change game resolution or its DLSS mode.";
 inline constexpr const char* kStyleDefaultTip = "Let the NR runtime choose its default style.";
 inline constexpr const char* kStyleNaturalTip = "Request the NR model Natural style. Changes restart NR history.";
 inline constexpr const char* kStyleCinematicTip = "Request the NR model Cinematic style. Changes restart NR history.";
@@ -132,7 +132,7 @@ inline constexpr const char* kFgMixedShort = "Mixed Pre-FG and fallback";
 inline constexpr const char* kStackCost = "Additional passes increase NR GPU work.";
 inline constexpr const char* kFgUnknownMultiplierTip = "FG activity and multiplier are separate observations. Native FG/XeFG can bypass Present cadence sampling; an unknown multiplier does not mean FG is off.";
 
-inline constexpr const char* kHookTips[] = {kHookUpscaledTip, kHookRenderTip, kHookPresentTip};
+inline constexpr const char* kHookTips[] = {kHookRenderTip, kHookUpscaledTip, kHookPresentTip};
 inline constexpr const char* kGuideTips[] = {kGuideOptional, kGuideRequired, kGuideNever};
 inline constexpr const char* kResolutionTips[] = {kResFullTip, kResQualityTip, kResBalancedTip, kResPerformanceTip, kResFollowTip};
 inline constexpr const char* kFgPolicyTips[] = {kFgEveryTip, kFgGameTip};
@@ -178,13 +178,27 @@ inline constexpr const char* kEffectiveStage = "Effective stage";
 inline constexpr const char* kStageBlocked = "Plan blocked";
 inline constexpr const char* kStagesUnavailable = "Requested stages are unavailable";
 inline constexpr const char* kStagePlanNote = "Effective stages describe the available route, not proof of GPU execution. Per-handle Ray Reconstruction is checked during evaluation.";
-inline constexpr const char* kResolutionInherit = "Inherit global resolution";
+inline constexpr const char* kResolutionInherit = "Inherit base resolution";
 inline constexpr const char* kResolutionFixed = "Fixed scale";
-inline constexpr const char* kPassResolutionTip = "Working size is independent of Stage, Model, Look and Result. Fixed scale uses this stage's reference size; Match game keeps the guide size and existing limits. Upsampling is shared.";
+inline constexpr const char* kPassResolutionTip = "Working size is independent of Stage, Model, Look and Result. Fixed scale uses this stage's reference size; Follow input uses min(valid guide size, reference size), otherwise the saved scale. Upsampling is shared.";
 inline constexpr const char* kStageResolutionNote = "Independent sizes across stage groups use DX11/DX12. Two Render or two Upscaled passes on native DX11 Bridge or DX12 in a chain without Present support different sizes. Two ordinary Present passes on native DX11 Bridge or DX12 also support different sizes, after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains. Groups of 3+ passes require matching sizes; unsupported mismatches skip the group. Inheritance and shared upsampling are unchanged.";
 inline constexpr const char* kStageResolutionBlocked = "Group skipped: different sizes require two Render/Upscaled passes on native DX11 Bridge or DX12 without Present, or two ordinary Present passes on native DX11 Bridge or DX12 after a confirmed FG Off declaration. Present pairs reject unknown/On FG, Pre-FG and B1/mixed chains; groups of 3+ passes require matching sizes.";
-inline constexpr const char* kResolutionBackend = "Independent pass resolution is unavailable on Vulkan; select Inherit global resolution.";
-inline constexpr const char* kObservedResolution = "Last observed reference / requested / applied work";
+inline constexpr const char* kResolutionBackend = "Independent pass resolution is unavailable on Vulkan; select Inherit base resolution.";
+inline constexpr const char* kObservedResolution = "Last recorded reference / requested work";
+inline constexpr const char* kEditingPass = "Editing Pass %u | %s | %s";
+inline constexpr const char* kResolutionFollow = "Follow input";
+inline constexpr const char* kResolutionSavedScale = "Saved scale is retained while Follow input is enabled; it is used when valid guides are unavailable.";
+inline constexpr const char* kResolutionSharedUpsample = "Upsampling is shared with the base resolution settings; this pass has no independent upsampling mode.";
+inline constexpr const char* kResolutionReferenceRender = "Reference: common cropped Color/Motion/Depth region (normally the DLSS input).";
+inline constexpr const char* kResolutionReferenceUpscaled = "Reference: DLSS output rectangle.";
+inline constexpr const char* kResolutionReferencePresent = "Reference: effective presented frame.";
+inline constexpr const char* kResolutionGuideUnknown = "Guide source and freshness are unknown; last recorded sizes do not confirm the current settings.";
+inline constexpr const char* kResolutionPresentGuides = "Ordinary Present may use full-size neutral guides, or reject the frame when guides are Required. Pre-FG has separate gates. The actual guide source is unconfirmed.";
+inline constexpr const char* kResolutionCurrentPending = "Current settings: execution unconfirmed.";
+inline constexpr const char* kResolutionUnavailable = "Last recorded sizes: unavailable for this pass and stage.";
+inline constexpr const char* kResolutionEffective = "Last recorded model work: %ux%u";
+inline constexpr const char* kResolutionEffectiveUnknown = "Last recorded model work: unavailable (model not recorded).";
+inline constexpr const char* kResolutionCompletedSample = "Recent completed GPU sample: %ux%u (historical; current settings unconfirmed).";
 inline constexpr const char* kModelNote =
     "This build does not read the runtime's actual network. Resolved models describe configuration only.";
 inline constexpr const char* kResourceNote = "Observed this session; the selected resource policy is not proof of availability.";
@@ -381,15 +395,12 @@ inline constexpr const char* kLanguageTip =
     " for its own language only, so a language written in another script"
     " can show as boxes: pick it in ReShade's settings too.";
 
-// The resolution presets, in segment order.  Quality, Balanced and
-// Performance are the working-resolution fractions of DLSS's own modes;
-// "Match game" follows the game's render resolution (NRFollowInputRes).
+// NR fractions of the effective stage reference; these do not select a game
+// DLSS mode. Stable widget IDs are appended after translating these labels.
 inline constexpr const char* kResolutionLabels[] = {
-    "Full", "Quality###nr_resolution_quality", "Balanced", "Performance", "Match game"};
+    "100%", "67%", "58%", "50%", kResolutionFollow};
 inline constexpr const char* kResolutionTip =
-    "The resolution Neural Rendering works at.  Full is the sharpest; the"
-    " lower presets cost less GPU time.  Match game follows the game's own"
-    " render resolution.";
+    "NR working size relative to the effective stage reference. Fixed presets use 100/67/58/50 percent per side; Follow input uses valid guides, otherwise the saved scale. Does not change the game's DLSS mode.";
 inline constexpr const char* kCustomResolution = "Custom (%.0f%%)";
 
 // NR's cost line (FormatNrCost) and the Faster options beside it (rc11).
