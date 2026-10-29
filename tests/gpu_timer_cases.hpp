@@ -21,6 +21,7 @@ using State = timers::SampleState;
 
 int Run() {
   try {
+    gpu_comparison_cases::Run();
     reshade::internal::get_reshade_module_handle(GetModuleHandleW(nullptr));
     ComPtr<ID3D12Debug> debug;
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) debug->EnableDebugLayer();
@@ -235,6 +236,12 @@ int Run() {
       native::pass_stage[0].store(mixed ? 2u : 0u);
       uint32_t steady = 0;
       for (uint32_t attempt = 0; attempt < native::kContractDebounceFrames + 40 && steady < 2; ++attempt) {
+        timers::comparison.Reset();
+        timers::comparison_settings = native::comparison_ui::CaptureSettings;
+        native::comparison_ui::CaptureSettings(&timers::comparison_capture_settings);
+        const auto min_sequence = timers::internal::next_sequence + 1;
+        Check(timers::comparison.Start(true, mixed ? 3 : 2, timers::NowNs(), min_sequence),
+              "production A/B recording contract starts before actual NR commands");
         stage_execution_cases::evaluations.clear();
         const auto original = stage_execution_cases::Capture(gpu, source.Get(), NATIVE_INPUT_STATE);
         {
@@ -264,6 +271,19 @@ int Run() {
               "production path preserves source bytes and restores SR Color");
         const auto& calls = stage_execution_cases::evaluations;
         if (calls.size() != 2 || calls[0].input.width != 16 || calls[1].input.width != 11) continue;
+        uint32_t bound_stages = 0;
+        for (const auto& segment : timers::internal::segments) {
+          const auto& captured = segment.comparison;
+          if (segment.sequence < min_sequence || captured.sequence == 0) continue;
+          Check(captured.identity.device_session != 0 && captured.identity.source_generation != 0
+                    && captured.identity.configuration_generation == native::configuration_generation.load()
+                    && captured.identity.sr_width == 16 && captured.identity.sr_height == 16
+                    && captured.identity.out_width == 16 && captured.identity.out_height == 16
+                    && captured.pass_count == (mixed ? 1u : 2u),
+                "actual recording freezes source, device, configuration, SR/display and group identity");
+          bound_stages |= 1u << captured.stage;
+        }
+        Check(bound_stages == (mixed ? 3u : 2u), "comparison identity preserves actual same/cross-stage grouping");
         for (uint32_t pass = 0; pass < 2; ++pass) {
           const auto& timing = timers::stage_stats[mixed && pass == 0 ? 0 : 1];
           const auto& layer = timing.passes[mixed ? 0 : pass];
@@ -288,6 +308,7 @@ int Run() {
       std::cout << "PASS production timer " << (mixed ? "Render -> Upscaled" : "Upscaled dual layer")
                 << ": A1=16x16 B2=11x11, GPU copy model/readback\n";
     }
+    timers::comparison.Reset();
     native::ForgetSourceHandleLocked(handle);
     finish();
     Check(native::worksets.empty() && !model_released_handles.empty(), "source retirement releases model worksets");
@@ -314,6 +335,7 @@ int Run() {
         synthetic.written |= uint64_t{1} << slot;
       }
       synthetic.sequence = ++timers::internal::next_sequence;
+      if (timers::ComparisonActive()) synthetic.comparison.sequence = synthetic.sequence;
       return timers::internal::Publish(synthetic, false, gpu.queue.Get());
     };
     Check(publish(1), "synthetic timestamp publisher");
@@ -350,6 +372,26 @@ int Run() {
     Check(!timers::internal::Publish(synthetic, false, gpu.queue.Get())
               && timers::stats.state == State::INVALID_TIMESTAMPS, "out-of-order timestamps cannot publish");
     Check(publish(1), "synthetic valid sample restored");
+    for (const bool baseline : {true, false}) {
+      const auto start = timers::NowNs() - 6'000'000'000;
+      Check(timers::comparison.Start(baseline, 2, start, timers::internal::next_sequence + 1),
+            "raw timer A/B capture starts");
+      synthetic.comparison = {.stage = 1, .valid = true, .stable = true, .pass_count = 1};
+      synthetic.passes[0].width = synthetic.passes[0].height = (baseline ? 16 : 11);
+      synthetic.passes[0].output_width = synthetic.passes[0].output_height = (baseline ? 16 : 11);
+      for (uint32_t i = 0; i < addon::gpu_comparison::SAMPLE_COUNT; ++i) {
+        synthetic.comparison.recorded_ns = start + addon::gpu_comparison::STABILITY_NS
+            + i * addon::gpu_comparison::INTERVAL_NS;
+        Check(publish(baseline ? 2 : 1), "raw timer A/B sample publishes");
+      }
+    }
+    Check(timers::comparison_result.reason == addon::gpu_comparison::Reason::NONE
+              && timers::comparison_result.stages[1].passes[0].a.median_us == 40
+              && timers::comparison_result.stages[1].passes[0].b.median_us == 20
+              && timers::comparison_result.stages[1].total.delta_us == -60,
+          "A/B uses individual completion data, not the four-sample display average");
+    timers::comparison.Reset();
+    synthetic.comparison = {};
     timers::stats.measured_ns = timers::NowNs() - timers::internal::kSampleAgeNs - 1;
     timers::stage_stats[1].measured_ns = timers::stats.measured_ns;
     timers::Poll(true, false);

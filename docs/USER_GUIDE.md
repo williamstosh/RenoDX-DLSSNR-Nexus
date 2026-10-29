@@ -307,6 +307,16 @@
 
 *开发源码的合成界面示例：尺寸与 GPU 区间属于同一测量快照；未执行层和重放拒绝不显示有效耗时。原始技术诊断沿用英文。图中数字不代表真实游戏性能。*
 
+#### 手动 GPU A/B 对比
+
+此工具仅在当前 `0.2.0-dev.10` 开发源码提供，尚未包含于已发布版本。诊断页紧凑固定区提供 **采集基线**、**采集对照** 和 **清除**：先在 A 条件采集基线，再只改变一个 Pass 的实际工作尺寸后采集 B。每个 StageGroup 均需 **16 个有效原始完成样本**；沿用既有 **250 ms** 采样节奏，每次采集开始及 NR reset/rebuild 后均有 **1 秒稳定期**，单次采集 **10 秒超时**。采集中发生配置变化会使结果无效。A/B 之间必须只有一层的实际工作尺寸不同；Stage、模型创建请求、主要处理设置、FG、HDR/SR 显示尺寸、来源、路由和队列均须匹配。
+
+![手动 GPU A/B 对比诊断区](images/ui/gpu-comparison-zh.webp)
+
+*开发界面的离屏合成预览，仅展示布局，不是真实采集或实测数据。*
+
+完成后，工具汇总每个 Pass 的 NGX GPU span 中位数与中位数绝对偏差（MAD），以及每个 StageGroup 总 span 的中位数与 MAD，并显示 B−A 的绝对／相对变化。波动较大或差异不足时不提供建议；只有测量数据支持时，才能说降低某 Pass 的实际工作尺寸使该层测得的 NGX 耗时减少。工具无法判定两次采集的场景是否可比，也不能确认模型内部实际运行的网络；结果不保证 FPS 或画质，请检查真实场景画质。跨队列 span 不应相加并解释为帧延迟。比较数据只保存在内存，不导出或上传；工具不会自动改变尺寸或保存 Preset/Profile。
+
 测量及路径足够时，**Faster／加速**提供放大前运行、50% 尺寸或两者组合，并给出估计与撤销。这些操作改变介入点／工作尺寸，不是基准保证；特别是 Ray Reconstruction，应重新核对实际路径。
 
 #### 问题报告
@@ -743,6 +753,16 @@ The **NR cost meter (`NRCostMeter`)** remains On by default and samples each Sta
 ![Per-pass GPU diagnostics](images/ui/gpu-pass-diagnostics.webp)
 
 *Synthetic development-source UI example: dimensions and GPU spans belong to the same measurement snapshot. Unexecuted passes and replay rejection do not display valid timings. Raw technical diagnostics remain in English. These numbers are not game performance measurements.*
+
+#### Manual GPU A/B comparison
+
+This tool is available only in the current `0.2.0-dev.10` development source and is not included in released packages. A compact fixed area on Diagnostics provides **Capture Baseline**, **Capture Comparison** and **Clear**: capture the baseline under A, then capture B after changing only one Pass's actual working size. Each StageGroup needs **16 valid raw completed samples**. The existing **250 ms** cadence is retained; each capture has a **1 s** settling period at start and after an NR reset/rebuild, and times out after **10 s**. A configuration change during capture invalidates the result. Exactly one Pass's actual working size may differ between A and B; Stage, model creation requests, core processing settings, FG, HDR/SR display size, source, route and queue must match.
+
+![Manual GPU A/B comparison controls](images/ui/gpu-comparison.webp)
+
+*Offline composite preview of the development UI; it shows the layout and is not a runtime capture or measurement.*
+
+The completed comparison reports the median and median absolute deviation (MAD) for each Pass's NGX GPU span and each StageGroup's total span, plus absolute and relative B−A changes. It makes no suggestion when variation is high or the difference is too small. A reduction in that layer's measured NGX time after lowering one Pass's actual working size is stated only when supported by the data. The tool cannot determine whether the two captures represent comparable scenes or confirm the model's internal network; results do not promise higher FPS or image quality, so inspect quality in the actual scene. Do not add spans across queues or treat them as frame latency. Comparison data stays in memory: there is no export or upload, and the tool does not change sizes or save a Preset/Profile automatically.
 
 When enough measurements and a compatible path are available, **Faster** options offer Before upscaling, Resolution 50%, or Both, with estimated costs and Undo. They change hook point/working-size settings; the estimates are not benchmark promises. Check the resulting route, especially with Ray Reconstruction.
 

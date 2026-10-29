@@ -65,6 +65,10 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
                          .action = "gpu-pass-diagnostics", .language = 1});
     scenarios.push_back({.id = "gpu-pass-diagnostics-zh", .page = 2,
                          .action = "gpu-pass-diagnostics", .language = 14});
+    scenarios.push_back({.id = "gpu-comparison", .page = 2,
+                         .action = "gpu-comparison", .language = 1, .doc_role = "gpu-comparison"});
+    scenarios.push_back({.id = "gpu-comparison-zh", .page = 2,
+                         .action = "gpu-comparison", .language = 14, .doc_role = "gpu-comparison"});
     if (snapshot_mode == "Full") {
       scenarios.push_back({.id = "pass-cross-stage-collapsed-zh", .page = 1, .action = "cross-stage-collapsed"});
       scenarios.push_back({.id = "pass-render2-upscaled2-zh", .page = 1, .action = "cross-stage-four"});
@@ -184,6 +188,14 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     runtime::hook_point = runtime::kHookPresent;
     runtime::stack_passes = 4;
     runtime::preset = 0;
+    renodx::addons::dlss5::gpu_timers::comparison.Reset();
+    renodx::addons::dlss5::gpu_timers::comparison_result = {};
+    if (scenario.action == "gpu-comparison") {
+      runtime::hook_point = runtime::kHookUpscaled;
+      runtime::stack_passes = 2;
+      runtime::vulkan_present_seen = false;
+      runtime::stage_source_rr = false;
+    }
     if (scenario.action == "gpu-pass-diagnostics") {
       namespace timers = renodx::addons::dlss5::gpu_timers;
       for (auto& timing : timers::stage_stats) timing = {};
@@ -293,7 +305,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     settle();
     const bool long_page = scenario.action == "expanded" || scenario.action == "collapsed"
         || scenario.action == "pass-independent" || scenario.action == "pass-first" || scenario.action == "doc-default"
-        || cross_stage || scenario.action == "gpu-pass-diagnostics";
+        || cross_stage || scenario.action == "gpu-pass-diagnostics" || scenario.action == "gpu-comparison";
     if (scenario.action == "cross-stage-resolution" || same_stage_resolution) {
       check(items.contains(find("##pass_resolution_scale").id), "independent pass resolution slider is drawn");
       check(runtime::pass_resolution_mode[0].load() == 2
@@ -308,7 +320,8 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       for (int attempt = 0; attempt < 12; ++attempt) {
         settle();
         for (auto* window : ImGui::GetCurrentContext()->Windows) {
-          if (window->Active && std::strstr(window->Name, "/##nr_settings_") != nullptr) settings = window;
+          if (window->Active && std::strstr(window->Name, "/##nr_settings_") != nullptr
+              && std::strstr(window->Name, "/gpu_comparison_") == nullptr) settings = window;
         }
         check(settings != nullptr, "snapshot production settings child missing");
         // Measure the host's complete chrome budget, including spacing below BeginChild.
@@ -344,7 +357,8 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     if (scenario.action == "viewport") {
       bool scroller = false;
       for (auto* window : ImGui::GetCurrentContext()->Windows) {
-        if (window->Active && std::strstr(window->Name, "/##nr_settings_") != nullptr) {
+        if (window->Active && std::strstr(window->Name, "/##nr_settings_") != nullptr
+            && std::strstr(window->Name, "/gpu_comparison_") == nullptr) {
           scroller = window->ScrollbarY && window->ScrollMax.y > 0.f;
         }
       }
@@ -375,7 +389,8 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       interaction = "click real empty Custom 1 slot; no capture/copy/save action";
     } else if (scenario.action == "restore-all-confirmation") {
       for (auto* window : ImGui::GetCurrentContext()->Windows) {
-        if (window->Active && std::strstr(window->Name, "/##nr_settings_") != nullptr) {
+        if (window->Active && std::strstr(window->Name, "/##nr_settings_") != nullptr
+            && std::strstr(window->Name, "/gpu_comparison_") == nullptr) {
           ImGui::SetScrollY(window, window->ScrollMax.y);
         }
       }
@@ -529,6 +544,58 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       check(!tooltip_text.empty(), "model tooltip missing");
       interaction = "hover real model A control at segmented-control breakpoint";
     }
+    if (scenario.action == "gpu-comparison") {
+      namespace cmp = renodx::addons::dlss5::gpu_comparison;
+      namespace timers = renodx::addons::dlss5::gpu_timers;
+      const auto configuration_epoch = runtime::present_restore_configuration.epoch;
+      const float comparison_height = find(ui::Tr("Capture baseline")).window->Size.y;
+      check(find(ui::Tr("Capture comparison")).disabled, "B capture requires completed A");
+      click(find(ui::Tr("Capture baseline")));
+      check(timers::ComparisonActive() && !find(ui::Tr("Clear comparison")).disabled,
+            "real baseline action starts a cancellable bounded capture");
+      check(find(ui::Tr("Capture baseline")).disabled && find(ui::Tr("Capture comparison")).disabled,
+            "capture actions cannot overlap");
+      const auto fill = [&](bool baseline) {
+        const uint64_t started = (baseline ? timers::comparison.baseline[1] : timers::comparison.control[1]).started_ns;
+        for (uint32_t i = 0; i < cmp::SAMPLE_COUNT; ++i) {
+          cmp::Sample sample{.stage = 1, .sequence = 1000u + i,
+              .recorded_ns = started + cmp::STABILITY_NS + i * cmp::INTERVAL_NS,
+              .valid = true, .stable = true,
+              .identity = {.source_generation = 1, .device_session = 1, .queue = 1,
+                  .sr_width = 2560, .sr_height = 1440, .out_width = 3840, .out_height = 2160},
+              .pass_count = 2, .total_us = (baseline ? 1500.0 : 1300.0)};
+          sample.completed_ns = sample.recorded_ns + 1;
+          sample.passes[0] = {.id = 0, .model = 1, .width = 3840, .height = 2160,
+              .output_width = 3840, .output_height = 2160, .eval_us = 700, .state = cmp::PassState::VALID};
+          sample.passes[1] = {.id = 1, .model = 2, .width = (baseline ? 3840u : 2573u),
+              .height = (baseline ? 2160u : 1447u), .output_width = (baseline ? 3840u : 2573u),
+              .output_height = (baseline ? 2160u : 1447u), .eval_us = (baseline ? 400.0 : 200.0),
+              .state = cmp::PassState::VALID};
+          timers::comparison.Observe(sample, sample.completed_ns);
+        }
+        timers::comparison_result = timers::comparison.Results();
+        settle();
+      };
+      fill(true);
+      check(!find(ui::Tr("Capture comparison")).disabled, "completed A enables real B action");
+      click(find(ui::Tr("Capture comparison")));
+      fill(false);
+      check(timers::comparison_result.reason == cmp::Reason::NONE
+                && timers::comparison_result.stages[1].passes[1].delta_us == -200,
+            "production comparison UI displays synthetic 100 to 67 percent GPU evidence");
+      check(runtime::present_restore_configuration.epoch == configuration_epoch,
+            "comparison actions never change processing or save presets");
+      check(find(ui::Tr("Capture baseline")).window->Size.y == comparison_height,
+            "comparison progress and result keep the same fixed height");
+      for (const auto& timing : rendered_text) {
+        if (timing.text != "0.700 ms" && timing.text != "0.400 ms" && timing.text != "0.200 ms") continue;
+        for (const auto& size : rendered_text) {
+          if (size.text != "3840x2160" && size.text != "2573x1447") continue;
+          check(!timing.rect.Overlaps(size.rect), "GPU times and working dimensions must not overlap");
+        }
+      }
+      interaction = "real A/B buttons; 16 synthetic completed samples per side; no game or performance claim";
+    }
     capture(scenario.id.c_str(), diagnostic, false);
     Json regions = Json::object();
     if (scenario.action == "gpu-pass-diagnostics") {
@@ -550,8 +617,13 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     }
     for (auto* window : ImGui::GetCurrentContext()->Windows) {
       if (!window->Active) continue;
+      if (scenario.action == "gpu-comparison" && std::strstr(window->Name, "/gpu_comparison_") != nullptr) {
+        regions["gpu_comparison"] = {window->Pos.x, window->Pos.y,
+            window->Pos.x + window->Size.x, window->Pos.y + window->Size.y};
+      }
       std::string name;
-      if (std::strstr(window->Name, "/##nr_settings_") != nullptr) name = "page_body";
+      if (std::strstr(window->Name, "/##nr_settings_") != nullptr
+          && std::strstr(window->Name, "/gpu_comparison_") == nullptr) name = "page_body";
       if ((window->Flags & ImGuiWindowFlags_Popup) != 0
           && std::strstr(window->Name, "nr_preset_manager") != nullptr
           && (window->Flags & ImGuiWindowFlags_ChildWindow) == 0) name = "library";
@@ -567,7 +639,8 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
                        (std::min)(panel_width, rect.Max.x + 4.f), (std::min)(panel_height, rect.Max.y + 4.f)};
     }
     if (!scenario.doc_role.empty()) {
-      const std::string region = (scenario.doc_role == "results" ? "result_controls"
+      const std::string region = (scenario.doc_role == "gpu-comparison" ? "gpu_comparison"
+                                  : scenario.doc_role == "results" ? "result_controls"
                                   : scenario.doc_role == "presets" ? "library" : "page_body");
       check(regions.contains(region), "documentation semantic crop region missing");
       regions["doc"] = regions[region];

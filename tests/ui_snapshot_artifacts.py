@@ -22,7 +22,7 @@ from PIL import Image, ImageDraw, ImageFont
 SCHEMA = 'nr-nexus-ui-snapshot/1'
 CAVEAT = '真实生产 ImGui 绘制逻辑；合成测试状态，不代表真实游戏运行、GPU 画质或性能验收。'
 SAFE_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z')
-DOC_ROLES = {'quality', 'multipass', 'results', 'diagnostics', 'advanced', 'presets'}
+DOC_ROLES = {'quality', 'multipass', 'results', 'diagnostics', 'advanced', 'presets', 'gpu-comparison'}
 THEMES = ('cyber_neon', 'nexus_dark', 'fluent_light', 'midnight_oled')
 THEME_TITLES = ('Cyber Neon', 'Nexus Dark', 'Fluent Light', 'Midnight OLED')
 PAGE_NAMES = {0: '画质', 1: '叠层', 2: '诊断', 3: '高级'}

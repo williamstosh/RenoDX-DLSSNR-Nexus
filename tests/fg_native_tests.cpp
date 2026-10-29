@@ -689,6 +689,7 @@ int RunNativeRequiredMenuTest() {
 #include "native_prefg_resolution_cases.hpp"
 #include "feature_switch_cases.hpp"
 #include "present_chain_cases.hpp"
+#include "gpu_comparison_cases.hpp"
 #include "gpu_timer_cases.hpp"
 
 int main(int argc, char** argv) {

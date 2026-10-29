@@ -34,7 +34,7 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 | **Render／Upscaled／Present** | 在 DLSS 超分前、DLSS 输出或 ReShade 效果前的最终游戏画面上应用 NR；实际执行取决于 API、资源和 FG 路由。 |
 | **NR 协同原生 DLSS FG/MFG 或 XeFG** | 配合已有 FG 后端运行，查看实际观测路径与活动，不把配置倍率当作 FG 已生效的证明。 |
 | **输出效果与时序稳定** | 调整亮度／颜色限制、细节、光晕和时序行为；SDR/HDR 兼容策略仍独立可配。 |
-| **实时诊断与报告** | 查看 NR 活动、请求／解析模型、资源及可用时的 GPU 时间；当前 v0.2.0-dev.10 开发源码可关联最多四层的实际 Stage／Pass、模型请求、工作／输出尺寸与 GPU 区间。准备可选诊断与需用户检查提交的 Issue 草稿。 |
+| **实时诊断与报告** | 查看 NR 活动、请求／解析模型、资源及可用时的 GPU 时间；当前 v0.2.0-dev.10 开发源码可关联最多四层的实际 Stage／Pass、模型请求、工作／输出尺寸与 GPU 区间，并提供手动 GPU A/B 对比：仅改变一层实际工作尺寸，在其余条件匹配时比较 GPU 统计；波动大或差异不足时不给建议，只有测量支持时才说明降低尺寸使该层 NGX 耗时减少。它不保证 FPS 或画质，且尚未包含于已发布版本。见[诊断指南](docs/USER_GUIDE.md#zh-diagnostics)。准备可选诊断与需用户检查提交的 Issue 草稿。 |
 | **15 种界面语言** | Auto 自动跟随 ReShade，也可手动选择。显示取决于 ReShade 已加载的字体，语言清单与缺字回退说明见指南。 |
 | **四套界面主题** | Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED 只改变菜单视觉，不影响 NR 图像处理。 |
 | **六个 NR Profile Slot（开发中）** | 每游戏三个官方开发候选及三个自定义 Slot，独立保留覆盖值，可捕获／重命名／清空自定义快照、撤销 Slot 操作或恢复当前官方默认值。编辑自动保存，首次升级保留当前配置，保存失败不切换。 |
@@ -247,7 +247,7 @@ and four menu themes.
 | **Render / Upscaled / Present** | Apply NR before DLSS upscaling, to its output, or to the final game image before ReShade effects. Actual execution depends on API, resources and FG routing. |
 | **NR + native DLSS FG/MFG or XeFG** | Coordinate NR with the existing FG backend; inspect the observed path and activity rather than assuming a configured multiplier proves FG is active. |
 | **Output shaping and temporal stability** | Adjust brightness/color limits, detail, halos and temporal behavior. SDR/HDR compatibility policies remain independently configurable. |
-| **Live diagnostics and reports** | Inspect NR activity, requested/resolved models, resources and GPU time when available. The current v0.2.0-dev.10 source binds GPU spans to actual Stage/Pass IDs, model requests and working/output dimensions across up to four passes. Prepare optional diagnostics and a reviewed GitHub Issue draft. |
+| **Live diagnostics and reports** | Inspect NR activity, requested/resolved models, resources and GPU time when available. The current v0.2.0-dev.10 source binds GPU spans to actual Stage/Pass IDs, model requests and working/output dimensions across up to four passes, and offers manual GPU A/B comparison by changing one Pass's actual working size while matching the other conditions. It gives no suggestion when variation is high or the difference is too small; a reduction in that layer's measured NGX time is reported only when supported by the data. It does not promise FPS or image quality and is not in a released package. See the [diagnostics guide](docs/USER_GUIDE.md#en-diagnostics). Prepare optional diagnostics and a reviewed GitHub Issue draft. |
 | **Multilingual interface — 15 languages** | Let Auto follow ReShade or choose a language manually. Display depends on ReShade's loaded font; the guide lists languages and explains missing-glyph fallback. |
 | **Four interface themes** | Cyber Neon, Nexus Dark, Fluent Light and Midnight OLED change the menu's appearance, independently of image processing. |
 | **Six NR Profile Slots (development)** | Three official development candidates plus three custom Slots for each game. Keep independent overrides, capture/rename/clear custom snapshots, undo profile actions or restore one official Slot. Slot edits save automatically; first upgrade keeps current game settings and a failed save blocks switching. |

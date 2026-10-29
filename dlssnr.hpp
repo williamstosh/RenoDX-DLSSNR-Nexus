@@ -2995,13 +2995,18 @@ inline bool BeginChainTimers(ID3D12GraphicsCommandList* command_list, ID3D12Devi
   const uint32_t stage = (std::strcmp(path, "preSR") == 0 ? 0u
                           : (std::strcmp(path, "present") == 0 ? 2u : 1u));
   if (!profiling
-      && (!cost_meter_enabled.load(std::memory_order_relaxed) || cost_meter_unavailable
+      && ((!cost_meter_enabled.load(std::memory_order_relaxed) && !gpu_timers::ComparisonActive()) || cost_meter_unavailable
           || now_ns < stage_cost_sample_due_ns[stage])) {
     return false;
   }
   cost_sample_due_ns = now_ns + kCostSampleNs;
   stage_cost_sample_due_ns[stage] = cost_sample_due_ns;
-  if (gpu_timers::Begin(command_list, device, path, width, height, group.begin, group.count)) return true;
+  if (gpu_timers::Begin(command_list, device, path, width, height, group.begin, group.count)) {
+    // Cadence and comparison use the same clock sample; setup jitter must not
+    // reject a normally scheduled sample as slightly earlier than 250 ms.
+    gpu_timers::internal::segments[gpu_timers::internal::current.idx].comparison.recorded_ns = now_ns;
+    return true;
+  }
   if (!profiling && !cost_meter_unavailable && gpu_timers::internal::heap == nullptr) {
     cost_meter_unavailable = true;
     Log(reshade::log::level::warning,
@@ -9254,6 +9259,47 @@ struct StageTelemetry {
   bool diagnostic_log_pending = false;
 };
 inline std::array<StageTelemetry, 3> stage_telemetry;
+inline std::array<int64_t, 3> comparison_stable_after_ns{};
+inline std::array<uint64_t, 3> comparison_stable_epochs{};
+
+// The same recording supplies identity and timestamps; publication never joins
+// a delayed GPU completion to the latest overlay/telemetry state.
+inline void BindComparisonContext(const FeatureState& feature, const FeatureState& current,
+    uint32_t hdr_mode, uint32_t width, uint32_t height, DXGI_FORMAT format,
+    const stage_plan::Plan& plan, const PresentTarget* present = nullptr) {
+  if (!gpu_timers::internal::current.active) return;
+  auto& sample = gpu_timers::internal::segments[gpu_timers::internal::current.idx].comparison;
+  if (sample.sequence == 0) return;
+  auto& identity = sample.identity;
+  identity.source_generation = (present != nullptr ? present->diagnostic_source_generation : feature.source_generation);
+  identity.source_feature = (present != nullptr ? present->diagnostic_source_feature : feature.source_feature);
+  identity.processing_hash = static_cast<uint64_t>(plan.reason) | (static_cast<uint64_t>(plan.mixed) << 16);
+  for (const uint32_t value : {feature.create_flags, current.motion_x, current.motion_y,
+           current.depth_x, current.depth_y, current.output_x, current.output_y}) {
+    identity.processing_hash ^= value;
+    identity.processing_hash *= 1099511628211ull;
+  }
+  identity.hdr = hdr_mode;
+  identity.display_format = static_cast<uint64_t>(format);
+  if (present != nullptr) {
+    identity.hdr |= static_cast<uint64_t>(present->hdr_color_space) << 8;
+    identity.hdr |= static_cast<uint64_t>(present->hdr_codec_mode) << 24;
+    identity.hdr |= static_cast<uint64_t>(present->hdr_encoding) << 32;
+    identity.hdr |= static_cast<uint64_t>(present->hdr_feed) << 40;
+  }
+  identity.sr_width = current.input_width;
+  identity.sr_height = current.input_height;
+  identity.out_width = width;
+  identity.out_height = height;
+  if (sample.stage == 0) {
+    identity.out_width = (current.declared_output_width != 0 ? current.declared_output_width : feature.declared_output_width);
+    identity.out_height = (current.declared_output_height != 0 ? current.declared_output_height : feature.declared_output_height);
+  }
+  identity.sr_mode = current.perf_quality;
+  identity.stable_epoch = comparison_stable_epochs[sample.stage];
+  sample.stable_after_ns = comparison_stable_after_ns[sample.stage];
+  sample.stable = sample.recorded_ns >= static_cast<uint64_t>(comparison_stable_after_ns[sample.stage]);
+}
 
 inline std::string HistoryResetReasonsText(uint32_t reasons) {
   std::string text;
@@ -9273,6 +9319,8 @@ inline std::string HistoryResetReasonsText(uint32_t reasons) {
 }
 
 inline void ObserveLocalHistoryReset(stage_plan::Stage stage, uint64_t source_generation, uint32_t reasons) {
+  comparison_stable_after_ns[static_cast<size_t>(stage)] = SteadyNowNs() + gpu_comparison::STABILITY_NS;
+  ++comparison_stable_epochs[static_cast<size_t>(stage)];
   stage_telemetry[static_cast<size_t>(stage)].last_reset_request = {
       .sequence = ++source_diagnostic_sequence, .source_generation = source_generation, .reasons = reasons};
 }
@@ -9282,6 +9330,13 @@ inline void ObserveNrEvaluation(stage_plan::Stage stage, const NVSDK_NGX_Handle*
     NVSDK_NGX_Result result, const stage_plan::Plan& plan, const PresentTarget* present = nullptr,
     bool api_returned = true) {
   auto& stats = stage_telemetry[static_cast<size_t>(stage)];
+  if (slot.model_reset || !api_returned || !NVSDK_NGX_SUCCEED(result)) {
+    comparison_stable_after_ns[static_cast<size_t>(stage)] = SteadyNowNs() + gpu_comparison::STABILITY_NS;
+    ++comparison_stable_epochs[static_cast<size_t>(stage)];
+    if (gpu_timers::internal::current.active) {
+      gpu_timers::internal::segments[gpu_timers::internal::current.idx].comparison.stable = false;
+    }
+  }
   NrEvaluationDiagnostic observed{.sequence = ++source_diagnostic_sequence, .observed_ns = SteadyNowNs(),
       .source_generation = feature.source_generation, .pass = pass,
       .requested = plan.requested[pass], .planned = plan.effective[pass], .plan_reason = plan.reason,
@@ -10707,6 +10762,7 @@ inline bool ProcessInline(
   // segment before the copy-in so the copies are inside the measured total.
   const bool timers_active = BeginChainTimers(
       command_list, device, present != nullptr ? "present" : "after", width, height, group);
+  if (timers_active) BindComparisonContext(feature, current, hdr_mode, width, height, output_format, plan, present);
   // The state the output rests in: UAV for a DLSS output (guide 3.4), PRESENT
   // for a back buffer at the present.
   const D3D12_RESOURCE_STATES output_rest =
@@ -12474,6 +12530,7 @@ inline bool ProcessInlinePreSR(
   // never started a segment), so this is the frame-start marker for both HDR
   // and SDR.
   const bool timers_active = BeginChainTimers(command_list, device, "preSR", width, height, group);
+  if (timers_active) BindComparisonContext(feature, current, hdr_mode, width, height, color_desc.Format, plan);
 
   if (res.hdr_mode != 0) {
     // v6 linearize: the game's own color (SRV by the NGX contract, same
@@ -20545,6 +20602,22 @@ inline void RunLifecycleTick(int64_t present_ns, bool from_present) {
     } else {
       PruneCompletedSubmissionUses();
     }
+    if (gpu_timers::ComparisonActive()) {
+      std::shared_lock config_lock(present_restore_configuration.mutex);
+      const auto& captured = gpu_timers::comparison_capture_settings;
+      if (captured.config_epoch != present_restore_configuration.epoch
+          || captured.configuration_generation != configuration_generation.load()) {
+        auto& engine = gpu_timers::comparison;
+        auto& windows = (engine.recording_baseline ? engine.baseline : engine.control);
+        for (auto& window : windows) {
+          if (window.status != gpu_comparison::Status::IDLE) {
+            window.status = gpu_comparison::Status::FAILED;
+            window.reason = gpu_comparison::Reason::IDENTITY_CHANGED;
+          }
+        }
+        gpu_timers::comparison_result = engine.Results();
+      }
+    }
     gpu_timers::Poll(queue_tracking_active.load(), gpu_timers_enabled.load());
     norm_trace::Poll(queue_tracking_active.load());
     edit_trace::Poll(queue_tracking_active.load());
@@ -21846,6 +21919,8 @@ inline constexpr SettingGroup kSettingSections[] = {
     kCoreSettings,        kStrengthSettings, kLookSettings,
     kLookResultSettings, kPassLookResultSettings, kHookPointSettings,   kPerformanceSettings, kStackingSettings,
     kHotkeySettings,      kDiagnosticsSettings, kFixesSettings};
+
+#include "gpu_comparison_ui.hpp"
 
 inline bool AnyModified(std::initializer_list<SettingGroup> groups) {
   for (const SettingGroup& group : groups) {
@@ -23842,6 +23917,7 @@ inline void DrawSectionDiagnosticsRaw() {
               " On records nothing here."
             : "  Not in Vulkan games: the edit trace is Direct3D 12 only.");
   }
+  comparison_ui::Draw();
   {
     RuntimeLock lock(runtime_mutex);
     ImGui::TextWrapped("Pre-FG independent-resolution pair: BLOCKED / NO-GO; retained research, default Off. Render -> Upscaled + FG compatibility is separate.");

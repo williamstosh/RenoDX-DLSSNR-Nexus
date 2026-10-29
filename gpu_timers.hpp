@@ -43,6 +43,7 @@
 
 #include "../../utils/directx.hpp"
 #include "gpu_lease.hpp"
+#include "gpu_comparison.hpp"
 #include "submission_tracker.hpp"
 
 namespace renodx::addons::dlss5::gpu_timers {
@@ -154,6 +155,7 @@ struct Segment {
   SampleState proof = SampleState::PENDING;
   FenceRef proof_fence;
   bool expired = false;
+  gpu_comparison::Sample comparison;
 };
 
 // Latest published per-evaluate timing, in microseconds.  Guarded by
@@ -187,6 +189,21 @@ inline uint64_t dropped_segments = 0;
 inline uint64_t published_segments = 0;
 inline uint64_t unexecuted_segments = 0;
 inline uint64_t lease_starved_segments = 0;
+// Owned by runtime_mutex, like the timer ring. No persistent game/device ID.
+inline gpu_comparison::Engine comparison;
+inline gpu_comparison::Comparison comparison_result;
+inline uint64_t device_session = 0;
+inline void (*comparison_settings)(gpu_comparison::Identity*) = nullptr;
+inline gpu_comparison::Identity comparison_capture_settings;
+
+inline bool ComparisonActive() {
+  for (const auto* windows : {&comparison.baseline, &comparison.control}) {
+    for (const auto& window : *windows) {
+      if (window.status == gpu_comparison::Status::COLLECTING) return true;
+    }
+  }
+  return false;
+}
 
 inline int64_t NowNs() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -297,6 +314,7 @@ inline bool Ensure(ID3D12Device* device) {
   }
   // Calibrated from the actual submitting queue only after its exact proof.
   context_device = identity;
+  ++device_session;
   return true;
 }
 
@@ -395,6 +413,25 @@ inline bool Publish(const Segment& s, bool log, const void* queue) {
   next.measured_ns = NowNs();
   next.queue = queue;
   next.samples = 1;
+  if (s.comparison.sequence != 0 && ComparisonActive()) {
+    auto sample = s.comparison;
+    sample.completed_ns = next.measured_ns;
+    sample.valid = true;
+    sample.identity.queue = reinterpret_cast<uint64_t>(queue);
+    sample.total_us = next.total_us;
+    for (uint32_t pass = 0; pass < sample.pass_count; ++pass) {
+      const auto& layer = next.passes[pass];
+      sample.passes[pass] = {
+          .id = layer.id, .model = layer.model, .width = layer.width, .height = layer.height,
+          .output_width = layer.output_width, .output_height = layer.output_height,
+          .eval_us = static_cast<double>(layer.eval_us),
+          .state = (layer.state == SampleState::VALID ? gpu_comparison::PassState::VALID
+                                                     : gpu_comparison::PassState::NOT_EXECUTED),
+          .look_executed = layer.look_measured};
+    }
+    comparison.Observe(sample, next.measured_ns);
+    if (!ComparisonActive()) comparison_result = comparison.Results();
+  }
   if (s.sequence >= stats.sequence) stats = next;
   const uint32_t stage = StageIndex(s.path);
   auto& window = display_windows[stage];
@@ -528,6 +565,15 @@ inline bool Begin(
   s.proof_fence = {};
   s.expired = false;
   s.passes = {};
+  s.comparison = {};
+  if (ComparisonActive()) {
+    s.comparison.stage = StageIndex(path);
+    s.comparison.sequence = s.sequence;
+    s.comparison.recorded_ns = NowNs();
+    s.comparison.pass_count = pass_count;
+    s.comparison.identity.device_session = device_session;
+    if (comparison_settings != nullptr) comparison_settings(&s.comparison.identity);
+  }
   for (uint32_t pass = 0; pass < std::min(pass_count, kTimerMaxPasses); ++pass) {
     s.passes[pass].id = pass_begin + pass;
   }
@@ -571,6 +617,11 @@ inline void End(ID3D12GraphicsCommandList* command_list) {
   if (!internal::current.active) return;
   internal::current.active = false;
   Segment& s = internal::segments[internal::current.idx];
+  if (s.comparison.sequence != 0 && comparison_settings != nullptr) {
+    auto identity = s.comparison.identity;
+    comparison_settings(&identity);
+    if (identity != s.comparison.identity) s.comparison.stable = false;
+  }
   // Even a start-only recording owns its query slot until Reset and GPU
   // completion. It will reject as incomplete, but cannot be reused yet.
   // Only the slots this chain wrote.  A chain writes a sparse set - one stack
@@ -639,6 +690,10 @@ inline void PreserveSubmissionProof(
 // preserved closed-recording receipts. Expiry rejects a measurement without
 // releasing slots a parked recording can still reference. `log`: as Publish's.
 inline void Poll(bool exact_proofs, bool log) {
+  if (ComparisonActive()) {
+    comparison.Tick(NowNs());
+    if (!ComparisonActive()) comparison_result = comparison.Results();
+  }
   internal::poll_ticks.fetch_add(1, std::memory_order_relaxed);
   for (auto& timing : stage_stats) {
     if (timing.valid && NowNs() - timing.measured_ns > internal::kSampleAgeNs) {
