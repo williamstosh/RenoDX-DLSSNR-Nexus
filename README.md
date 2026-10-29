@@ -63,6 +63,8 @@ Slot 自动保存与共享库文件、ReShade 正常设置分别处理，强退�
 默认继承全局；上采样和“独立皮肤”仍全链共享。该新增能力不包含在已发布的 dev.8 包中；
 结果控件有各自的开关及资源前提。
 
+**dev.9 开发源码另含默认关闭的原生 Pre-FG 独立尺寸实验。** 在 INI 的 `[RenoDX.DLSS5]` 下设置 `NRExperimentalNativePreFgResolution=1` 启用；范围仅为单平面原生 DX12 NGX DLSS FG/MFG、严格两个 Present Pass 的 `A 100% → B 67%` 及反向比例。需要有效真实引导，排除 HUDLess／UI／UIAlpha、XeFG、DX11、B1／B2 和最终 Present（Final FG）路径；普通 Present 的 FG Off 门控不变。支持以 producer 录制代次仅提交一次为前提；MFG 后续调用复用缓存，不再录制 NR，但宿主重放整个 producer list 仍会再次执行 GPU NR 命令。不代表游戏可用或新增 HDR10 验收，详见[实验条件与验证边界](docs/USER_GUIDE.md#zh-native-prefg-resolution)。
+
 参数值、依赖、继承和配置示例见[玩家指南](docs/USER_GUIDE.md)。
 
 ![Cyber Neon 多层处理链及第 2 层独立编辑器](docs/images/ui/multipass-zh.webp)
@@ -284,6 +286,8 @@ The default inherits global settings. Upsampling and
 Independent skin remain shared. This addition is not in the published dev.8 package.
 Result controls have enable and resource
 requirements.
+
+**The dev.9 development source also includes a default-off native Pre-FG independent-resolution experiment.** Enable `NRExperimentalNativePreFgResolution=1` under `[RenoDX.DLSS5]` in the INI. Its scope is single-plane native DX12 NGX DLSS FG/MFG with exactly two Present passes, `A 100% → B 67%` or the reverse scales. It requires valid real guides and excludes HUDLess/UI/UIAlpha, XeFG, DX11, B1/B2 and the final Present (Final FG) path; ordinary Present retains its FG Off gate. Support requires each producer recording generation to be submitted only once. Subsequent MFG calls reuse the cache without recording NR again, but replaying the entire producer list still executes its GPU NR commands again. This does not establish game readiness or new HDR10 acceptance; see the [experimental conditions and validation limits](docs/USER_GUIDE.md#en-native-prefg-resolution).
 
 See the [User Guide](docs/USER_GUIDE.md) for values, dependencies, inheritance
 and practical examples.

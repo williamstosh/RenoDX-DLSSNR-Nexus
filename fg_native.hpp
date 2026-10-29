@@ -32,6 +32,15 @@ struct Stream {
   uint64_t native_display_epoch = 0;
   uint64_t native_configuration = 0;
   uint64_t native_options_generation = 0;
+  bool native_resolution_pair = false;
+  uint64_t native_pair_attempt_frame = 0;
+  std::pair<uint64_t, uint64_t> native_pair_recording{};
+  const void* native_pair_producer_marker = nullptr;
+  std::array<PassResolutionSettings, 2> native_pair_resolutions{};
+  FenceRef native_pair_completion;
+  uint64_t native_pair_completion_value = 0;
+  bool native_pair_discarded = false;
+  bool native_pair_replayed = false;
   const NVSDK_NGX_Handle* native_handle = nullptr;
   bool continuing_submission = false;
   uint64_t last_model_frame[2] = {};
@@ -58,6 +67,8 @@ static std::map<const NVSDK_NGX_Handle*, uintptr_t> native_bindings;
 
 inline void ResetNativeFrame(Stream* stream) {
   stream->cached = nullptr;
+  stream->native_pair_producer_marker = nullptr;
+  stream->native_pair_completion = {};
   stream->native_serial = 0;
   stream->continuing_submission = false;
   stream->result = fg::Result::PREPARED;
@@ -104,6 +115,8 @@ inline bool PrepareCapture(ID3D12GraphicsCommandList* list) noexcept {
 // history. Rebuild the feature and workset, including their GPU state ledger.
 inline void Invalidate(Stream* stream) {
   stream->cached = nullptr;
+  stream->native_pair_producer_marker = nullptr;
+  stream->native_pair_completion = {};
   stream->native_serial = 0;
   stream->continuing_submission = false;
   stream->last_model_frame[0] = stream->last_model_frame[1] = 0;
@@ -435,7 +448,10 @@ inline fg::Result Record(Stream* stream, Slot* slot, ID3D12GraphicsCommandList* 
     const uint64_t previous_capture_serial = screenshot::PendingModelCaptureSerial(list);
     const bool accepted = ProcessInline(list, role.Handle(), &role.parameters, &touched, &target, &recording);
     prepared |= recording.prepared;
-    if (!accepted || !recording.output_ready) {
+    const bool complete_pair = !base.native_prefg_resolution_pair
+        || (NativePreFgResolutionPairAllowed(target)
+            && recording.group_complete && recording.model_pass_mask == 3u);
+    if (!accepted || !recording.output_ready || !complete_pair) {
       restore_guides();
       return (accepted && prepared ? fg::Result::PREPARED : fg::Result::FAILED);
     }
@@ -760,6 +776,31 @@ inline fg::Result Service(const fg::FrameInput& input) noexcept {
 
 }  // namespace fg_service
 
+inline void PreserveNativePreFgProof(
+    const void* marker, const std::vector<submission::GenerationSubmission>& submissions) {
+  if (screenshot::WantsFinalPresent() || experimental_present_chain.load()) {
+    PreservePresentCaptureProof(marker, submissions);
+  }
+  // An opt-out must still retain the previous producer's exact receipt so
+  // a same-frame rollback never treats a pruned recording as unproven work.
+  for (auto& [key, stream] : fg_service::streams) {
+    if (!stream.native_resolution_pair || marker != stream.native_pair_producer_marker) continue;
+    if (submissions.empty()) {
+      stream.native_pair_discarded = true;
+      continue;
+    }
+    for (const auto& proof : submissions) {
+      if (std::pair{proof.list_identity, proof.recording_generation} != stream.native_pair_recording) continue;
+      if (submissions.size() != 1 || proof.pending || proof.fence.empty()) {
+        stream.native_pair_replayed = true;
+        continue;
+      }
+      stream.native_pair_completion = proof.fence;
+      stream.native_pair_completion_value = proof.value;
+    }
+  }
+}
+
 inline void OnNativePresentPassthrough(const PresentStream* owner) {
   const auto binding = fg_service::native_bindings.find(native_fg_owner);
   if (binding == fg_service::native_bindings.end()
@@ -869,6 +910,32 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
                  static_cast<uint32_t>(motion_desc.Width)) != 0
       && GetUInt(parameters, NVSDK_NGX_DLSSG_Parameter_MVecsSubrectHeight, motion_desc.Height) != 0
       && GetUInt(parameters, NVSDK_NGX_DLSSG_Parameter_NotRenderingGameFrames) == 0;
+  const auto pair_plan = RequestedStagePlan();
+  const bool resolution_pair = experimental_native_prefg_resolution.load()
+      && pair_plan.valid && !pair_plan.mixed && pair_plan.pass_count == 2
+      && pair_plan.At(stage_plan::Stage::PRESENT).count == 2;
+  const uint32_t index = GetUInt(parameters, NVSDK_NGX_DLSSG_Parameter_MultiFrameIndex, 1);
+  unsigned long long frame_id = 0;
+  if (NVSDK_NGX_FAILED(parameters->Get(NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID, &frame_id))) frame_id = 0;
+  if (resolution_pair) {
+    const auto source = created_feature_ids.find(handle);
+    if (handle == nullptr || source == created_feature_ids.end()
+        || source->second != NVSDK_NGX_Feature_FrameGeneration || frame_id == 0
+        || hudless != nullptr || ui != nullptr
+        || PreFgResource(parameters, NVSDK_NGX_DLSSG_Parameter_UIAlpha) != nullptr
+        || !current_guides || fg::xefg::Enabled()
+        || diagnostics::GuideMode(owner->prefg_target.diagnostic.guides,
+               present_guides.load()) == kPresentGuidesNever) return nullptr;
+    const uint32_t guide_width = GetUInt(parameters, NVSDK_NGX_DLSSG_Parameter_MVecsSubrectWidth,
+                                        static_cast<uint32_t>(motion_desc.Width));
+    const uint32_t guide_height = GetUInt(parameters, NVSDK_NGX_DLSSG_Parameter_MVecsSubrectHeight,
+                                         motion_desc.Height);
+    if (!SubrectFits(GetUInt(parameters, "DLSSG.MVecsSubrectBaseX"),
+                    GetUInt(parameters, "DLSSG.MVecsSubrectBaseY"), guide_width, guide_height, motion_desc)
+        || !SubrectFits(GetUInt(parameters, "DLSSG.DepthSubrectBaseX"),
+                       GetUInt(parameters, "DLSSG.DepthSubrectBaseY"), guide_width, guide_height,
+                       current_depth->GetDesc())) return nullptr;
+  }
   if (native_sdk_present_input.decision_id != 0
       && native_sdk_present_input.identity == owner->native_output_identity) {
     if (!current_guides) {
@@ -913,6 +980,51 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
   }
   const auto configuration = configuration_generation.load(std::memory_order_relaxed);
   const auto options_generation = native_fg_options_generation.load(std::memory_order_acquire);
+  const std::array pair_resolutions{CurrentPassResolution(0), CurrentPassResolution(1)};
+  const auto same_resolutions = [](const auto& first, const auto& second) {
+    for (size_t i = 0; i < first.size(); ++i) {
+      if (first[i].follow_input != second[i].follow_input || first[i].scale != second[i].scale
+          || first[i].commit_source != second[i].commit_source || first[i].commit_epoch != second[i].commit_epoch) return false;
+    }
+    return true;
+  };
+  if (stream.native_resolution_pair && stream.native_pair_producer_marker != nullptr) {
+    const bool same_recording = stream.native_pair_recording == submission::RecordingIdentity(list);
+    std::vector<std::pair<FenceRef, uint64_t>> proofs;
+    const auto proof = submission::UseSubmissionTokens(stream.native_pair_producer_marker, &proofs);
+    bool completed_producer = proof == submission::UseSubmission::kTokens && proofs.size() == 1;
+    if (proof == submission::UseSubmission::kComplete && !stream.native_pair_completion.empty()
+        && !stream.native_pair_discarded && !stream.native_pair_replayed) {
+      const auto completed = stream.native_pair_completion.fence->GetCompletedValue();
+      completed_producer = completed != UINT64_MAX && completed >= stream.native_pair_completion_value;
+    }
+    for (const auto& [fence, value] : proofs) {
+      const auto completed = fence.fence->GetCompletedValue();
+      completed_producer &= completed != UINT64_MAX && completed >= value;
+    }
+    // Another list has no known queue ordering here. Poll a single genuine
+    // producer completion; an empty/discarded recording is never production.
+    if (stream.native_pair_replayed || stream.native_pair_discarded || proofs.size() > 1
+        || (!same_recording && !completed_producer)) {
+      if (frame_id == stream.source_frame_id || (!proofs.empty() && !completed_producer)) return nullptr;
+      fg_service::Invalidate(&stream);
+    } else if (stream.cached != nullptr && frame_id == stream.source_frame_id
+               && (!resolution_pair || stream.native_configuration != configuration
+                   || stream.native_handle != handle || stream.native_options_generation != options_generation
+                   || stream.native_display_epoch != history_reset_epoch.load()
+                   || !same_resolutions(stream.native_pair_resolutions, pair_resolutions))) {
+      const auto original_desc = stream.cached->original_backbuffer->GetDesc();
+      if (backbuffer == stream.source_backbuffer && desc.Width == original_desc.Width
+          && desc.Height == original_desc.Height && desc.Format == original_desc.Format
+          && desc.SampleDesc.Count == original_desc.SampleDesc.Count) {
+        fg_service::CopyColor(list, backbuffer, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                              stream.cached->original_backbuffer, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+      }
+      fg_service::ResetNativeFrame(&stream);
+      return nullptr;
+    }
+  }
+  if (stream.native_resolution_pair != resolution_pair) fg_service::ResetNativeFrame(&stream);
   if (stream.native_configuration != configuration || stream.native_handle != handle
       || stream.native_options_generation != options_generation) {
     fg_service::ResetNativeFrame(&stream);
@@ -922,11 +1034,6 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
     native_fg_marker.store(nullptr, std::memory_order_release);
     native_fg_continuing_submission.store(false, std::memory_order_release);
     native_fg_result.store(fg::Result::PREPARED, std::memory_order_release);
-  }
-  const uint32_t index = GetUInt(parameters, NVSDK_NGX_DLSSG_Parameter_MultiFrameIndex, 1);
-  unsigned long long frame_id = 0;
-  if (NVSDK_NGX_FAILED(parameters->Get(NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID, &frame_id))) {
-    frame_id = 0;
   }
   // NGX DLSS-FG requires NPS for every input on both direct and compute lists.
   constexpr auto input_state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
@@ -960,6 +1067,13 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
       return nullptr;
     }
   } else {
+    // A failed or invalidated pair cannot become a second attempt on the same
+    // game frame by changing its pass count or disabling the experiment.
+    if (stream.native_pair_attempt_frame != 0 && frame_id <= stream.native_pair_attempt_frame) return nullptr;
+    if (resolution_pair) {
+      if (index != 1) return nullptr;
+      stream.native_pair_attempt_frame = frame_id;
+    }
     // Only the same stream's adjacent, queue-proven recording can keep the
     // service active while this list records. A skipped recording breaks it.
     const auto display_epoch = history_reset_epoch.load(std::memory_order_relaxed);
@@ -1037,14 +1151,36 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
     const bool ui_recomposition = uir != native_fg_ui_recomposition.end() && uir->second;
     if (!fg_service::PrepareSurfaces(&stream, slot, input,
             fg_service::NeedsNativeColorCoupling(input, parameters, ui_recomposition))) return nullptr;
+    if (resolution_pair) {
+      // Cover feature-only and partial warm-up recordings as well as a final
+      // image. Discarding any such recording invalidates its GPU state ledger.
+      stream.native_resolution_pair = true;
+      stream.native_pair_producer_marker = slot->original_backbuffer;
+      stream.native_pair_recording = submission::RecordingIdentity(list);
+      stream.native_pair_completion = {};
+      stream.native_pair_completion_value = 0;
+      stream.native_pair_discarded = false;
+      stream.native_pair_replayed = false;
+      submission::TrackUse(list, stream.native_pair_producer_marker);
+    }
     bool output_ready = false;
     std::array<NrRecording, 2> recordings;
-    const auto result = fg_service::Record(&stream, slot, list, input, owner->prefg_target,
+    PresentTarget target = owner->prefg_target;
+    target.native_prefg_resolution_pair = resolution_pair;
+    const auto result = fg_service::Record(&stream, slot, list, input, target,
                                           &output_ready, &recordings, parameters, ui_recomposition);
     // These commands belong to the game's list and cannot be rolled back.
     // Private colors preserve both game surfaces on any partial failure;
     // discontinuous model history is rebuilt before the next application frame.
     envelope.MarkInjectionCommandsRecorded();
+    if (resolution_pair && (configuration != configuration_generation.load()
+        || options_generation != native_fg_options_generation.load()
+        || display_epoch != history_reset_epoch.load()
+        || !experimental_native_prefg_resolution.load()
+        || !same_resolutions(pair_resolutions, std::array{CurrentPassResolution(0), CurrentPassResolution(1)}))) {
+      fg_service::Invalidate(&stream);
+      return nullptr;
+    }
     if (!output_ready) {
       if (result != fg::Result::PREPARED) fg_service::Invalidate(&stream);
       for (uint32_t i = 0; i < recordings.size(); ++i) {
@@ -1058,6 +1194,13 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
     // their recordings cannot overwrite a snapshot used by another queue.
     fg_service::CopyColor(list, slot->original_backbuffer, input_state, backbuffer, input_state);
     stream.cached = slot;
+    stream.native_resolution_pair = resolution_pair;
+    stream.native_pair_recording = submission::RecordingIdentity(list);
+    stream.native_pair_resolutions = pair_resolutions;
+    stream.native_pair_completion = {};
+    stream.native_pair_completion_value = 0;
+    stream.native_pair_discarded = false;
+    stream.native_pair_replayed = false;
     stream.source_backbuffer = backbuffer;
     stream.source_hudless = hudless;
     stream.source_ui = ui;

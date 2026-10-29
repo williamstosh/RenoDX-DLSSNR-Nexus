@@ -197,6 +197,24 @@
 
 在支持的双模型运行时，可固定介入点、尺寸、强度，比较 **A、B、AA、AB、BA、BB**。字母按执行顺序排列，AB 即先 A 后 B。比较时明确设置每层模型，避免“继承主模型”随主模型一起改变序列。每次切换后等历史稳定，同时看静止细节和运动。以上仅为例子，**不保证哪组最佳**；加层可能增强效果，也会累积颜色、光晕、时序伪影并增加 GPU 工作。上采样仍共用；当前 0.2.0-dev.9 开发源码支持逐层阶段、跨 StageGroup 工作尺寸覆盖及原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass 不同工作尺寸。
 
+<a id="zh-native-prefg-resolution"></a>
+#### 实验：原生 Pre-FG 双 Pass 独立尺寸（dev.9 开发源码）
+
+这是独立于普通 Present 和 B1／B2 的实验，默认 **false／关闭**，未包含于已发布的 dev.8 包。在 INI 中启用：
+
+```ini
+[RenoDX.DLSS5]
+NRExperimentalNativePreFgResolution=1
+```
+
+本轮支持范围仅限**单平面原生 DX12 NGX DLSS FG/MFG、纯 Present 阶段、严格两个 Pass**：`A 100% → B 67%` 或 `A 67% → B 100%`。要求已识别的 FG handle、非零且单调递增的真实 Backbuffer FrameID、首次调用的 `MultiFrameIndex=1`，以及有效的真实 Depth／Motion；不能用中性引导替代。任何 HUDLess、UI 或 UIAlpha 输入均排除，即使与 Backbuffer 别名也不例外。不支持 XeFG、DX11、B1、尚未实现的 B2 或最终 Present（Final FG）路径；普通 Present 双 Pass 的公共 FG Off 门控不变。
+
+**支持条件是 producer command-list 录制代次仅提交一次。** 同一真实 FrameID 最多尝试一次，失败或未成熟也不在本帧重跑。MFG 派生调用只复用完整缓存，不再录制 NR；同一 list 录制代次内按命令顺序消费，不同 list／录制代次必须已有该 producer 的单次提交及 GPU 完成证明，否则跳过。此路径不新增 CPU Fence 等待（`CPUFenceWait=0`）。宿主重放整个 producer list 仍会物理执行其中的 GPU NR 命令；检测到多次提交 receipt 后拒绝缓存复用，资源保留至全部 receipt 完成且对应录制代次经 Reset／销毁关闭。API evaluate 次数不能代替实际 GPU 执行次数。
+
+只有两个模型实际 evaluate 成功（`model_pass_mask=3`）、`group_complete`、调用接受且输出就绪时才提交结果。部分失败或未成熟结果只留在私有 staging，不交付给 FG，原始 Backbuffer 保持受保护。配置或尺寸在本帧变化时冻结或拒绝本帧，不交付半条链。关闭实验后仍保留既有 producer 的提交证明，以便在原输入及顺序条件满足时恢复本帧原始 Backbuffer；本帧不另跑新链。
+
+**验证边界：** 本轮定向 WARP／RTX 5090 D GPU 自动化已通过，范围为 SDR／scRGB；NVIDIA NR 与 FG 均使用替身。没有真游戏验收，不承诺 game-ready、真实 NVIDIA 网络行为、画质或性能收益，也不新增 HDR10 验收。实际 GPU 调用次数需依据 GPU timestamp 等执行证据，单独区分正常 MFG 缓存消费与整个宿主 list 重放。现有截图不作为这项实验的验收证据。
+
 #### 示例：两层独立风格与结果调整
 
 这是操作示例，不是最佳画质预设；需要上述 0.1.0 界面，B 还要求已识别的 **310.9.16.0** Runtime。
@@ -620,6 +638,24 @@ Turning either inheritance switch off exposes that pass's **stored independent v
 The default **Chained history** is On: each pass keeps its own history. Off is a diagnostic mode where Passes 2–4 reset every frame and can flicker. Model choice and pass-count changes recreate features; strength and model steering changes reset history. Repeated switching can cause visible settling and creation cost. Live result edits do not restart the NR model history.
 
 For controlled comparisons on the supported dual-model runtime, try **A**, **B**, **AA**, **AB**, **BA**, **BB**. Letters are model choices in execution order: AB means A first, B second. Explicitly set each model when comparing; Inherit Main Model can otherwise change the whole sequence. Start with the same location, size and strengths, let history settle, then inspect both still detail and movement. These are examples, **not recommended winners**; extra passes can compound colour, halos and temporal artifacts as well as strengthen the effect. Each adds GPU work. Upsampling stays shared; the current v0.2.0-dev.9 development source supports per-pass stages, working-size overrides across StageGroups and different working sizes for two Upscaled passes on native DX11 Bridge or DX12.
+
+<a id="en-native-prefg-resolution"></a>
+#### Experiment: native Pre-FG independent-resolution pair (dev.9 development source)
+
+This experiment is separate from ordinary Present and B1/B2, defaults to **false/off**, and is absent from the published dev.8 package. Enable it in the INI:
+
+```ini
+[RenoDX.DLSS5]
+NRExperimentalNativePreFgResolution=1
+```
+
+The supported scope is **single-plane native DX12 NGX DLSS FG/MFG, a pure Present stage and exactly two passes**: `A 100% → B 67%` or `A 67% → B 100%`. It requires a recognized FG handle, a nonzero monotonically increasing real Backbuffer FrameID, `MultiFrameIndex=1` on the first call, and valid real Depth/Motion; neutral guides cannot substitute. Any HUDLess, UI or UIAlpha input is excluded, even if it aliases the Backbuffer. XeFG, DX11, B1, the unimplemented B2 and the final Present (Final FG) path are unsupported. Ordinary Present pairs retain their public FG Off gate.
+
+**Support requires each producer command-list recording generation to be submitted only once.** Each real FrameID gets at most one attempt, including failed or immature attempts. Derived MFG calls only reuse a complete cache and do not record NR again. Consumption in the same list recording generation follows command order; a different list/recording generation requires proof of the producer's single submission and GPU completion, otherwise it is skipped. This path adds no CPU fence wait (`CPUFenceWait=0`). Replaying the entire producer list still physically executes its GPU NR commands again. Once multiple submission receipts are detected, cache reuse is rejected; resources remain retained until every receipt completes and the corresponding recording generation is closed by Reset/destruction. API evaluate counts do not establish actual GPU execution counts.
+
+Results are committed only after both model evaluates actually succeed (`model_pass_mask=3`), with `group_complete`, an accepted call and ready output. Partial failures and immature results stay in private staging and are not delivered to FG; the original Backbuffer remains protected. Configuration or size changes within the frame are frozen or cause that frame to be rejected, without delivering a partial chain. Disabling the experiment still retains the existing producer's submission proof so the frame's original Backbuffer can be restored when the original-input and ordering conditions hold; no new chain runs in that frame.
+
+**Validation limits:** this round's targeted WARP/RTX 5090 D GPU automation passed for SDR/scRGB; both NVIDIA NR and FG use substitutes. There is no game acceptance, no game-ready claim, no established real NVIDIA network behavior, image quality or performance gain, and no new HDR10 acceptance. Actual GPU call counts require execution evidence such as GPU timestamps, distinguishing normal MFG cache consumption from replay of an entire host list. Existing screenshots are not acceptance evidence for this experiment.
 
 #### Example: two passes with independent looks and results
 

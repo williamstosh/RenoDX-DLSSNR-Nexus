@@ -684,10 +684,13 @@ int RunNativeRequiredMenuTest() {
 #include "stage_execution_cases.hpp"
 #include "same_stage_resolution_cases.hpp"
 #include "present_stage_resolution_cases.hpp"
+#include "native_prefg_resolution_cases.hpp"
 #include "feature_switch_cases.hpp"
 #include "present_chain_cases.hpp"
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--native-prefg-resolution") == 0) return native_prefg_resolution_cases::Run(false);
+  if (argc == 2 && std::strcmp(argv[1], "--native-prefg-resolution-hardware") == 0) return native_prefg_resolution_cases::Run(true);
   if (argc == 2 && std::strcmp(argv[1], "--present-stage-resolution") == 0) return present_stage_resolution_cases::Run(false);
   if (argc == 2 && std::strcmp(argv[1], "--present-stage-resolution-hardware") == 0) return present_stage_resolution_cases::Run(true);
   if (argc == 2 && std::strcmp(argv[1], "--render-stage-resolution") == 0) return same_stage_resolution_cases::Run(false, false, true);

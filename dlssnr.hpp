@@ -1002,6 +1002,8 @@ struct PresentTarget {
   bool d3d11_bridge = false;
   // Granted only by the ordinary Present caller, never by pre-FG/B1.
   bool independent_resolution_pair = false;
+  // Granted only to the validated native single-plane FG transaction.
+  bool native_prefg_resolution_pair = false;
   present_hdr_pedestal::Snapshot hdr_pedestal;
   uint32_t hdr_codec_mode = 0;
   uint32_t hdr_curve = 0;
@@ -1928,6 +1930,7 @@ inline constexpr uint32_t kHookRender = 1;
 inline constexpr uint32_t kHookPresent = 2;
 inline std::atomic_uint32_t hook_point = defaults::kHookPoint;
 inline std::atomic_bool experimental_present_chain{false};
+inline std::atomic_bool experimental_native_prefg_resolution{false};
 inline std::atomic_bool mixed_present_fg_seen{false};
 inline std::atomic_uint32_t auto_fg_fallback = defaults::kAutoFgFallback;
 inline std::atomic_bool auto_fg_fallback_active{false};
@@ -2866,6 +2869,10 @@ inline void CapturePresentGuides11(
     const NVSDK_NGX_Handle* handle,
     const NVSDK_NGX_Parameter* parameters);
 inline void PreservePresentCaptureProof(
+    const void* marker, const std::vector<submission::GenerationSubmission>& submissions);
+// The native service owns its frame cache in fg_native.hpp, included after
+// retirement; this callback preserves an exact producer receipt before prune.
+inline void PreserveNativePreFgProof(
     const void* marker, const std::vector<submission::GenerationSubmission>& submissions);
 
 // Multi-pass admission: returns false when a pass from `handle` on `resource`
@@ -4779,8 +4786,7 @@ inline void DrainRetiredResources(bool nr_release_allowed) {
   screenshot::PreserveStageSubmissionProofs();
   // Advance the exact proofs first: drop closed generations whose
   // submissions all completed.
-  submission::PruneCompletedGenerations(
-      (screenshot::WantsFinalPresent() || experimental_present_chain.load()) ? PreservePresentCaptureProof : nullptr);
+  submission::PruneCompletedGenerations(PreserveNativePreFgProof);
   // A removed device will never execute the retired work, so releasing is
   // safe - but that must be diagnosed, not mistaken for a proven completion.
   static std::atomic<bool> logged_device_removal{false};
@@ -9939,6 +9945,7 @@ struct NrRecording {
   bool model_recorded = false;
   bool output_ready = false;
   bool group_complete = false;
+  uint32_t model_pass_mask = 0;
 };
 
 inline bool PresentResolutionPairAllowed(const PresentTarget& present) {
@@ -9951,6 +9958,14 @@ inline bool PresentResolutionPairAllowed(const PresentTarget& present) {
       && !native_fg_owns.load(std::memory_order_acquire)
       && !fg::xefg::Enabled() && !fg::xefg::OwnsStream()
       && !auto_fg_fallback_active.load(std::memory_order_relaxed)
+      && hook_point.load(std::memory_order_relaxed) == kHookPresent;
+}
+
+inline bool NativePreFgResolutionPairAllowed(const PresentTarget& present) {
+  return present.native_prefg_resolution_pair && experimental_native_prefg_resolution.load()
+      && !present.d3d11_bridge && present.stage_execution_plan == nullptr && present.source_color == nullptr
+      && present.domain == present_restore_scope::Domain::PRE_FG_BACKBUFFER
+      && !fg::xefg::Enabled() && !fg::xefg::OwnsStream()
       && hook_point.load(std::memory_order_relaxed) == kHookPresent;
 }
 
@@ -10300,7 +10315,8 @@ inline bool ProcessInline(
   uint32_t nr_input_width = width;
   uint32_t nr_input_height = height;
   const bool independent_pair = group.count == 2
-      && (present == nullptr || PresentResolutionPairAllowed(*present));
+      && (present == nullptr || PresentResolutionPairAllowed(*present)
+          || NativePreFgResolutionPairAllowed(*present));
   if (independent_pair) {
     ComputeNrWorkingResolution(width, height, current.input_width, current.input_height,
                                nr_input_width, nr_input_height, group.begin);
@@ -11211,7 +11227,10 @@ inline bool ProcessInline(
       break;
     }
     last_model_pass = static_cast<int32_t>(pass);
-    if (recording != nullptr) recording->model_recorded = true;
+    if (recording != nullptr) {
+      recording->model_recorded = true;
+      recording->model_pass_mask |= 1u << pass;
+    }
     // Decode pass: blend the neural result over this pass's reference image
     // and upscale from the NR working resolution to the output resolution.
     // v6 HDR resolves in LINEAR source units onto the work ping-pong
@@ -25280,6 +25299,7 @@ inline void ReadIniRawValues() {
       {"NRPresentPreFgContract", IniKind::kUint},
       {"NRPresentBlockHudless", IniKind::kBool},
       {"NRExperimentalPresentChain", IniKind::kBool},
+      {"NRExperimentalNativePreFgResolution", IniKind::kBool},
       {"NRAutoFgFallback", IniKind::kUint},
       {"NRNormTrace", IniKind::kBool},     {"NRScreenshotPlanes", IniKind::kBool},
       {"UiWelcomed", IniKind::kBool},      {"UiIssueNotice", IniKind::kBool},
@@ -25471,6 +25491,7 @@ inline void LoadConfiguration() {
   uint32_t saved_present_pre_fg_contract = defaults::kPresentPreFgContract;
   bool saved_present_block_hudless = false;
   bool saved_experimental_present_chain = false;
+  bool saved_experimental_native_prefg_resolution = false;
   uint32_t saved_present_mvec_units = defaults::kPresentMvecUnits;
   uint32_t saved_auto_fg_fallback = defaults::kAutoFgFallback;
   uint32_t saved_vk_state_restore = defaults::kVkStateRestore;
@@ -25582,6 +25603,9 @@ inline void LoadConfiguration() {
   reshade::get_config_value(
       nullptr, kConfigSection, "NRExperimentalPresentChain", saved_experimental_present_chain);
   experimental_present_chain.store(saved_experimental_present_chain);
+  reshade::get_config_value(nullptr, kConfigSection, "NRExperimentalNativePreFgResolution",
+                           saved_experimental_native_prefg_resolution);
+  experimental_native_prefg_resolution.store(saved_experimental_native_prefg_resolution);
   reshade::get_config_value(
       nullptr, kConfigSection, "NRPresentMVecUnits", saved_present_mvec_units);
   reshade::get_config_value(

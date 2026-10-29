@@ -211,7 +211,10 @@ int main(int argc, char** argv) {
       // Empty add-on settings; other ReShade sections do not make it an old add-on.
     } else {
       addon = current_global + policy_keys;
-      if (test_case == "presets") {
+      if (test_case == "native-prefg-resolution-config") {
+        addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\n"
+                 "NRExperimentalNativePreFgResolution=1\r\n";
+      } else if (test_case == "presets") {
         addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\n"
                  "NeuralUplift=0\r\nNRIntensity=0.75\r\nNRPreset=1\r\nNRPasses=2\r\n"
                  "NRLookMode=1\r\nNRLookStrength=1.4\r\nNRDetailStability=1\r\n"
@@ -295,6 +298,19 @@ int main(int argc, char** argv) {
     if (test_case == "fail-sdr-version") failed_key = "NRPresentSdrRestoreConfigVersion";
     if (test_case == "fail-hdr-version") failed_key = "NRPresentHdrPedestalConfigVersion";
     runtime::LoadConfiguration();
+    if (test_case == "native-prefg-resolution-config") {
+      Check(runtime::experimental_native_prefg_resolution.load(), "explicit INI enables the experimental PreFG pair");
+      Check(Read("NRExperimentalNativePreFgResolution") == "1", "registered experimental key survives configuration load");
+      Check(WritePrivateProfileStringA("RenoDX.DLSS5", "NRExperimentalNativePreFgResolution", "0", ini_path.c_str()),
+            "write explicit prototype Off");
+      runtime::LoadConfiguration();
+      Check(!runtime::experimental_native_prefg_resolution.load(), "explicit Off disables the prototype");
+      runtime::experimental_native_prefg_resolution.store(true);
+      Check(WritePrivateProfileStringA("RenoDX.DLSS5", "NRExperimentalNativePreFgResolution", nullptr, ini_path.c_str()),
+            "remove experimental override");
+      runtime::LoadConfiguration();
+      Check(!runtime::experimental_native_prefg_resolution.load(), "missing key resets to default Off after reload");
+    }
     if (test_case.starts_with("nr-resolution-")) {
       const bool explicit_values = test_case == "nr-resolution-explicit";
       for (uint32_t pass = 1; pass < runtime::kMaxNrPasses; ++pass) {
@@ -1136,7 +1152,8 @@ int main(int argc, char** argv) {
       }
       Check(Read("UnregisteredPersistentKnob") == "42", "reset preserves unregistered key");
     } else if (test_case.starts_with("nr-model-") || test_case.starts_with("nr-stage-") || test_case.starts_with("pass-result-")
-               || test_case.starts_with("nr-resolution-") || test_case == "profiles") {
+               || test_case.starts_with("nr-resolution-") || test_case == "profiles"
+               || test_case == "native-prefg-resolution-config") {
       CheckPair("1");
       Check(!Configuration().inherited && Configuration().scope == scope::Scope::FINAL_PRESENT_AND_PRE_FG,
             "model selection leaves explicit restore scope unchanged");
