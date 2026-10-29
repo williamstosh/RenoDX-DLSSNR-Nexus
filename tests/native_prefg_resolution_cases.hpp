@@ -13,6 +13,7 @@
 #include <exception>
 #include <iostream>
 #include <memory>
+#include <thread>
 #include <vector>
 
 // Reuses the native Host, GPU stamps and readbacks. Only NR and the FG consumer
@@ -303,8 +304,15 @@ int Run(bool hardware) {
     };
     native::nr_resolution_scale.store(1.f);
     native::pass_resolution_scale[0].store(.67f);
+    const auto diagnostic_count = [] {
+      return std::count_if(captured_logs.begin(), captured_logs.end(), [](const auto& entry) {
+        return entry.second.find("native-prefg-experiment reason=") != std::string::npos;
+      });
+    };
+    const auto diagnostics_off = diagnostic_count();
     record(); submit(); raw();
     Check(!replaced && pair::evaluations.empty(), "disabled prototype cannot execute heterogeneous PreFG NR");
+    Check(diagnostic_count() == diagnostics_off, "default-off experiment adds no diagnostic logs");
     native::experimental_native_prefg_resolution.store(true);
     {
       const auto before = model_calls;
@@ -323,6 +331,13 @@ int Run(bool hardware) {
       missing_frame.Set(NVSDK_NGX_DLSSG_Parameter_Depth, depth.Get());
       missing_frame.Set(NVSDK_NGX_DLSSG_Parameter_MVecs, motion.Get());
       missing_frame.Set(NVSDK_NGX_DLSSG_Parameter_MultiFrameIndex, 1u);
+      auto hudless = texture(DXGI_FORMAT_R8G8B8A8_UNORM);
+      auto alpha = texture(DXGI_FORMAT_R8_UNORM);
+      missing_frame.Set(NVSDK_NGX_DLSSG_Parameter_HUDLess, hudless.Get());
+      missing_frame.Set(NVSDK_NGX_DLSSG_Parameter_UIAlpha, alpha.Get());
+      native::native_fg_ui_recomposition[handle] = true;
+      // Cross the diagnostic rate limit once, without changing GPU scheduling.
+      std::this_thread::sleep_for(std::chrono::milliseconds(1100));
       const auto before = model_calls;
       bool missing_replaced = false;
       auto* original = native::RunNativePreFg(gpu.list.Get(), &missing_frame, handle, &missing_replaced);
@@ -331,6 +346,44 @@ int Run(bool hardware) {
       submit(); raw();
       Check(original == nullptr && !missing_replaced && model_calls == before,
           "missing BackbufferFrameID cannot borrow SDK/present fallback");
+      const auto diagnostic = std::find_if(captured_logs.rbegin(), captured_logs.rend(), [](const auto& entry) {
+        return entry.second.find("native-prefg-experiment reason=") != std::string::npos;
+      });
+      Check(diagnostic != captured_logs.rend()
+          && diagnostic->second.find("reason=frame_id_uint64_unreadable_or_zero") != std::string::npos
+          && diagnostic->second.find("frame_id_available=0") != std::string::npos
+          && diagnostic->second.find("frame_id_type=uint64") != std::string::npos
+          && diagnostic->second.find("uir=1") != std::string::npos
+          && diagnostic->second.find("alpha=[present=1 size=16x16 format=61") != std::string::npos
+          && diagnostic->second.find("hudless=[present=1") != std::string::npos
+          && diagnostic->second.find("group_complete=0 model_pass_mask=0") != std::string::npos,
+          "first rejection is absent uint64 FrameID, not the downstream HUDLess/UI gate");
+      size_t tracked = 0;
+      {
+        std::lock_guard lock(addon::submission::tracker_mutex);
+        tracked = addon::submission::tracked_lists.size();
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+      bool changed = false;
+      Check(native::RunNativePreFg(nullptr, &missing_frame, handle, &changed) == nullptr && !changed,
+          "a due missing-list diagnostic never produces an FG image");
+      Check(captured_logs.back().second.find("reason=command_list_missing") != std::string::npos
+          && captured_logs.back().second.find("recording=0:0") != std::string::npos,
+          "missing-list diagnostic observes an unavailable recording without querying a null COM object");
+      const auto once = diagnostic_count();
+      for (uint32_t retry = 0; retry < 100; ++retry) {
+        changed = false;
+        Check(native::RunNativePreFg(nullptr, &missing_frame, handle, &changed) == nullptr && !changed,
+            "diagnosing a missing list never produces an FG image");
+      }
+      {
+        std::lock_guard lock(addon::submission::tracker_mutex);
+        Check(addon::submission::tracked_lists.size() == tracked,
+            "read-only rejection diagnostics never manufacture submission generations");
+      }
+      Check(diagnostic_count() == once && model_calls == before,
+          "100 rejected invocations are throttled and do not execute either model");
+      std::cout << "PASS precise missing FrameID before HUDLess/UI; default-off and bounded read-only diagnostics\n";
     }
     for (const char* key : {NVSDK_NGX_DLSSG_Parameter_HUDLess, NVSDK_NGX_DLSSG_Parameter_UI,
                            NVSDK_NGX_DLSSG_Parameter_UIAlpha}) {

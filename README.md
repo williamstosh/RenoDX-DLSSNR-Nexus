@@ -34,7 +34,7 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 | **Render／Upscaled／Present** | 在 DLSS 超分前、DLSS 输出或 ReShade 效果前的最终游戏画面上应用 NR；实际执行取决于 API、资源和 FG 路由。 |
 | **NR 协同原生 DLSS FG/MFG 或 XeFG** | 配合已有 FG 后端运行，查看实际观测路径与活动，不把配置倍率当作 FG 已生效的证明。 |
 | **输出效果与时序稳定** | 调整亮度／颜色限制、细节、光晕和时序行为；SDR/HDR 兼容策略仍独立可配。 |
-| **实时诊断与报告** | 查看 NR 活动、请求／解析模型、资源及可用时的 GPU 时间，准备可选诊断与需用户检查提交的 Issue 草稿。 |
+| **实时诊断与报告** | 查看 NR 活动、请求／解析模型、资源及可用时的 GPU 时间；当前 v0.2.0-dev.10 开发源码可关联最多四层的实际 Stage／Pass、模型请求、工作／输出尺寸与 GPU 区间。准备可选诊断与需用户检查提交的 Issue 草稿。 |
 | **15 种界面语言** | Auto 自动跟随 ReShade，也可手动选择。显示取决于 ReShade 已加载的字体，语言清单与缺字回退说明见指南。 |
 | **四套界面主题** | Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED 只改变菜单视觉，不影响 NR 图像处理。 |
 | **六个 NR Profile Slot（开发中）** | 每游戏三个官方开发候选及三个自定义 Slot，独立保留覆盖值，可捕获／重命名／清空自定义快照、撤销 Slot 操作或恢复当前官方默认值。编辑自动保存，首次升级保留当前配置，保存失败不切换。 |
@@ -51,19 +51,21 @@ Slot 自动保存与共享库文件、ReShade 正常设置分别处理，强退�
 
 模型外观控制 NR 生成什么，结果编辑则塑造每层模型已经返回的改变量。模型选择、外观继承、
 结果继承彼此独立，附加层既可沿用第 1 层，也可保留各自保存的编辑。第 1 层选择起始介入点，
-后续层可继承或选择合法的后续阶段。**当前 0.2.0-dev.9 开发源码：独立工作分辨率（阶段性支持）**：
+后续层可继承或选择合法的后续阶段。**当前 0.2.0-dev.10 开发源码：独立工作分辨率（阶段性支持）**：
 第 2–4 层可继承全局、跟随游戏 Guide 或使用 33–100% 固定比例，例如
 `Render A 100% → 游戏 DLSS SR → Upscaled B 67%`。不改游戏 DLSS SR 分辨率；
 不含 Present 的原生 DX11 Bridge／DX12 链中，同一 Render 或 Upscaled StageGroup 的两个 Pass 可使用各自工作尺寸，例如
 `Upscaled A 100% → B 67%` 或反向比例；Render 双层同样支持两方向，例如
-`Render A 100% → Render B 67% → 游戏 DLSS SR`。当前 0.2.0-dev.9 开发源码还允许普通原生 DX11 Bridge／DX12 Present 双 Pass 使用不同工作尺寸，前提是已收到成功的进程级公共 FG Off 声明。没有该成功声明时，即使未观测到 FG 活动，仍拒绝该双 Pass 异尺寸组合；该声明作用于进程，不区分各个 viewport。该 Present 能力拒绝 FG 未知／On、Pre-FG 及 B1／混合链，不改变既有 Render／Upscaled 支持。新增 DX11 Present 双 Pass 已通过 WARP／硬件定向 GPU 自动化；真实游戏、NVIDIA 网络及性能收益未验收。同组 3 层以上仍要求
+`Render A 100% → Render B 67% → 游戏 DLSS SR`。当前 0.2.0-dev.10 开发源码还允许普通原生 DX11 Bridge／DX12 Present 双 Pass 使用不同工作尺寸，前提是已收到成功的进程级公共 FG Off 声明。没有该成功声明时，即使未观测到 FG 活动，仍拒绝该双 Pass 异尺寸组合；该声明作用于进程，不区分各个 viewport。该 Present 能力拒绝 FG 未知／On、Pre-FG 及 B1／混合链，不改变既有 Render／Upscaled 支持。新增 DX11 Present 双 Pass 已通过 WARP／硬件定向 GPU 自动化；真实游戏、NVIDIA 网络及性能收益未验收。同组 3 层以上仍要求
 实际工作尺寸一致；不支持的尺寸组合会明确拒绝该组并保留设置。Upscaled 同阶段实现已通过定向 WARP／硬件 GPU 自动化；Render 双层的 DX12／Bridge 核心已实现，Bridge 本轮三组 HDR 场景及 DX12 本轮八场景／二十阶段均已通过 WARP／硬件 GPU 自动化，
 真实网络、实机画质及性能收益未验收。
 新增独立模式仅限 native DX11/DX12；Vulkan 明确拒绝非继承模式，默认继承保留旧行为。
 默认继承全局；上采样和“独立皮肤”仍全链共享。该新增能力不包含在已发布的 dev.8 包中；
 结果控件有各自的开关及资源前提。
 
-**dev.9 开发源码另含默认关闭的原生 Pre-FG 独立尺寸实验。** 在 INI 的 `[RenoDX.DLSS5]` 下设置 `NRExperimentalNativePreFgResolution=1` 启用；范围仅为单平面原生 DX12 NGX DLSS FG/MFG、严格两个 Present Pass 的 `A 100% → B 67%` 及反向比例。需要有效真实引导，排除 HUDLess／UI／UIAlpha、XeFG、DX11、B1／B2 和最终 Present（Final FG）路径；普通 Present 的 FG Off 门控不变。支持以 producer 录制代次仅提交一次为前提；MFG 后续调用复用缓存，不再录制 NR，但宿主重放整个 producer list 仍会再次执行 GPU NR 命令。不代表游戏可用或新增 HDR10 验收，详见[实验条件与验证边界](docs/USER_GUIDE.md#zh-native-prefg-resolution)。
+**原生 Pre-FG Present 双 Pass 异尺寸：研究保留，BLOCKED／NO-GO。** `NRExperimentalNativePreFgResolution`（INI `[RenoDX.DLSS5]`）在源码与测试中保留并默认关闭；本轮已结束该研究，不建议玩家开启，也不属于正式支持。原研究范围仅为单平面原生 DX12 NGX DLSS FG/MFG、纯 Present 的两个 Pass：`A 100% → B 67%` 或反向比例；要求有效真实引导，并排除 HUDLess／UI／UIAlpha、XeFG、DX11、B1／B2 与最终 Present（Final FG）。实验原设定要求每个 producer 录制代次精确提交一次。当前 `BackbufferFrameID` 数值 Get 失败；指针 Get 虽成功，但对象身份及真实帧语义未证；MFG replay 行为和 HUDLess／UI 一致性也未证，因此无法证明实验所需的帧身份及提交条件。该 Pre-FG 路径为 BLOCKED／NO-GO，本轮不再继续研究或测试。此结论只针对原生 Pre-FG 双 Pass 异尺寸；已有 Render → Upscaled 与原生 DLSS FG／XeFG 并用是独立路径，仍受各自既有输入、资源、所有权及实验门控约束。详见[研究范围与状态](docs/USER_GUIDE.md#zh-native-prefg-resolution)。
+
+该技术开关保留的实验启用值为 `1`。
 
 参数值、依赖、继承和配置示例见[玩家指南](docs/USER_GUIDE.md)。
 
@@ -245,7 +247,7 @@ and four menu themes.
 | **Render / Upscaled / Present** | Apply NR before DLSS upscaling, to its output, or to the final game image before ReShade effects. Actual execution depends on API, resources and FG routing. |
 | **NR + native DLSS FG/MFG or XeFG** | Coordinate NR with the existing FG backend; inspect the observed path and activity rather than assuming a configured multiplier proves FG is active. |
 | **Output shaping and temporal stability** | Adjust brightness/color limits, detail, halos and temporal behavior. SDR/HDR compatibility policies remain independently configurable. |
-| **Live diagnostics and reports** | Inspect NR activity, requested/resolved models, resources and GPU time when available; prepare optional diagnostics and a reviewed GitHub Issue draft. |
+| **Live diagnostics and reports** | Inspect NR activity, requested/resolved models, resources and GPU time when available. The current v0.2.0-dev.10 source binds GPU spans to actual Stage/Pass IDs, model requests and working/output dimensions across up to four passes. Prepare optional diagnostics and a reviewed GitHub Issue draft. |
 | **Multilingual interface — 15 languages** | Let Auto follow ReShade or choose a language manually. Display depends on ReShade's loaded font; the guide lists languages and explains missing-glyph fallback. |
 | **Four interface themes** | Cyber Neon, Nexus Dark, Fluent Light and Midnight OLED change the menu's appearance, independently of image processing. |
 | **Six NR Profile Slots (development)** | Three official development candidates plus three custom Slots for each game. Keep independent overrides, capture/rename/clear custom snapshots, undo profile actions or restore one official Slot. Slot edits save automatically; first upgrade keeps current game settings and a failed save blocks switching. |
@@ -267,14 +269,14 @@ Model-look controls steer what NR generates; result editing reshapes the change
 returned by each pass. Model choice, look inheritance and result inheritance are
 separate, so additional layers can follow Pass 1 or keep their own saved edits.
 Pass 1 selects the initial processing location; later passes can inherit or
-select a legal later stage. **Current development source (v0.2.0-dev.9): independent working
+select a legal later stage. **Current development source (v0.2.0-dev.10): independent working
 resolution (partial support)**. Passes 2–4 can inherit
 global settings, follow game guides or use a fixed 33–100% scale, for example
 `Render A 100% → game DLSS SR → Upscaled B 67%`. This leaves game DLSS SR
 resolution unchanged. In a native DX11 Bridge or DX12 chain without Present, two passes in one Render or Upscaled StageGroup can use
 separate working sizes, such as `Upscaled A 100% → B 67%`, or the reverse scales. Render supports both directions too,
 for example `Render A 100% → Render B 67% → game DLSS SR`.
-The current v0.2.0-dev.9 development source also permits exactly two ordinary Present passes on native DX11 Bridge or DX12 with different working sizes, after a successful public FG Off declaration for the process. Without that successful declaration, the pair remains rejected, even if no FG activity is observed. The declaration applies to the process, not to individual viewports. This Present capability rejects unknown/On FG, Pre-FG and B1/mixed chains, without changing existing Render/Upscaled support. The new DX11 Present pair passed targeted WARP/hardware GPU automation; game operation, the NVIDIA network and performance gains remain unverified.
+The current v0.2.0-dev.10 development source also permits exactly two ordinary Present passes on native DX11 Bridge or DX12 with different working sizes, after a successful public FG Off declaration for the process. Without that successful declaration, the pair remains rejected, even if no FG activity is observed. The declaration applies to the process, not to individual viewports. This Present capability rejects unknown/On FG, Pre-FG and B1/mixed chains, without changing existing Render/Upscaled support. The new DX11 Present pair passed targeted WARP/hardware GPU automation; game operation, the NVIDIA network and performance gains remain unverified.
 Groups of 3+ passes still require matching actual sizes;
 unsupported mismatches explicitly reject the group and retain settings.
 The Upscaled implementation passed targeted WARP/hardware GPU automation.
@@ -287,7 +289,9 @@ Independent skin remain shared. This addition is not in the published dev.8 pack
 Result controls have enable and resource
 requirements.
 
-**The dev.9 development source also includes a default-off native Pre-FG independent-resolution experiment.** Enable `NRExperimentalNativePreFgResolution=1` under `[RenoDX.DLSS5]` in the INI. Its scope is single-plane native DX12 NGX DLSS FG/MFG with exactly two Present passes, `A 100% → B 67%` or the reverse scales. It requires valid real guides and excludes HUDLess/UI/UIAlpha, XeFG, DX11, B1/B2 and the final Present (Final FG) path; ordinary Present retains its FG Off gate. Support requires each producer recording generation to be submitted only once. Subsequent MFG calls reuse the cache without recording NR again, but replaying the entire producer list still executes its GPU NR commands again. This does not establish game readiness or new HDR10 acceptance; see the [experimental conditions and validation limits](docs/USER_GUIDE.md#en-native-prefg-resolution).
+**Native Pre-FG Present pair with different pass sizes: research retained, BLOCKED/NO-GO.** `NRExperimentalNativePreFgResolution` (INI `[RenoDX.DLSS5]`) remains in source and tests, default-off. This round has ended the research; do not enable it as a player option. It is not formally supported. The retained research scope is single-plane native DX12 NGX DLSS FG/MFG, exactly two pure-Present passes, `A 100% → B 67%` or the reverse; it requires valid real guides and excludes HUDLess/UI/UIAlpha, XeFG, DX11, B1/B2 and final Present (Final FG). The experiment also required each producer recording generation to be submitted exactly once. `BackbufferFrameID` numeric Get fails; pointer Get succeeds, but the returned object's identity and real-frame meaning are unverified. MFG replay behavior and HUDLess/UI consistency are also unverified, so the required frame identity and submission conditions are not established. This Pre-FG path is BLOCKED/NO-GO; no further research or testing is planned in this round. This applies only to the native Pre-FG pair with different sizes. The existing Render → Upscaled path can still run alongside native DLSS FG/XeFG under its own existing input, resource, ownership and experimental gates. See the [research scope and status](docs/USER_GUIDE.md#en-native-prefg-resolution).
+
+The retained technical switch uses `1` as its experimental enable value.
 
 See the [User Guide](docs/USER_GUIDE.md) for values, dependencies, inheritance
 and practical examples.

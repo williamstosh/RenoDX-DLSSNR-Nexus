@@ -1107,10 +1107,8 @@ int Run(bool resolution_only = false, bool hardware = false, bool mixed_pair_onl
     addon::mixed_stage_group_successes.fetch_add(4);
     addon::mixed_stage_source_successes.fetch_add(2);
     native::TickNrCost(1 + native::kCostWindowNs, 0);
-    Check(std::abs(native::nr_cost_gpu_ms.load() - 7.f) < .001f,
-          "cost panel reports both 3.5ms stage groups as 7ms per source SR, not half the NR cost");
-    Check(std::abs(native::nr_cost_present_ms.load() - (14.f / 60.f)) < .001f,
-          "per-present cost counts the four stage groups once without multiplying source totals again");
+    Check(native::nr_cost_gpu_ms.load() == 0.f && native::nr_cost_present_ms.load() == 0.f,
+          "separate stage spans remain available in diagnostics without a combined frame-latency estimate");
     std::cout << "PASS stage-chain cases=" << cases << " boundaries=" << boundary_cases
               << " partial_warmups=" << partial_warmups << " failed_predecessors=" << failed_predecessors
               << " production PreSR/Upscaled, WARP copy-consumer/readback; NVIDIA SR/NR substituted\n";

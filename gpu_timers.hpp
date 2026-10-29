@@ -15,13 +15,13 @@
 // list (ResolveQueryData executes on the GPU with the list - no CPU wait).
 // Completion is polled from the per-present lifecycle tick: the exact proof -
 // the recording that carried the resolve was submitted and that submission
-// completed (submission_tracker.hpp) - wherever the queue hooks are live, else
-// the every-queue fence lease (gpu_lease.hpp), which starves while any tracked
-// queue idles (norm_trace.hpp, rc4).  End stamps the segment's frame-start
+// completed exactly once and closed against replay (submission_tracker.hpp).
+// A fence lease alone cannot prove single execution, so it never publishes a
+// readback. End stamps the segment's frame-start
 // texel with kUnwritten, so a segment the resolve never reached is counted
 // as unexecuted instead of publishing a lap-old timing.  A segment whose
-// proof never lands is dropped unread after a bounded tick window (torn
-// timing is worthless, but a blocked GPU must not wedge diagnostics).
+// proof never lands expires unread after a bounded tick window. Its slots
+// remain reserved until the recording cannot execute them again.
 // Everything below is guarded by runtime_mutex: Begin/Mark/End run inside the
 // evaluate hook's lock, Poll runs in RunLifecycleTick's lock.
 
@@ -29,7 +29,10 @@
 
 #include "brand.h"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -97,18 +100,60 @@ inline void SafeLog(reshade::log::level level, const std::string& message) {
       level, (std::string(kLogPrefix) + ": " + message).c_str());
 }
 
+enum class SampleState : uint8_t {
+  NOT_MEASURED, PENDING, VALID, NOT_EXECUTED, BYPASSED, DISCARDED,
+  REPLAYED, EXPIRED, DEVICE_REMOVED, PROOF_UNAVAILABLE, INVALID_TIMESTAMPS,
+};
+
+inline const char* StateText(SampleState state) {
+  switch (state) {
+    case SampleState::NOT_MEASURED: return "Not measured";
+    case SampleState::PENDING: return "Awaiting closed recording and GPU completion";
+    case SampleState::VALID: return "GPU complete: single submission";
+    case SampleState::NOT_EXECUTED: return "Not executed";
+    case SampleState::BYPASSED: return "Skipped: zero strength";
+    case SampleState::DISCARDED: return "Discarded: recording not submitted";
+    case SampleState::REPLAYED: return "Rejected: command list replayed";
+    case SampleState::EXPIRED: return "Expired: no recent proven sample";
+    case SampleState::DEVICE_REMOVED: return "Unavailable: device removed";
+    case SampleState::PROOF_UNAVAILABLE: return "Unavailable: exact submission or queue frequency missing";
+    case SampleState::INVALID_TIMESTAMPS: return "Rejected: incomplete or invalid timestamps";
+  }
+  return "Not measured";
+}
+
+struct PassStats {
+  uint32_t id = UINT32_MAX;  // Global pass id; timestamp slots are group-local.
+  uint32_t model = 0;  // Resolved NGX creation request, not internal network proof.
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t output_width = 0;
+  uint32_t output_height = 0;
+  uint32_t encode_us = 0;
+  uint32_t eval_us = 0;
+  uint32_t resolve_us = 0;
+  uint32_t look_us = 0;  // Included in resolve_us.
+  uint32_t total_us = 0;
+  bool look_measured = false;
+  SampleState state = SampleState::NOT_EXECUTED;
+};
+
 struct Segment {
   uint32_t base = 0;   // first heap slot (== index * kSlotsPerEval)
   uint32_t count = 0;  // highest slot written + 1 (the resolve range)
   uint64_t written = 0;  // bit per slot written (kSlotsPerEval == 64)
   bool recorded = false;
   bool bypass = false;  // zero-strength passthrough frame: no stats
-  bool lease_taken = false;
   GpuLease lease;
   uint64_t tick = 0;
   char path[8] = {};
   uint32_t width = 0;
   uint32_t height = 0;
+  std::array<PassStats, kTimerMaxPasses> passes{};
+  uint64_t sequence = 0;
+  SampleState proof = SampleState::PENDING;
+  FenceRef proof_fence;
+  bool expired = false;
 };
 
 // Latest published per-evaluate timing, in microseconds.  Guarded by
@@ -127,6 +172,12 @@ struct Stats {
   uint32_t width = 0;
   uint32_t height = 0;
   bool valid = false;
+  std::array<PassStats, kTimerMaxPasses> passes{};
+  SampleState state = SampleState::NOT_MEASURED;
+  uint64_t sequence = 0;
+  int64_t measured_ns = 0;
+  const void* queue = nullptr;  // Compared only; never dereferenced.
+  uint32_t samples = 0;
 };
 inline Stats stats;
 inline Stats stage_stats[3];
@@ -137,11 +188,19 @@ inline uint64_t published_segments = 0;
 inline uint64_t unexecuted_segments = 0;
 inline uint64_t lease_starved_segments = 0;
 
+inline int64_t NowNs() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+inline uint32_t StageIndex(const char* path) {
+  return (std::strcmp(path, "preSR") == 0 ? 0u : (std::strcmp(path, "present") == 0 ? 2u : 1u));
+}
+
 namespace internal {
 
 inline Segment segments[kSegmentDepth];
 inline uint32_t head = 0;  // next segment Begin will claim
-inline uint32_t tail = 0;  // oldest segment awaiting its proof
 // The device's native identity (utils::directx::NativeIdentity), compared
 // only.  The raw pointer is whichever face the evaluate's list reports -
 // ReShade's device proxy or the native device - and a change of face is not a
@@ -155,7 +214,6 @@ inline uint64_t* mapped = nullptr;
 inline double frequency = 0.0;
 inline std::atomic_uint64_t poll_ticks{0};
 inline std::atomic<int64_t> last_log_ns{0};
-inline std::atomic_bool stale_warned{false};
 
 struct EvalState {
   bool active = false;
@@ -164,6 +222,17 @@ struct EvalState {
 // No nesting: ProcessInline is serialized by runtime_mutex and the internal
 // stack-pass evaluates never re-enter the injection path.
 inline EvalState current;
+inline uint64_t next_sequence = 0;
+constexpr int64_t kDisplayIntervalNs = 500'000'000;
+constexpr int64_t kSampleAgeNs = 2'000'000'000;
+constexpr uint32_t kDisplaySamples = 4;
+struct DisplayWindow {
+  std::array<Stats, kDisplaySamples> samples{};
+  uint32_t count = 0;
+  uint32_t next = 0;
+  int64_t updated_ns = 0;
+};
+inline std::array<DisplayWindow, 3> display_windows;
 
 inline void Release() {
   if (mapped != nullptr) {
@@ -181,10 +250,12 @@ inline void Release() {
   context_device = nullptr;
   frequency = 0.0;
   head = 0;
-  tail = 0;
   current.active = false;
   for (Segment& s : segments) s = Segment{};
   stats.valid = false;
+  stats.state = SampleState::NOT_MEASURED;
+  for (auto& stage : stage_stats) stage = Stats{};
+  display_windows = {};
 }
 
 inline bool Ensure(ID3D12Device* device) {
@@ -224,19 +295,7 @@ inline bool Ensure(ID3D12Device* device) {
     heap = nullptr;
     return false;
   }
-  // GPU timestamp frequency is reported per queue; direct queues on one
-  // adapter report one value in practice, so a throwaway queue on the same
-  // device calibrates the conversion.
-  D3D12_COMMAND_QUEUE_DESC queue_desc{};
-  queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-  ID3D12CommandQueue* queue = nullptr;
-  if (SUCCEEDED(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue)))) {
-    UINT64 rate = 0;
-    if (SUCCEEDED(queue->GetTimestampFrequency(&rate)) && rate > 0) {
-      frequency = static_cast<double>(rate);
-    }
-    queue->Release();
-  }
+  // Calibrated from the actual submitting queue only after its exact proof.
   context_device = identity;
   return true;
 }
@@ -244,14 +303,23 @@ inline bool Ensure(ID3D12Device* device) {
 // False for a segment the resolve never reached (counted as unexecuted).
 // `log`: the "NR gpu timers" lines, NRGpuTimers' own; the cost meter's
 // samples publish silently (the addon logs their sum as "NR cost:").
-inline bool Publish(const Segment& s, bool log) {
+inline void Reject(const Segment& s, SampleState state) {
+  auto& target = stage_stats[StageIndex(s.path)];
+  if (s.sequence < target.sequence) return;
+  target = Stats{.passes = s.passes, .state = state, .sequence = s.sequence};
+  display_windows[StageIndex(s.path)] = {};
+  if (s.sequence >= stats.sequence) stats = target;
+}
+
+inline bool Publish(const Segment& s, bool log, const void* queue) {
+  if (s.sequence < stage_stats[StageIndex(s.path)].sequence) return false;
   if (frequency <= 0.0 || mapped == nullptr) return false;
   const uint64_t* q = mapped + s.base;
   if (q[kSlotFrameStart] == kUnwritten) {
     ++unexecuted_segments;
+    Reject(s, SampleState::DISCARDED);
     return false;
   }
-  ++published_segments;
   const double inv = 1000000.0 / frequency;  // ticks -> microseconds
   const auto delta_us = [&](uint32_t a, uint32_t b) -> uint32_t {
     if ((s.written >> a & 1) == 0 || (s.written >> b & 1) == 0 || q[b] <= q[a]) {
@@ -261,8 +329,15 @@ inline bool Publish(const Segment& s, bool log) {
   };
 
   Stats next;
+  const auto has_span = [&](uint32_t a, uint32_t b) {
+    return (s.written >> a & 1) != 0 && (s.written >> b & 1) != 0 && q[b] >= q[a];
+  };
+  if (!has_span(kSlotFrameStart, kSlotCopyBackEnd)
+      || (q[kSlotCopyBackEnd] - q[kSlotFrameStart]) * inv > UINT32_MAX) {
+    Reject(s, SampleState::INVALID_TIMESTAMPS);
+    return false;
+  }
   next.total_us = delta_us(kSlotFrameStart, kSlotCopyBackEnd);
-  if (next.total_us == 0) return true;
   next.copies_us = delta_us(kSlotFrameStart, kSlotCopyInEnd)
                    + delta_us(kSlotCommitEnd, kSlotCopyBackEnd);
   next.linearize_us = delta_us(kSlotCopyInEnd, kSlotLinearizeEnd);
@@ -271,10 +346,43 @@ inline bool Publish(const Segment& s, bool log) {
     next.linearize_us = delta_us(kSlotFrameStart, kSlotLinearizeEnd);
   }
   for (uint32_t pass = 0; pass < kTimerMaxPasses; ++pass) {
-    next.encode_us += delta_us(PassEncodeStart(pass), PassEncodeEnd(pass));
-    next.eval_us += delta_us(PassEvalStart(pass), PassEvalEnd(pass));
-    next.resolve_us += delta_us(PassEvalEnd(pass), PassResolveEnd(pass));
-    next.look_us += delta_us(PassEvalEnd(pass), PassLookEnd(pass));
+    auto& layer = next.passes[pass];
+    layer = s.passes[pass];
+    if ((s.written >> PassEncodeStart(pass) & 1) == 0) continue;
+    if (layer.width == 0 || layer.height == 0
+        || !has_span(PassEncodeStart(pass), PassEncodeEnd(pass))
+        || !has_span(PassEncodeEnd(pass), PassEvalStart(pass))
+        || !has_span(PassEvalStart(pass), PassEvalEnd(pass))
+        || !has_span(PassEvalEnd(pass), PassResolveEnd(pass))
+        || q[PassEncodeStart(pass)] < q[kSlotFrameStart]
+        || q[PassResolveEnd(pass)] > q[kSlotCopyBackEnd]
+        || ((s.written >> PassLookEnd(pass) & 1) != 0
+            && (!has_span(PassEvalEnd(pass), PassLookEnd(pass))
+                || !has_span(PassLookEnd(pass), PassResolveEnd(pass))))) {
+      Reject(s, SampleState::INVALID_TIMESTAMPS);
+      return false;
+    }
+    layer.encode_us = delta_us(PassEncodeStart(pass), PassEncodeEnd(pass));
+    layer.eval_us = delta_us(PassEvalStart(pass), PassEvalEnd(pass));
+    layer.resolve_us = delta_us(PassEvalEnd(pass), PassResolveEnd(pass));
+    layer.look_us = delta_us(PassEvalEnd(pass), PassLookEnd(pass));
+    layer.look_measured = (s.written >> PassLookEnd(pass) & 1) != 0;
+    layer.total_us = delta_us(PassEncodeStart(pass), PassResolveEnd(pass));
+    layer.state = SampleState::VALID;
+    next.encode_us += layer.encode_us;
+    next.eval_us += layer.eval_us;
+    next.resolve_us += layer.resolve_us;
+    next.look_us += layer.look_us;
+  }
+  if (std::none_of(next.passes.begin(), next.passes.end(), [](const auto& pass) {
+        return pass.state == SampleState::VALID;
+      })) {
+    Reject(s, SampleState::NOT_EXECUTED);
+    return false;
+  }
+  if (next.eval_us > next.total_us) {
+    Reject(s, SampleState::INVALID_TIMESTAMPS);
+    return false;
   }
   next.commit_us = delta_us(kSlotCommitStart, kSlotCommitEnd);
   next.own_us = next.total_us - next.eval_us;
@@ -282,10 +390,66 @@ inline bool Publish(const Segment& s, bool log) {
   next.height = s.height;
   std::memcpy(next.path, s.path, sizeof(next.path));
   next.valid = true;
-  stats = next;
-  const uint32_t stage = (std::strcmp(s.path, "preSR") == 0 ? 0u
-                            : (std::strcmp(s.path, "present") == 0 ? 2u : 1u));
-  stage_stats[stage] = next;
+  next.state = SampleState::VALID;
+  next.sequence = s.sequence;
+  next.measured_ns = NowNs();
+  next.queue = queue;
+  next.samples = 1;
+  if (s.sequence >= stats.sequence) stats = next;
+  const uint32_t stage = StageIndex(s.path);
+  auto& window = display_windows[stage];
+  // Never mix queues, pass identities, models or working sizes in one average.
+  const auto& previous = window.samples[(window.next + kDisplaySamples - 1) % kDisplaySamples];
+  bool same_contract = window.count != 0 && previous.queue == next.queue
+      && previous.width == next.width && previous.height == next.height
+      && next.measured_ns - previous.measured_ns <= kSampleAgeNs;
+  for (uint32_t pass = 0; pass < kTimerMaxPasses && same_contract; ++pass) {
+    const auto& a = previous.passes[pass];
+    const auto& b = next.passes[pass];
+    same_contract = a.id == b.id && a.model == b.model && a.width == b.width && a.height == b.height
+        && a.output_width == b.output_width && a.output_height == b.output_height
+        && a.state == b.state && a.look_measured == b.look_measured;
+  }
+  if (!same_contract) window = {};
+  window.samples[window.next] = next;
+  window.next = (window.next + 1) % kDisplaySamples;
+  window.count = std::min(window.count + 1, kDisplaySamples);
+  if (!same_contract || next.measured_ns - window.updated_ns >= kDisplayIntervalNs) {
+    Stats display = next;
+    const auto average = [&](auto member) {
+      uint64_t sum = 0;
+      for (uint32_t i = 0; i < window.count; ++i) sum += window.samples[i].*member;
+      return static_cast<uint32_t>(sum / window.count);
+    };
+    display.total_us = average(&Stats::total_us);
+    display.eval_us = average(&Stats::eval_us);
+    display.own_us = display.total_us - display.eval_us;
+    display.encode_us = average(&Stats::encode_us);
+    display.resolve_us = average(&Stats::resolve_us);
+    display.look_us = average(&Stats::look_us);
+    display.linearize_us = average(&Stats::linearize_us);
+    display.commit_us = average(&Stats::commit_us);
+    display.copies_us = average(&Stats::copies_us);
+    for (uint32_t pass = 0; pass < kTimerMaxPasses; ++pass) {
+      const auto pass_average = [&](auto member) {
+        uint64_t sum = 0;
+        for (uint32_t i = 0; i < window.count; ++i) sum += window.samples[i].passes[pass].*member;
+        return static_cast<uint32_t>(sum / window.count);
+      };
+      auto& layer = display.passes[pass];
+      layer.total_us = pass_average(&PassStats::total_us);
+      layer.eval_us = pass_average(&PassStats::eval_us);
+      layer.encode_us = pass_average(&PassStats::encode_us);
+      layer.resolve_us = pass_average(&PassStats::resolve_us);
+      layer.look_us = pass_average(&PassStats::look_us);
+    }
+    display.samples = window.count;
+    stage_stats[stage] = display;
+    window.updated_ns = next.measured_ns;
+  }
+  stage_stats[stage].measured_ns = next.measured_ns;
+  stage_stats[stage].sequence = next.sequence;
+  ++published_segments;
   ++stage_published[stage];
   measured_total_us += next.total_us;
 
@@ -334,29 +498,39 @@ inline bool Begin(
     ID3D12Device* device,
     const char* path,
     uint32_t width,
-    uint32_t height) {
+    uint32_t height, uint32_t pass_begin = 0, uint32_t pass_count = 0) {
   if (!internal::Ensure(device)) return false;
-  Segment& s = internal::segments[internal::head];
-  if (s.recorded) {
-    // Lapping an undrained segment (a pathologically deep evaluate backlog):
-    // drop the oldest rather than overwrite a segment the GPU may still be
-    // resolving.
-    s.recorded = false;
-    ++dropped_segments;
-    if (internal::tail == internal::head) {
-      internal::tail = (internal::tail + 1) % kSegmentDepth;
-    }
+  uint32_t available = 0;
+  while (available < kSegmentDepth) {
+    const auto& candidate = internal::segments[internal::head];
+    if (!candidate.recorded && submission::ResourceReleasable(&candidate)) break;
+    internal::head = (internal::head + 1) % kSegmentDepth;
+    ++available;
   }
+  if (available == kSegmentDepth) {
+    // A stale or replayable recording still owns these query/readback slots.
+    // Skip instrumentation rather than overwrite memory its GPU work can touch.
+    ++dropped_segments;
+    return false;
+  }
+  Segment& s = internal::segments[internal::head];
   s.base = internal::head * kSlotsPerEval;
   s.count = 0;
   s.bypass = false;
-  s.lease_taken = false;
   s.lease = GpuLease{};
   s.tick = internal::poll_ticks.load(std::memory_order_relaxed);
   std::strncpy(s.path, path, sizeof(s.path) - 1);
   s.path[sizeof(s.path) - 1] = '\0';
   s.width = width;
   s.height = height;
+  s.sequence = ++internal::next_sequence;
+  s.proof = SampleState::PENDING;
+  s.proof_fence = {};
+  s.expired = false;
+  s.passes = {};
+  for (uint32_t pass = 0; pass < std::min(pass_count, kTimerMaxPasses); ++pass) {
+    s.passes[pass].id = pass_begin + pass;
+  }
   internal::current.active = true;
   internal::current.idx = internal::head;
   command_list->EndQuery(
@@ -364,6 +538,14 @@ inline bool Begin(
   s.count = kSlotFrameStart + 1;
   s.written = uint64_t{1} << kSlotFrameStart;
   return true;
+}
+
+inline void SetPass(uint32_t pass, uint32_t id, uint32_t model, uint32_t width,
+                    uint32_t height, uint32_t output_width, uint32_t output_height) {
+  if (!internal::current.active || pass >= kTimerMaxPasses) return;
+  internal::segments[internal::current.idx].passes[pass] = PassStats{
+      .id = id, .model = model, .width = width, .height = height,
+      .output_width = output_width, .output_height = output_height};
 }
 
 inline void Mark(ID3D12GraphicsCommandList* command_list, uint32_t slot) {
@@ -383,23 +565,14 @@ inline void MarkBypassed() {
   internal::segments[internal::current.idx].bypass = true;
 }
 
-// Resolves the current segment on the list it was recorded with, tracks the
-// segment as a use of that recording (the exact proof) and takes the
-// completion lease (the fallback, conservatively requiring the next
-// submission on every tracked queue, like resource retirement).
-//
-// An empty lease is not kept.  The queue tracker creates a queue's entry at
-// that queue's first submission carrying injected work, so the FIRST timed
-// evaluate of a session - and of every D3D11 bridge session - ends before any
-// queue is known, and its lease covers nothing and can never complete.  Until
-// alpha45 End kept it anyway: that segment pinned the ring, the ring lapped,
-// and the timers published nothing in any session from v6.1.1 on.  Poll takes
-// the lease once a queue is known.
+// Resolve on the original list and retain its slots through the existing
+// recording tracker. The lease is delivery telemetry only, never readback proof.
 inline void End(ID3D12GraphicsCommandList* command_list) {
   if (!internal::current.active) return;
   internal::current.active = false;
   Segment& s = internal::segments[internal::current.idx];
-  if (s.count < 2) return;  // no measurable span; the slot is reusable
+  // Even a start-only recording owns its query slot until Reset and GPU
+  // completion. It will reject as incomplete, but cannot be reused yet.
   // Only the slots this chain wrote.  A chain writes a sparse set - one stack
   // pass leaves the other passes' slots unwritten, a pass without look work
   // its look slot - and resolving a query that was never performed is invalid
@@ -424,67 +597,104 @@ inline void End(ID3D12GraphicsCommandList* command_list) {
   internal::mapped[s.base + kSlotFrameStart] = kUnwritten;
   submission::TrackUse(command_list, &s);
   s.lease = AcquireGpuLease();
-  s.lease_taken = !s.lease.empty();
   s.tick = internal::poll_ticks.load(std::memory_order_relaxed);
   s.recorded = true;
   internal::head = (internal::head + 1) % kSegmentDepth;
+  if (!stage_stats[StageIndex(s.path)].valid) internal::Reject(s, SampleState::PENDING);
+}
+
+// Called by the existing tracker before it forgets a closed recording.
+// No tracker re-entry or queue-map lock here: Poll resolves the frequency later.
+inline void PreserveSubmissionProof(
+    const void* marker, const std::vector<submission::GenerationSubmission>& submissions) {
+  const auto address = reinterpret_cast<uintptr_t>(marker);
+  const auto first = reinterpret_cast<uintptr_t>(internal::segments);
+  if (address < first || address - first >= sizeof(internal::segments)
+      || (address - first) % sizeof(Segment) != 0) return;
+  auto& s = internal::segments[(address - first) / sizeof(Segment)];
+  if (!s.recorded) return;
+  if (submissions.empty()) {
+    s.proof = SampleState::DISCARDED;
+    return;
+  }
+  if (submissions.size() != 1 || s.proof != SampleState::PENDING) {
+    s.proof = SampleState::REPLAYED;
+    return;
+  }
+  const auto& receipt = submissions.front();
+  if (receipt.pending || receipt.fence.empty()) {
+    s.proof = SampleState::PROOF_UNAVAILABLE;
+    return;
+  }
+  const auto completed = receipt.fence->GetCompletedValue();
+  if (completed == UINT64_MAX) {
+    s.proof = SampleState::DEVICE_REMOVED;
+  } else if (completed >= receipt.value) {
+    s.proof = SampleState::VALID;
+    s.proof_fence = receipt.fence;
+  }
 }
 
 // Lifecycle-tick side (runtime_mutex held), after DrainRetiredResources
-// pruned the tracker: publishes every segment whose completion proof has
-// landed and drops segments whose proof can never land.  `exact_proofs`: the
-// queue hooks are live, so the tracker's release of a segment is the proof
-// (queue_tracking_active).  `log`: as Publish's.
+// preserved closed-recording receipts. Expiry rejects a measurement without
+// releasing slots a parked recording can still reference. `log`: as Publish's.
 inline void Poll(bool exact_proofs, bool log) {
   internal::poll_ticks.fetch_add(1, std::memory_order_relaxed);
-  uint32_t scanned = 0;
-  while (scanned++ < kSegmentDepth) {
-    Segment& s = internal::segments[internal::tail];
-    if (!s.recorded) {
-      // tail == head means empty only when the tail segment is idle: a lap
-      // (Begin dropping the oldest) leaves tail == head on a FULL ring, and
-      // reading that as empty is what wedged the timers before alpha45.
-      if (internal::tail == internal::head) return;
-      internal::tail = (internal::tail + 1) % kSegmentDepth;
-      continue;
+  for (auto& timing : stage_stats) {
+    if (timing.valid && NowNs() - timing.measured_ns > internal::kSampleAgeNs) {
+      timing.valid = false;
+      timing.state = SampleState::EXPIRED;
     }
-    if (!s.lease_taken) {
-      s.lease = AcquireGpuLease();
-      s.lease_taken = !s.lease.empty();
+  }
+  if (stats.valid && NowNs() - stats.measured_ns > internal::kSampleAgeNs) {
+    stats.valid = false;
+    stats.state = SampleState::EXPIRED;
+  }
+  // Oldest-first, but one parked recording must not suppress other stages.
+  for (uint32_t offset = 0; offset < kSegmentDepth; ++offset) {
+    Segment& s = internal::segments[(internal::head + offset) % kSegmentDepth];
+    if (!s.recorded) continue;
+    if (internal::poll_ticks.load(std::memory_order_relaxed) - s.tick >= kStaleTicks && !s.expired) {
+      s.expired = true;
+      ++dropped_segments;
+      internal::Reject(s, SampleState::EXPIRED);
     }
-    const bool exact = exact_proofs && submission::ResourceReleasable(&s);
-    const GpuLeaseState lease = QueryGpuLease(s.lease);
-    switch (exact ? GpuLeaseState::kCompleted : lease) {
-      case GpuLeaseState::kCompleted:
-        // Counted: the segments only the exact proof could publish.
-        if (!s.bypass && internal::Publish(s, log) && lease == GpuLeaseState::kPending) {
-          ++lease_starved_segments;
+    // Even a completed fence does not exclude future replay. Keep slots until
+    // the recording closes; expired slots are retained too, but never read.
+    if (!submission::ResourceReleasable(&s)) continue;
+    if (!s.expired) {
+      if (!exact_proofs || s.proof == SampleState::PENDING) s.proof = SampleState::PROOF_UNAVAILABLE;
+      if (s.bypass) s.proof = SampleState::BYPASSED;
+      if (s.proof == SampleState::VALID) {
+        internal::frequency = 0;
+        const void* measured_queue = nullptr;
+        {
+          std::shared_lock lock(queue_completion_mutex);
+          for (const auto& [queue, tracker] : queue_completions) {
+            if (tracker.fence != s.proof_fence.fence) continue;
+            UINT64 rate = 0;
+            if (SUCCEEDED(queue->GetTimestampFrequency(&rate)) && rate != 0) {
+              internal::frequency = static_cast<double>(rate);
+              measured_queue = queue;
+            }
+            break;
+          }
         }
-        s.recorded = false;
-        internal::tail = (internal::tail + 1) % kSegmentDepth;
-        break;
-      case GpuLeaseState::kDeviceRemoved:
-        s.recorded = false;
-        internal::tail = (internal::tail + 1) % kSegmentDepth;
-        break;
-      case GpuLeaseState::kPending:
-        if (internal::poll_ticks.load(std::memory_order_relaxed) - s.tick
-            < kStaleTicks) {
-          return;  // oldest outstanding segment still pending; keep order
+        if (internal::frequency > 0) {
+          if (internal::Publish(s, log, measured_queue) && QueryGpuLease(s.lease) == GpuLeaseState::kPending) {
+            ++lease_starved_segments;
+          }
+        } else {
+          internal::Reject(s, SampleState::PROOF_UNAVAILABLE);
         }
-        s.recorded = false;
-        ++dropped_segments;
-        if (!internal::stale_warned.exchange(true)) {
-          SafeLog(
-              reshade::log::level::warning,
-              "NR gpu timers: a segment's completion proof never landed (its"
-              " list was neither submitted nor reset, or the queue hooks are"
-              " not live and a tracked queue idles); dropping its timing"
-              " sample");
-        }
-        internal::tail = (internal::tail + 1) % kSegmentDepth;
-        break;
+      } else {
+        if (s.proof == SampleState::DISCARDED) ++unexecuted_segments;
+        internal::Reject(s, s.proof);
+      }
     }
+    s.proof_fence = {};
+    s.lease = {};
+    s.recorded = false;
   }
 }
 

@@ -61,6 +61,10 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
                          .action = "present-stage-resolution", .language = 1});
     scenarios.push_back({.id = "present-stage-resolution-zh", .page = 1,
                          .action = "present-stage-resolution", .language = 14});
+    scenarios.push_back({.id = "gpu-pass-diagnostics", .page = 2,
+                         .action = "gpu-pass-diagnostics", .language = 1});
+    scenarios.push_back({.id = "gpu-pass-diagnostics-zh", .page = 2,
+                         .action = "gpu-pass-diagnostics", .language = 14});
     if (snapshot_mode == "Full") {
       scenarios.push_back({.id = "pass-cross-stage-collapsed-zh", .page = 1, .action = "cross-stage-collapsed"});
       scenarios.push_back({.id = "pass-render2-upscaled2-zh", .page = 1, .action = "cross-stage-four"});
@@ -180,6 +184,30 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     runtime::hook_point = runtime::kHookPresent;
     runtime::stack_passes = 4;
     runtime::preset = 0;
+    if (scenario.action == "gpu-pass-diagnostics") {
+      namespace timers = renodx::addons::dlss5::gpu_timers;
+      for (auto& timing : timers::stage_stats) timing = {};
+      auto& sample = timers::stage_stats[1];
+      sample.total_us = 1500;
+      sample.eval_us = 1000;
+      sample.own_us = 500;
+      sample.width = 3840;
+      sample.height = 2160;
+      sample.valid = true;
+      sample.state = timers::SampleState::VALID;
+      sample.samples = 4;
+      sample.measured_ns = timers::NowNs();
+      sample.passes[0] = {.id = 0, .model = 1, .width = 3840, .height = 2160,
+          .output_width = 3840, .output_height = 2160, .encode_us = 60, .eval_us = 750,
+          .resolve_us = 100, .look_us = 40, .total_us = 930, .look_measured = true,
+          .state = timers::SampleState::VALID};
+      sample.passes[1] = {.id = 1, .model = 2, .width = 2573, .height = 1447,
+          .output_width = 2573, .output_height = 1447, .encode_us = 30, .eval_us = 250,
+          .resolve_us = 80, .total_us = 380, .state = timers::SampleState::VALID};
+      sample.passes[2].id = 2;  // Planned but not executed: never draw a zero timing.
+      timers::stage_stats[2].state = timers::SampleState::REPLAYED;
+      timers::stats = {};
+    }
     for (uint32_t pass = 0; pass < 3; ++pass) {
       runtime::pass_stage[pass] = 0;
       runtime::pass_preset[pass] = 0;
@@ -265,7 +293,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     settle();
     const bool long_page = scenario.action == "expanded" || scenario.action == "collapsed"
         || scenario.action == "pass-independent" || scenario.action == "pass-first" || scenario.action == "doc-default"
-        || cross_stage;
+        || cross_stage || scenario.action == "gpu-pass-diagnostics";
     if (scenario.action == "cross-stage-resolution" || same_stage_resolution) {
       check(items.contains(find("##pass_resolution_scale").id), "independent pass resolution slider is drawn");
       check(runtime::pass_resolution_mode[0].load() == 2
@@ -503,6 +531,23 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     }
     capture(scenario.id.c_str(), diagnostic, false);
     Json regions = Json::object();
+    if (scenario.action == "gpu-pass-diagnostics") {
+      ImRect metrics(ImVec2(panel_width, panel_height), ImVec2(0.f, 0.f));
+      bool inside = false;
+      bool skipped = false;
+      bool replayed = false;
+      for (const auto& text : rendered_text) {
+        if (text.text.starts_with("Pre-FG independent-resolution pair:")) inside = true;
+        if (!inside) continue;
+        metrics.Add(text.rect);
+        skipped |= text.text.find("Pass 3: Not executed") != std::string::npos;
+        replayed |= text.text.find("Rejected: command list replayed") != std::string::npos;
+        if (replayed) break;
+      }
+      check(inside && skipped && replayed, "GPU diagnostics must draw valid, unexecuted and rejected samples");
+      regions["gpu_pass_metrics"] = {metrics.Min.x - 4.f, metrics.Min.y - 4.f,
+                                     (std::min)(panel_width, metrics.Max.x + 4.f), metrics.Max.y + 4.f};
+    }
     for (auto* window : ImGui::GetCurrentContext()->Windows) {
       if (!window->Active) continue;
       std::string name;

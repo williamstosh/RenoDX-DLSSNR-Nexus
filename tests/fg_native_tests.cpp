@@ -2,8 +2,10 @@
 #include <windows.h>
 #include <d3d12sdklayers.h>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <limits>
+#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <dlssnr.hpp>
@@ -687,8 +689,55 @@ int RunNativeRequiredMenuTest() {
 #include "native_prefg_resolution_cases.hpp"
 #include "feature_switch_cases.hpp"
 #include "present_chain_cases.hpp"
+#include "gpu_timer_cases.hpp"
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--gpu-pass-diagnostics") == 0) return gpu_timer_cases::Run();
+  if (argc == 2 && std::strcmp(argv[1], "--native-frame-identity") == 0) {
+    try {
+      reshade::internal::get_reshade_module_handle(GetModuleHandleW(nullptr));
+      native::experimental_native_prefg_resolution.store(true);
+      const auto* handle = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xF001});
+      native::created_feature_ids[handle] = NVSDK_NGX_Feature_FrameGeneration;
+      renodx::addons::dlss5::bridge::OwnedParameters parameters;
+      for (uint32_t sample = 0; sample < 4; ++sample) {
+        if (sample != 0) std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+        parameters.Reset();
+        if (sample == 1) parameters.Set(NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID, 42ull);
+        if (sample == 2) parameters.Set(NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID, reinterpret_cast<void*>(uintptr_t{1}));
+        const auto before = captured_logs.size();
+        bool replaced = true;
+        Check(native::RunNativePreFg(nullptr, &parameters, handle, &replaced) == nullptr && !replaced,
+            "CPU identity observation never records an FG input");
+        Check(captured_logs.size() == before + 1, "changed bounded identity observation logged");
+        const auto& line = captured_logs.back().second;
+        if (sample == 0) {
+          Check(line.find("frame_id_class=unreadable_absence_or_type_unproven") != std::string::npos,
+              "getter failure is not asserted to be a definitely absent key");
+        } else if (sample == 1) {
+          Check(line.find("frame_id_class=uint64_readable_semantics_unverified") != std::string::npos
+              && line.find("ull=[result=0x1 value=42]") != std::string::npos,
+              "a readable integer is not automatically a valid real-frame identity");
+        } else if (sample == 2) {
+          Check(line.find("frame_id_class=alternate_getter_readable_semantics_unverified") != std::string::npos
+              && line.find("voidp=[result=0x1 nonnull=1]") != std::string::npos,
+              "alternate readable types never replace the documented uint64 contract");
+        } else {
+          Check(line.find("identity_probe=") == std::string::npos, "typed probe budget stops after three observations");
+        }
+      }
+      native::experimental_native_prefg_resolution.store(false);
+      const auto before = captured_logs.size();
+      bool replaced = true;
+      native::RunNativePreFg(nullptr, &parameters, handle, &replaced);
+      Check(!replaced && captured_logs.size() == before, "disabled identity diagnostic is inert");
+      std::cout << "PASS native-frame-identity CPU only; no GPU, model, hook installation or frame identity invented\n";
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << error.what() << '\n';
+      return 1;
+    }
+  }
   if (argc == 2 && std::strcmp(argv[1], "--native-prefg-resolution") == 0) return native_prefg_resolution_cases::Run(false);
   if (argc == 2 && std::strcmp(argv[1], "--native-prefg-resolution-hardware") == 0) return native_prefg_resolution_cases::Run(true);
   if (argc == 2 && std::strcmp(argv[1], "--present-stage-resolution") == 0) return present_stage_resolution_cases::Run(false);

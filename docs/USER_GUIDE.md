@@ -4,7 +4,7 @@
 
 ## 简体中文
 
-> **版本范围——当前开发源码 0.2.0-dev.9；最新预发布 0.2.0-dev.8／0.1.0 正式版：** 本指南对应完整 0.1.0 包，包含四页菜单、双模型、逐层独立模型风格与结果设置及四套主题。请在 Releases 页面查看可下载的版本化 ZIP；逐层阶段、NR 快速方案、方案库与辅助输入已包含于 dev.8 预发布包，但未包含于已发布 0.1.0 包；早期预发布包也不含本指南展示的全部功能。跨 StageGroup 独立工作分辨率、原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass 不同工作尺寸，以及满足进程级 FG Off 条件的普通 Present 双 Pass 不同工作尺寸，属于当前 0.2.0-dev.9 开发源码，尚未包含于任何已发布包。
+> **版本范围——当前开发源码 0.2.0-dev.10；最新预发布 0.2.0-dev.8／0.1.0 正式版：** 本指南对应完整 0.1.0 包，包含四页菜单、双模型、逐层独立模型风格与结果设置及四套主题。请在 Releases 页面查看可下载的版本化 ZIP；逐层阶段、NR 快速方案、方案库与辅助输入已包含于 dev.8 预发布包，但未包含于已发布 0.1.0 包；早期预发布包也不含本指南展示的全部功能。跨 StageGroup 独立工作分辨率、原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass 不同工作尺寸，以及满足进程级 FG Off 条件的普通 Present 双 Pass 不同工作尺寸，属于当前 0.2.0-dev.10 开发源码，尚未包含于任何已发布包；逐 Pass GPU 诊断也只在当前开发源码提供，尚未随包发布。
 
 <a id="zh-contents"></a>
 ### 目录
@@ -119,7 +119,7 @@
 | Classic／经典 | 更直接显示 NR 的低分辨率像素，可能块状。 |
 | Edge-aware (area input)／边缘感知（区域输入） | NR 前对输入像素平均，之后重建改变量；可能改变模型外观，进入或离开此模式重置 NR 历史。 |
 
-上采样独立于结果调整，工作尺寸与输出一致时无尺寸重建作用。全局工作尺寸仍是默认来源，**上采样全链共用**；当前 0.2.0-dev.9 开发源码支持叠层章节所述的跨 StageGroup 独立尺寸及原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass 不同工作尺寸，属于阶段性支持。降低尺寸可能降低成本，也可能改变细节和稳定性，应观察运动与实际 GPU 测量。
+上采样独立于结果调整，工作尺寸与输出一致时无尺寸重建作用。全局工作尺寸仍是默认来源，**上采样全链共用**；当前 0.2.0-dev.10 开发源码支持叠层章节所述的跨 StageGroup 独立尺寸及原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass 不同工作尺寸，属于阶段性支持。降低尺寸可能降低成本，也可能改变细节和稳定性，应观察运动与实际 GPU 测量。
 
 <a id="zh-results"></a>
 ### 结果调整与稳定性
@@ -171,9 +171,9 @@
 
 **开发源码：逐层阶段。** 第 1 层沿用画质页的介入点；第 2–4 层新增**阶段：与上一层相同／Render／Upscaled／Present**，与模型、外观及结果继承分别独立。默认保持旧版单阶段链。阶段必须按 `Render → Upscaled → Present` 前进；倒退请求会停用整链并保留选择。原生 DX12 和原生 DX11 Bridge DLSS SR/DLAA 可以拆分 Render 和 Upscaled 分组，例如 `第 1 层 · Render · A → 游戏 DLSS SR → 第 2 层 · Upscaled · B`。A/B 组合不受阶段限制。Render 的结果作为游戏 SR 的真实输入，Upscaled 读取游戏 SR 输出。DX11 需要 immediate context、共享 Fence 支持及同适配器私有 DX12 设备；混合链每阶段通过有界事件等待确认 GPU 完成，会增加同步成本。Render 交付或游戏 SR 失败时跳过后组并重置 NR 历史。
 
-**当前 0.2.0-dev.9 开发源码：独立工作分辨率（阶段性支持）。** 在现有第 2–4 层编辑区域选择分辨率模式：默认继承全局 `NRFollowInputRes` 与 `NRResolutionScale`；跟随游戏模式沿用有效 Guide、尺寸上限与缺失 Guide 时的比例回退规则；固定比例使用本层保存的 **33–100%** 比例，默认 **100%**。固定比例参考该 Stage 的完整尺寸：Render 使用 Color 有效区域，Upscaled 使用游戏 DLSS 输出。第 1 层仍使用画质页全局控件，不改变游戏 DLSS SR 分辨率。可配置 `Render A 100% → 游戏 DLSS SR → Upscaled B 67%`，也可互换为 Render 67%、Upscaled 100%。返回继承模式会保留本层独立比例；模式与 Stage、Model Preset、Look、Result 分别独立，上采样仍共享。
+**当前 0.2.0-dev.10 开发源码：独立工作分辨率（阶段性支持）。** 在现有第 2–4 层编辑区域选择分辨率模式：默认继承全局 `NRFollowInputRes` 与 `NRResolutionScale`；跟随游戏模式沿用有效 Guide、尺寸上限与缺失 Guide 时的比例回退规则；固定比例使用本层保存的 **33–100%** 比例，默认 **100%**。固定比例参考该 Stage 的完整尺寸：Render 使用 Color 有效区域，Upscaled 使用游戏 DLSS 输出。第 1 层仍使用画质页全局控件，不改变游戏 DLSS SR 分辨率。可配置 `Render A 100% → 游戏 DLSS SR → Upscaled B 67%`，也可互换为 Render 67%、Upscaled 100%。返回继承模式会保留本层独立比例；模式与 Stage、Model Preset、Look、Result 分别独立，上采样仍共享。
 
-不含 Present 的原生 DX11 Bridge／DX12 链中，同一 Render 或 Upscaled StageGroup 的两个 Pass 支持不同工作尺寸：`Upscaled Pass 1 · A 100% → Pass 2 · B 67%`，也可反向设置为 A 67%、B 100%；Render 双层对应 `Render A 100% → Render B 67% → 游戏 DLSS SR` 及反向比例，不改变游戏 SR 内部渲染尺寸；各层比例仍参考完整 Stage 尺寸。当前 0.2.0-dev.9 开发源码还允许普通原生 DX11 Bridge／DX12 Present 双 Pass 使用不同工作尺寸，前提是已收到成功的进程级公共 FG Off 声明。没有该成功声明时，即使未观测到 FG 活动，仍拒绝该双 Pass 异尺寸组合；该声明作用于进程，不区分各个 viewport。该 Present 能力拒绝 FG 未知／On、Pre-FG 及 B1／混合链，不改变既有 Render／Upscaled 支持。DX11 Present 双 Pass 增加有界 GPU 完成等待及同步成本。新增 DX11 Present 双 Pass 已通过 WARP／硬件定向 GPU 自动化；真实游戏、NVIDIA 网络及性能收益未验收。同组 3 层以上仍要求实际工作尺寸相同；不支持的尺寸组合会明确拒绝该组并由界面说明原因，保留设置供修正，不静默忽略覆盖。同组模式或比例不同但实际尺寸相同不构成冲突。**此为双 Pass 阶段性实现；Upscaled 已通过定向 WARP／硬件 GPU 自动化，Render 双层的 DX12／Bridge 核心已实现，Bridge 本轮三组 HDR 场景及 DX12 本轮八场景／二十阶段均已通过 WARP／硬件 GPU 自动化；真实网络、实机画质及性能收益未验收。**新增独立模式仅限 native DX11/DX12；Vulkan 旧执行器不消费工作尺寸，因此明确拒绝非继承模式（1/2），默认继承（0）保留旧行为。最近观测的真实工作尺寸以诊断为准，配置百分比不证明实际执行或性能改善；既有截图未展示新增控件。
+不含 Present 的原生 DX11 Bridge／DX12 链中，同一 Render 或 Upscaled StageGroup 的两个 Pass 支持不同工作尺寸：`Upscaled Pass 1 · A 100% → Pass 2 · B 67%`，也可反向设置为 A 67%、B 100%；Render 双层对应 `Render A 100% → Render B 67% → 游戏 DLSS SR` 及反向比例，不改变游戏 SR 内部渲染尺寸；各层比例仍参考完整 Stage 尺寸。当前 0.2.0-dev.10 开发源码还允许普通原生 DX11 Bridge／DX12 Present 双 Pass 使用不同工作尺寸，前提是已收到成功的进程级公共 FG Off 声明。没有该成功声明时，即使未观测到 FG 活动，仍拒绝该双 Pass 异尺寸组合；该声明作用于进程，不区分各个 viewport。该 Present 能力拒绝 FG 未知／On、Pre-FG 及 B1／混合链，不改变既有 Render／Upscaled 支持。DX11 Present 双 Pass 增加有界 GPU 完成等待及同步成本。新增 DX11 Present 双 Pass 已通过 WARP／硬件定向 GPU 自动化；真实游戏、NVIDIA 网络及性能收益未验收。同组 3 层以上仍要求实际工作尺寸相同；不支持的尺寸组合会明确拒绝该组并由界面说明原因，保留设置供修正，不静默忽略覆盖。同组模式或比例不同但实际尺寸相同不构成冲突。**此为双 Pass 阶段性实现；Upscaled 已通过定向 WARP／硬件 GPU 自动化，Render 双层的 DX12／Bridge 核心已实现，Bridge 本轮三组 HDR 场景及 DX12 本轮八场景／二十阶段均已通过 WARP／硬件 GPU 自动化；真实网络、实机画质及性能收益未验收。**新增独立模式仅限 native DX11/DX12；Vulkan 旧执行器不消费工作尺寸，因此明确拒绝非继承模式（1/2），默认继承（0）保留旧行为。最近观测的真实工作尺寸以诊断为准，配置百分比不证明实际执行或性能改善；既有截图未展示新增控件。
 
 **Render→Upscaled 与 FG 并用。** 上述 DX12／DX11 Bridge 双阶段链可以与原生 DLSS FG 或 XeFG 并用，仍受既有来源、资源、输入所有权及实验门控约束。FG 开启不等于 FG 服务接管 NR 输入。确认两个 Pass 时应核对同一来源的 Render／Upscaled 实际 NR 调用；配置链、模型创建或 FG 开启状态不能单独证明两组已执行。NGX 调用成功、GPU 完成和 FG 消费是不同的证据。
 
@@ -195,25 +195,16 @@
 
 **链式历史默认开**，每层保留各自历史。关闭是诊断模式，第 2–4 层每帧重置，可能闪烁。更换模型或层数重建 Feature；改强度或模型风格重置历史。频繁切换会有历史稳定过程及创建开销；实时结果修改不重启 NR 模型历史。
 
-在支持的双模型运行时，可固定介入点、尺寸、强度，比较 **A、B、AA、AB、BA、BB**。字母按执行顺序排列，AB 即先 A 后 B。比较时明确设置每层模型，避免“继承主模型”随主模型一起改变序列。每次切换后等历史稳定，同时看静止细节和运动。以上仅为例子，**不保证哪组最佳**；加层可能增强效果，也会累积颜色、光晕、时序伪影并增加 GPU 工作。上采样仍共用；当前 0.2.0-dev.9 开发源码支持逐层阶段、跨 StageGroup 工作尺寸覆盖及原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass 不同工作尺寸。
+在支持的双模型运行时，可固定介入点、尺寸、强度，比较 **A、B、AA、AB、BA、BB**。字母按执行顺序排列，AB 即先 A 后 B。比较时明确设置每层模型，避免“继承主模型”随主模型一起改变序列。每次切换后等历史稳定，同时看静止细节和运动。以上仅为例子，**不保证哪组最佳**；加层可能增强效果，也会累积颜色、光晕、时序伪影并增加 GPU 工作。上采样仍共用；当前 0.2.0-dev.10 开发源码支持逐层阶段、跨 StageGroup 工作尺寸覆盖及原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass 不同工作尺寸。
 
 <a id="zh-native-prefg-resolution"></a>
-#### 实验：原生 Pre-FG 双 Pass 独立尺寸（dev.9 开发源码）
+#### 原生 Pre-FG 双 Pass 独立尺寸：研究保留，BLOCKED／NO-GO
 
-这是独立于普通 Present 和 B1／B2 的实验，默认 **false／关闭**，未包含于已发布的 dev.8 包。在 INI 中启用：
+该技术开关保留的实验启用值为 `1`。
 
-```ini
-[RenoDX.DLSS5]
-NRExperimentalNativePreFgResolution=1
-```
+`NRExperimentalNativePreFgResolution`（INI `[RenoDX.DLSS5]`）在源码与测试中保留，默认关闭。**本轮已结束该研究；不要将开关作为玩家选项启用，也不得视为正式支持。** 原研究范围仅为**单平面原生 DX12 NGX DLSS FG/MFG、纯 Present 阶段、严格两个 Pass**：`A 100% → B 67%` 或 `A 67% → B 100%`。技术边界包括已识别的 FG handle、非零且单调递增的真实 Backbuffer FrameID、首次调用 `MultiFrameIndex=1`、有效真实 Depth／Motion（不能以中性引导替代），以及每个 producer command-list 录制代次精确提交一次；排除 HUDLess、UI、UIAlpha、XeFG、DX11、B1、B2 和最终 Present（Final FG）。这些是原研究的范围与门槛，不代表已验证或支持。
 
-本轮支持范围仅限**单平面原生 DX12 NGX DLSS FG/MFG、纯 Present 阶段、严格两个 Pass**：`A 100% → B 67%` 或 `A 67% → B 100%`。要求已识别的 FG handle、非零且单调递增的真实 Backbuffer FrameID、首次调用的 `MultiFrameIndex=1`，以及有效的真实 Depth／Motion；不能用中性引导替代。任何 HUDLess、UI 或 UIAlpha 输入均排除，即使与 Backbuffer 别名也不例外。不支持 XeFG、DX11、B1、尚未实现的 B2 或最终 Present（Final FG）路径；普通 Present 双 Pass 的公共 FG Off 门控不变。
-
-**支持条件是 producer command-list 录制代次仅提交一次。** 同一真实 FrameID 最多尝试一次，失败或未成熟也不在本帧重跑。MFG 派生调用只复用完整缓存，不再录制 NR；同一 list 录制代次内按命令顺序消费，不同 list／录制代次必须已有该 producer 的单次提交及 GPU 完成证明，否则跳过。此路径不新增 CPU Fence 等待（`CPUFenceWait=0`）。宿主重放整个 producer list 仍会物理执行其中的 GPU NR 命令；检测到多次提交 receipt 后拒绝缓存复用，资源保留至全部 receipt 完成且对应录制代次经 Reset／销毁关闭。API evaluate 次数不能代替实际 GPU 执行次数。
-
-只有两个模型实际 evaluate 成功（`model_pass_mask=3`）、`group_complete`、调用接受且输出就绪时才提交结果。部分失败或未成熟结果只留在私有 staging，不交付给 FG，原始 Backbuffer 保持受保护。配置或尺寸在本帧变化时冻结或拒绝本帧，不交付半条链。关闭实验后仍保留既有 producer 的提交证明，以便在原输入及顺序条件满足时恢复本帧原始 Backbuffer；本帧不另跑新链。
-
-**验证边界：** 本轮定向 WARP／RTX 5090 D GPU 自动化已通过，范围为 SDR／scRGB；NVIDIA NR 与 FG 均使用替身。没有真游戏验收，不承诺 game-ready、真实 NVIDIA 网络行为、画质或性能收益，也不新增 HDR10 验收。实际 GPU 调用次数需依据 GPU timestamp 等执行证据，单独区分正常 MFG 缓存消费与整个宿主 list 重放。现有截图不作为这项实验的验收证据。
+**阻断证据：** `BackbufferFrameID` 的数值 Get 失败；指针 Get 虽成功，但返回对象的身份及真实帧语义未证。MFG replay 行为以及 HUDLess／UI 一致性也未证，因此无法证明真实帧身份和所需的单次提交条件。该原生 Pre-FG 双 Pass 异尺寸路径为 **BLOCKED／NO-GO**；本轮不再继续研究或测试。此结论只针对该实验，不改变已有 **Render → Upscaled 与原生 DLSS FG／XeFG 并用**路径；后者仍受各自既有输入、资源、所有权及实验门控约束。普通 Present 的 FG Off 门控也保持独立。
 
 #### 示例：两层独立风格与结果调整
 
@@ -224,14 +215,14 @@ NRExperimentalNativePreFgResolution=1
 3. 选择**第 2 层**，明确选择 **B**，关闭**继承第 1 层外观**和**继承第 1 层结果设置**。此时显示本层保存的独立值，初始为默认，不会复制第 1 层当前的编辑。
 4. 为第 2 层尝试**风格：电影感**，分别调整它的局部色调或结构；开启本层**调整 NR 的外观**，再尝试**细节**或**暗晕抑制**，每次只改一项。角色／皮肤需要本层角色遮罩开启；独立皮肤仍全链共用，并可能限制实际发送给模型的结构值。结果效果要求处理阶段可用，运动稳定还需可用的运动矢量。
 5. 想恢复共享时，分别重新开启所需的继承开关；以后关闭仍能继续使用保存的独立值。**继承主模型**是另一项选择，只有希望第 2 层连模型也跟随主模型时才选它。
-6. 等待历史稳定，在同一场景比较静止与运动，并查看诊断中 **NR 开销**里的可用 GPU 耗时。固定介入点和尺寸，对比两层与一层；减少层数仍保留第 2 层编辑。耗时按诊断所列 NR 工作口径统计，不是逐层计时；不可用读数不代表零开销。
+6. 等待历史稳定，在同一场景比较静止与运动，并查看诊断中 **NR 开销**里的可用 GPU 耗时。固定介入点和尺寸，对比两层与一层；减少层数仍保留第 2 层编辑。NR 开销计量按 Stage 采样，不是单个 Pass 的网络耗时；不可用读数不代表零开销。
 
-模型风格改变生成阶段并重置时序历史，结果编辑实时塑造每层返回的改变量。上采样仍共享；当前 0.2.0-dev.9 开发源码支持逐层阶段、跨 StageGroup 工作尺寸覆盖及原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass 不同工作尺寸。可调项和层数更多不代表画质或性能更好，应在实际游玩场景中比较后选择。
+模型风格改变生成阶段并重置时序历史，结果编辑实时塑造每层返回的改变量。上采样仍共享；当前 0.2.0-dev.10 开发源码支持逐层阶段、跨 StageGroup 工作尺寸覆盖及原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass 不同工作尺寸。可调项和层数更多不代表画质或性能更好，应在实际游玩场景中比较后选择。
 
 <a id="zh-presets"></a>
 ### NR 快速方案与方案库（开发中）
 
-本节对应当前 **0.2.0-dev.9 开发源码**，包括按任务展开的方案库。已发布的 **0.1.0 包不包含六个方案或方案库管理**。以下说明界面操作，不代表下列官方组合已通过实机画质或性能验收。
+本节对应当前 **0.2.0-dev.10 开发源码**，包括按任务展开的方案库。已发布的 **0.1.0 包不包含六个方案或方案库管理**。以下说明界面操作，不代表下列官方组合已通过实机画质或性能验收。
 
 #### 当前游戏的六个方案
 
@@ -271,7 +262,7 @@ NRExperimentalNativePreFgResolution=1
 
 “返回方案库”回到主页。标题栏 **X**，或管理窗口获得焦点且没有正在编辑的输入框时按 **Esc**，均可关闭管理器；再次打开从主页开始。同会话保留输入草稿、库内选择、展开选项和待应用的导入预览，关闭不会保存或应用它们。输入框、内部弹窗及原生辅助输入窗优先处理自己的 Esc。可拖动标题栏移动、拖动缩放角调整尺寸；尺寸与位置在当前运行会话中记忆，并按可用显示区域和字体大小约束。简洁保存与尚未读取文件的导入任务使用紧凑窗口。展开“更多选项”或导出选项、读取出预览或返回主页时恢复编辑空间，并保留用户调整的尺寸；此窗口几何不跨游戏重启保存。
 
-画质范围包含基础模型／外观／结果，以及第 1 层介入点、跟随输入、共同分辨率比例和上采样四个控件；不包含 HDR、运动／深度、FG 策略或界面偏好，模型 UI correction 属图像设置。画质＋叠层增加启用层的阶段、工作分辨率模式／比例、模型、外观／结果及继承。完整备份还含停用层及允许的兼容／通用字段，但**不保证跨游戏兼容**；启动期 Hook 策略需重启游戏。上采样仍共享；分辨率覆盖支持跨 StageGroup，以及 不含 Present 的原生 DX11 Bridge／DX12 链中，同一 Render 或 Upscaled StageGroup 的两个 Pass。当前 0.2.0-dev.9 开发源码另支持已成功收到进程级公共 FG Off 声明的普通原生 DX11 Bridge／DX12 Present 双 Pass 异尺寸；没有该声明时仍拒绝，声明作用于进程而非单独 viewport。该 Present 能力拒绝 FG 未知／On、Pre-FG 及 B1／混合链。DX11 Present 双 Pass 增加有界 GPU 完成等待及同步成本。新增 DX11 Present 双 Pass 已通过 WARP／硬件定向 GPU 自动化；真实游戏、NVIDIA 网络及性能收益未验收。同组 3 层以上及其他不支持的实际尺寸组合会明确拒绝该组并保留设置。旧 schema 1 文件缺少新字段时保留当前值。
+画质范围包含基础模型／外观／结果，以及第 1 层介入点、跟随输入、共同分辨率比例和上采样四个控件；不包含 HDR、运动／深度、FG 策略或界面偏好，模型 UI correction 属图像设置。画质＋叠层增加启用层的阶段、工作分辨率模式／比例、模型、外观／结果及继承。完整备份还含停用层及允许的兼容／通用字段，但**不保证跨游戏兼容**；启动期 Hook 策略需重启游戏。上采样仍共享；分辨率覆盖支持跨 StageGroup，以及 不含 Present 的原生 DX11 Bridge／DX12 链中，同一 Render 或 Upscaled StageGroup 的两个 Pass。当前 0.2.0-dev.10 开发源码另支持已成功收到进程级公共 FG Off 声明的普通原生 DX11 Bridge／DX12 Present 双 Pass 异尺寸；没有该声明时仍拒绝，声明作用于进程而非单独 viewport。该 Present 能力拒绝 FG 未知／On、Pre-FG 及 B1／混合链。DX11 Present 双 Pass 增加有界 GPU 完成等待及同步成本。新增 DX11 Present 双 Pass 已通过 WARP／硬件定向 GPU 自动化；真实游戏、NVIDIA 网络及性能收益未验收。同组 3 层以上及其他不支持的实际尺寸组合会明确拒绝该组并保留设置。旧 schema 1 文件缺少新字段时保留当前值。
 
 有可撤销的导入时，方案库主页会显示“撤销上次导入”，也可从高级页“管理方案”旁操作。它只恢复仍等于导入值的字段，保留之后的编辑，与“撤销方案操作”分开。共享库文件仍须显式保存，与方案自动保存分开。配置写入先核验再提交运行时参数，应用失败尝试恢复原保存值；不保证磁盘／GPU 事务或进程崩溃恢复。
 
@@ -308,9 +299,13 @@ NRExperimentalNativePreFgResolution=1
 
 #### GPU 时间与加速选项
 
-**NR 开销计量默认开**，每 **250 ms** 为一条链计时一次，根据测得 NR GPU 时间与帧间隔估计帧率成本。估计以前提“GPU 限制帧率”为基础，CPU 瓶颈或限帧时关闭 NR 的收益更小。FG 下单次求值成本与每 Present 成本可能不同；节点和示例截图均不提供逐层 GPU 测量。
+**NR 开销计量（`NRCostMeter`）默认开**，仍按每个 Stage 每 **250 ms** 采样。详细诊断的逐层读数以最近最多 **4 个有效样本**计算有限平均，约每 **0.5 秒**刷新，超过 **2 秒**无新证明即过期。旧帧率成本估计仅在单 Stage、有近期有效测量时提供；多 Stage 分别查看各组 GPU 时间，不相加解释为整帧延迟。估计以前提“GPU 限制帧率”为基础，CPU 瓶颈或限帧时关闭 NR 的收益更小。FG 下单次求值成本与每 Present 成本可能不同。
 
-**GPU 分阶段计时（profiling）默认关**，可在详细诊断中开启，比较模型与编码、解析、线性化／缩放、提交、复制等插件开销。不支持时间戳或暂无有效数据时，不能把“暂无”解释为零开销。**NR edit trace 默认关**，仅 D3D12 可用，只观测、不改变画面，将改变量统计写入日志／CSV。
+**GPU 分阶段计时（profiling）默认关**，DX12 与 DX11 Bridge 均已有计时器，可在详细诊断中开启。每条样本关联实际 StageGroup／Stage／Pass ID、解析后的模型请求、工作宽高及神经网络（NN）输出尺寸；最多覆盖四层，并列出 NGX GPU span、Encode、Resolve、Look、Pass span、StageGroup GPU 总 span及非模型 GPU 时间。Look 包含准备工作，但计入 Resolve；NGX 时间包含已有的边界 barrier。只有录制已关闭、相关工作精确提交一次且 GPU 完成的样本才有效；重复 replay、未提交、丢弃、过期或无法测量的样本会被拒绝。模型内部实际运行的网络仍未确认；这些 GPU 区间不代表 CPU 等待时间，也不保证跨 StageGroup 的整帧延迟。无有效时间戳时，“暂无”不等于零开销。**NR edit trace 默认关**，仅 D3D12 可用，只观测、不改变画面，将改变量统计写入日志／CSV。
+
+![逐层 GPU 诊断](images/ui/gpu-pass-diagnostics-zh.webp)
+
+*开发源码的合成界面示例：尺寸与 GPU 区间属于同一测量快照；未执行层和重放拒绝不显示有效耗时。原始技术诊断沿用英文。图中数字不代表真实游戏性能。*
 
 测量及路径足够时，**Faster／加速**提供放大前运行、50% 尺寸或两者组合，并给出估计与撤销。这些操作改变介入点／工作尺寸，不是基准保证；特别是 Ray Reconstruction，应重新核对实际路径。
 
@@ -447,7 +442,7 @@ Pre-FG service ROI、单个 HDR 样本、120 次 HDR Present、单个 P0 样本�
 
 ## English
 
-> **Version scope — current v0.2.0-dev.9 development source; latest pre-release v0.2.0-dev.8 / v0.1.0 release:** this guide describes the complete 0.1.0 package: four-page menu, dual models, independent per-pass model styling and result settings, and four interface themes. Check the Releases page for available versioned ZIP packages. The published dev.8 pre-release includes per-pass stages, NR Profiles, presets and assisted input; the published 0.1.0 package does not. Earlier pre-release packages do not contain every feature shown here. Independent working resolution across StageGroups, different working sizes for two Render/Upscaled passes on native DX11 Bridge/DX12, and two ordinary Present passes after the required process-wide FG Off declaration describe the current v0.2.0-dev.9 development source and are not included in any published package.
+> **Version scope — current v0.2.0-dev.10 development source; latest pre-release v0.2.0-dev.8 / v0.1.0 release:** this guide describes the complete 0.1.0 package: four-page menu, dual models, independent per-pass model styling and result settings, and four interface themes. Check the Releases page for available versioned ZIP packages. The published dev.8 pre-release includes per-pass stages, NR Profiles, presets and assisted input; the published 0.1.0 package does not. Earlier pre-release packages do not contain every feature shown here. Independent working resolution across StageGroups, different working sizes for two Render/Upscaled passes on native DX11 Bridge/DX12, and two ordinary Present passes after the required process-wide FG Off declaration describe the current v0.2.0-dev.10 development source and are not included in any published package. Per-pass GPU diagnostics are also available only in the current development source and have not shipped.
 
 ### Contents
 
@@ -561,7 +556,7 @@ The reference is normally DLSS output size on Upscaled, the input colour size on
 | Classic | Shows the lower-resolution NR pixels more directly; they may look blocky. |
 | Edge-aware (area input) | Averages input pixels before NR and reconstructs the edit afterward. Can change the model's look; entering or leaving this mode resets NR history. |
 
-Upsampling is independent of Adjust NR's look, and has no reconstruction effect at full output size. Global working-size controls remain the default source; upsampling stays shared by **the whole chain**. The current v0.2.0-dev.9 development source adds the partial cross-StageGroup and native DX11 Bridge/DX12 two-pass Upscaled resolution support described under Multi-Pass. Lower resolution can reduce cost but change detail and stability. Judge actual motion and GPU measurements.
+Upsampling is independent of Adjust NR's look, and has no reconstruction effect at full output size. Global working-size controls remain the default source; upsampling stays shared by **the whole chain**. The current v0.2.0-dev.10 development source adds the partial cross-StageGroup and native DX11 Bridge/DX12 two-pass Upscaled resolution support described under Multi-Pass. Lower resolution can reduce cost but change detail and stability. Judge actual motion and GPU measurements.
 
 <a id="en-results"></a>
 ### Result adjustment and stability
@@ -613,9 +608,9 @@ Each pass processes the preceding result. These are not parallel alternatives an
 
 **Development source: per-pass stages.** Pass 1 keeps the Quality page's Hook Point. Passes 2–4 add **Stage: Same as previous / Render / Upscaled / Present**, independently of model, styling and result inheritance. The default keeps the old single-stage chain. Stages must move in order `Render → Upscaled → Present`; a backward request disables the chain and preserves your choices. Native DX12 and native DX11 Bridge DLSS SR/DLAA can split Render and Upscaled groups, for example `Pass 1 · Render · A → game DLSS SR → Pass 2 · Upscaled · B`. A/B combinations remain independent of stage. Render consumes the render image and supplies its result as the game's SR input; Upscaled consumes the game's SR output. The DX11 path requires an immediate context, shared-fence support and a private DX12 device on the same adapter. Each mixed-stage delivery waits for proven GPU completion with a bounded event wait, adding synchronization cost; failed Render delivery or failed game SR skips the following group and resets NR history.
 
-**Current development source (v0.2.0-dev.9): independent working resolution (partial support).** In the existing Passes 2–4 editor, choose a resolution mode: inherit global `NRFollowInputRes` and `NRResolutionScale` (default), follow game guides with the existing caps and scale fallback when guides are missing, or use the saved fixed scale of **33–100%** (default **100%**). Fixed scales refer to that Stage's full dimensions: the valid Render Color region or the game's Upscaled DLSS output. Pass 1 still uses the global Quality controls. Game DLSS SR resolution is unchanged. Examples include `Render A 100% → game DLSS SR → Upscaled B 67%`, or Render 67% and Upscaled 100%. Returning to inherited mode retains the local scale. Resolution is independent of Stage, Model Preset, Look and Result; upsampling remains shared.
+**Current development source (v0.2.0-dev.10): independent working resolution (partial support).** In the existing Passes 2–4 editor, choose a resolution mode: inherit global `NRFollowInputRes` and `NRResolutionScale` (default), follow game guides with the existing caps and scale fallback when guides are missing, or use the saved fixed scale of **33–100%** (default **100%**). Fixed scales refer to that Stage's full dimensions: the valid Render Color region or the game's Upscaled DLSS output. Pass 1 still uses the global Quality controls. Game DLSS SR resolution is unchanged. Examples include `Render A 100% → game DLSS SR → Upscaled B 67%`, or Render 67% and Upscaled 100%. Returning to inherited mode retains the local scale. Resolution is independent of Stage, Model Preset, Look and Result; upsampling remains shared.
 
-In a native DX11 Bridge or DX12 chain without Present, two passes in one Render or Upscaled StageGroup support different working sizes: `Upscaled Pass 1 · A 100% → Pass 2 · B 67%`, or A 67% and B 100%. Render uses `Render A 100% → Render B 67% → game DLSS SR` or the reverse scales, preserving the game SR internal render dimensions. Each scale still refers to the full Stage size. The current v0.2.0-dev.9 development source also permits exactly two ordinary Present passes on native DX11 Bridge or DX12 with different working sizes, after a successful public FG Off declaration for the process. Without that successful declaration, the pair remains rejected, even if no FG activity is observed. The declaration applies to the process, not to individual viewports. This Present capability rejects unknown/On FG, Pre-FG and B1/mixed chains, without changing existing Render/Upscaled support. The DX11 Present pair adds a bounded GPU-completion wait and synchronization cost. The new DX11 Present pair passed targeted WARP/hardware GPU automation; game operation, the NVIDIA network and performance gains remain unverified. Groups of 3+ passes still require matching actual sizes; unsupported mismatches explicitly reject the group, with a UI explanation and saved settings retained for correction. Overrides are never silently ignored. Different settings that resolve to the same dimensions do not conflict. **This is a partial two-pass implementation. Upscaled passed targeted WARP/hardware GPU automation; the DX12/Bridge Render two-pass core is implemented, with three HDR Bridge cases and eight DX12 scenarios/twenty phases passing WARP/hardware GPU automation; actual neural-network behavior, game visuals and performance gains have not been accepted.** Independent modes require native DX11/DX12. The existing Vulkan executor does not consume working dimensions, so it explicitly rejects non-inherited modes (1/2); inherited defaults (0) preserve its old behavior. Diagnostics report the last observed dimensions; percentages do not prove execution or performance gains. Existing screenshots do not show these new controls.
+In a native DX11 Bridge or DX12 chain without Present, two passes in one Render or Upscaled StageGroup support different working sizes: `Upscaled Pass 1 · A 100% → Pass 2 · B 67%`, or A 67% and B 100%. Render uses `Render A 100% → Render B 67% → game DLSS SR` or the reverse scales, preserving the game SR internal render dimensions. Each scale still refers to the full Stage size. The current v0.2.0-dev.10 development source also permits exactly two ordinary Present passes on native DX11 Bridge or DX12 with different working sizes, after a successful public FG Off declaration for the process. Without that successful declaration, the pair remains rejected, even if no FG activity is observed. The declaration applies to the process, not to individual viewports. This Present capability rejects unknown/On FG, Pre-FG and B1/mixed chains, without changing existing Render/Upscaled support. The DX11 Present pair adds a bounded GPU-completion wait and synchronization cost. The new DX11 Present pair passed targeted WARP/hardware GPU automation; game operation, the NVIDIA network and performance gains remain unverified. Groups of 3+ passes still require matching actual sizes; unsupported mismatches explicitly reject the group, with a UI explanation and saved settings retained for correction. Overrides are never silently ignored. Different settings that resolve to the same dimensions do not conflict. **This is a partial two-pass implementation. Upscaled passed targeted WARP/hardware GPU automation; the DX12/Bridge Render two-pass core is implemented, with three HDR Bridge cases and eight DX12 scenarios/twenty phases passing WARP/hardware GPU automation; actual neural-network behavior, game visuals and performance gains have not been accepted.** Independent modes require native DX11/DX12. The existing Vulkan executor does not consume working dimensions, so it explicitly rejects non-inherited modes (1/2); inherited defaults (0) preserve its old behavior. Diagnostics report the last observed dimensions; percentages do not prove execution or performance gains. Existing screenshots do not show these new controls.
 
 **Render→Upscaled alongside FG.** The DX12/DX11 Bridge chain above can run alongside native DLSS FG or XeFG, subject to existing source, resource, input-ownership and experimental gates. Enabling FG does not itself mean that the FG service owns NR input. To confirm both passes, check actual Render/Upscaled NR calls for the same source; the configured chain, model creation or FG enabled state alone does not prove that both groups ran. Successful NGX calls, GPU completion and FG consumption are distinct evidence.
 
@@ -637,25 +632,16 @@ Turning either inheritance switch off exposes that pass's **stored independent v
 
 The default **Chained history** is On: each pass keeps its own history. Off is a diagnostic mode where Passes 2–4 reset every frame and can flicker. Model choice and pass-count changes recreate features; strength and model steering changes reset history. Repeated switching can cause visible settling and creation cost. Live result edits do not restart the NR model history.
 
-For controlled comparisons on the supported dual-model runtime, try **A**, **B**, **AA**, **AB**, **BA**, **BB**. Letters are model choices in execution order: AB means A first, B second. Explicitly set each model when comparing; Inherit Main Model can otherwise change the whole sequence. Start with the same location, size and strengths, let history settle, then inspect both still detail and movement. These are examples, **not recommended winners**; extra passes can compound colour, halos and temporal artifacts as well as strengthen the effect. Each adds GPU work. Upsampling stays shared; the current v0.2.0-dev.9 development source supports per-pass stages, working-size overrides across StageGroups and different working sizes for two Upscaled passes on native DX11 Bridge or DX12.
+For controlled comparisons on the supported dual-model runtime, try **A**, **B**, **AA**, **AB**, **BA**, **BB**. Letters are model choices in execution order: AB means A first, B second. Explicitly set each model when comparing; Inherit Main Model can otherwise change the whole sequence. Start with the same location, size and strengths, let history settle, then inspect both still detail and movement. These are examples, **not recommended winners**; extra passes can compound colour, halos and temporal artifacts as well as strengthen the effect. Each adds GPU work. Upsampling stays shared; the current v0.2.0-dev.10 development source supports per-pass stages, working-size overrides across StageGroups and different working sizes for two Upscaled passes on native DX11 Bridge or DX12.
 
 <a id="en-native-prefg-resolution"></a>
-#### Experiment: native Pre-FG independent-resolution pair (dev.9 development source)
+#### Native Pre-FG independent-resolution pair: research retained, BLOCKED/NO-GO
 
-This experiment is separate from ordinary Present and B1/B2, defaults to **false/off**, and is absent from the published dev.8 package. Enable it in the INI:
+The retained technical switch uses `1` as its experimental enable value.
 
-```ini
-[RenoDX.DLSS5]
-NRExperimentalNativePreFgResolution=1
-```
+`NRExperimentalNativePreFgResolution` (INI `[RenoDX.DLSS5]`) remains in source and tests, default-off. **This round has ended the research. Do not enable it as a player option or treat it as formally supported.** The retained research scope is **single-plane native DX12 NGX DLSS FG/MFG, a pure Present stage and exactly two passes**: `A 100% → B 67%` or `A 67% → B 100%`. Its technical boundaries included a recognized FG handle, a nonzero monotonically increasing real Backbuffer FrameID, `MultiFrameIndex=1` on the first call, valid real Depth/Motion (neutral guides cannot substitute), and exactly one submission per producer command-list recording generation; HUDLess, UI, UIAlpha, XeFG, DX11, B1, B2 and final Present (Final FG) were excluded. These describe the original research scope and gates; they do not establish support.
 
-The supported scope is **single-plane native DX12 NGX DLSS FG/MFG, a pure Present stage and exactly two passes**: `A 100% → B 67%` or `A 67% → B 100%`. It requires a recognized FG handle, a nonzero monotonically increasing real Backbuffer FrameID, `MultiFrameIndex=1` on the first call, and valid real Depth/Motion; neutral guides cannot substitute. Any HUDLess, UI or UIAlpha input is excluded, even if it aliases the Backbuffer. XeFG, DX11, B1, the unimplemented B2 and the final Present (Final FG) path are unsupported. Ordinary Present pairs retain their public FG Off gate.
-
-**Support requires each producer command-list recording generation to be submitted only once.** Each real FrameID gets at most one attempt, including failed or immature attempts. Derived MFG calls only reuse a complete cache and do not record NR again. Consumption in the same list recording generation follows command order; a different list/recording generation requires proof of the producer's single submission and GPU completion, otherwise it is skipped. This path adds no CPU fence wait (`CPUFenceWait=0`). Replaying the entire producer list still physically executes its GPU NR commands again. Once multiple submission receipts are detected, cache reuse is rejected; resources remain retained until every receipt completes and the corresponding recording generation is closed by Reset/destruction. API evaluate counts do not establish actual GPU execution counts.
-
-Results are committed only after both model evaluates actually succeed (`model_pass_mask=3`), with `group_complete`, an accepted call and ready output. Partial failures and immature results stay in private staging and are not delivered to FG; the original Backbuffer remains protected. Configuration or size changes within the frame are frozen or cause that frame to be rejected, without delivering a partial chain. Disabling the experiment still retains the existing producer's submission proof so the frame's original Backbuffer can be restored when the original-input and ordering conditions hold; no new chain runs in that frame.
-
-**Validation limits:** this round's targeted WARP/RTX 5090 D GPU automation passed for SDR/scRGB; both NVIDIA NR and FG use substitutes. There is no game acceptance, no game-ready claim, no established real NVIDIA network behavior, image quality or performance gain, and no new HDR10 acceptance. Actual GPU call counts require execution evidence such as GPU timestamps, distinguishing normal MFG cache consumption from replay of an entire host list. Existing screenshots are not acceptance evidence for this experiment.
+**Blocking evidence:** numeric Get for `BackbufferFrameID` fails. Pointer Get succeeds, but the returned object's identity and real-frame meaning are unverified. MFG replay behavior and HUDLess/UI consistency are also unverified, so the required frame identity and single-submission conditions are not established. This native Pre-FG pair with different pass sizes is **BLOCKED/NO-GO**; no further research or testing is planned in this round. This applies only to this experiment and does not change the existing **Render → Upscaled path alongside native DLSS FG/XeFG**, which remains subject to its own existing input, resource, ownership and experimental gates. Ordinary Present's FG Off gate remains separate.
 
 #### Example: two passes with independent looks and results
 
@@ -666,14 +652,14 @@ This is an editing workflow, not a best-quality preset. It requires the 0.1.0 in
 3. Select **Pass 2**, explicitly choose **B**, and turn **Same as pass 1** and **Inherit Pass 1 result settings** off. The controls reveal Pass 2's stored independent values, initially defaults; they do not copy the current Pass 1 edits.
 4. Try **Style: Cinematic** for Pass 2 and adjust its Local tone or structure separately. Enable that pass's **Adjust NR's look**, then try **Fine detail** or **Halo suppression**, changing one control at a time. Character / skin requires that pass's Character mask; Independent skin remains global and can cap the structure sent to the model. Result effects require an available result stage, and Motion stabilization needs usable motion vectors.
 5. To share settings again, re-enable either inheritance switch independently. Turning it off later restores access to the saved independent values. **Inherit Main Model** is a separate choice; use it only if Pass 2 should also follow the main model.
-6. Let history settle, compare the same scene while still and moving, and inspect the available GPU timing under **NR cost** in Diagnostics. Compare two passes with one at the same location and size; reducing the count keeps Pass 2's saved edits. The timer covers NR work as reported there, not individual-pass cost; an unavailable reading is not zero cost.
+6. Let history settle, compare the same scene while still and moving, and inspect the available GPU timing under **NR cost** in Diagnostics. Compare two passes with one at the same location and size; reducing the count keeps Pass 2's saved edits. The NR cost meter samples by Stage, not the network time of an individual Pass; an unavailable reading is not zero cost.
 
-Model styling changes synthesis and resets temporal history; result edits reshape each pass's returned change live. Upsampling stays shared; per-pass stages, working-size overrides across StageGroups and different working sizes for two Upscaled passes on native DX11 Bridge or DX12 are available in the current v0.2.0-dev.9 development source. More control and more passes do not establish better quality or performance—keep the combination that works in the scenes you actually play.
+Model styling changes synthesis and resets temporal history; result edits reshape each pass's returned change live. Upsampling stays shared; per-pass stages, working-size overrides across StageGroups and different working sizes for two Upscaled passes on native DX11 Bridge or DX12 are available in the current v0.2.0-dev.10 development source. More control and more passes do not establish better quality or performance—keep the combination that works in the scenes you actually play.
 
 <a id="en-presets"></a>
 ### NR Profiles and profile library (development)
 
-This section describes the current **0.2.0-dev.9 development source**, including the task-based profile library. The published **0.1.0 package contains neither six Slots nor preset management**. These instructions describe the interface and do not establish in-game image-quality or performance validation for the official combinations below.
+This section describes the current **0.2.0-dev.10 development source**, including the task-based profile library. The published **0.1.0 package contains neither six Slots nor preset management**. These instructions describe the interface and do not establish in-game image-quality or performance validation for the official combinations below.
 
 #### Six Slots for this game
 
@@ -713,7 +699,7 @@ Open **Manage profiles** on Quality or Advanced. **Profile library** opens on on
 
 **Back to profile library** returns to home. The title-bar **X**, or **Esc** while the manager is focused and no text editor is active, closes the manager; reopening starts at home. Draft input, library selection, expanded options and a pending import preview are retained during the same session; closing does not save or apply them. Text fields, nested popups and the native assisted-input editor handle their own Esc first. Move or resize the manager by its title bar and resize grip. Size and position are remembered for the running session and constrained to the available display/font size. Simple save and unread import tasks use a compact window. Opening More options or export options, loading a preview, or returning home restores editing space while retaining user-adjusted dimensions. This geometry is not saved across game restarts.
 
-Quality includes the base model/appearance/results plus four common controls: Pass 1 processing location, follow input, resolution scale and upsampling. It excludes HDR, motion/depth, FG policies and interface preferences; model UI correction is an image setting. Quality + Multi-Pass adds enabled layers and their stages, working-resolution mode/scale, models, styling/results and inheritance. Full backup also includes inactive layers and allowed compatibility/general fields, but **does not guarantee cross-game compatibility**. Startup hook policies require a game restart. Upsampling stays shared; independent working sizes are supported across StageGroups and for two passes in one Render or Upscaled StageGroup on native DX11 Bridge or DX12 in a chain without Present. The current v0.2.0-dev.9 development source also allows different sizes for two ordinary Present passes on native DX11 Bridge or DX12 after a successful process-wide public FG Off declaration. Without that declaration the pair remains rejected; this is a process-level declaration, not a per-viewport state. This Present capability rejects unknown/On FG, Pre-FG and B1/mixed chains. The DX11 Present pair adds a bounded GPU-completion wait and synchronization cost. The new DX11 Present pair passed targeted WARP/hardware GPU automation; game operation, the NVIDIA network and performance gains remain unverified. Groups of 3+ passes and other unsupported size combinations explicitly reject the group while retaining settings. Old schema-1 presets missing new fields keep current values.
+Quality includes the base model/appearance/results plus four common controls: Pass 1 processing location, follow input, resolution scale and upsampling. It excludes HDR, motion/depth, FG policies and interface preferences; model UI correction is an image setting. Quality + Multi-Pass adds enabled layers and their stages, working-resolution mode/scale, models, styling/results and inheritance. Full backup also includes inactive layers and allowed compatibility/general fields, but **does not guarantee cross-game compatibility**. Startup hook policies require a game restart. Upsampling stays shared; independent working sizes are supported across StageGroups and for two passes in one Render or Upscaled StageGroup on native DX11 Bridge or DX12 in a chain without Present. The current v0.2.0-dev.10 development source also allows different sizes for two ordinary Present passes on native DX11 Bridge or DX12 after a successful process-wide public FG Off declaration. Without that declaration the pair remains rejected; this is a process-level declaration, not a per-viewport state. This Present capability rejects unknown/On FG, Pre-FG and B1/mixed chains. The DX11 Present pair adds a bounded GPU-completion wait and synchronization cost. The new DX11 Present pair passed targeted WARP/hardware GPU automation; game operation, the NVIDIA network and performance gains remain unverified. Groups of 3+ passes and other unsupported size combinations explicitly reject the group while retaining settings. Old schema-1 presets missing new fields keep current values.
 
 **Undo last import** is available on the Profile library home when there is an import to undo, or beside Manage profiles on Advanced. It restores only fields still equal to imported values, preserving later edits. It is separate from Undo profile action. Library files require explicit saving; profile autosave is separate. Configuration writes are checked before runtime publication, and failed application attempts to restore prior saved values. This does not guarantee a disk/GPU transaction or recovery from a process crash.
 
@@ -750,9 +736,13 @@ Route messages distinguish **Pre-FG confirmed**, **Pre-FG observed; multiplier u
 
 #### GPU time and Faster options
 
-The **NR cost meter** defaults On and times one chain every **250 ms**. It reports measured NR GPU cost and an estimate of frame-rate cost using frame intervals. These estimates assume the GPU limits frame rate; CPU limits or a frame cap reduce the expected benefit of disabling NR. The per-evaluation cost and the per-present contribution can differ with FG. Neither a chain node nor the screenshot supplies per-pass GPU timing.
+The **NR cost meter (`NRCostMeter`)** remains On by default and samples each Stage every **250 ms**. Per-pass readouts in detailed diagnostics average up to **4 valid samples**, refresh about every **0.5 seconds**, and expire after **2 seconds** without new proof. The legacy frame-rate cost estimate is available only with a single Stage and a recent valid measurement. Inspect multiple StageGroups separately; their GPU spans are not added into whole-frame latency. These estimates assume the GPU limits frame rate; CPU limits or a frame cap reduce the expected benefit of disabling NR. The per-evaluation cost and the per-present contribution can differ with FG.
 
-**GPU stage timers (profiling)** default Off. Turn them on in detailed diagnostics when comparing model time with add-on overhead (encode, resolve, linearize/scale, commit, copies). Unsupported or unavailable timestamps leave no valid timing; do not read “none yet” as zero cost. **NR edit trace** defaults Off, is observe-only and D3D12-only, and writes change statistics to the log/CSV without changing the displayed image.
+**GPU stage timers (profiling)** default Off; existing timers are available on both DX12 and the DX11 Bridge. Enable them in detailed diagnostics. Each sample is bound to the actual StageGroup/Stage/Pass ID, resolved model request, working width/height and neural-network (NN) output dimensions, for up to four passes. Readouts include NGX GPU span, Encode, Resolve, Look, Pass span, StageGroup total GPU span and non-model GPU time. Look includes preparation but is inside Resolve; NGX timings include the existing boundary barriers. A sample is valid only after recording is closed, the associated work has been submitted exactly once and GPU completion is confirmed. Repeated replay, unsubmitted, discarded, stale/expired or unmeasurable samples are rejected. The actual network running inside the model remains unconfirmed; these GPU spans do not represent CPU wait time or guarantee end-to-end latency across StageGroups. Unsupported or unavailable timestamps leave no valid timing; “none yet” is not zero cost. **NR edit trace** defaults Off, is observe-only and D3D12-only, and writes change statistics to the log/CSV without changing the displayed image.
+
+![Per-pass GPU diagnostics](images/ui/gpu-pass-diagnostics.webp)
+
+*Synthetic development-source UI example: dimensions and GPU spans belong to the same measurement snapshot. Unexecuted passes and replay rejection do not display valid timings. Raw technical diagnostics remain in English. These numbers are not game performance measurements.*
 
 When enough measurements and a compatible path are available, **Faster** options offer Before upscaling, Resolution 50%, or Both, with estimated costs and Undo. They change hook point/working-size settings; the estimates are not benchmark promises. Check the resulting route, especially with Ray Reconstruction.
 

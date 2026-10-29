@@ -856,6 +856,167 @@ inline void OnNativePresentStreamRetired(const void* owner) {
 inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
                                      const NVSDK_NGX_Parameter* parameters,
                                      const NVSDK_NGX_Handle* handle, bool* backbuffer_replaced) {
+  // Observation only. Log the first unmet condition, rather than attributing
+  // a downstream NOT_SERVED verdict to an input that was never inspected.
+  struct ExperimentalDiagnostic {
+    bool enabled;
+    ID3D12GraphicsCommandList* list;
+    const NVSDK_NGX_Parameter* parameters;
+    const NVSDK_NGX_Handle* handle;
+    const char* reason = "entry_contract";
+    const PresentStream* owner = nullptr;
+    fg_service::Stream* stream = nullptr;
+    std::array<NrRecording, 2> recordings{};
+    ~ExperimentalDiagnostic() noexcept {
+      if (!enabled) return;
+      try {
+        static std::string last_signature;
+        static ULONGLONG last_ms = 0;
+        static uint32_t emitted = 0;
+        const auto now = GetTickCount64();
+        if (emitted >= 64 || (emitted != 0 && now - last_ms < 1000)) return;
+        // Throttle observation too: an unchanged signature must not cause
+        // resource/parameter queries on every later frame.
+        last_ms = now;
+        std::ostringstream line;
+        line << "native-prefg-experiment reason=" << reason;
+        const auto source = created_feature_ids.find(handle);
+        line << " feature=" << (source == created_feature_ids.end() ? -1 : static_cast<int>(source->second));
+        const auto uir = native_fg_ui_recomposition.find(handle);
+        line << " uir=" << (uir == native_fg_ui_recomposition.end() ? -1 : static_cast<int>(uir->second));
+        unsigned long long frame = 0;
+        const auto frame_result = (parameters != nullptr ? parameters->Get(
+            NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID, &frame) : NVSDK_NGX_Result_FAIL_InvalidParameter);
+        static uint32_t identity_probes = 0;
+        if (parameters != nullptr && source != created_feature_ids.end()
+            && source->second == NVSDK_NGX_Feature_FrameGeneration
+            && GetUInt(parameters, NVSDK_NGX_DLSSG_Parameter_NotRenderingGameFrames) == 0
+            && identity_probes < 3) {
+          // The public interface has no key/type enumeration. Compare all
+          // documented Get overloads with an unset control, without writing
+          // either key or treating a readable value as a proven frame token.
+          bool alternate_readable = false;
+          const auto probe = [&]<typename T>(const char* key, const char* type, T value) {
+            const auto result = parameters->Get(key, &value);
+            line << ' ' << type << "=[result=0x" << std::hex << static_cast<uint32_t>(result) << std::dec;
+            if (NVSDK_NGX_SUCCEED(result)) {
+              if constexpr (std::is_pointer_v<T>) {
+                line << " nonnull=" << (value != nullptr);
+              } else {
+                line << " value=" << value;
+              }
+            }
+            line << ']';
+            return NVSDK_NGX_SUCCEED(result);
+          };
+          line << " identity_probe=" << ++identity_probes << "/3 frame_id_getters={";
+          for (const char* key : {NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID, "NRNexus.AbsentFrameIdentityControl"}) {
+            line << " key=" << key;
+            const bool readable_ull = probe(key, "ull", 0ull);
+            const bool readable_ui = probe(key, "uint", 0u);
+            const bool readable_i = probe(key, "int", 0);
+            const bool readable_f = probe(key, "float", 0.f);
+            const bool readable_d = probe(key, "double", 0.);
+            const bool readable_p = probe(key, "voidp", static_cast<void*>(nullptr));
+            const bool readable_11 = probe(key, "d3d11", static_cast<ID3D11Resource*>(nullptr));
+            const bool readable_12 = probe(key, "d3d12", static_cast<ID3D12Resource*>(nullptr));
+            if (std::string_view(key) == NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID) {
+              alternate_readable = readable_ull || readable_ui || readable_i || readable_f
+                  || readable_d || readable_p || readable_11 || readable_12;
+            }
+          }
+          line << " } frame_id_class="
+               << (NVSDK_NGX_SUCCEED(frame_result) ? "uint64_readable_semantics_unverified"
+                   : (alternate_readable ? "alternate_getter_readable_semantics_unverified"
+                                         : "unreadable_absence_or_type_unproven"));
+          line << " known_backbuffer_control={";
+          probe(NVSDK_NGX_DLSSG_Parameter_Backbuffer, "d3d12", static_cast<ID3D12Resource*>(nullptr));
+          probe(NVSDK_NGX_DLSSG_Parameter_Backbuffer, "voidp", static_cast<void*>(nullptr));
+          line << " }";
+        }
+        uint32_t index = 1;
+        const bool index_available = GetUIntIfPresent(parameters, NVSDK_NGX_DLSSG_Parameter_MultiFrameIndex, &index);
+        const auto plan = RequestedStagePlan();
+        line << " plan_valid=" << plan.valid << " mixed=" << plan.mixed << " passes=" << plan.pass_count
+             << " present_passes=" << plan.At(stage_plan::Stage::PRESENT).count
+             << " frame_id_available=" << NVSDK_NGX_SUCCEED(frame_result)
+             << " frame_id_nonzero=" << (frame != 0)
+             << " index_available=" << index_available << " index=" << index
+             << " no_game=" << GetUInt(parameters, NVSDK_NGX_DLSSG_Parameter_NotRenderingGameFrames);
+        auto* back = PreFgResource(parameters, NVSDK_NGX_DLSSG_Parameter_Backbuffer);
+        auto* hudless = PreFgResource(parameters, NVSDK_NGX_DLSSG_Parameter_HUDLess);
+        for (const auto& [name, key] : {std::pair{"back", NVSDK_NGX_DLSSG_Parameter_Backbuffer},
+                 {"hudless", NVSDK_NGX_DLSSG_Parameter_HUDLess}, {"ui", NVSDK_NGX_DLSSG_Parameter_UI},
+                 {"alpha", NVSDK_NGX_DLSSG_Parameter_UIAlpha}, {"depth", NVSDK_NGX_DLSSG_Parameter_Depth},
+                 {"motion", NVSDK_NGX_DLSSG_Parameter_MVecs}}) {
+          auto* resource = PreFgResource(parameters, key);
+          const auto desc = (resource != nullptr ? resource->GetDesc() : D3D12_RESOURCE_DESC{});
+          line << ' ' << name << "=[present=" << (resource != nullptr) << " size=" << desc.Width << 'x' << desc.Height
+               << " format=" << static_cast<uint32_t>(desc.Format) << " back_alias="
+               << (resource != nullptr && back != nullptr && renodx::utils::directx::SameNativeObject(resource, back))
+               << " hudless_alias=" << (resource != nullptr && hudless != nullptr
+                   && renodx::utils::directx::SameNativeObject(resource, hudless)) << ']';
+        }
+        for (uint32_t pass = 0; pass < 2; ++pass) {
+          const auto resolution = CurrentPassResolution(pass);
+          line << " pass" << pass + 1 << "=[follow=" << resolution.follow_input << " scale=" << resolution.scale << ']';
+        }
+        for (const char* key : {"DLSSG.MVecsSubrectBaseX", "DLSSG.MVecsSubrectBaseY",
+                 "DLSSG.MVecsSubrectWidth", "DLSSG.MVecsSubrectHeight",
+                 "DLSSG.DepthSubrectBaseX", "DLSSG.DepthSubrectBaseY"}) {
+          uint32_t value = 0;
+          const bool available = GetUIntIfPresent(parameters, key, &value);
+          line << ' ' << key << "=[available=" << available << " value=" << value << ']';
+        }
+        for (uint32_t role = 0; role < recordings.size(); ++role) {
+          const auto& record = recordings[role];
+          line << " plane" << role << "=[prepared=" << record.prepared << " output_ready=" << record.output_ready
+               << " model_invoked=" << record.model_invoked << " model_recorded=" << record.model_recorded
+               << " group_complete=" << record.group_complete << " model_pass_mask=" << record.model_pass_mask << ']';
+        }
+        line << " fg_handle=" << handle << " owner=" << owner
+             << " frame_id_get_result=" << static_cast<uint32_t>(frame_result)
+             << " frame_id_type=uint64"
+             << " guide_mode=" << present_guides.load()
+             << " queue_tracking=" << queue_tracking_active.load();
+        if (stream != nullptr && stream->native_pair_producer_marker != nullptr) {
+          std::vector<std::pair<FenceRef, uint64_t>> proofs;
+          const auto state = submission::UseSubmissionTokens(stream->native_pair_producer_marker, &proofs);
+          bool complete = !proofs.empty();
+          for (const auto& [fence, value] : proofs) {
+            const auto done = fence.fence->GetCompletedValue();
+            complete &= done != UINT64_MAX && done >= value;
+          }
+          line << " producer_state=" << static_cast<uint32_t>(state) << " receipts=" << proofs.size()
+               << " receipts_complete=" << complete << " cached=" << (stream->cached != nullptr)
+               << " replayed=" << stream->native_pair_replayed << " discarded=" << stream->native_pair_discarded;
+        } else {
+          line << " producer=unavailable";
+        }
+        // Frame IDs and recording generations advance every frame. Keep
+        // identity/contract/proof changes in the signature, but not counters.
+        const auto signature = line.str();
+        if (signature == last_signature) return;
+        last_signature = signature;
+        std::pair<uint64_t, uint64_t> recording{};
+        {
+          // Never create or advance a recording merely to explain a rejection.
+          std::lock_guard lock(submission::tracker_mutex);
+          const auto identity = submission::identity_by_pointer.find(list);
+          if (identity != submission::identity_by_pointer.end()) {
+            const auto state = submission::tracked_lists.find(identity->second);
+            if (state != submission::tracked_lists.end()) recording = {identity->second, state->second.current};
+          }
+        }
+        line << " frame_id=" << frame << " recording=" << recording.first << ':' << recording.second;
+        line << " gpu_execution=unverified log_budget=" << ++emitted << "/64";
+        LogPresent(reshade::log::level::info, line.str());
+      } catch (...) {
+        // Diagnostic allocation/logging must not change FG execution or unwind.
+      }
+    }
+  } diagnostic{.enabled = experimental_native_prefg_resolution.load(), .list = list,
+               .parameters = parameters, .handle = handle};
   if (backbuffer_replaced != nullptr) {
     *backbuffer_replaced = false;
   }
@@ -871,22 +1032,32 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
       }
     }
   } display_recording;
-  if (fg::xefg::OwnsStream() || !fg_service::Requested() || list == nullptr
-      || (native_fg_public_off.load(std::memory_order_acquire) && !fg::native_options::ObservesPresentDecisions())
-      || !queue_tracking_active.load(std::memory_order_acquire)) return nullptr;
+  diagnostic.reason = "xefg_owns_stream";
+  if (fg::xefg::OwnsStream()) return nullptr;
+  diagnostic.reason = "prefg_not_requested";
+  if (!fg_service::Requested()) return nullptr;
+  diagnostic.reason = "command_list_missing";
+  if (list == nullptr) return nullptr;
+  diagnostic.reason = "public_fg_off_without_present_decisions";
+  if (native_fg_public_off.load(std::memory_order_acquire) && !fg::native_options::ObservesPresentDecisions()) return nullptr;
+  diagnostic.reason = "queue_tracking_unavailable";
+  if (!queue_tracking_active.load(std::memory_order_acquire)) return nullptr;
   auto* backbuffer = PreFgResource(parameters, NVSDK_NGX_DLSSG_Parameter_Backbuffer);
   auto* hudless = PreFgResource(parameters, NVSDK_NGX_DLSSG_Parameter_HUDLess);
   auto* ui = PreFgResource(parameters, NVSDK_NGX_DLSSG_Parameter_UI);
+  diagnostic.reason = "backbuffer_missing";
   if (backbuffer == nullptr) return nullptr;
   // FG inputs are NPS and outputs are UAV. Restoring an aliased input would
   // also overwrite FG's output, so reject the unsupported contract up front.
   for (const char* key : {NVSDK_NGX_DLSSG_Parameter_OutputReal,
                           NVSDK_NGX_DLSSG_Parameter_OutputInterpolated}) {
+    diagnostic.reason = "fg_output_alias";
     if (auto* output = PreFgResource(parameters, key); output != nullptr
         && (output == backbuffer || renodx::utils::directx::SameNativeObject(output, backbuffer))) return nullptr;
   }
   const auto desc = backbuffer->GetDesc();
   ID3D12Device* device = nullptr;
+  diagnostic.reason = "list_device";
   if (FAILED(list->GetDevice(IID_PPV_ARGS(&device)))) return nullptr;
   auto device_release = std::unique_ptr<ID3D12Device, void (*)(ID3D12Device*)>(device,
       [](ID3D12Device* value) { value->Release(); });
@@ -897,11 +1068,14 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
         && (candidate.device_identity == identity || candidate.streamline_identity == identity)
         && candidate.backbuffer_width == desc.Width && candidate.backbuffer_height == desc.Height
         && ConcreteResourceFormat(candidate.backbuffer_format) == ConcreteResourceFormat(desc.Format)) {
+      diagnostic.reason = "owner_ambiguous";
       if (owner != nullptr) return nullptr;
       owner = &candidate;
     }
   }
+  diagnostic.reason = "owner_missing";
   if (owner == nullptr) return nullptr;
+  diagnostic.owner = owner;
   auto* current_depth = PreFgResource(parameters, NVSDK_NGX_DLSSG_Parameter_Depth);
   auto* current_motion = PreFgResource(parameters, NVSDK_NGX_DLSSG_Parameter_MVecs);
   const auto motion_desc = (current_motion != nullptr ? current_motion->GetDesc() : D3D12_RESOURCE_DESC{});
@@ -919,17 +1093,26 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
   if (NVSDK_NGX_FAILED(parameters->Get(NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID, &frame_id))) frame_id = 0;
   if (resolution_pair) {
     const auto source = created_feature_ids.find(handle);
+    diagnostic.reason = "fg_feature_unrecognized";
     if (handle == nullptr || source == created_feature_ids.end()
-        || source->second != NVSDK_NGX_Feature_FrameGeneration || frame_id == 0
-        || hudless != nullptr || ui != nullptr
-        || PreFgResource(parameters, NVSDK_NGX_DLSSG_Parameter_UIAlpha) != nullptr
-        || !current_guides || fg::xefg::Enabled()
-        || diagnostics::GuideMode(owner->prefg_target.diagnostic.guides,
-               present_guides.load()) == kPresentGuidesNever) return nullptr;
+        || source->second != NVSDK_NGX_Feature_FrameGeneration) return nullptr;
+    diagnostic.reason = "frame_id_uint64_unreadable_or_zero";
+    if (frame_id == 0) return nullptr;
+    diagnostic.reason = "single_backbuffer_requires_no_hudless_ui";
+    if (hudless != nullptr || ui != nullptr
+        || PreFgResource(parameters, NVSDK_NGX_DLSSG_Parameter_UIAlpha) != nullptr) return nullptr;
+    diagnostic.reason = "real_guides_unavailable";
+    if (!current_guides) return nullptr;
+    diagnostic.reason = "xefg_enabled";
+    if (fg::xefg::Enabled()) return nullptr;
+    diagnostic.reason = "guide_mode_never";
+    if (diagnostics::GuideMode(owner->prefg_target.diagnostic.guides,
+                             present_guides.load()) == kPresentGuidesNever) return nullptr;
     const uint32_t guide_width = GetUInt(parameters, NVSDK_NGX_DLSSG_Parameter_MVecsSubrectWidth,
                                         static_cast<uint32_t>(motion_desc.Width));
     const uint32_t guide_height = GetUInt(parameters, NVSDK_NGX_DLSSG_Parameter_MVecsSubrectHeight,
                                          motion_desc.Height);
+    diagnostic.reason = "guide_subrect_invalid";
     if (!SubrectFits(GetUInt(parameters, "DLSSG.MVecsSubrectBaseX"),
                     GetUInt(parameters, "DLSSG.MVecsSubrectBaseY"), guide_width, guide_height, motion_desc)
         || !SubrectFits(GetUInt(parameters, "DLSSG.DepthSubrectBaseX"),
@@ -952,11 +1135,13 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
   owner_resident_nr_handles.insert(owner->Handle(true));
   ComputeStateEnvelope envelope(list);
   envelope.StopCapture();
+  diagnostic.reason = "command_state_unproven";
   if (!envelope.CanInject()) return nullptr;
   // NR models belong to the matched output. A game FG feature may restart
   // on focus changes without changing the NR image contract.
   const auto context = (handle != nullptr ? reinterpret_cast<uintptr_t>(owner) : reinterpret_cast<uintptr_t>(parameters));
   auto& stream = fg_service::streams[{true, context}];
+  diagnostic.stream = &stream;
   if (stream.result == fg::Result::FAILED) {
     fg_service::Invalidate(&stream);
     stream.result = fg::Result::FAILED;
@@ -1006,6 +1191,7 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
     // producer completion; an empty/discarded recording is never production.
     if (stream.native_pair_replayed || stream.native_pair_discarded || proofs.size() > 1
         || (!same_recording && !completed_producer)) {
+      diagnostic.reason = "producer_discarded_replayed_or_unfinished";
       if (frame_id == stream.source_frame_id || (!proofs.empty() && !completed_producer)) return nullptr;
       fg_service::Invalidate(&stream);
     } else if (stream.cached != nullptr && frame_id == stream.source_frame_id
@@ -1021,6 +1207,7 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
                               stream.cached->original_backbuffer, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
       }
       fg_service::ResetNativeFrame(&stream);
+      diagnostic.reason = "cached_configuration_changed";
       return nullptr;
     }
   }
@@ -1045,6 +1232,7 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
       && stream.cached != nullptr && stream.result == fg::Result::PREPARED
       && stream.source_backbuffer == backbuffer && stream.source_hudless == hudless && stream.source_ui == ui;
   if (index > 1 || repeated_frame) {
+    diagnostic.reason = "mfg_cache_unavailable";
     if (stream.cached == nullptr && stream.result == fg::Result::PREPARED) {
       display_recording.result = fg::Result::PREPARED;
       return nullptr;
@@ -1064,13 +1252,16 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
       fg_service::ResetNativeFrame(&stream);
       stream.result = fg::Result::NOT_SERVED;
       native_fg_marker.store(nullptr, std::memory_order_release);
+      diagnostic.reason = "mfg_guides_withdrawn";
       return nullptr;
     }
   } else {
     // A failed or invalidated pair cannot become a second attempt on the same
     // game frame by changing its pass count or disabling the experiment.
+    diagnostic.reason = "frame_already_attempted_or_nonmonotonic";
     if (stream.native_pair_attempt_frame != 0 && frame_id <= stream.native_pair_attempt_frame) return nullptr;
     if (resolution_pair) {
+      diagnostic.reason = "first_index_not_one";
       if (index != 1) return nullptr;
       stream.native_pair_attempt_frame = frame_id;
     }
@@ -1149,6 +1340,7 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
     // the texture's presence alone does not justify one-model composition.
     const auto uir = native_fg_ui_recomposition.find(handle);
     const bool ui_recomposition = uir != native_fg_ui_recomposition.end() && uir->second;
+    diagnostic.reason = "private_surfaces_unavailable";
     if (!fg_service::PrepareSurfaces(&stream, slot, input,
             fg_service::NeedsNativeColorCoupling(input, parameters, ui_recomposition))) return nullptr;
     if (resolution_pair) {
@@ -1169,6 +1361,7 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
     target.native_prefg_resolution_pair = resolution_pair;
     const auto result = fg_service::Record(&stream, slot, list, input, target,
                                           &output_ready, &recordings, parameters, ui_recomposition);
+    diagnostic.recordings = recordings;
     // These commands belong to the game's list and cannot be rolled back.
     // Private colors preserve both game surfaces on any partial failure;
     // discontinuous model history is rebuilt before the next application frame.
@@ -1179,9 +1372,11 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
         || !experimental_native_prefg_resolution.load()
         || !same_resolutions(pair_resolutions, std::array{CurrentPassResolution(0), CurrentPassResolution(1)}))) {
       fg_service::Invalidate(&stream);
+      diagnostic.reason = "configuration_changed_during_record";
       return nullptr;
     }
     if (!output_ready) {
+      diagnostic.reason = (result == fg::Result::PREPARED ? "nr_group_warming_or_incomplete" : "nr_group_failed");
       if (result != fg::Result::PREPARED) fg_service::Invalidate(&stream);
       for (uint32_t i = 0; i < recordings.size(); ++i) {
         if (recordings[i].model_invoked) ResetPresentStreamHistory(&stream.roles[i]);
@@ -1235,6 +1430,7 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
                                       NVSDK_NGX_DLSSG_Parameter_UI, stream.cached->coupled_ui);
   }
   display_recording.prepared = true;
+  diagnostic.reason = (repeated_frame || index > 1 ? "mfg_cached_output_recorded" : "group_output_recorded");
   return (hudless != backbuffer ? hudless : nullptr);
 }
 

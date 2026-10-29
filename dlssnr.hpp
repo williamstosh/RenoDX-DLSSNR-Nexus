@@ -1930,6 +1930,7 @@ inline constexpr uint32_t kHookRender = 1;
 inline constexpr uint32_t kHookPresent = 2;
 inline std::atomic_uint32_t hook_point = defaults::kHookPoint;
 inline std::atomic_bool experimental_present_chain{false};
+// Retained research only: real-frame identity / replay / UI consistency are BLOCKED.
 inline std::atomic_bool experimental_native_prefg_resolution{false};
 inline std::atomic_bool mixed_present_fg_seen{false};
 inline std::atomic_uint32_t auto_fg_fallback = defaults::kAutoFgFallback;
@@ -2988,7 +2989,7 @@ inline uint64_t cost_seen_total_us = 0;
 // off for the session with one line - the cost stays unmeasured, NR runs as
 // before - and profiling keeps trying, as it always has.
 inline bool BeginChainTimers(ID3D12GraphicsCommandList* command_list, ID3D12Device* device,
-                             const char* path, uint32_t width, uint32_t height) {
+                             const char* path, uint32_t width, uint32_t height, const stage_plan::Group& group) {
   const bool profiling = gpu_timers_enabled.load(std::memory_order_relaxed);
   const int64_t now_ns = SteadyNowNs();
   const uint32_t stage = (std::strcmp(path, "preSR") == 0 ? 0u
@@ -3000,8 +3001,8 @@ inline bool BeginChainTimers(ID3D12GraphicsCommandList* command_list, ID3D12Devi
   }
   cost_sample_due_ns = now_ns + kCostSampleNs;
   stage_cost_sample_due_ns[stage] = cost_sample_due_ns;
-  if (gpu_timers::Begin(command_list, device, path, width, height)) return true;
-  if (!profiling && !cost_meter_unavailable) {
+  if (gpu_timers::Begin(command_list, device, path, width, height, group.begin, group.count)) return true;
+  if (!profiling && !cost_meter_unavailable && gpu_timers::internal::heap == nullptr) {
     cost_meter_unavailable = true;
     Log(reshade::log::level::warning,
         "NR cost meter: GPU timestamps could not be set up on this device, so the"
@@ -4769,6 +4770,16 @@ inline void ReleaseRetiredNrFeature(const RetiredNrFeature& retired) {
 // `tracker[... late_leases=N]`.
 inline uint64_t retired_late_leases = 0;
 
+inline void PruneCompletedSubmissionUses() {
+  // Preserve readback provenance even when the user keeps NR worksets alive.
+  // The screenshot state lock must be taken before tracker_mutex.
+  screenshot::PreserveStageSubmissionProofs();
+  submission::PruneCompletedGenerations([](const void* marker, const auto& receipts) {
+    PreserveNativePreFgProof(marker, receipts);
+    gpu_timers::PreserveSubmissionProof(marker, receipts);
+  });
+}
+
 // Requires runtime_mutex. Releases only entries with a positive completion
 // proof: exact submission-use proofs where the queue hook was live (issue 01),
 // the every-queue lease otherwise.  An entry retired while no queue fence
@@ -4781,12 +4792,7 @@ inline void DrainRetiredResources(bool nr_release_allowed) {
     }
     return true;
   });
-  // Observe copy receipts before pruning; callbacks under tracker_mutex must
-  // not take screenshot's state lock in the reverse order.
-  screenshot::PreserveStageSubmissionProofs();
-  // Advance the exact proofs first: drop closed generations whose
-  // submissions all completed.
-  submission::PruneCompletedGenerations(PreserveNativePreFgProof);
+  PruneCompletedSubmissionUses();
   // A removed device will never execute the retired work, so releasing is
   // safe - but that must be diagnosed, not mistaken for a proven completion.
   static std::atomic<bool> logged_device_removal{false};
@@ -10700,7 +10706,7 @@ inline bool ProcessInline(
   // Per-stage GPU timestamps (NRGpuTimers, NRCostMeter): begin the frame
   // segment before the copy-in so the copies are inside the measured total.
   const bool timers_active = BeginChainTimers(
-      command_list, device, present != nullptr ? "present" : "after", width, height);
+      command_list, device, present != nullptr ? "present" : "after", width, height, group);
   // The state the output rests in: UAV for a DLSS output (guide 3.4), PRESENT
   // for a back buffer at the present.
   const D3D12_RESOURCE_STATES output_rest =
@@ -11137,6 +11143,8 @@ inline bool ProcessInline(
       }
     }
     if (timers_active) {
+      gpu_timers::SetPass(pass, group.begin + pass, feature.slots[pass].nr_preset,
+                          nr_input_width, nr_input_height, feature_out_width, feature_out_height);
       gpu_timers::Mark(
           command_list, gpu_timers::PassEncodeStart(pass));
     }
@@ -12465,7 +12473,7 @@ inline bool ProcessInlinePreSR(
   // records nothing before this point (no copy-in; the bypass return above
   // never started a segment), so this is the frame-start marker for both HDR
   // and SDR.
-  const bool timers_active = BeginChainTimers(command_list, device, "preSR", width, height);
+  const bool timers_active = BeginChainTimers(command_list, device, "preSR", width, height, group);
 
   if (res.hdr_mode != 0) {
     // v6 linearize: the game's own color (SRV by the NGX contract, same
@@ -12769,6 +12777,8 @@ inline bool ProcessInlinePreSR(
       }
     }
     if (timers_active) {
+      gpu_timers::SetPass(pass, group.begin + pass, feature.slots[pass].nr_preset,
+                          nr_input_width, nr_input_height, nr_input_width, nr_input_height);
       gpu_timers::Mark(
           command_list, gpu_timers::PassEncodeStart(pass));
     }
@@ -18986,6 +18996,18 @@ inline void EmitHealthSummary() {
 // the window; the window out once it is kCostWindowNs old.  A window needs 8
 // presents to be paced, as the health ledger's windows do.
 inline void TickNrCost(int64_t now_ns, double interval_ms) {
+  uint32_t recent_stages = 0;
+  for (const auto& timing : gpu_timers::stage_stats) {
+    recent_stages += timing.valid && now_ns - timing.measured_ns <= gpu_timers::internal::kSampleAgeNs;
+  }
+  // The legacy FPS estimate assumes one chain on one stage. Do not carry a
+  // stale value forward or turn separate stage/queue spans into frame latency.
+  const bool comparable = recent_stages == 1 && !RequestedStagePlan().mixed;
+  if (!comparable) {
+    cost_chain_ms = 0;
+    nr_cost_gpu_ms.store(0.f, std::memory_order_relaxed);
+    nr_cost_present_ms.store(0.f, std::memory_order_relaxed);
+  }
   if (gpu_timers::published_segments != cost_seen_published) {
     const uint64_t samples = gpu_timers::stage_published[0] + gpu_timers::stage_published[1]
         + gpu_timers::stage_published[2];
@@ -19006,7 +19028,7 @@ inline void TickNrCost(int64_t now_ns, double interval_ms) {
   const uint64_t nr_evals = evals - cost_window.start_evals;
   const uint64_t sources = SourceSuccessfulEvaluations();
   const uint64_t nr_sources = sources - cost_window.start_source_evals;
-  if (cost_window.samples != 0) cost_chain_ms = cost_window.chain_ms / cost_window.samples;
+  if (comparable && cost_window.samples != 0) cost_chain_ms = cost_window.chain_ms / cost_window.samples;
   if (nr_evals == 0) cost_chain_ms = 0.0;
   const bool paced = cost_window.start_ns != 0 && cost_window.presents >= 8;
   nr_cost_frame_ms.store(paced ? static_cast<float>(cost_window.frame_ms / cost_window.presents)
@@ -20520,6 +20542,8 @@ inline void RunLifecycleTick(int64_t present_ns, bool from_present) {
             || disable_release_mode.load(std::memory_order_relaxed) == 0u)) {
       RetireSupersededWorksets(SteadyNowNs());
       DrainRetiredResources(retirement_turn.has_value() && retirement_turn->owns());
+    } else {
+      PruneCompletedSubmissionUses();
     }
     gpu_timers::Poll(queue_tracking_active.load(), gpu_timers_enabled.load());
     norm_trace::Poll(queue_tracking_active.load());
@@ -23820,7 +23844,9 @@ inline void DrawSectionDiagnosticsRaw() {
   }
   {
     RuntimeLock lock(runtime_mutex);
+    ImGui::TextWrapped("Pre-FG independent-resolution pair: BLOCKED / NO-GO; retained research, default Off. Render -> Upscaled + FG compatibility is separate.");
     ImGui::TextUnformatted("NR stages: counters are session totals; pass range, size and model requests are last observed.");
+    ImGui::TextWrapped("GPU samples: up to 4 matching samples, display refresh 0.5s. Each StageGroup is separate; these spans are not whole-frame latency or CPU wait.");
     for (size_t stage = 0; stage < stage_telemetry.size(); ++stage) {
       const auto& observed = stage_telemetry[stage];
       const char* name = stage_plan::Name(static_cast<stage_plan::Stage>(stage));
@@ -23837,7 +23863,7 @@ inline void DrawSectionDiagnosticsRaw() {
                     observed.pass_begin, observed.pass_count, observed.width, observed.height);
         for (uint32_t pass = observed.pass_begin; pass < observed.pass_begin + observed.pass_count; ++pass) {
           const auto& resolution = observed.pass_resolutions[pass];
-          ImGui::Text("  Pass %u work: requested=%ux%u effective=%ux%u model_recorded=%d GPU=unverified",
+          ImGui::Text("  Recorded Pass %u: requested=%ux%u effective=%ux%u model_recorded=%d (separate GPU sample below)",
                       pass + 1, resolution.requested_width, resolution.requested_height,
                       resolution.effective_width, resolution.effective_height, resolution.model_recorded);
         }
@@ -23848,15 +23874,33 @@ inline void DrawSectionDiagnosticsRaw() {
       const auto& timing = gpu_timers::stage_stats[stage];
       ImGui::Text("  GPU samples=%llu", static_cast<unsigned long long>(gpu_timers::stage_published[stage]));
       if (timing.valid) {
-        ImGui::Text("  Last GPU sample [%ux%u]: total %.2fms model %.2fms overhead %.2fms",
+        ImGui::Text("  StageGroup [%ux%u]: total %.3fms NGX %.3fms non-model %.3fms",
                     timing.width, timing.height, timing.total_us / 1000.f,
                     timing.eval_us / 1000.f, timing.own_us / 1000.f);
+        ImGui::Text("  GPU-complete samples in average: %u; Look is included in Resolve", timing.samples);
+        for (const auto& pass : timing.passes) {
+          if (pass.id == UINT32_MAX) continue;
+          if (pass.state != gpu_timers::SampleState::VALID) {
+            ImGui::TextWrapped("  Pass %u: %s", pass.id + 1, gpu_timers::StateText(pass.state));
+            continue;
+          }
+          ImGui::TextWrapped("  Pass %u / %s: %ux%u -> %ux%u / request %s",
+                      pass.id + 1, name, pass.width, pass.height, pass.output_width, pass.output_height,
+                      nr_model::PresetName(pass.model));
+          ImGui::TextWrapped("    GPU ms: NGX %.3f | Encode %.3f | Resolve %.3f | span %.3f",
+                      pass.eval_us / 1000.f, pass.encode_us / 1000.f, pass.resolve_us / 1000.f,
+                      pass.total_us / 1000.f);
+          if (pass.look_measured) {
+            ImGui::Text("    Look %.3f ms (inside Resolve)", pass.look_us / 1000.f);
+          } else {
+            ImGui::TextUnformatted("    Look: not executed");
+          }
+        }
       } else {
-        ImGui::TextUnformatted("  GPU timing: not measured");
+        ImGui::TextWrapped("  GPU timing: %s", gpu_timers::StateText(timing.state));
       }
     }
-    if (gpu_timers::stats.valid) {
-      const gpu_timers::Stats& t = gpu_timers::stats;
+    if (const auto& t = gpu_timers::stage_stats[gpu_timers::StageIndex(gpu_timers::stats.path)]; gpu_timers::stats.valid && t.valid) {
       ImGui::Text(
           "GPU stage timings [%s %ux%u]: total %.2fms, model %.2fms, own"
           " overhead %.2fms",
@@ -24425,7 +24469,9 @@ inline void DrawDiagnostics(const NrVerdict& verdict) {
     float gpu_ms = 0.f;
     {
       RuntimeLock lock(runtime_mutex);
-      if (gpu_timers::stats.valid) gpu_ms = gpu_timers::stats.total_us / 1000.f;
+      if (const auto& t = gpu_timers::stage_stats[gpu_timers::StageIndex(gpu_timers::stats.path)]; gpu_timers::stats.valid && t.valid) {
+        gpu_ms = t.total_us / 1000.f;
+      }
     }
     ui::RowLabel(ui::text::kLastFrame);
     if (result == NVSDK_NGX_Result_Success) {
