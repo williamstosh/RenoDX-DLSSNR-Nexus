@@ -78,6 +78,44 @@ inline std::optional<presets::Document> share_request;
 enum class SlotTask { NONE, RENAME, COPY, IMPORT, EXPORT, CLEAR, RESTORE };
 inline SlotTask slot_task = SlotTask::NONE;
 inline int task_index = -1;
+struct SlotAnchor {
+  ImVec2 minimum;
+  ImVec2 maximum;
+  ImVec2 menu_minimum;
+  ImVec2 menu_maximum;
+  bool valid = false;
+};
+inline SlotAnchor slot_anchor;
+struct SlotMenuBounds {
+  ImVec2 position;
+  ImVec2 size;
+};
+// Supplied by the overlay before entering its scrolling children.
+inline SlotMenuBounds slot_menu_bounds;
+
+inline ImVec2 SlotWindowPosition(const SlotAnchor& anchor, ImVec2 size) {
+  // The pinned ReShade ImGui table exposes one overlay surface, not viewport getters.
+  const float gap = ImGui::GetStyle().ItemSpacing.x;
+  const ImVec2 minimum(0.f, 0.f);
+  const auto maximum = ImGui::GetIO().DisplaySize;
+  ImVec2 position(anchor.maximum.x + gap, anchor.minimum.y);
+  const float right = maximum.x - anchor.menu_maximum.x - gap;
+  const float left = anchor.menu_minimum.x - minimum.x - gap;
+  if (right >= size.x || left >= size.x) {
+    position.x = (right >= size.x && (left < size.x
+                      || anchor.menu_maximum.x - anchor.maximum.x <= anchor.minimum.x - anchor.menu_minimum.x)
+                      ? anchor.menu_maximum.x + gap
+                      : anchor.menu_minimum.x - gap - size.x);
+  } else {
+    position.x = anchor.minimum.x;
+    position.y = (anchor.maximum.y + gap + size.y <= maximum.y
+                      ? anchor.maximum.y + gap
+                      : anchor.minimum.y - gap - size.y);
+  }
+  position.x = std::clamp(position.x, minimum.x, (std::max)(minimum.x, maximum.x - size.x));
+  position.y = std::clamp(position.y, minimum.y, (std::max)(minimum.y, maximum.y - size.y));
+  return position;
+}
 
 enum class ResetPhase { NONE, FLUSH, STORE, ROLLBACK };
 struct ResetTransaction {
@@ -1152,19 +1190,33 @@ inline std::string SlotLabel(int index, bool compact = false) {
 
 inline void DrawSlotContext(int index) {
   const bool right_click = ImGui::IsItemClicked(ImGuiMouseButton_Right);
+  if (right_click) {
+    const auto menu = (slot_menu_bounds.size.x > 0.f ? slot_menu_bounds.position : ImGui::GetWindowPos());
+    const auto size = (slot_menu_bounds.size.x > 0.f ? slot_menu_bounds.size : ImGui::GetWindowSize());
+    slot_anchor = {.minimum = ImGui::GetItemRectMin(),
+                   .maximum = ImGui::GetItemRectMax(),
+                   .menu_minimum = menu,
+                   .menu_maximum = ImVec2(menu.x + size.x, menu.y + size.y),
+                   .valid = true};
+  }
   std::string unavailable;
   if (loaded && state.slots[index].populated && !SlotAvailable(index, &unavailable)) {
     ui::ItemTooltip("%s\n%s", ui::Tr("Unavailable in current environment"), unavailable.c_str());
   } else {
-  ui::ItemTooltip("%s\n%s\n%s%s%s", SlotLabel(index).c_str(),
+    const char* recipes[] = {
+        "Official template: 1 Render pass, model B, scale 0.67, Default style.",
+        "Official template: 1 Upscaled pass, model A, scale 0.67, Default style.",
+        "Official template: Render B (Cinematic), then Upscaled A (Default); both at scale 0.67."};
+    ui::ItemTooltip("%s\n%s\n%s%s%s%s%s", SlotLabel(index).c_str(),
                   ui::Tr(state.slots[index].populated
                              ? "Left-click to apply; right-click to manage."
                              : "Left-click to create; right-click to manage."),
                   ui::Tr(index < 3 && !state.slots[index].overrides.empty() &&
                                  !dirty && !Busy() && !save_failed
                              ? "Personal changes have been automatically saved."
-                             : "Saved settings do not confirm NR execution. "
-                               "See Diagnostics for runtime status."),
+                             : SaveStatus()),
+                  (index < 3 ? "\n" : ""),
+                  (index < 3 ? ui::Tr(recipes[index]) : ""),
                   (index < 3 && data::DEVELOPMENT_CANDIDATE ? "\n" : ""),
                   (index < 3 && data::DEVELOPMENT_CANDIDATE ? ui::Tr("Development candidate") : ""));
   }
@@ -1179,6 +1231,7 @@ inline void DrawSlotContext(int index) {
   ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.f),
       ImVec2(width, (std::max)(1.f, display.y - margin * 2.f)));
   if (ImGui::BeginPopup("slot_context")) {
+    ImGui::SetWindowPos(SlotWindowPosition(slot_anchor, ImGui::GetWindowSize()));
     DrawSlotMenu(index);
     ImGui::EndPopup();
   }
@@ -1450,8 +1503,7 @@ inline bool DrawQuick() {
     ImGui::TextWrapped(
         "%s", ui::Tr(notice == "Profile applied. Runtime execution is pending "
                                "confirmation."
-                         ? "Saved settings do not confirm NR execution. See "
-                           "Diagnostics for runtime status."
+                         ? SaveStatus()
                          : notice.c_str()));
   }
   if (important) {

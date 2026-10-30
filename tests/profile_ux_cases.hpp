@@ -37,6 +37,23 @@
   frame(); frame();
   check(find("##nr_enable").rect.Min.y < find("open_presets").rect.Min.y,
         "NR main switch precedes the entire profile area");
+  const auto profile_hover = [&](const char* label, const char* recipe) {
+    const auto id = find(label).id;
+    for (int i = 0; i < 40; ++i) {
+      const auto center = items.at(id).rect.GetCenter();
+      io.AddMousePosEvent(center.x, center.y);
+      frame();
+    }
+    check(std::ranges::any_of(tooltip_text, [&](const auto& text) {
+      return text.find(recipe) != std::string::npos;
+    }), "official tooltip describes the actual template recipe");
+    check(std::ranges::none_of(tooltip_text, [](const auto& text) {
+      return text.find("Saved settings do not confirm NR execution.") != std::string::npos;
+    }), "ordinary Slot tooltip leaves runtime evidence to the status area");
+  };
+  profile_hover("NR Lite", "Official template: 1 Render pass, model B, scale 0.67, Default style.");
+  profile_hover("NR Balanced", "Official template: 1 Upscaled pass, model A, scale 0.67, Default style.");
+  profile_hover("NR Max", "Official template: Render B (Cinematic), then Upscaled A (Default); both at scale 0.67.");
   const auto before_empty = profile::Snapshot();
   click(custom_button(3));
   capture("ux-create-custom-slot");
@@ -157,6 +174,11 @@
   frame();
   check(find("confirm_slot_operation").disabled,
         "clearing requires explicit confirmation");
+  const auto* clear_window = find("confirm_slot_operation").window;
+  check(std::strstr(clear_window->Name, "###nr_slot_operation_clear") != nullptr
+            && std::fabs(clear_window->Rect().GetCenter().x - io.DisplaySize.x * 0.5f) <= 1.f
+            && std::fabs(clear_window->Rect().GetCenter().y - io.DisplaySize.y * 0.5f) <= 1.f,
+        "dangerous clear confirmation has a separate centered modal identity");
   click(find("Confirm replacing or clearing this slot"));
   click(find("confirm_slot_operation"));
   settle_profile_ux();
@@ -295,6 +317,163 @@
   check(std::string(profile::SaveStatus()) != "Saved", "saving failures cannot be presented as saved");
   profile::save_failed = false;
   runtime::enabled = original_enabled;
+  // Exercise actual mouse input with a movable host menu, rather than assigning
+  // a popup's position from the fixture and masking production placement.
+  {
+    ImVec2 menu_position(20.f, 40.f);
+    ImVec2 menu_size(650.f, 500.f);
+    const auto placement_frame = [&]() {
+      items.clear();
+      rendered_text.clear();
+      tooltip_text.clear();
+      ImGui::GetStyle().FontSizeBase = font_size;
+      ImGui::NewFrame();
+      runtime::RefreshUiLanguage();
+      ImGui::SetNextWindowPos(menu_position);
+      ImGui::SetNextWindowSize(menu_size);
+      ImGui::Begin("Slot placement fixture", nullptr, ImGuiWindowFlags_NoSavedSettings);
+      profile::slot_menu_bounds = {.position = ImGui::GetWindowPos(), .size = ImGui::GetWindowSize()};
+      {
+        ui::StyleScope theme;
+        ui::PushPanelTheme(theme);
+        ImGui::BeginChild("##slot_settings", ImVec2(0.f, 0.f));
+        manager::DrawEntry();
+        ImGui::EndChild();
+      }
+      ImGui::End();
+      ImGui::Render();
+    };
+    const auto placement_click = [&](ImVec2 position, int button = 0) {
+      io.AddMousePosEvent(position.x, position.y); placement_frame();
+      io.AddMouseButtonEvent(button, true); placement_frame();
+      io.AddMouseButtonEvent(button, false); placement_frame(); placement_frame();
+    };
+    const auto bounded = [&](const ImGuiWindow* window) {
+      check(window->Pos.x >= 0.f && window->Pos.y >= 0.f
+                && window->Pos.x + window->Size.x <= io.DisplaySize.x + 1.f
+                && window->Pos.y + window->Size.y <= io.DisplaySize.y + 1.f,
+            "Slot menus and tasks stay within the display after auto-fit");
+    };
+    const auto open_context = [&](int slot = 3) {
+      std::printf("Slot placement: language=%d menu=%.0f,%.0f display=%.0fx%.0f slot=%d\n",
+                  runtime::ui_language_choice.load(), menu_position.x, menu_position.y,
+                  io.DisplaySize.x, io.DisplaySize.y, slot);
+      placement_click(custom_button(slot).rect.GetCenter(), 1);
+      const auto* context = find("Rename slot").window;
+      bounded(context);
+      check(!context->Rect().Overlaps(ImRect(profile::slot_anchor.minimum, profile::slot_anchor.maximum)),
+            "context placement leaves its source Slot visible");
+      if (io.DisplaySize.x >= 1800.f) {
+        check(context->Pos.x >= menu_position.x + menu_size.x
+                  || context->Pos.x + context->Size.x <= menu_position.x,
+              "context menu uses the free side outside the host menu");
+        check(std::fabs(context->Pos.y - profile::slot_anchor.minimum.y) <= 1.f,
+              "context menu remains aligned with the original Slot, not the mouse");
+      }
+    };
+    const auto settings_before_placement = profile::Snapshot();
+    const auto slots_before_placement = profile::data::internal::Encode(profile::state);
+    const int active_before_placement = profile::active;
+    const auto original_validator = profile::capability_validator;
+    profile::capability_validator = [](const Json&, std::string* error) {
+      if (error != nullptr) {
+        *error = "Synthetic unavailable Slot reason";
+      }
+      return false;
+    };
+    io.DisplaySize = ImVec2(1800.f, 1100.f);
+    runtime::ui_language_choice = 1;
+    placement_frame(); placement_frame();
+    check(find("NR Lite").disabled, "unavailable profile remains disabled");
+    const auto lite_id = find("NR Lite").id;
+    for (int i = 0; i < 40; ++i) {
+      const auto center = items.at(lite_id).rect.GetCenter();
+      io.AddMousePosEvent(center.x, center.y);
+      placement_frame();
+    }
+    check(std::ranges::any_of(tooltip_text, [](const auto& text) {
+      return text.find("Synthetic unavailable Slot reason") != std::string::npos;
+    }), "disabled Slot tooltip preserves its compatibility reason");
+    profile::capability_validator = original_validator;
+    placement_frame(); placement_frame();
+    for (const int language : {1, 4, 14}) {
+      runtime::ui_language_choice = language;
+      for (const auto position : {ImVec2(20.f, 40.f), ImVec2(1100.f, 40.f),
+                                  ImVec2(20.f, 570.f), ImVec2(1100.f, 570.f)}) {
+        io.DisplaySize = ImVec2(1800.f, 1100.f);
+        menu_position = position;
+        manager::slot_geometry[static_cast<int>(profile::SlotTask::RENAME)] = {};
+        placement_frame(); placement_frame();
+        open_context();
+        placement_click(find("Rename slot").rect.GetCenter());
+        auto* task_window = find("rename_slot").window;
+        bounded(task_window);
+        check((task_window->Flags & ImGuiWindowFlags_Modal) != 0
+                  && std::strstr(task_window->Name, "###nr_slot_operation_rename") != nullptr,
+              "rename retains the existing task lifecycle with its own stable window identity");
+        check(task_window->Pos.x >= menu_position.x + menu_size.x
+                  || task_window->Pos.x + task_window->Size.x <= menu_position.x,
+              "first rename task uses the original Slot's free menu side");
+        placement_click(find("close_slot_operation").rect.GetCenter());
+      }
+    }
+    runtime::ui_language_choice = 1;
+    menu_position = ImVec2(600.f, 40.f);
+    placement_frame(); placement_frame();
+    open_context(5);
+    check(find("Rename slot").window->Pos.x >= menu_position.x + menu_size.x,
+          "when both sides fit, the rightmost Slot uses the nearer right side");
+    placement_click(ImVec2(menu_position.x + 20.f, menu_position.y + font_size * 0.5f));
+    check(ImGui::GetCurrentContext()->OpenPopupStack.empty(), "clicking outside dismisses the context menu");
+    menu_position = ImVec2(20.f, 40.f);
+    placement_frame(); placement_frame();
+    open_context();
+    placement_click(find("Rename slot").rect.GetCenter());
+    auto* rename_window = find("rename_slot").window;
+    const auto before_drag = rename_window->Pos;
+    const ImVec2 title(before_drag.x + rename_window->Size.x * 0.5f, before_drag.y + font_size * 0.5f);
+    io.AddMousePosEvent(title.x, title.y); placement_frame();
+    io.AddMouseButtonEvent(0, true); placement_frame();
+    io.AddMousePosEvent(title.x + 35.f, title.y + 45.f); placement_frame();
+    io.AddMouseButtonEvent(0, false); placement_frame(); placement_frame();
+    const auto moved = rename_window->Pos;
+    check(moved.x > before_drag.x + 20.f && moved.y > before_drag.y + 30.f,
+          "Slot task supports a real mouse title drag");
+    placement_click(find("close_slot_operation").rect.GetCenter());
+    menu_position = ImVec2(1100.f, 40.f);
+    placement_frame(); placement_frame();
+    open_context();
+    placement_click(find("Rename slot").rect.GetCenter());
+    check(std::fabs(rename_window->Pos.x - moved.x) <= 1.f
+              && std::fabs(rename_window->Pos.y - moved.y) <= 1.f,
+          "reopening rename preserves the player's moved position");
+    placement_click(find("close_slot_operation").rect.GetCenter());
+    manager::slot_geometry[static_cast<int>(profile::SlotTask::EXPORT)] = {};
+    open_context();
+    placement_click(find("Export profile").rect.GetCenter());
+    auto* export_window = find("choose_export").window;
+    bounded(export_window);
+    check(std::strstr(export_window->Name, "###nr_slot_operation_export") != nullptr
+              && export_window->Pos.x + export_window->Size.x <= menu_position.x,
+          "export has an independent first Slot anchor, unaffected by rename memory");
+    placement_click(find("close_slot_operation").rect.GetCenter());
+    for (const float scale : {18.f, 26.f}) {
+      font_size = scale;
+      io.DisplaySize = ImVec2(700.f, 720.f);
+      menu_position = ImVec2(35.f, 180.f);
+      placement_frame(); placement_frame();
+      open_context();
+      placement_click(find("Rename slot").rect.GetCenter());
+      bounded(find("rename_slot").window);
+      placement_click(find("close_slot_operation").rect.GetCenter());
+    }
+    check(profile::Snapshot() == settings_before_placement
+              && profile::data::internal::Encode(profile::state) == slots_before_placement
+              && profile::active == active_before_placement,
+          "placement, dragging and task cancellation preserve Slot data and association");
+    font_size = 18.f;
+    profile::slot_menu_bounds = {};
+  }
   profile::active = -1;
   profile::state.selected.clear();
   std::string error;
@@ -308,5 +487,5 @@
   panel_height = 1100.f;
   io.DisplaySize = ImVec2(panel_width, panel_height);
   frame(); frame();
-  std::puts("profile UX: switch order, local empty creation/cancel, responsive identities, restore/cancel/undo and save-status cases passed");
+  std::puts("profile UX: Slot mouse/menu/task placement, languages/edges/drag memory, recipes/compatibility, data/undo/save-status cases passed");
 }

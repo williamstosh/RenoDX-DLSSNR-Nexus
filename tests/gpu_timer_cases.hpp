@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "gpu_completion_cases.hpp"
+
 // Included after the native WARP host and GPU-copy model stand-ins.
 namespace gpu_timer_cases {
 namespace addon = renodx::addons::dlss5;
@@ -72,6 +74,7 @@ int Run() {
       gpu.uploads.clear();
     };
     finish();
+    gpu_completion_cases::Run(gpu, finish);
 
     Check(timers::Begin(gpu.list.Get(), gpu.device.Get(), "preSR", 16, 16), "start-only timer begin");
     const auto start_only = timers::internal::current.idx;

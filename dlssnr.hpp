@@ -2012,11 +2012,50 @@ inline std::shared_mutex profile_keys_mutex;
 inline std::array<ui::ProfileKeyEdge, 2> profile_key_edges;
 // Shared by the gameplay and ReShade input readers.
 inline std::atomic_bool hud_overlay_open{false};
+inline std::atomic_uint32_t monitor_hotkey{VK_F11};
+inline std::atomic_uint32_t host_overlay_hotkey{VK_HOME};
+inline std::atomic_bool monitor_requested{false};
+// Borrowed from the UI thread's copied snapshot, whose storage lasts for the
+// thread. Resolution editors do not acquire the runtime lock while drawing.
+inline thread_local const ui::MonitorInputs* ui_monitor_view = nullptr;
+inline std::atomic_bool monitor_keep_visible{true};
+inline std::atomic_uint64_t monitor_observation_epoch{0};
+inline std::atomic_uint64_t monitor_settings_epoch{0};
+inline std::atomic<reshade::api::effect_runtime*> monitor_runtime{nullptr};
+inline std::mutex monitor_key_mutex;
+inline ui::ProfileKeyEdge monitor_key_edge;
+inline void DrawIndependentMonitor(reshade::api::effect_runtime* runtime, bool menu = false);
+inline ui::StatusCard MonitorDisplayCard();
+
+inline bool MonitorKeyConflict(uint32_t key) {
+  return key == host_overlay_hotkey.load() || key == VK_HOME
+      || key == toggle_hotkey.load() || key == screenshot_hotkey.load()
+      || key == official_cycle_key.load() || key == custom_cycle_key.load();
+}
+
+inline void ToggleMonitor() {
+  bool previous = monitor_requested.load();
+  while (!monitor_requested.compare_exchange_weak(previous, !previous)) {}
+  monitor_observation_epoch.fetch_add(1);
+}
+
+inline void PollMonitorKey(bool down, bool permitted, bool overlay_input) {
+  std::scoped_lock lock(monitor_key_mutex);
+  const auto binding = monitor_hotkey.load();
+  if (!permitted || MonitorKeyConflict(binding)) {
+    monitor_key_edge.Poll(binding, true, down, false, overlay_input);
+    monitor_key_edge.awaiting_context_release = true;
+    return;
+  }
+  if (monitor_key_edge.Poll(binding, true, down, true, overlay_input)) {
+    ToggleMonitor();
+  }
+}
 
 inline bool ProfileKeyConflict(std::size_t action) {
-  return ui::HotkeyConflict({toggle_hotkey.load(), screenshot_hotkey.load(),
-      official_cycle_key.load(), custom_cycle_key.load()},
-      {true, true, official_cycle_enabled.load(), custom_cycle_enabled.load()}, action);
+  return ui::HotkeyConflict<5>({toggle_hotkey.load(), screenshot_hotkey.load(),
+      official_cycle_key.load(), custom_cycle_key.load(), monitor_hotkey.load()},
+      {true, true, official_cycle_enabled.load(), custom_cycle_enabled.load(), true}, action);
 }
 
 inline void PollProfileKeys(bool official_down, bool custom_down, bool permitted) {
@@ -3015,37 +3054,37 @@ inline double cost_chain_ms = 0.0;
 inline uint64_t cost_seen_published = 0;
 inline uint64_t cost_seen_total_us = 0;
 
-// Starts this chain's stage timers when it is timed (evaluate hooks,
-// runtime_mutex): every chain under NRGpuTimers, one per kCostSampleNs under
-// NRCostMeter.  A device whose timestamps cannot be set up turns the meter
-// off for the session with one line - the cost stays unmeasured, NR runs as
-// before - and profiling keeps trying, as it always has.
+// Sample each Stage every kCostSampleNs, or every chain while profiling.
+// Completion proof shares the recording tracker even when optional timing is
+// off or unavailable; it issues no GPU queries and publishes no durations.
 inline bool BeginChainTimers(ID3D12GraphicsCommandList* command_list, ID3D12Device* device,
                              const char* path, uint32_t width, uint32_t height, const stage_plan::Group& group) {
   const bool profiling = gpu_timers_enabled.load(std::memory_order_relaxed);
   const int64_t now_ns = SteadyNowNs();
   const uint32_t stage = (std::strcmp(path, "preSR") == 0 ? 0u
                           : (std::strcmp(path, "present") == 0 ? 2u : 1u));
-  if (!profiling
-      && ((!cost_meter_enabled.load(std::memory_order_relaxed) && !gpu_timers::ComparisonActive()) || cost_meter_unavailable
-          || now_ns < stage_cost_sample_due_ns[stage])) {
-    return false;
+  const bool sample_due = now_ns >= stage_cost_sample_due_ns[stage];
+  if (!profiling && !sample_due) return false;
+  const bool measure = profiling || (!cost_meter_unavailable
+      && (cost_meter_enabled.load(std::memory_order_relaxed) || gpu_timers::ComparisonActive()));
+  if (sample_due) {
+    cost_sample_due_ns = now_ns + kCostSampleNs;
+    stage_cost_sample_due_ns[stage] = cost_sample_due_ns;
   }
-  cost_sample_due_ns = now_ns + kCostSampleNs;
-  stage_cost_sample_due_ns[stage] = cost_sample_due_ns;
-  if (gpu_timers::Begin(command_list, device, path, width, height, group.begin, group.count)) {
+  if (gpu_timers::Begin(command_list, device, path, width, height, group.begin, group.count, measure)) {
     // Cadence and comparison use the same clock sample; setup jitter must not
     // reject a normally scheduled sample as slightly earlier than 250 ms.
     gpu_timers::internal::segments[gpu_timers::internal::current.idx].comparison.recorded_ns = now_ns;
     return true;
   }
-  if (!profiling && !cost_meter_unavailable && gpu_timers::internal::heap == nullptr) {
+  if (measure && !profiling && !cost_meter_unavailable && gpu_timers::internal::heap == nullptr) {
     cost_meter_unavailable = true;
     Log(reshade::log::level::warning,
         "NR cost meter: GPU timestamps could not be set up on this device, so the"
         " panel cannot show what NR costs; NR itself is unaffected (NRCostMeter)");
   }
-  return false;
+  return measure && sample_due && gpu_timers::internal::heap == nullptr
+      && gpu_timers::Begin(command_list, device, path, width, height, group.begin, group.count, false);
 }
 
 // Logs the first foreign-producer signal of each kind; only a strong one
@@ -18269,6 +18308,22 @@ inline uint32_t VkFromImGuiKey(ImGuiKey key) {
 
 inline void RecreateFeatures();
 
+struct ProfileFeedback {
+  std::shared_mutex mutex;
+  std::string message;
+  // Translated when drawn, so a language change cannot leave a stale Toast.
+  const char* operation = nullptr;
+};
+inline ProfileFeedback profile_feedback;
+inline std::atomic_int64_t profile_feedback_until_ns{0};
+inline constexpr int64_t kHudToastNs = 2'000'000'000LL;
+
+inline void NotifyNrOperation(bool on) {
+  std::unique_lock lock(profile_feedback.mutex);
+  profile_feedback.operation = (on ? "NR enabled" : "NR disabled");
+  profile_feedback_until_ns.store(SteadyNowNs() + kHudToastNs, std::memory_order_release);
+}
+
 // One press of the NR toggle key, from either reader below.  Same semantics
 // as the overlay checkbox: persist, and reset the failure latches when
 // switching NR back on.  The line names the key, and whether the overlay's
@@ -18282,6 +18337,7 @@ inline void ToggleNrFromHotkey(uint32_t toggle_key, bool overlay_open) {
   }
   enabled = next;
   reshade::set_config_value(nullptr, kConfigSection, "NeuralUplift", next);
+  NotifyNrOperation(next);
   Log(
       reshade::log::level::info,
       "NR toggled " + std::string(next ? "ON" : "OFF") + " via "
@@ -18302,6 +18358,8 @@ inline void PollHotkeys() {
   GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
   const bool focused = foreground_process == GetCurrentProcessId();
   if (!hud_overlay_open.load(std::memory_order_relaxed)) {
+    PollMonitorKey((GetAsyncKeyState(static_cast<int>(monitor_hotkey.load())) & 0x8000) != 0,
+        focused && hotkey_capture_target.load() == 0, false);
     PollProfileKeys((GetAsyncKeyState(static_cast<int>(official_cycle_key.load())) & 0x8000) != 0,
         (GetAsyncKeyState(static_cast<int>(custom_cycle_key.load())) & 0x8000) != 0,
         focused && hotkey_capture_target.load() == 0);
@@ -18383,6 +18441,11 @@ inline void OnOverlayHotkeys(reshade::api::effect_runtime* runtime) {
   DWORD foreground_process = 0;
   GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
   if (hud_overlay_open.load()) {
+    if (monitor_runtime.load() == nullptr || monitor_runtime.load() == runtime) {
+      PollMonitorKey(runtime->is_key_down(monitor_hotkey.load()),
+          foreground_process == GetCurrentProcessId() && !ImGui::IsAnyItemActive()
+          && !ImGui::GetIO().WantTextInput && hotkey_capture_target.load() == 0, true);
+    }
     PollProfileKeys(runtime->is_key_down(official_cycle_key.load()), runtime->is_key_down(custom_cycle_key.load()),
         foreground_process == GetCurrentProcessId() && !ImGui::IsAnyItemActive()
         && !ImGui::GetIO().WantTextInput && hotkey_capture_target.load() == 0);
@@ -19226,6 +19289,17 @@ struct CardObservation {
 };
 inline CardObservation card_observation;
 
+inline bool CurrentGpuSample(const gpu_timers::Stats& sample, int64_t now_ns) {
+  if (!enabled.load() || !sample.valid || sample.measured_ns <= 0 || now_ns < sample.measured_ns
+      || now_ns - sample.measured_ns > gpu_timers::internal::kSampleAgeNs
+      || gpu_timers::comparison_settings == nullptr) return false;
+  gpu_comparison::Identity current;
+  gpu_timers::comparison_settings(&current);
+  return sample.identity.configuration_generation == current.configuration_generation
+      && sample.identity.settings_hash == current.settings_hash && sample.identity.resolution_hash == current.resolution_hash
+      && sample.identity.route == current.route && sample.identity.fg == current.fg;
+}
+
 inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
                                         int64_t now_ns) {
   ui::CardInputs in;
@@ -19314,9 +19388,41 @@ inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
       mix(std::bit_cast<uint32_t>(pass_resolution_scale[pass - 1].load()));
       mix(std::bit_cast<uint32_t>(pass_intensity[pass - 1].load()));
     }
+    ui::RecentGpuCompletion completed;
+    uint64_t recorded_sequence = 0;
+    {
+      std::optional<RuntimeLock> runtime_lock;
+      if (!runtime_lock::State::HeldByThisThread()) runtime_lock.emplace(runtime_mutex);
+      recorded_sequence = gpu_timers::internal::next_sequence;
+      const auto plan = RequestedStagePlan();
+      completed.current = plan.valid && plan.group_count != 0;
+      completed.completed_ns = now_ns;
+      completed.sequence = UINT64_MAX;
+      for (uint32_t group_index = 0; group_index < plan.group_count; ++group_index) {
+        const auto& group = plan.groups[group_index];
+        const auto current_group = [&](const gpu_timers::Stats& sample) {
+          if (!CurrentGpuSample(sample, now_ns) || sample.state != gpu_timers::SampleState::VALID) return false;
+          for (uint32_t pass = group.begin; pass < group.begin + group.count; ++pass) {
+            const auto& measured_pass = sample.passes[pass - group.begin];
+            if (measured_pass.id != pass || measured_pass.state != gpu_timers::SampleState::VALID) return false;
+          }
+          return true;
+        };
+        const auto& timing = gpu_timers::stage_stats[static_cast<uint32_t>(group.stage)];
+        const auto& proof = gpu_timers::execution_stats[static_cast<uint32_t>(group.stage)];
+        const gpu_timers::Stats* sample = current_group(timing) ? &timing : nullptr;
+        if (current_group(proof) && (sample == nullptr || proof.sequence > sample->sequence)) sample = &proof;
+        if (sample == nullptr) {
+          completed.current = false;
+          continue;
+        }
+        completed.completed_ns = (std::min)(completed.completed_ns, sample->measured_ns);
+        completed.sequence = (std::min)(completed.sequence, sample->sequence);
+      }
+    }
     std::unique_lock observation_lock(card_observation.mutex);
     in.recent = card_observation.window.Observe(configuration, verdict.eligible,
-        verdict.injected, in.present_gaps, now_ns);
+        verdict.injected, in.present_gaps, now_ns, recorded_sequence, completed);
     in.present_gaps = in.recent->gaps;
     if (card_observation.configuration != configuration
         || now_ns - card_observation.declines_sampled_ns >= 100'000'000LL) {
@@ -19371,8 +19477,8 @@ inline void EmitStatusCard(const ui::StatusCard& card, const char* trigger) {
 
 // U4, the HUD (PLAN_UI_V7.md 4): a pill while NR is
 // not working (ui::ShowsOnHud), and a 2-second toast when the card turns
-// green after a pill or NR is enabled. Both hide while
-// ReShade's overlay is open, where the card itself is.  The tick below sets
+// green after an important warning. User operations use the same notification
+// window immediately, including while the main menu is open. The tick below sets
 // the two; OnPresent listens to reshade_overlay only while one is due, so a
 // working session keeps ReShade's no-ImGui-frame early-out: zero cost by
 // construction when green or gray.
@@ -19381,13 +19487,6 @@ inline std::atomic_bool hud_pill{false};
 // visible pill but cannot consume recovery before a proven submission.
 inline bool hud_recovery_pending = false;
 inline std::atomic_int64_t hud_toast_until_ns{0};
-struct ProfileFeedback {
-  std::shared_mutex mutex;
-  std::string message;
-};
-inline ProfileFeedback profile_feedback;
-inline std::atomic_int64_t profile_feedback_until_ns{0};
-inline constexpr int64_t kHudToastNs = 2'000'000'000LL;
 inline std::atomic<float> hud_position_x{50.f};
 inline std::atomic<float> hud_position_y{0.f};
 
@@ -19418,7 +19517,7 @@ inline void MaybeEmitStatusCard(const NrVerdict& verdict, int64_t now_ns) {
     // card's bounded, current-epoch submission proof also permits its toast;
     // preparation without that proof remains silent.
     if (!verdict.IsFgPreparing() || inputs.fg_continuing_submission) {
-      if (hud_recovery_pending || hud_toast_until_ns.load(std::memory_order_relaxed) == 0) {
+      if (hud_recovery_pending) {
         hud_toast_until_ns.store(now_ns + kHudToastNs, std::memory_order_relaxed);
       }
       hud_recovery_pending = false;
@@ -19448,6 +19547,12 @@ inline bool OnReshadeOpenOverlay(reshade::api::effect_runtime* /*runtime*/,
                                  bool open,
                                  reshade::api::input_source /*source*/) {
   hud_overlay_open.store(open, std::memory_order_relaxed);
+  monitor_observation_epoch.fetch_add(1);
+  if (!open && !monitor_keep_visible.load()) monitor_requested = false;
+  if (!open) {
+    uint32_t monitor_capture = 5;
+    hotkey_capture_target.compare_exchange_strong(monitor_capture, 0);
+  }
   if (!open && flush_profile_storage != nullptr) flush_profile_storage();
   return false;
 }
@@ -19598,14 +19703,55 @@ inline void RefreshUiLanguage() {
 // The card is recomputed here rather than carried from the tick, as the
 // panel does: atomics only, and the pill never shows a card the tick has
 // since left.
-inline void OnHudOverlay(reshade::api::effect_runtime* /*runtime*/) {
+inline void OnHudOverlay(reshade::api::effect_runtime* runtime) {
+  DrawIndependentMonitor(runtime);
   // Registered only while due, except when a second effect runtime froze
   // the listeners (OnPresent): then this is the check.
-  if (!hud_enabled.load(std::memory_order_relaxed)
-      || hud_overlay_open.load(std::memory_order_relaxed)) return;
+  if (!hud_enabled.load(std::memory_order_relaxed)) return;
   RefreshUiLanguage();
   const int64_t now_ns = SteadyNowNs();
-  const ui::StatusCard card = ui::ComputeStatusCard(
+  const bool operation_notice = profile_feedback_until_ns.load(std::memory_order_acquire) > now_ns
+      && [&] { std::shared_lock lock(profile_feedback.mutex); return profile_feedback.operation != nullptr; }();
+  if (operation_notice) {
+    // A no-input window can remain behind Home after a modal returns focus.
+    // Keep the existing operation notice above host windows without focusing it.
+    std::shared_lock feedback_lock(profile_feedback.mutex);
+    if (profile_feedback.operation == nullptr) return;
+    const char* title = ui::Tr(profile_feedback.operation);
+    const char* detail = std::strcmp(profile_feedback.operation, "NR enabled") == 0
+        ? ui::Tr("Checking runtime status") : nullptr;
+    const auto display = ImGui::GetIO().DisplaySize;
+    const float gap = ui::tokens::kRowGap;
+    const ImVec2 padding(ui::tokens::kCardPadding, gap);
+    const float wrap = (std::max)(1.f, (std::min)(ImGui::GetFontSize() * ui::tokens::kTooltipEm,
+        display.x - 2.f * (gap + padding.x)));
+    const auto title_size = ImGui::CalcTextSize(title, nullptr, false, wrap);
+    const auto detail_size = detail != nullptr ? ImGui::CalcTextSize(detail, nullptr, false, wrap) : ImVec2();
+    const ImVec2 size((std::max)(title_size.x, detail_size.x) + padding.x * 2.f,
+        title_size.y + (detail != nullptr ? gap + detail_size.y : 0.f) + padding.y * 2.f);
+    const ImVec2 anchor(hud_position_x.load(std::memory_order_relaxed) / 100.f,
+                        hud_position_y.load(std::memory_order_relaxed) / 100.f);
+    const ImVec2 lo(gap + (display.x - gap * 2.f - size.x) * anchor.x,
+                   gap + (display.y - gap * 2.f - size.y) * anchor.y);
+    const ImVec2 hi(lo.x + size.x, lo.y + size.y);
+    const float alpha = (std::min)(1.f, static_cast<float>(profile_feedback_until_ns.load() - now_ns) / 1e9f);
+    const auto color = [&](ImVec4 value) { value.w *= alpha; return ui::ToU32(value); };
+    auto* draw = ImGui::GetForegroundDrawList();
+    draw->AddRectFilled(lo, hi, color(ui::CurrentTheme().bg_card), ui::tokens::kRadiusCard);
+    draw->AddRect(lo, hi, color(ui::CurrentTheme().stroke), ui::tokens::kRadiusCard);
+    draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(lo.x + padding.x, lo.y + padding.y),
+        color(ui::CurrentTheme().text_primary), title, nullptr, wrap);
+    if (detail != nullptr) {
+      draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
+          ImVec2(lo.x + padding.x, lo.y + padding.y + title_size.y + gap),
+          color(ui::CurrentTheme().text_secondary), detail, nullptr, wrap);
+    }
+    return;
+  }
+  if (hud_overlay_open.load(std::memory_order_relaxed)) return;
+  if (!hud_pill.load() && now_ns >= hud_toast_until_ns.load()
+      && now_ns >= health_notice_until_ns.load() && now_ns >= profile_feedback_until_ns.load()) return;
+  const ui::StatusCard card = monitor_requested.load() ? MonitorDisplayCard() : ui::ComputeStatusCard(
       CollectCardInputs(ComputeNrVerdict(CollectFunnelInputs()), now_ns));
   const bool pill = ui::ShowsOnHud(card);
   const int64_t toast_ns =
@@ -20828,11 +20974,19 @@ inline void NgxLifecycleTick() {
 inline void OnInitEffectRuntime(reshade::api::effect_runtime* runtime) {
   std::scoped_lock lock(overlay_listener_mutex);
   live_effect_runtimes.push_back(runtime);
+  if (monitor_runtime.load() == nullptr) monitor_runtime = runtime;
+  monitor_observation_epoch.fetch_add(1);
 }
 
 inline void OnDestroyEffectRuntime(reshade::api::effect_runtime* runtime) {
   std::scoped_lock lock(overlay_listener_mutex);
   std::erase(live_effect_runtimes, runtime);
+  if (monitor_runtime.load() == runtime) {
+    monitor_runtime = live_effect_runtimes.empty() ? nullptr : live_effect_runtimes.front();
+    monitor_observation_epoch.fetch_add(1);
+    std::scoped_lock key_lock(monitor_key_mutex);
+    monitor_key_edge = {};
+  }
 }
 
 // Explicit-off cleanup runs only on Present, never inside a game's NGX
@@ -21039,11 +21193,12 @@ inline void OnPresent(
     static std::atomic_bool hotkeys_listening{false};
     const bool overlay_open = hud_overlay_open.load(std::memory_order_relaxed);
     listen(&hud_listening,
-           !overlay_open && hud_enabled.load(std::memory_order_relaxed)
-               && (hud_pill.load(std::memory_order_relaxed)
+           monitor_requested.load(std::memory_order_relaxed)
+           || (hud_enabled.load(std::memory_order_relaxed)
+               && ((!overlay_open && (hud_pill.load(std::memory_order_relaxed)
                    || present_ns < hud_toast_until_ns.load(std::memory_order_relaxed)
-                   || present_ns < profile_feedback_until_ns.load(std::memory_order_relaxed)
-                   || present_ns < health_notice_until_ns.load(std::memory_order_relaxed)),
+                   || present_ns < health_notice_until_ns.load(std::memory_order_relaxed)))
+                   || present_ns < profile_feedback_until_ns.load(std::memory_order_relaxed))),
            OnHudOverlay);
     listen(&hotkeys_listening, overlay_open, OnOverlayHotkeys);
     // A dock whose tab-select frame never came (the overlay closed first)
@@ -21395,6 +21550,7 @@ struct Setting {
         ++nr_resolution_commit_epochs[pass];
       }
     }
+    monitor_settings_epoch.fetch_add(1, std::memory_order_release);
   }
   // Always to the global config file, as PersistConfig explains.
   void Persist() const {
@@ -21635,6 +21791,8 @@ inline constexpr Setting kSetOfficialCycleKey{"NROfficialCycleKey", &official_cy
 inline constexpr Setting kSetCustomCycleKey{"NRCustomCycleKey", &custom_cycle_key, VK_F10, SettingEffect::kNone};
 inline constexpr Setting kSetOfficialCycleEnabled{"NROfficialCycleEnabled", &official_cycle_enabled, false, SettingEffect::kNone};
 inline constexpr Setting kSetCustomCycleEnabled{"NRCustomCycleEnabled", &custom_cycle_enabled, false, SettingEffect::kNone};
+inline constexpr Setting kSetMonitorKey{"NRMonitorKey", &monitor_hotkey, VK_F11, SettingEffect::kNone};
+inline constexpr Setting kSetMonitorKeepVisible{"UiMonitorKeepVisible", &monitor_keep_visible, true, SettingEffect::kNone};
 inline constexpr Setting kSetScreenshotSource{
     "NRScreenshotSource", &screenshot::source_mode, 0u, SettingEffect::kNone};
 inline constexpr Setting kSetScreenshotFormat{
@@ -22020,6 +22178,7 @@ inline constexpr const Setting* kStackingSettings[] = {
     &kSetPassAutoMask[2], &kSetPassUiCorrection[0], &kSetPassUiCorrection[1],
     &kSetPassUiCorrection[2]};
 inline constexpr const Setting* kHotkeySettings[] = {
+    &kSetMonitorKey, &kSetMonitorKeepVisible,
     &kSetOfficialCycleKey, &kSetCustomCycleKey, &kSetOfficialCycleEnabled, &kSetCustomCycleEnabled,
     &kSetToggleKey,        &kSetScreenshotKey,         &kSetScreenshotSource,
     &kSetScreenshotFormat, &kSetScreenshotLayout,      &kSetScreenshotJpegQuality,
@@ -22132,24 +22291,46 @@ inline bool IsCapabilitySetting(std::string_view key) {
           && (key.ends_with("Stage") || key.ends_with("Preset") || key.ends_with("ResolutionMode") || key.ends_with("ResolutionScale")));
 }
 
+inline bool IsStageSetting(const Setting& setting) {
+  return &setting == &kSetHookPoint || std::any_of(std::begin(kSetPassStage), std::end(kSetPassStage),
+      [&](const auto& stage) { return &setting == &stage; });
+}
+
+inline presets::Json ProposedStageValues(const Setting& setting, float value) {
+  std::optional<RuntimeLock> lock;
+  if (!runtime_lock::State::HeldByThisThread()) lock.emplace(runtime_mutex);
+  stage_plan::Configuration before{.pass_count = stack_passes.load(), .hook_point = hook_point.load()};
+  uint32_t edited = 0;
+  for (uint32_t pass = 1; pass < kMaxNrPasses; ++pass) {
+    before.stages[pass - 1] = pass_stage[pass - 1].load();
+    if (&setting == &kSetPassStage[pass - 1]) edited = pass;
+  }
+  const auto after = stage_plan::ProposeStageChange(before, edited, static_cast<uint32_t>(value));
+  presets::Json changes = presets::Json::object();
+  if (after.hook_point != before.hook_point) changes["NRHookPoint"] = after.hook_point;
+  for (uint32_t pass = 1; pass < before.pass_count; ++pass) {
+    if (after.stages[pass - 1] != before.stages[pass - 1]) {
+      changes[kSetPassStage[pass - 1].key] = after.stages[pass - 1];
+    }
+  }
+  return changes;
+}
+
+struct StageEditRequest {
+  const Setting* setting = nullptr;
+  float value = 0.f;
+};
+inline StageEditRequest stage_edit_request;
+
 inline bool CanChooseSetting(const Setting& setting, float value, std::string* reason = nullptr) {
   if (!IsCapabilitySetting(setting.key) || std::abs(value - setting.Get()) < 0.00001f) return true;
   // Recovery to inherited sizes is always available, even before device discovery.
   if (std::string_view(setting.key).ends_with("ResolutionMode") && value == 0.f) return true;
+  if (IsStageSetting(setting)) return ValidateConfigurationCapability(ProposedStageValues(setting, value), reason);
   return ValidateConfigurationCapability({{setting.key, value}}, reason);
 }
 
 #include "gpu_comparison_ui.hpp"
-
-inline bool CurrentGpuSample(const gpu_timers::Stats& sample, int64_t now_ns) {
-  if (!enabled.load() || !sample.valid || sample.measured_ns <= 0 || now_ns < sample.measured_ns
-      || now_ns - sample.measured_ns > gpu_timers::internal::kSampleAgeNs) return false;
-  gpu_comparison::Identity current;
-  comparison_ui::CaptureSettings(&current);
-  return sample.identity.configuration_generation == current.configuration_generation
-      && sample.identity.settings_hash == current.settings_hash && sample.identity.resolution_hash == current.resolution_hash
-      && sample.identity.route == current.route && sample.identity.fg == current.fg;
-}
 
 inline bool AnyModified(std::initializer_list<SettingGroup> groups) {
   for (const SettingGroup& group : groups) {
@@ -22294,13 +22475,14 @@ inline std::atomic_int ui_panel_resets{0};
 // Set by the card's "Open Diagnostics" button; consumed by that section.
 inline bool ui_open_diagnostics = false;
 inline int ui_menu_page = 0;
-inline ui::FgRouteObserver ui_fg_route;
+inline thread_local ui::FgRouteObserver ui_fg_route;
 inline int ui_selected_pass = 0;
 inline bool ui_open_present_settings = false;
 
 // The switch, in one place: the checkbox and the Off card's button both
 // turn NR on or off through here.
 inline void SetNrEnabledFromUi(bool on) {
+  if (enabled.load() == on) return;
   if (on && native_fg_owns.load(std::memory_order_acquire) && hook_point.load() == kHookPresent) {
     native_fg_marker.store(nullptr, std::memory_order_release);
     native_fg_continuing_submission.store(false, std::memory_order_release);
@@ -22308,6 +22490,7 @@ inline void SetNrEnabledFromUi(bool on) {
   }
   enabled = on;
   reshade::set_config_value(nullptr, kConfigSection, "NeuralUplift", on);
+  NotifyNrOperation(on);
   if (on) RecreateFeatures();
 }
 
@@ -22418,9 +22601,10 @@ inline void ChoiceSetting(const ui::PanelText& text, const Setting& setting,
     disabled[i] = !CanChooseSetting(setting, static_cast<float>(stored_values.empty() ? i : stored_values[i]), &reasons[i]);
     tips[i] = (disabled[i] ? reasons[i].c_str() : option_tips.empty() ? items[i] : option_tips[i]);
   }
+  const char* control_id = (IsStageSetting(setting) ? "##stage_value" : "##value");
   if (text.modern) {
     ui::RowLabel(label, tooltip);
-    const int clicked = ui::Segmented("##value", items.data(), count, index, nullptr,
+    const int clicked = ui::Segmented(control_id, items.data(), count, index, nullptr,
                                       tips.data(), disabled.data());
     changed = clicked >= 0 && clicked != index;
     if (changed) {
@@ -22431,7 +22615,7 @@ inline void ChoiceSetting(const ui::PanelText& text, const Setting& setting,
     if (tooltip != nullptr) {
       ui::ItemTooltip("%s", tooltip);
     }
-    const int clicked = ui::Segmented("##value", items.data(), count, index, nullptr,
+    const int clicked = ui::Segmented(control_id, items.data(), count, index, nullptr,
                                       tips.data(), disabled.data(), true);
     changed = clicked >= 0 && clicked != index;
     if (changed) {
@@ -22441,13 +22625,15 @@ inline void ChoiceSetting(const ui::PanelText& text, const Setting& setting,
   if (changed) {
     const float choice = static_cast<float>(stored_values.empty() ? index : stored_values[index]);
     if (CanChooseSetting(setting, choice)) {
-      setting.Commit(choice);
+      if (IsStageSetting(setting)) stage_edit_request = {.setting = &setting, .value = choice};
+      else setting.Commit(choice);
     }
   }
   if (text.modern && setting.Modified()
       && ui::ResetButton("reset", fallback_index >= 0 && fallback_index < count ? items[fallback_index] : nullptr)) {
     if (CanChooseSetting(setting, setting.fallback)) {
-      setting.Commit(setting.fallback);
+      if (IsStageSetting(setting)) stage_edit_request = {.setting = &setting, .value = setting.fallback};
+      else setting.Commit(setting.fallback);
     }
   }
   ImGui::PopID();
@@ -23001,7 +23187,7 @@ inline void DrawSectionHookPoint(const ui::PanelText& text, bool present_details
   }
 }
 
-inline void DrawResolutionObserved(const ui::PanelText& text, uint32_t pass = 0) {
+inline void DrawResolutionObserved(const ui::PanelText& text, uint32_t pass = 0, bool historical = false) {
   const auto plan = RequestedStagePlan();
   const auto stage = plan.effective[pass];
   const char* reference = ui::text::kResolutionReferenceUpscaled;
@@ -23009,6 +23195,25 @@ inline void DrawResolutionObserved(const ui::PanelText& text, uint32_t pass = 0)
     case stage_plan::Stage::RENDER: reference = ui::text::kResolutionReferenceRender; break;
     case stage_plan::Stage::UPSCALED: break;
     case stage_plan::Stage::PRESENT: reference = ui::text::kResolutionReferencePresent; break;
+  }
+  if (!historical) {
+    const auto settings = CurrentPassResolution(pass);
+    const bool render = stage == stage_plan::Stage::RENDER;
+    const uint32_t width = render ? last_input_width.load() : last_output_width.load();
+    const uint32_t height = render ? last_input_height.load() : last_output_height.load();
+    if (!settings.follow_input && width != 0 && height != 0) {
+      const auto estimate = capability::ResolveWorkingSize({.scale = settings.scale},
+          {.reference_width = width, .reference_height = height});
+      ImGui::TextWrapped(text.Tr("Estimated working resolution: %ux%u"), estimate.width, estimate.height);
+    } else {
+      ImGui::TextWrapped("%s: %s", text.Tr("Estimated working resolution"), text.Tr("Pending confirmation"));
+    }
+    ui::ItemTooltip("%s", text.Tr("Estimate uses the last observed reference. Actual dimensions require a current completed sample."));
+    const bool current = ui_monitor_view != nullptr && pass < ui_monitor_view->pass_count
+        && ui_monitor_view->passes[pass].execution_confirmed;
+    ImGui::TextWrapped("%s: %s", text.Tr("Actual working resolution"),
+        current ? ui_monitor_view->passes[pass].actual_size.c_str() : text.Tr("Pending confirmation"));
+    return;
   }
   ImGui::TextUnformatted(text.Tr("Working size details (?)"));
   ui::ItemTooltip("%s\n%s\n%s\n%s", text.Tr(reference), text.Tr(ui::text::kResolutionGuideUnknown),
@@ -24376,6 +24581,7 @@ inline void DrawSectionHotkeys(const ui::PanelText& text) {
       ui::ItemTooltip("%s", ui::Tr(ui::text::kRebindTip));
       // A reset never binds one key to both actions.
       if (!capturing && setting.Modified() && other.Get() != setting.fallback
+          && (target != 5 || !MonitorKeyConflict(static_cast<uint32_t>(setting.fallback)))
           && ui::ResetButton(
               setting.key, VirtualKeyName(static_cast<uint32_t>(setting.fallback)).c_str())) {
         setting.Commit(setting.fallback);
@@ -24403,6 +24609,12 @@ inline void DrawSectionHotkeys(const ui::PanelText& text) {
   ToggleSetting(text, kSetCustomCycleEnabled, "Enable custom profile key",
                 "Recommended F10: cycle saved, available custom slots. Empty slots are skipped.");
   hotkey_button("Cycle custom profiles", kSetCustomCycleKey, kSetOfficialCycleKey, 4);
+  hotkey_button("Show / hide runtime monitor", kSetMonitorKey, kSetToggleKey, 5);
+  ToggleSetting(text, kSetMonitorKeepVisible, "Keep monitor visible after closing the menu",
+      "Default F11 toggles the monitor. Open the menu to move, resize or edit it.");
+  if (MonitorKeyConflict(monitor_hotkey.load())) {
+    ImGui::TextWrapped("%s", ui::Tr("Monitor key conflicts with another shortcut. Choose a different key."));
+  }
   if (ProfileKeyConflict(2) || ProfileKeyConflict(3)) {
     ImGui::TextWrapped("%s", ui::Tr("Duplicate add-on key: profile cycling is disabled until rebound."));
   }
@@ -24417,8 +24629,8 @@ inline void DrawSectionHotkeys(const ui::PanelText& text) {
         if (!ImGui::IsKeyPressed(key, false)) continue;
         const uint32_t vk = VkFromImGuiKey(key);
         if (vk == 0) continue;
-        const uint32_t bindings[] = {toggle_hotkey.load(), screenshot_hotkey.load(), official_cycle_key.load(), custom_cycle_key.load()};
-        bool conflict = false;
+        const uint32_t bindings[] = {toggle_hotkey.load(), screenshot_hotkey.load(), official_cycle_key.load(), custom_cycle_key.load(), monitor_hotkey.load()};
+        bool conflict = vk == host_overlay_hotkey.load() || vk == VK_HOME;
         for (uint32_t i = 0; i < std::size(bindings); ++i) {
           conflict |= i + 1 != capture_target && bindings[i] == vk;
         }
@@ -24432,13 +24644,19 @@ inline void DrawSectionHotkeys(const ui::PanelText& text) {
           screenshot_hotkey = vk;
           screenshot::internal::hotkey_was_down.store(
               true, std::memory_order_relaxed);
+        } else if (capture_target == 5) {
+          kSetMonitorKey.Commit(static_cast<float>(vk));
+          std::scoped_lock key_lock(monitor_key_mutex);
+          monitor_key_edge = {};
+          monitor_key_edge.Poll(vk, true, true, false, true);
+          monitor_key_edge.awaiting_context_release = true;
         } else {
           (capture_target == 3 ? kSetOfficialCycleKey : kSetCustomCycleKey).Commit(static_cast<float>(vk));
           std::unique_lock key_lock(profile_keys_mutex);
           profile_key_edges[capture_target - 3] = {.held = true, .binding = vk,
               .enabled = (capture_target == 3 ? official_cycle_enabled.load() : custom_cycle_enabled.load())};
         }
-        const char* config_keys[] = {"NRToggleKey", "NRScreenshotKey", "NROfficialCycleKey", "NRCustomCycleKey"};
+        const char* config_keys[] = {"NRToggleKey", "NRScreenshotKey", "NROfficialCycleKey", "NRCustomCycleKey", "NRMonitorKey"};
         reshade::set_config_value(
             nullptr, kConfigSection,
             config_keys[capture_target - 1], vk);
@@ -24846,6 +25064,13 @@ inline DWORD WINAPI OpenLogFolderMain(void* module) {
 // the report buttons; the alpha44 counters stay one click down.
 inline void DrawDiagnostics(const NrVerdict& verdict) {
   ui::SectionCaption(ui::text::kResources, nullptr, false);
+  bool reset_history = false;
+  if (ui::SectionHeader("Working resolution history", nullptr, nullptr, false, &reset_history)) {
+    const auto pass = static_cast<uint32_t>(std::clamp(ui_selected_pass, 0,
+        static_cast<int>(stack_passes.load()) - 1));
+    ImGui::Text(ui::Tr("Pass %u"), pass + 1);
+    DrawResolutionObserved(ui::kModernText, pass, true);
+  }
   ui::RowLabel(ui::text::kWorkingResolution);
   if (last_input_width.load() != 0) {
     ImGui::TextWrapped("%ux%u -> %ux%u", last_input_width.load(), last_input_height.load(),
@@ -25002,10 +25227,12 @@ inline void DrawDiagnostics(const NrVerdict& verdict) {
 // The issue report (rc11): BeginIssueReport and the panel's steps.
 #include "report_flow.hpp"
 #include "preset_runtime.hpp"
+#include "stage_edit.hpp"
 
 inline ui::MonitorState ui_runtime_monitor_state;
 inline bool ui_monitor_geometry_dirty = false;
 inline bool ui_monitor_saved_pin = false;
+#include "monitor_runtime.hpp"
 inline profile_ui::FirstInstallEvidence first_install_evidence = profile_ui::FirstInstallEvidence::UNKNOWN;
 
 // ReShade's frame callback owns profile transactions even with the add-on panel
@@ -25036,6 +25263,7 @@ inline void OnProfilePresent(reshade::api::effect_runtime* runtime) {
     }
     else {
       std::unique_lock feedback_lock(profile_feedback.mutex);
+      profile_feedback.operation = nullptr;
       profile_feedback.message = (profile_ui::notice.empty() ? ui::Tr("Profile switch unavailable") : ui::Tr(profile_ui::notice.c_str()));
       profile_feedback_until_ns = SteadyNowNs() + kHudToastNs;
     }
@@ -25043,6 +25271,7 @@ inline void OnProfilePresent(reshade::api::effect_runtime* runtime) {
   profile_ui::Tick();
   if (pending_feedback >= 0 && profile_ui::pending_action == profile_ui::Action::NONE && !profile_ui::Busy()) {
     std::unique_lock feedback_lock(profile_feedback.mutex);
+    profile_feedback.operation = nullptr;
     profile_feedback.message = (profile_ui::active == pending_feedback
         ? std::string(ui::Tr("Switched profile")) + ": " + profile_ui::Name(pending_feedback)
         : ui::Tr("Profile switch unavailable"));
@@ -25447,7 +25676,6 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
       DrawDiagnostics(verdict);
       DrawIssueReport();
     } else {
-      preset_ui::DrawEntry(false, true);
       char hotkeys[128];
       std::snprintf(hotkeys, sizeof(hotkeys), ui::Tr(ui::text::kHotkeysHint),
                     VirtualKeyName(toggle_hotkey.load()).c_str(),
@@ -25503,132 +25731,17 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
 
 inline void DrawPanelBody(reshade::api::effect_runtime* runtime) {
   profile_ui::capability_validator = ValidateConfigurationCapability;
-  const NrVerdict verdict = ComputeNrVerdict(CollectFunnelInputs());
-  const int64_t observed_ns = SteadyNowNs();
-  const ui::CardInputs card_inputs = CollectCardInputs(verdict, observed_ns);
-  ui::StatusCard card = ui::ComputeStatusCard(card_inputs);
+  UpdateMonitorCadence(runtime);
+  const auto& snapshot = RefreshMonitorSnapshot(true);
+  ui_monitor_view = &snapshot.monitor;
+  const auto& verdict = snapshot.verdict;
+  const auto& card = snapshot.card;
   if (!ui_capture_dir.empty()) {
     ui_drawn_card.store(static_cast<uint16_t>((static_cast<unsigned>(card.tone) << 8)
-                                              | static_cast<unsigned>(card.id)),
-                        std::memory_order_relaxed);
+                                              | static_cast<unsigned>(card.id)), std::memory_order_relaxed);
   }
-  ui_fg_route.Update({.enabled = enabled.load(), .present = hook_point.load() == kHookPresent, .prefg_active = present_prefg_active.load(), .upscaled_active = present_prefg_upscaled_active.load(), .submitted_before_fg = card_inputs.fg_continuing_submission, .multiplier = card_inputs.frame_gen_multiplier, .prefg_policy = present_pre_fg.load(), .frame_policy = present_frames.load(), .prefg_frames = present_prefg_frames.load(), .prefg_evaluates = present_prefg_evaluates.load(), .fallbacks = present_prefg_fallbacks.load(), .upscaled_frames = present_prefg_upscaled.load(), .captures = present_captures.load(), .nr_successes = successful_evaluations.load() + successful_pre_sr_evaluations.load(), .fg_submitted = TotalFgSubmittedFrames()}, observed_ns);
-  card.observed_fg_route = ui_fg_route.route;
-  card.fg_declared = fg::xefg::OwnsStream()
-                     || native_fg_declaration.load() == NativeFgDeclaration::kOn;
-  unsigned warnings = (card.tone == ui::CardTone::kWarn || card.tone == ui::CardTone::kBad ? 1u : 0u);
-  const uint64_t health_mask = health_active_mask.load(std::memory_order_relaxed);
-  for (size_t i = 0; i < health::kRowCount; ++i) {
-    if (((health_mask >> i) & 1u) != 0 && health::kRows[i].tone == health::Tone::kWarn) {
-      ++warnings;
-    }
-  }
-  if (streamline_hooks_enabled.load() && hooks_enabled.load()) {
-    ++warnings;
-  }
-  if (card.present_gaps != 0) {
-    ++warnings;
-  }
-  std::string execution;
-  if (enabled.load()) {
-    const auto samples = [] {
-      RuntimeLock lock(runtime_mutex);
-      return std::array<gpu_timers::Stats, 3>{gpu_timers::stage_stats[0], gpu_timers::stage_stats[1], gpu_timers::stage_stats[2]};
-    }();
-    const auto now = gpu_timers::NowNs();
-    for (size_t stage = 0; stage < samples.size(); ++stage) {
-      if (CurrentGpuSample(samples[stage], now)) {
-        if (!execution.empty()) execution += " + ";
-        execution += stage_plan::Name(static_cast<stage_plan::Stage>(stage));
-      }
-    }
-  }
-  if (execution.empty()) execution = ui::Tr("Execution stage pending confirmation");
-  if (execution == ui::Tr("Execution stage pending confirmation")) {
-    card.nr_gpu_ms = 0.f;
-    card.nr_present_ms = 0.f;
-  }
-  if (ui::DrawStatusSummary(card, warnings, execution.c_str())) {
-    ui_runtime_monitor_state.open = !ui_runtime_monitor_state.open;
-  }
-  if (ui_runtime_monitor_state.open) {
-    ui::MonitorInputs monitor{.card = card};
-    monitor.now_ns = observed_ns;
-    if (card_inputs.recent) {
-      const auto& recent = *card_inputs.recent;
-      monitor.recent = {.available = true, .ready = recent.ready, .partial = recent.partial,
-          .eligible = recent.eligible, .injected = recent.injected, .gaps = recent.gaps,
-          .last_sample_ns = recent.last_sample_ns};
-    }
-    monitor.gpu_scope = ui::Tr("Completed single submissions; stage spans are not frame latency.");
-    const auto queried = QueryConfigurationCapability();
-    monitor.current_limit = (queried.CanSubmit() ? ui::Tr("No configuration blocker; execution needs current evidence.")
-        : ui::Tr(queried.configuration.reason == capability::Reason::PLAN_REJECTED
-            ? stage_plan::ReasonText(queried.plan_reason) : capability::ReasonText(queried.configuration.reason)));
-    if (card_inputs.gap_reason != nullptr) {
-      monitor.current_limit += "\n";
-      monitor.current_limit += ui::Tr(card_inputs.gap_reason);
-    }
-    for (size_t issue = 0; issue < health::kRowCount; ++issue) {
-      if (((health_mask >> issue) & 1u) != 0 && health::Counted(health::kRows[issue])) {
-        monitor.current_limit += "\n";
-        monitor.current_limit += ui::Tr(health::kRows[issue].title);
-        break;
-      }
-    }
-    const auto plan = RequestedStagePlan();
-    monitor.pass_count = plan.pass_count;
-    const auto dimensions = [](uint32_t width, uint32_t height) {
-      return std::to_string(width) + " x " + std::to_string(height);
-    };
-    for (uint32_t pass = 0; pass < plan.pass_count; ++pass) {
-      RuntimeLock lock(runtime_mutex);
-      auto& row = monitor.passes[pass];
-      const auto stage = static_cast<size_t>(plan.effective[pass]);
-      row.requested_stage = stage_plan::Name(plan.requested[pass]);
-      row.effective_stage = (vulkan_present_seen.load() ? "Upscaled"
-          : plan.valid ? stage_plan::Name(plan.effective[pass]) : ui::Tr("Blocked"));
-      row.requested_model = nr_model::PresetName(pass == 0 || pass_preset[pass - 1].load() == 0
-          ? preset.load() : pass_preset[pass - 1].load());
-      const auto settings = CurrentPassResolution(pass);
-      row.requested_size = (settings.follow_input ? ui::Tr("Follow input")
-          : std::to_string(static_cast<int>(std::lround(settings.scale * 100.f))) + "%");
-      const auto& timing = gpu_timers::stage_stats[stage];
-      const bool current = CurrentGpuSample(timing, observed_ns);
-      row.execution_proof = ui::Tr("Pending confirmation");
-      row.actual_model_proof = ui::Tr("Pending confirmation");
-      row.actual_size = ui::Tr("No current completed sample");
-      for (const auto& sample : timing.passes) {
-        if (sample.id != pass || sample.state != gpu_timers::SampleState::VALID) continue;
-        row.created_model_request = nr_model::PresetName(sample.model);
-        if (current) {
-          row.execution_proof = ui::Tr("GPU complete: single submission");
-          row.actual_size = dimensions(sample.width, sample.height);
-        }
-        char cost[96];
-        std::snprintf(cost, sizeof(cost), "%.3f ms", sample.total_us / 1000.f);
-        row.gpu_cost = cost;
-        row.gpu_state = (current ? ui::MonitorGpuState::CURRENT : ui::MonitorGpuState::STALE);
-      }
-    }
-    const auto actions = ui::DrawRuntimeMonitor(monitor, &ui_runtime_monitor_state);
-    if (actions.open_diagnostics) {
-      ui_open_diagnostics = true;
-    }
-    ui_monitor_geometry_dirty |= actions.geometry_changed;
-    ui_monitor_geometry_dirty |= ui_monitor_saved_pin != ui_runtime_monitor_state.pin;
-    if (ui_monitor_geometry_dirty && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-      const auto& geometry = ui_runtime_monitor_state.geometry;
-      reshade::set_config_value(nullptr, kConfigSection, "UiMonitorX", geometry.position.x);
-      reshade::set_config_value(nullptr, kConfigSection, "UiMonitorY", geometry.position.y);
-      reshade::set_config_value(nullptr, kConfigSection, "UiMonitorWidth", geometry.size.x);
-      reshade::set_config_value(nullptr, kConfigSection, "UiMonitorHeight", geometry.size.y);
-      reshade::set_config_value(nullptr, kConfigSection, "UiMonitorScale", geometry.ui_scale);
-      reshade::set_config_value(nullptr, kConfigSection, "UiMonitorPinned", ui_runtime_monitor_state.pin);
-      ui_monitor_geometry_dirty = false;
-      ui_monitor_saved_pin = ui_runtime_monitor_state.pin;
-    }
-  }
+  if (ui::DrawStatusSummary(card, snapshot.warnings, snapshot.summary)) ToggleMonitor();
+  DrawIndependentMonitor(runtime, true);
   ui::SectionGap();
   if (profile_ui::Resetting()) {
     ImGui::TextWrapped("%s", ui::Tr("Saving profiles and restoring defaults..."));
@@ -25642,6 +25755,13 @@ inline void DrawPanelBody(reshade::api::effect_runtime* runtime) {
     profile_ui::RetryResetRecovery();
   }
   ImGui::BeginDisabled(profile_ui::Resetting() || profile_ui::reset.recovery_failed);
+  if (!stage_edit::notice.empty()) ImGui::TextWrapped("%s", ui::Tr(stage_edit::notice.c_str()));
+  if (!stage_edit::pending && !stage_edit::error.empty()) {
+    ImGui::TextWrapped("%s", ui::Tr(stage_edit::error.c_str()));
+  }
+  if (!stage_edit::undo.empty() && ui::ActionButton(ui::Tr("Undo stage change"), "undo_stage_change")) {
+    if (preset_ui::Undo(&stage_edit::error, &stage_edit::undo)) stage_edit::notice = "Stage change undone. Later edits were kept.";
+  }
   if (ui_classic_layout.load()) {
     DrawClassicLayout(runtime, card);
   } else {
@@ -25716,6 +25836,7 @@ inline void OnOverlay(reshade::api::effect_runtime* runtime) {
         .Var(ImGuiStyleVar_CellPadding, ImVec2(0.f, 0.f));
     const ImGuiWindowFlags scroll_flags = (ui_classic_layout.load() ? ImGuiWindowFlags_None
                                                                     : ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    profile_ui::slot_menu_bounds = {.position = ImGui::GetWindowPos(), .size = ImGui::GetWindowSize()};
     if (ImGui::BeginChild("##nr_panel", ImVec2(0.f, 0.f),
                           ImGuiChildFlags_AlwaysUseWindowPadding, scroll_flags)) {
       // Every line of text wraps at the column's (the classic layout: the
@@ -25724,6 +25845,7 @@ inline void OnOverlay(reshade::api::effect_runtime* runtime) {
       // were cut off mid-word there.
       ImGui::PushTextWrapPos(0.f);
       DrawPanelBody(runtime);
+      stage_edit::Draw();
       ImGui::PopTextWrapPos();
     }
     ImGui::EndChild();
@@ -26107,6 +26229,20 @@ inline void LoadConfiguration() {
       && reshade::get_config_value(nullptr, kConfigSection, "UiMonitorY", monitor_geometry.position.y);
   reshade::get_config_value(nullptr, kConfigSection, "UiMonitorScale", monitor_geometry.ui_scale);
   reshade::get_config_value(nullptr, kConfigSection, "UiMonitorPinned", ui_runtime_monitor_state.pin);
+  ui_runtime_monitor_state.detailed = false;
+  reshade::get_config_value(nullptr, kConfigSection, "UiMonitorDetailed", ui_runtime_monitor_state.detailed);
+  ui_monitor_saved_pin = ui_runtime_monitor_state.pin;
+  ui_monitor_saved_detailed = ui_runtime_monitor_state.detailed;
+  uint32_t saved_monitor_key = VK_F11;
+  bool saved_monitor_keep = true;
+  reshade::get_config_value(nullptr, kConfigSection, "NRMonitorKey", saved_monitor_key);
+  reshade::get_config_value(nullptr, kConfigSection, "UiMonitorKeepVisible", saved_monitor_keep);
+  monitor_hotkey = saved_monitor_key >= 0x08 && saved_monitor_key <= 0xFE ? saved_monitor_key : VK_F11;
+  monitor_keep_visible = saved_monitor_keep;
+  uint32_t overlay_key = VK_HOME;
+  reshade::get_config_value(nullptr, "INPUT", "KeyOverlay", overlay_key);
+  host_overlay_hotkey = overlay_key >= 0x08 && overlay_key <= 0xFE ? overlay_key : VK_HOME;
+  monitor_observation_epoch.fetch_add(1);
   uint32_t raw_global_version = 0;
   bool global_writable = true;
   if (global_version_raw) {
@@ -27889,6 +28025,9 @@ inline void Use(DWORD reason, HMODULE module, LPVOID reserved) {
       lastgasp::MarkOnce("ngx:hooks-installed");
       break;
     case DLL_PROCESS_DETACH:
+      internal::monitor_requested = false;
+      internal::monitor_runtime = nullptr;
+      internal::monitor_observation_epoch.fetch_add(1);
       reshade::unregister_event<reshade::addon_event::reshade_present>(internal::OnProfilePresent);
       fg::xefg::Stop();
       fg::native_options::Stop();

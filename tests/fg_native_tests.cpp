@@ -1422,8 +1422,8 @@ int main(int argc, char** argv) {
                 && native::CollectCardInputs(recording_verdict, hud_now).fg_continuing_submission,
             "initial toast regression has a current-stream submission proof");
       native::MaybeEmitStatusCard(recording_verdict, hud_now);
-      Check(native::hud_toast_until_ns.load() == hud_now + native::kHudToastNs,
-            "first proven native service toasts even when the UI samples the next recording");
+      Check(native::hud_toast_until_ns.load() == 0,
+            "ordinary first proven service updates status without an automatic success Toast");
       native::RestoreNativePreFg(gpu.list.Get(), &parameters, original, true);
       submit_native();
       native::hud_toast_until_ns.store(0);
@@ -1431,7 +1431,7 @@ int main(int argc, char** argv) {
     auto hud_verdict = native::MaybeEmitNrVerdict();
     native::MaybeEmitStatusCard(hud_verdict, hud_now);
     const auto first_toast = native::hud_toast_until_ns.load();
-    Check(first_toast == hud_now + native::kHudToastNs, "first real engagement toasts once");
+    Check(first_toast == 0, "ordinary first engagement remains Toast-silent");
     Check(native::RunNativePreFg(gpu.list.Get(), &parameters) == hudless.Get(), "HUD pending recording");
     hud_verdict = native::MaybeEmitNrVerdict();
     native::MaybeEmitStatusCard(hud_verdict, ++hud_now);
@@ -1483,8 +1483,8 @@ int main(int argc, char** argv) {
       Check(native::RunNativePreFg(gpu.list.Get(), &parameters) == hudless.Get(),
             "NR re-enable toast samples the following native recording");
       native::MaybeEmitStatusCard(native::MaybeEmitNrVerdict(), ++hud_now);
-      Check(native::hud_toast_until_ns.load() == hud_now + native::kHudToastNs,
-            "NR re-enable toasts from fresh submission proof during the following recording");
+      Check(native::hud_toast_until_ns.load() == 0,
+            "re-enabled service updates status silently after the separate operation feedback");
       native::RestoreNativePreFg(gpu.list.Get(), &parameters, original, true);
       submit_native();
       hud_verdict = native::MaybeEmitNrVerdict();

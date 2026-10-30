@@ -551,10 +551,18 @@ inline StatusCard ComputeStatusCard(const CardInputs& in) {
       }
       card.issues = in.issues;
       if (in.recent.has_value() && !continuing && !in.fg_submitted_frames.has_value()
-          && !in.recent->ready) {
-        Set(card, CardId::kStarting, CardTone::kIdle, CardGlyph::kWaiting,
-            "Confirming current configuration",
-            "Waiting for enough recent source frames. No current execution result is confirmed.");
+          && !in.recent->gpu_completed && !in.recent->partial) {
+        if (in.issues != 0) {
+          Set(card, CardId::kStarting, CardTone::kWarn, CardGlyph::kWarning,
+              "Neural Rendering needs attention",
+              "Check the warnings below while NR checks the current settings.");
+          SetFix(card, "Each issue below names what to change.");
+          card.action = CardAction::kOpenDiagnostics;
+        } else {
+          Set(card, CardId::kStarting, CardTone::kIdle, CardGlyph::kWaiting,
+              "Checking Neural Rendering",
+              "Waiting for a fresh GPU result for the current settings.");
+        }
         return card;
       }
       const bool whole = continuing
@@ -576,7 +584,7 @@ inline StatusCard ComputeStatusCard(const CardInputs& in) {
       }
       if (whole) {
         Set(card, CardId::kActive, CardTone::kGood, CardGlyph::kCheck,
-            "Neural Rendering is active",
+            in.fg_submitted_frames.has_value() ? "NR submitted before FG" : "NR running normally",
             in.present  ? "Enhancing the frame the game presents"
             : in.pre_sr ? "Enhancing the game's DLSS input before upscaling"
                         : "Replacing the game's DLSS output");

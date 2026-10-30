@@ -44,12 +44,12 @@ void RunRuntimeMonitorCases(const Check& check) {
     }
     ImGui::End();
     ImGui::Render();
-    check(log.find(fields.resolution) != std::string::npos,
-          "summary preserves the complete priority resolution field");
-    check((log.find(fields.stage) != std::string::npos) == (available >= measured_font * 32.f),
-          "medium width adds stage evidence and narrow width defers it to monitor");
-    check((log.find(fields.gpu) != std::string::npos) == (available >= measured_font * 52.f),
-          "only wide summaries include the low-priority GPU field");
+    check(log.find(fields.gpu) != std::string::npos,
+          "NR GPU remains visible at all supported summary widths");
+    check((log.find(fields.stage) != std::string::npos) == (available >= measured_font * 56.f),
+          "stage is auxiliary while metrics keep priority");
+    check((log.find(fields.resolution) != std::string::npos) == (available >= measured_font * 56.f),
+          "working resolution is auxiliary rather than the sole narrow metric");
     return log;
   };
   for (const auto& theme : ui::kThemes) {
@@ -57,7 +57,7 @@ void RunRuntimeMonitorCases(const Check& check) {
     for (int language : {0, 3, 13}) {
       ui::SelectLanguage(language);
       for (float font : {13.f, 19.5f, 26.f}) {
-        for (float boundary : {32.f, 52.f}) {
+        for (float boundary : {28.f, 56.f}) {
           for (float offset : {-1.f, 0.f, 1.f}) {
             summary_frame(boundary * std::round(font) + 48.f + offset, font);
           }
@@ -68,14 +68,14 @@ void RunRuntimeMonitorCases(const Check& check) {
   ui::SelectLanguage(0);
   summary_frame(1600.f, 13.f);
   io.AddMousePosEvent(summary_window->Pos.x + summary_window->WindowPadding.x + 5.f,
-                      summary_window->Pos.y + summary_window->WindowPadding.y + 22.f);
+                      summary_window->Pos.y + summary_window->WindowPadding.y + ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y + 5.f);
   std::string tooltip_log;
   for (int tick = 0; tick < 60; ++tick) tooltip_log = summary_frame(1600.f, 13.f);
-  const auto help = tooltip_log.find("Resolution evidence help");
-  check(help != std::string::npos && tooltip_log.find("Resolution evidence help", help + 1) == std::string::npos,
+  const auto help = tooltip_log.find("GPU evidence help");
+  check(help != std::string::npos && tooltip_log.find("GPU evidence help", help + 1) == std::string::npos,
         "hovering a structured field shows its explanation exactly once");
   check(tooltip_log.find("Stage evidence help") == std::string::npos
-        && tooltip_log.find("GPU evidence help") == std::string::npos,
+        && tooltip_log.find("Resolution evidence help") == std::string::npos,
         "neighboring field tooltips do not repeat in the hovered tooltip");
   io.AddMousePosEvent(-100.f, -100.f);
   ui::MonitorGeometry invalid;
@@ -107,7 +107,7 @@ void RunRuntimeMonitorCases(const Check& check) {
             .created_model_request = "Transformer", .requested_size = "2560x1440",
             .actual_size = "2560x1440", .gpu_cost = "1.2 ms", .gpu_state = ui::MonitorGpuState::CURRENT};
   }
-  ui::MonitorState state;
+  ui::MonitorState state{.detailed = true};
   float scale = 1.f;
   bool narrow = false;
   std::string output;
@@ -122,6 +122,9 @@ void RunRuntimeMonitorCases(const Check& check) {
     if (next_size != nullptr) ImGui::SetWindowSize("###nr_runtime_monitor", *next_size);
     ImGui::LogToBuffer();
     const float before_y = ImGui::GetCursorPosY();
+    if (auto* raw = ImGui::FindWindowByName("###nr_runtime_monitor")) {
+      raw->StateStorage.SetInt(raw->GetID("###monitor_raw_evidence"), 1);
+    }
     const auto actions = ui::DrawRuntimeMonitor(inputs, &state);
     output = ImGui::GetCurrentContext()->LogBuffer.c_str();
     ImGui::LogFinish();
@@ -211,13 +214,15 @@ void RunRuntimeMonitorCases(const Check& check) {
   ImGui::LogFinish();
   check(ImGui::GetCursorPosY() - start < 350.f, "narrow disclosure leaves space for parameters");
   check(output.find("Confirmed source frames") != std::string::npos
-        && output.find("Execution chain") != std::string::npos
-        && output.find("GPU cost") != std::string::npos
+        && output.find("NR GPU") != std::string::npos
         && output.find("Created model request") == std::string::npos
         && output.find("Observed working size") == std::string::npos, "narrow mode shows only key summary");
   ImGui::End();
   ImGui::Render();
   io.DisplaySize = original_display;
+  if (auto* raw = ImGui::FindWindowByName("###nr_runtime_monitor")) {
+    raw->StateStorage.SetInt(raw->GetID("###monitor_raw_evidence"), 0);
+  }
 
   // The pure hotkey contract is exercised here without changing profile code.
   ui::ProfileKeyEdge key;

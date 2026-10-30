@@ -30,6 +30,29 @@ struct Capabilities {
   bool fg_owns_input = false;
   bool mixed_present_dx12 = false;
 };
+
+// Only repair backwards explicit stages after the edited pass. Inheritance and
+// compatible overrides retain their stored meaning; capability validation still
+// decides whether the resulting complete chain can be submitted.
+inline Configuration ProposeStageChange(Configuration config, uint32_t pass, uint32_t choice) {
+  if (config.pass_count < 1 || config.pass_count > kMaxPasses || pass >= config.pass_count
+      || choice > (pass == 0 ? 2u : 3u)) return config;
+  if (pass == 0) config.hook_point = choice;
+  else config.stages[pass - 1] = choice;
+  Stage previous = (config.hook_point == 1 ? Stage::RENDER
+      : config.hook_point == 2 ? Stage::PRESENT : Stage::UPSCALED);
+  for (uint32_t index = 1; index < config.pass_count; ++index) {
+    auto& stored = config.stages[index - 1];
+    if (stored == 0) continue;
+    const auto requested = static_cast<Stage>(stored - 1);
+    if (index > pass && stored <= 3 && requested < previous) {
+      stored = static_cast<uint32_t>(previous) + 1;
+    } else {
+      previous = requested;
+    }
+  }
+  return config;
+}
 struct Group {
   Stage stage = Stage::UPSCALED;
   uint32_t begin = 0;

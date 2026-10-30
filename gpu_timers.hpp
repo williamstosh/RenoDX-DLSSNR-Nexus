@@ -7,7 +7,8 @@
 // [RenoDX.DLSS5] NRGpuTimers (diagnostics), one chain every 250 ms under
 // NRCostMeter (on by default since rc11: the panel's NR cost line).  A timed
 // chain pays a handful of EndQuery calls plus one ResolveQueryData per run of
-// written slots; an untimed one pays nothing.
+// written slots. Completion-only samples freeze CPU markers and reuse the
+// recording tracker without timestamp queries or readback resources.
 //
 // Mechanism: every injected evaluate writes up to kSlotCount TIMESTAMP
 // EndQuery markers into one segment of a ringed query heap and resolves its
@@ -145,6 +146,9 @@ struct Segment {
   uint64_t written = 0;  // bit per slot written (kSlotsPerEval == 64)
   bool recorded = false;
   bool bypass = false;  // zero-strength passthrough frame: no stats
+  bool measure = true;
+  uint32_t pass_begin = 0;
+  uint32_t pass_count = 0;
   GpuLease lease;
   uint64_t tick = 0;
   char path[8] = {};
@@ -186,6 +190,8 @@ struct Stats {
 };
 inline Stats stats;
 inline Stats stage_stats[3];
+// Completion proofs have no measured durations and are consumed only by status collectors.
+inline Stats execution_stats[3];
 inline uint64_t stage_published[3] = {};
 inline uint64_t measured_total_us = 0;
 inline uint64_t dropped_segments = 0;
@@ -275,13 +281,19 @@ inline void Release() {
   stats.valid = false;
   stats.state = SampleState::NOT_MEASURED;
   for (auto& stage : stage_stats) stage = Stats{};
+  for (auto& stage : execution_stats) stage = Stats{};
   display_windows = {};
 }
 
 inline bool Ensure(ID3D12Device* device) {
   IUnknown* const identity = renodx::utils::directx::NativeIdentity(device);
-  if (context_device == identity) return heap != nullptr;
-  Release();
+  if (context_device != identity) {
+    Release();
+    context_device = identity;
+    ++device_session;
+  }
+  // A same-device retry must preserve completion-only recordings in the ring.
+  if (heap != nullptr) return true;
   D3D12_QUERY_HEAP_DESC heap_desc{};
   heap_desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
   heap_desc.Count = kHeapSlots;
@@ -315,9 +327,6 @@ inline bool Ensure(ID3D12Device* device) {
     heap = nullptr;
     return false;
   }
-  // Calibrated from the actual submitting queue only after its exact proof.
-  context_device = identity;
-  ++device_session;
   return true;
 }
 
@@ -325,6 +334,15 @@ inline bool Ensure(ID3D12Device* device) {
 // `log`: the "NR gpu timers" lines, NRGpuTimers' own; the cost meter's
 // samples publish silently (the addon logs their sum as "NR cost:").
 inline void Reject(const Segment& s, SampleState state) {
+  if (!s.measure) {
+    auto& target = execution_stats[StageIndex(s.path)];
+    if (s.sequence >= target.sequence) {
+      target = Stats{.width = s.width, .height = s.height, .passes = s.passes,
+                     .state = state, .sequence = s.sequence, .identity = s.comparison.identity};
+      std::memcpy(target.path, s.path, sizeof(target.path));
+    }
+    return;
+  }
   auto& target = stage_stats[StageIndex(s.path)];
   if (s.sequence < target.sequence) return;
   target = Stats{.passes = s.passes, .state = state, .sequence = s.sequence};
@@ -532,16 +550,24 @@ inline bool Publish(const Segment& s, bool log, const void* queue) {
 
 }  // namespace internal
 
-// Begins one timed chain on the game's command list.  Returns false (and
-// records nothing) when the timer context cannot be created on this device -
-// diagnostics never block the image path.
+// Completion-only samples use the same recording ownership without GPU queries.
+// Instrumentation failure never blocks the image path.
 inline bool Begin(
     ID3D12GraphicsCommandList* command_list,
     ID3D12Device* device,
     const char* path,
     uint32_t width,
-    uint32_t height, uint32_t pass_begin = 0, uint32_t pass_count = 0) {
-  if (!internal::Ensure(device)) return false;
+    uint32_t height, uint32_t pass_begin = 0, uint32_t pass_count = 0, bool measure = true) {
+  if (measure) {
+    if (!internal::Ensure(device)) return false;
+  } else {
+    IUnknown* const identity = renodx::utils::directx::NativeIdentity(device);
+    if (internal::context_device != identity) {
+      internal::Release();
+      internal::context_device = identity;
+      ++device_session;
+    }
+  }
   uint32_t available = 0;
   while (available < kSegmentDepth) {
     const auto& candidate = internal::segments[internal::head];
@@ -559,6 +585,9 @@ inline bool Begin(
   s.base = internal::head * kSlotsPerEval;
   s.count = 0;
   s.bypass = false;
+  s.measure = measure;
+  s.pass_begin = pass_begin;
+  s.pass_count = pass_count;
   s.lease = GpuLease{};
   s.tick = internal::poll_ticks.load(std::memory_order_relaxed);
   std::strncpy(s.path, path, sizeof(s.path) - 1);
@@ -575,7 +604,7 @@ inline bool Begin(
   if (comparison_settings != nullptr) {
     comparison_settings(&s.comparison.identity);
   }
-  if (ComparisonActive()) {
+  if (measure && ComparisonActive()) {
     s.comparison.stage = StageIndex(path);
     s.comparison.sequence = s.sequence;
     s.comparison.recorded_ns = NowNs();
@@ -586,8 +615,10 @@ inline bool Begin(
   }
   internal::current.active = true;
   internal::current.idx = internal::head;
-  command_list->EndQuery(
-      internal::heap, D3D12_QUERY_TYPE_TIMESTAMP, s.base + kSlotFrameStart);
+  if (s.measure) {
+    command_list->EndQuery(
+        internal::heap, D3D12_QUERY_TYPE_TIMESTAMP, s.base + kSlotFrameStart);
+  }
   s.count = kSlotFrameStart + 1;
   s.written = uint64_t{1} << kSlotFrameStart;
   return true;
@@ -604,8 +635,10 @@ inline void SetPass(uint32_t pass, uint32_t id, uint32_t model, uint32_t width,
 inline void Mark(ID3D12GraphicsCommandList* command_list, uint32_t slot) {
   if (!internal::current.active || slot >= kSlotsPerEval) return;
   Segment& s = internal::segments[internal::current.idx];
-  command_list->EndQuery(
-      internal::heap, D3D12_QUERY_TYPE_TIMESTAMP, s.base + slot);
+  if (s.measure) {
+    command_list->EndQuery(
+        internal::heap, D3D12_QUERY_TYPE_TIMESTAMP, s.base + slot);
+  }
   if (slot >= s.count) s.count = slot + 1;
   s.written |= uint64_t{1} << slot;
 }
@@ -638,7 +671,7 @@ inline void End(ID3D12GraphicsCommandList* command_list) {
   // alpha47 every timed evaluate with fewer than four passes raised it once
   // per unwritten slot under the debug layer.  Each run of written slots
   // resolves on its own; the readers skip unwritten slots by `written`.
-  for (uint32_t first = 0; first < s.count;) {
+  for (uint32_t first = 0; s.measure && first < s.count;) {
     if ((s.written >> first & 1) == 0) {
       ++first;
       continue;
@@ -652,13 +685,16 @@ inline void End(ID3D12GraphicsCommandList* command_list) {
   }
   // The segment is its own tracked object, as in norm_trace::Record; the CPU
   // stamp lands before this list can be submitted.
-  internal::mapped[s.base + kSlotFrameStart] = kUnwritten;
+  if (s.measure) {
+    internal::mapped[s.base + kSlotFrameStart] = kUnwritten;
+  }
   submission::TrackUse(command_list, &s);
   s.lease = AcquireGpuLease();
   s.tick = internal::poll_ticks.load(std::memory_order_relaxed);
   s.recorded = true;
   internal::head = (internal::head + 1) % kSegmentDepth;
-  if (!stage_stats[StageIndex(s.path)].valid) internal::Reject(s, SampleState::PENDING);
+  const auto& previous = (s.measure ? stage_stats[StageIndex(s.path)] : execution_stats[StageIndex(s.path)]);
+  if (!previous.valid) internal::Reject(s, SampleState::PENDING);
 }
 
 // Called by the existing tracker before it forgets a closed recording.
@@ -708,6 +744,12 @@ inline void Poll(bool exact_proofs, bool log) {
       timing.state = SampleState::EXPIRED;
     }
   }
+  for (auto& proof : execution_stats) {
+    if (proof.valid && NowNs() - proof.measured_ns > internal::kSampleAgeNs) {
+      proof.valid = false;
+      proof.state = SampleState::EXPIRED;
+    }
+  }
   if (stats.valid && NowNs() - stats.measured_ns > internal::kSampleAgeNs) {
     stats.valid = false;
     stats.state = SampleState::EXPIRED;
@@ -727,7 +769,34 @@ inline void Poll(bool exact_proofs, bool log) {
     if (!s.expired) {
       if (!exact_proofs || s.proof == SampleState::PENDING) s.proof = SampleState::PROOF_UNAVAILABLE;
       if (s.bypass) s.proof = SampleState::BYPASSED;
-      if (s.proof == SampleState::VALID) {
+      if (s.proof == SampleState::VALID && !s.measure) {
+        bool complete = s.pass_count != 0 && s.pass_count <= kTimerMaxPasses
+            && (s.written & (uint64_t{1} << kSlotFrameStart)) != 0;
+        for (uint32_t pass = 0; pass < std::min(s.pass_count, kTimerMaxPasses); ++pass) {
+          const auto& layer = s.passes[pass];
+          const uint64_t required = (uint64_t{1} << PassEncodeStart(pass))
+              | (uint64_t{1} << PassEncodeEnd(pass)) | (uint64_t{1} << PassEvalStart(pass))
+              | (uint64_t{1} << PassEvalEnd(pass)) | (uint64_t{1} << PassResolveEnd(pass));
+          if (layer.id != s.pass_begin + pass || layer.width == 0 || layer.height == 0
+              || (s.written & required) != required) {
+            complete = false;
+          }
+        }
+        if (complete) {
+          auto& target = execution_stats[StageIndex(s.path)];
+          if (s.sequence >= target.sequence) {
+            target = Stats{.width = s.width, .height = s.height, .valid = true, .passes = s.passes,
+                           .state = SampleState::VALID, .sequence = s.sequence, .measured_ns = NowNs(),
+                           .identity = s.comparison.identity};
+            std::memcpy(target.path, s.path, sizeof(target.path));
+            for (uint32_t pass = 0; pass < s.pass_count; ++pass) {
+              target.passes[pass].state = SampleState::VALID;
+            }
+          }
+        } else {
+          internal::Reject(s, SampleState::NOT_EXECUTED);
+        }
+      } else if (s.proof == SampleState::VALID) {
         internal::frequency = 0;
         const void* measured_queue = nullptr;
         {

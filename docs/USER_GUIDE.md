@@ -4,7 +4,7 @@
 
 ## 简体中文
 
-> **版本范围——当前开发源码 0.2.0-dev.11；最新预发布 0.2.0-dev.8／0.1.0 正式版：** 本指南对应完整 0.1.0 包，包含四页菜单、双模型、逐层独立模型风格与结果设置及四套主题。请在 Releases 页面查看可下载的版本化 ZIP；逐层阶段、NR 快速方案、方案库与辅助输入已包含于 dev.8 预发布包，但未包含于已发布 0.1.0 包；早期预发布包也不含本指南展示的全部功能。跨 StageGroup 独立工作分辨率、原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass 不同工作尺寸，以及满足进程级 FG Off 条件的普通 Present 双 Pass 不同工作尺寸，属于当前 0.2.0-dev.11 开发源码，尚未包含于任何已发布包；逐 Pass GPU 诊断也只在当前开发源码提供，尚未随包发布。
+> **版本范围——当前开发源码 0.2.0-dev.11；最新预发布 0.2.0-dev.8／0.1.0 正式版：** 本指南对应完整 0.1.0 包，包含四页菜单、双模型、逐层独立模型风格与结果设置及四套主题。请在 Releases 页面查看可下载的版本化 ZIP；逐层阶段、NR 快速方案、方案库与辅助输入已包含于 dev.8 预发布包，但未包含于已发布 0.1.0 包；早期预发布包也不含本指南展示的全部功能。跨 StageGroup 独立工作分辨率、原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass 不同工作分辨率，以及满足进程级 FG Off 条件的普通 Present 双 Pass 不同工作分辨率，属于当前 0.2.0-dev.11 开发源码，尚未包含于任何已发布包；逐 Pass GPU 诊断也只在当前开发源码提供，尚未随包发布。
 
 <a id="zh-contents"></a>
 ### 目录
@@ -29,11 +29,11 @@
 
 **当前开发源码：页面恢复默认按字段归属执行。** 画质页恢复 NR 主开关、基础模型、介入点、分辨率／共享上采样、模型风格与结果设置，包括叠层页共用的第 1 层字段；叠层页只恢复层数与第 2–4 层独立字段，不重置这些第 1 层共用值；高级页恢复兼容性、HDR／深度／运动、快捷键、截图及界面偏好，保留画质、独立层及诊断控件。确认后先保存待处理的 Slot 编辑，再解除当前 Slot 关联；保留全部六槽保存内容及方案库文件，避免将重置值自动写回原槽。全量恢复的范围与保留项见[高级设置](#zh-advanced)。
 
-当前开发源码将“全部展开／全部收起”放在各页内容区右上角，窄窗口使用带悬浮说明的 `+`／`-`。顶部采用结构化字段：先显示当前状态和“运行监视器”入口，再按可用宽度显示输入／输出尺寸、Stage 和 GPU 开销。监视器可与主菜单同时操作，支持拖动、缩放和锁定位置；窄屏使用折叠摘要，详细历史仍在诊断页。请求设置、已有执行证明、过期样本及待确认状态分别呈现，模型创建请求不等于内部网络回读。此更新尚未随安装包发布。
+当前开发源码将“全部展开／全部收起”放在各页内容区右上角，窄窗口使用带悬浮说明的 `+`／`-`。顶部紧凑显示 NR 状态，优先呈现 NR GPU 开销、可用的 ReShade FPS 与 FG 状态；工作分辨率和 Stage 在宽屏作为辅助信息，窄屏保留性能摘要。独立监视器可与主菜单同时显示，菜单打开时支持拖动、缩放和锁定位置；窄屏也保持独立窗口，详细历史仍在诊断页。请求设置、已有执行证明、过期样本及待确认状态分别呈现，模型创建请求不等于内部网络回读。此更新尚未随安装包发布。
 
-下文默认值针对全新配置；已有保存值或迁移配置可能不同。一般编辑会即时保存。更换模型、层数、介入点或工作尺寸可能重建 Feature，并短暂重建时序历史，比较前应等待场景和历史稳定。
+下文默认值针对全新配置；已有保存值或迁移配置可能不同。一般编辑会即时保存。更换模型、层数、介入点或工作分辨率可能重建 Feature，并短暂重建时序历史，比较前应等待场景和历史稳定。
 
-**配图说明：** 所有配图均为当前生产 ImGui 界面离屏合成的状态示例，用来说明布局与控件，不代表实机画质、FPS 或运行时性能测量。中文章节使用简体中文界面截图与中文图注。顶部版本范围同样适用于本节。
+**配图说明：** 配图为生产 ImGui 界面的离屏状态示例，不代表实机画质、FPS 或运行时性能测量。正式配图保留既有版本；最新开发源码的独立 HUD 和状态栏布局以本指南文字为准。中文章节使用简体中文界面截图与中文图注。顶部版本范围同样适用于本节。
 
 本轮更新的画质、叠层、结果、诊断、高级与主题配图使用 **0.2.0-dev.10 开发源码**；仍准确的保存任务区域图继续保留。任何图片中出现的方案及辅助输入控件均属于开发功能，不包含于已发布的 0.1.0 包。
 
@@ -42,18 +42,20 @@
 
 ![画质页](images/ui/quality-zh.webp)
 
-*画质页：NR 开关、效果比较、模型、共用工作尺寸与介入点。*
+*画质页：NR 开关、效果比较、模型、共用工作分辨率与介入点。*
 
 #### 开关与比较
 
 当前开发源码把 **Neural Rendering 主开关**放在画质页最前方、NR 快速方案之前。比较关／开时先用主开关，再选择或编辑方案。方案摘要表示保存状态和个人修改，是否实际执行 NR 请到“诊断”查看。
+
+**当前开发源码：F6 操作反馈与实际状态分开。** 按 F6 会立即提示“NR 已开启／NR 已关闭”，只确认开关操作；开启后显示“正在检查运行状态”，普通路径须有当前设置下整链近期 GPU 完成证据才显示正常运行。完成确认不依赖可选的 GPU 性能计时；无可靠证明时保持检查状态，不推定完成。FG 路径继续依据已有提交证据显示“NR 已提交至 FG”；提交不代表 FG 已消费／输出，也不代表 GPU 耗时。普通运行状态保留在摘要／运行监视器中，不再连续弹出成功提示；不可用时就近显示当前原因。
 
 | 控件 | 默认／选项 | 用途与条件 |
 | --- | --- | --- |
 | Neural Rendering | **开**；关／开 | 开关 NR，默认快捷键 **F6**。比较 NR 开关请用此项；强度归零是另一种操作。 |
 | 模型强度 | **1.00**，**0–2** | 在结果调整之前传给模型；改动重置 NR 历史。大于 1 的响应依赖模型／运行时，尚未验证；2 不代表保证“双倍画质”。 |
 
-**Vulkan 开发源码边界：** 旧执行路径仅在 Upscaled、完整输出尺寸上运行，叠层继承该尺寸。普通界面不再允许新建 Render／Present 或全局工作比例／跟随输入请求，也不提供独立 Pass 工作尺寸；已有值保留，需选择受支持配置后再应用方案。
+**Vulkan 开发源码边界：** 旧执行路径仅在 Upscaled、完整输出尺寸上运行，叠层继承该尺寸。普通界面不再允许新建 Render／Present 或全局工作比例／跟随输入请求，也不提供独立 Pass 工作分辨率；已有值保留，需选择受支持配置后再应用方案。
 
 #### 模型选择
 
@@ -108,19 +110,19 @@
 
 每次 Present 都处理时，FG 可能成倍增加整链 NR 次数。“游戏帧”可能减少工作，但生成帧外观可能不一致。成功 Pre-FG 通常先处理源游戏帧再插帧，无须每个生成帧都跑整链；HUD 处理仍可能增加工作。不能据此保证每个显示帧恰有一次模型求值。
 
-#### 共用工作尺寸与上采样
+#### 共用工作分辨率与上采样
 
 | 预设 | 单轴比例 | 含义 |
 | --- | --- | --- |
 | **100%**（默认） | **100%** | 完整比例基准尺寸，不会选择 DLAA 或更改游戏 DLSS 设置。 |
-| 67% | **67%** | 降低 NR 工作尺寸。 |
+| 67% | **67%** | 降低 NR 工作分辨率。 |
 | 58% | **58%** | 进一步降低尺寸。 |
 | 50% | **50%** | 宽高各半，约为基准像素数四分之一，不保证 GPU 时间也降至四分之一。 |
 | Follow input／跟随输入 | 有效 Guide 与参考尺寸逐轴取较小值 | 缺少有效 Guide 时使用先前保存的比例；选择跟随不会改写该比例，也不会更改游戏 DLSS 模式。 |
 
 当前开发源码中，五档、**33–100%** 比例滑条和共享上采样常驻显示；画质页与叠层页第 1 层复用同一套控件，编辑的是同一份基础值。Follow input 时滑条禁用但保留比例，并显示原因；非固定档比例不高亮为某个固定档。预设在下次求值应用，连续拖动可能稳定后才重建；实际尺寸仍受参考与兼容资源契约约束。
 
-比例以**当前有效 Stage** 为基准：Render 为 Color／Motion／Depth 的公共裁切区域（通常为 DLSS 输入），Upscaled 为 DLSS 输出矩形，Present 为有效呈现帧。**Last recorded／最后记录**的参考、请求及模型工作尺寸属于历史数据，不能证明当前编辑已执行；模型未录制或缺少数据时显示不可用，当前设置仍可处于待确认。最近完成的 GPU 样本也不自动证明修改后的配置已生效。Guide 的真实来源与时效无法回读时明确为未知，不能从尺寸或 Hook 选择确认；普通 Present 可能使用全尺寸中性引导，Required 缺少有效引导则拒绝，Pre-FG 另有门控。
+比例以**当前有效 Stage** 为基准：Render 为 Color／Motion／Depth 的公共裁切区域（通常为 DLSS 输入），Upscaled 为 DLSS 输出矩形，Present 为有效呈现帧。**Last recorded／最后记录**的参考、请求及模型工作分辨率属于历史数据，不能证明当前编辑已执行；模型未录制或缺少数据时显示不可用，当前设置仍可处于待确认。最近完成的 GPU 样本也不自动证明修改后的配置已生效。Guide 的真实来源与时效无法回读时明确为未知，不能从尺寸或 Hook 选择确认；普通 Present 可能使用全尺寸中性引导，Required 缺少有效引导则拒绝，Pre-FG 另有门控。
 
 | 上采样选项 | NR 低于输出尺寸时的行为 |
 | --- | --- |
@@ -129,7 +131,7 @@
 | Classic／经典 | 更直接显示 NR 的低分辨率像素，可能块状。 |
 | Edge-aware (area input)／边缘感知（区域输入） | NR 前对输入像素平均，之后重建改变量；可能改变模型外观，进入或离开此模式重置 NR 历史。 |
 
-上采样独立于结果调整，工作尺寸与输出一致时无尺寸重建作用。全局工作尺寸仍是默认来源，**上采样全链共用**；当前 0.2.0-dev.11 开发源码支持叠层章节所述的跨 StageGroup 独立尺寸及原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass 不同工作尺寸，属于阶段性支持。降低尺寸可能降低成本，也可能改变细节和稳定性，应观察运动与实际 GPU 测量。
+上采样独立于结果调整，工作分辨率与输出一致时无尺寸重建作用。全局工作分辨率仍是默认来源，**上采样全链共用**；当前 0.2.0-dev.11 开发源码支持叠层章节所述的跨 StageGroup 独立尺寸及原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass 不同工作分辨率，属于阶段性支持。降低尺寸可能降低成本，也可能改变细节和稳定性，应观察运动与实际 GPU 测量。
 
 <a id="zh-results"></a>
 ### 结果调整与稳定性
@@ -179,11 +181,13 @@
 
 后一层处理前一层结果，不是并行方案。点节点只选择编辑对象，处理链表示配置；当前节点显示编辑中，其他为已配置。星号表示偏离默认，不表示逐层耗时或运行时网络确认。
 
-**开发源码：逐层阶段。** 第 1 层沿用画质页的介入点；第 2–4 层新增**阶段：与上一层相同／Render／Upscaled／Present**，与模型、外观及结果继承分别独立。默认保持旧版单阶段链。阶段必须按 `Render → Upscaled → Present` 前进；倒退请求会停用整链并保留选择。原生 DX12 和原生 DX11 Bridge DLSS SR/DLAA 可以拆分 Render 和 Upscaled 分组，例如 `第 1 层 · Render · A → 游戏 DLSS SR → 第 2 层 · Upscaled · B`。A/B 组合不受阶段限制。Render 的结果作为游戏 SR 的真实输入，Upscaled 读取游戏 SR 输出。DX11 需要 immediate context、共享 Fence 支持及同适配器私有 DX12 设备；混合链每阶段通过有界事件等待确认 GPU 完成，会增加同步成本。Render 交付或游戏 SR 失败时跳过后组并重置 NR 历史。
+**当前开发源码：Stage 修改先预览、后确认。** 多 Pass 的 Stage 选择先展示完整处理链各层的更改前／更改后状态，保留 Render／Upscaled／Present 技术名称；检查相关层后点击“确认更改”，一次原子提交整批阶段修改。“取消”不改设置；提交后可用“撤销阶段更改”撤销该次修改，并保留之后的编辑。若当前环境没有合法能力，控件附近或预览中显示具体原因，不会强行提交。
+
+**开发源码：逐层阶段。** 第 1 层沿用画质页的介入点；第 2–4 层新增**阶段：与上一层相同／Render／Upscaled／Present**，与模型、外观及结果继承分别独立。默认保持旧版单阶段链。阶段必须按 `Render → Upscaled → Present` 前进；菜单会在整链预览中列出必要的后续层调整，不合法的已保存倒退链仍会停用并保留选择。原生 DX12 和原生 DX11 Bridge DLSS SR/DLAA 可以拆分 Render 和 Upscaled 分组，例如 `第 1 层 · Render · A → 游戏 DLSS SR → 第 2 层 · Upscaled · B`。A/B 组合不受阶段限制。Render 的结果作为游戏 SR 的真实输入，Upscaled 读取游戏 SR 输出。DX11 需要 immediate context、共享 Fence 支持及同适配器私有 DX12 设备；混合链每阶段通过有界事件等待确认 GPU 完成，会增加同步成本。Render 交付或游戏 SR 失败时跳过后组并重置 NR 历史。
 
 **当前 0.2.0-dev.11 开发源码：独立工作分辨率（阶段性支持）。** 第 2–4 层默认**继承基础分辨率**（`NRFollowInputRes` 与 `NRResolutionScale`），不是继承上一层比例；也可选择 **Follow input／跟随输入**，或使用本层保存的 **33–100%** 固定比例，默认 **100%**。跟随时使用有效 Guide 与本层 Stage 参考尺寸的逐轴较小值，缺失有效 Guide 时回退保存比例。固定比例同样以本层有效 Stage 为基准，定义见画质页。第 1 层与画质页共用同一套基础控件，不改变游戏 DLSS SR 分辨率。可配置 `Render A 100% → 游戏 DLSS SR → Upscaled B 67%`，也可互换为 Render 67%、Upscaled 100%。返回继承模式会保留本层独立比例；模式与 Stage、Model Preset、Look、Result 分别独立，上采样全链共享，第 2–4 层只显示共享提示。编辑标题集中显示所选 Pass、有效 Stage 与模型请求名称，不代表实际执行确认。
 
-不含 Present 的原生 DX11 Bridge／DX12 链中，同一 Render 或 Upscaled StageGroup 的两个 Pass 支持不同工作尺寸：`Upscaled Pass 1 · A 100% → Pass 2 · B 67%`，也可反向设置为 A 67%、B 100%；Render 双层对应 `Render A 100% → Render B 67% → 游戏 DLSS SR` 及反向比例，不改变游戏 SR 内部渲染尺寸；各层比例仍参考完整 Stage 尺寸。当前 0.2.0-dev.11 开发源码还允许普通原生 DX11 Bridge／DX12 Present 双 Pass 使用不同工作尺寸，前提是已收到成功的进程级公共 FG Off 声明。没有该成功声明时，即使未观测到 FG 活动，仍拒绝该双 Pass 异尺寸组合；该声明作用于进程，不区分各个 viewport。该 Present 能力拒绝 FG 未知／On、Pre-FG 及 B1／混合链，不改变既有 Render／Upscaled 支持。DX11 Present 双 Pass 增加有界 GPU 完成等待及同步成本。新增 DX11 Present 双 Pass 已通过 WARP／硬件定向 GPU 自动化；真实游戏、NVIDIA 网络及性能收益未验收。同组 3 层以上仍要求实际工作尺寸相同；不支持的尺寸组合会明确拒绝该组并由界面说明原因，保留设置供修正，不静默忽略覆盖。同组模式或比例不同但实际尺寸相同不构成冲突。**此为双 Pass 阶段性实现；Upscaled 已通过定向 WARP／硬件 GPU 自动化，Render 双层的 DX12／Bridge 核心已实现，Bridge 本轮三组 HDR 场景及 DX12 本轮八场景／二十阶段均已通过 WARP／硬件 GPU 自动化；真实网络、实机画质及性能收益未验收。**新增独立模式仅限 native DX11/DX12；Vulkan 旧执行器不消费工作尺寸，因此明确拒绝非继承模式（1/2），默认继承（0）保留旧行为。最近观测的真实工作尺寸以诊断为准，配置百分比不证明实际执行或性能改善；既有截图未展示新增控件。
+不含 Present 的原生 DX11 Bridge／DX12 链中，同一 Render 或 Upscaled StageGroup 的两个 Pass 支持不同工作分辨率：`Upscaled Pass 1 · A 100% → Pass 2 · B 67%`，也可反向设置为 A 67%、B 100%；Render 双层对应 `Render A 100% → Render B 67% → 游戏 DLSS SR` 及反向比例，不改变游戏 SR 内部渲染尺寸；各层比例仍参考完整 Stage 尺寸。当前 0.2.0-dev.11 开发源码还允许普通原生 DX11 Bridge／DX12 Present 双 Pass 使用不同工作分辨率，前提是已收到成功的进程级公共 FG Off 声明。没有该成功声明时，即使未观测到 FG 活动，仍拒绝该双 Pass 异尺寸组合；该声明作用于进程，不区分各个 viewport。该 Present 能力拒绝 FG 未知／On、Pre-FG 及 B1／混合链，不改变既有 Render／Upscaled 支持。DX11 Present 双 Pass 增加有界 GPU 完成等待及同步成本。新增 DX11 Present 双 Pass 已通过 WARP／硬件定向 GPU 自动化；真实游戏、NVIDIA 网络及性能收益未验收。同组 3 层以上仍要求实际工作分辨率相同；不支持的尺寸组合会明确拒绝该组并由界面说明原因，保留设置供修正，不静默忽略覆盖。同组模式或比例不同但实际尺寸相同不构成冲突。**此为双 Pass 阶段性实现；Upscaled 已通过定向 WARP／硬件 GPU 自动化，Render 双层的 DX12／Bridge 核心已实现，Bridge 本轮三组 HDR 场景及 DX12 本轮八场景／二十阶段均已通过 WARP／硬件 GPU 自动化；真实网络、实机画质及性能收益未验收。**新增独立模式仅限 native DX11/DX12；Vulkan 旧执行器不消费工作分辨率，因此明确拒绝非继承模式（1/2），默认继承（0）保留旧行为。最近观测的真实工作分辨率以诊断为准，配置百分比不证明实际执行或性能改善；既有截图未展示新增控件。
 
 **Render→Upscaled 与 FG 并用。** 上述 DX12／DX11 Bridge 双阶段链可以与原生 DLSS FG 或 XeFG 并用，仍受既有来源、资源、输入所有权及实验门控约束。FG 开启不等于 FG 服务接管 NR 输入。确认两个 Pass 时应核对同一来源的 Render／Upscaled 实际 NR 调用；配置链、模型创建或 FG 开启状态不能单独证明两组已执行。NGX 调用成功、GPU 完成和 FG 消费是不同的证据。
 
@@ -205,7 +209,7 @@
 
 **链式历史默认开**，每层保留各自历史。关闭是诊断模式，第 2–4 层每帧重置，可能闪烁。更换模型或层数重建 Feature；改强度或模型风格重置历史。频繁切换会有历史稳定过程及创建开销；实时结果修改不重启 NR 模型历史。
 
-在支持的双模型运行时，可固定介入点、尺寸、强度，比较 **A、B、AA、AB、BA、BB**。字母按执行顺序排列，AB 即先 A 后 B。比较时明确设置每层模型，避免“继承主模型”随主模型一起改变序列。每次切换后等历史稳定，同时看静止细节和运动。以上仅为例子，**不保证哪组最佳**；加层可能增强效果，也会累积颜色、光晕、时序伪影并增加 GPU 工作。上采样仍共用；当前 0.2.0-dev.11 开发源码支持逐层阶段、跨 StageGroup 工作尺寸覆盖及原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass 不同工作尺寸。
+在支持的双模型运行时，可固定介入点、尺寸、强度，比较 **A、B、AA、AB、BA、BB**。字母按执行顺序排列，AB 即先 A 后 B。比较时明确设置每层模型，避免“继承主模型”随主模型一起改变序列。每次切换后等历史稳定，同时看静止细节和运动。以上仅为例子，**不保证哪组最佳**；加层可能增强效果，也会累积颜色、光晕、时序伪影并增加 GPU 工作。上采样仍共用；当前 0.2.0-dev.11 开发源码支持逐层阶段、跨 StageGroup 工作分辨率覆盖及原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass 不同工作分辨率。
 
 <a id="zh-native-prefg-resolution"></a>
 #### 原生 Pre-FG 双 Pass 独立尺寸：研究保留，BLOCKED／NO-GO
@@ -227,7 +231,7 @@
 5. 想恢复共享时，分别重新开启所需的继承开关；以后关闭仍能继续使用保存的独立值。**继承主模型**是另一项选择，只有希望第 2 层连模型也跟随主模型时才选它。
 6. 等待历史稳定，在同一场景比较静止与运动，并查看诊断中 **NR 开销**里的可用 GPU 耗时。固定介入点和尺寸，对比两层与一层；减少层数仍保留第 2 层编辑。NR 开销计量按 Stage 采样，不是单个 Pass 的网络耗时；不可用读数不代表零开销。
 
-模型风格改变生成阶段并重置时序历史，结果编辑实时塑造每层返回的改变量。上采样仍共享；当前 0.2.0-dev.11 开发源码支持逐层阶段、跨 StageGroup 工作尺寸覆盖及原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass 不同工作尺寸。可调项和层数更多不代表画质或性能更好，应在实际游玩场景中比较后选择。
+模型风格改变生成阶段并重置时序历史，结果编辑实时塑造每层返回的改变量。上采样仍共享；当前 0.2.0-dev.11 开发源码支持逐层阶段、跨 StageGroup 工作分辨率覆盖及原生 DX11 Bridge／DX12 Render／Upscaled 双 Pass 不同工作分辨率。可调项和层数更多不代表画质或性能更好，应在实际游玩场景中比较后选择。
 
 <a id="zh-presets"></a>
 ### NR 快速方案与方案库（开发中）
@@ -238,7 +242,7 @@
 
 画质页的 **NR 快速方案（NR Profiles）** 提供三个官方方案和三个自定义方案，标题旁为“管理方案”。仅当 NR 配置被确证为空、方案存储被确证为新建且 Balanced 通过当前能力检查时，首次安装才会尝试自动应用 Balanced；已有、未知、不可读、旧版、损坏、显式解绑、身份不匹配或只读状态均保留当前设置。选择已有内容的方案会应用其管理的 NR 设置。点击尚未创建的自定义方案会就地打开创建弹窗：“将当前设置保存为此方案”捕获当前设置并选中该方案；“从官方方案复制”按所选官方方案创建，然后选中并应用。“取消”保留当前设置。若目标已不再为空，请到“管理方案”检查，创建弹窗不会直接覆盖它。
 
-| 官方开发候选 | 介入点 | 层数／请求模型 | 工作尺寸 |
+| 官方开发候选 | 介入点 | 层数／请求模型 | 工作分辨率 |
 | --- | --- | --- | --- |
 | **轻量（NR Lite）** | Render | 1／B | 工作比例 0.67 |
 | **均衡（NR Balanced）** | Upscaled | 1／A | 工作比例 0.67 |
@@ -262,7 +266,7 @@
 
 #### 方案库：主页、保存与导入
 
-在画质或高级页打开**管理方案**，进入单一的**方案库**主页：当前方案摘要、“保存方案”“导入方案”、折叠的“我的方案”管理区及可搜索的库列表。选中文件后才显示预览、重命名、复制及删除操作；删除须显式确认，且只影响库内文件。打开及库内保存／重命名／复制／删除后自动刷新，也可点“刷新方案库”。默认共享库为 `%LOCALAPPDATA%\NR Nexus\Presets\`，与当前游戏的六个方案分开保存。在保存任务中展开“导出文件”，可查看实际库路径并使用“打开方案文件夹”。
+在画质页打开**管理方案**，进入单一的**方案库**主页：当前方案摘要、“保存方案”“导入方案”、折叠的“我的方案”管理区及可搜索的库列表。选中文件后才显示预览、重命名、复制及删除操作；删除须显式确认，且只影响库内文件。打开及库内保存／重命名／复制／删除后自动刷新，也可点“刷新方案库”。默认共享库为 `%LOCALAPPDATA%\NR Nexus\Presets\`，与当前游戏的六个方案分开保存。在保存任务中展开“导出文件”，可查看实际库路径并使用“打开方案文件夹”。
 
 1. **保存方案：** 初始只显示名称输入，首次使用默认“画质＋叠层”。展开“更多选项”再修改范围、选填作者／描述／来源游戏或“预览导出字段”。通常来源为当前游戏配置；从自定义方案分享时来源为其已保存快照，可点“使用当前游戏设置”切回。快照导出使用画质范围，完整备份须切回当前游戏设置。“保存方案到方案库”“导出文件”“复制分享文本”始终可见，保存会写入库文件，复制会把 JSON 放入剪贴板。展开“导出文件”后可指定路径、“选择导出文件”或“浏览文件夹”，最后主动点“导出方案文件”才写入。选路径不会立即导出；覆盖已有文件前须勾选替换许可；勾选后确认项始终可见，收起选项也不会隐藏。
 2. **导入方案：** 初始选择“选择方案文件”或“粘贴分享文本”；需要手输本地完整路径时再展开“输入文件路径”，然后“读取方案文件”。读取仅准备预览，成功后才出现差异、应用及自定义方案存入操作。按组检查变化、保留值、不支持及跳过字段，可显示未改变字段。兼容项默认排除，完整备份需确认范围。当前设置变化后须检查刷新预览，再“确认并应用方案”；“取消导入”丢弃待应用预览，不应用设置。
@@ -295,7 +299,13 @@
 
 #### 近期状态监视器
 
-宽屏布局可打开独立的非模态运行时监视器；窗口可拖动、调整大小，也可锁定位置与尺寸。窄屏布局将其嵌入可折叠区域，完整诊断页和计数仍可单独查看。监视器分为**当前结论、执行链、尺寸、GPU、当前限制**五区。
+画质页将比例、预计工作分辨率和当前完成样本的实际工作分辨率放在同一区域；预计值依据最近观测的参考尺寸，不代表当前执行。历史尺寸与 Guide 说明保留在诊断页的“工作分辨率历史”中。
+
+当前开发源码支持独立运行时监视器：默认按 **F11** 显示／隐藏，不必打开 ReShade 主菜单；可在**高级 → 快捷键**修改绑定。默认开启“关闭主菜单后保持显示”。关闭该选项时，下一次关闭主菜单也会隐藏监视器，仍可在游戏中用快捷键重新打开。监视器始终使用独立窗口，窄屏也不会插入参数列表。
+
+游戏中监视器不接收鼠标或键盘输入。打开主菜单后可拖动、调整大小、锁定位置，或切换**精简／详细**视图；位置、尺寸与显示模式会保存。首次显示按内容和屏幕空间确定尺寸，实时文本变化不会反复调整窗口大小。关闭 ReShade 效果不会关闭此 HUD；卸载 ReShade 后无法绘制。运行时重建会丢弃旧快照，保留几何设置并重新读取当前状态。
+
+默认精简仪表板展示 NR 状态、NR GPU 开销、可用的 ReShade FPS 和 FG 状态；P1–P4 使用纵向执行链，关联 Stage、配置模型、工作比例、实际工作分辨率及执行确认。详细视图增加逐 Pass 开销与异常，原始计数和六列表格保留在可展开的证据详情中。展示快照最多约每 100ms 刷新一次，锁忙时推迟读取，底层运行证据与必要 GPU 完成检查不因显示缓存而停用。ReShade FPS 复用宿主 OSD 的帧率来源，显示前先等待稳定观察；它不单独证明游戏渲染 FPS 或 FG 输出 FPS。无可靠来源时显示空值，FG 耗时仍不提供。
 
 近期状态使用 3 秒窗口，至少需要 60 个有效源帧且覆盖至少 750 ms；2 秒没有新样本时显示待确认。历史累计计数不会因此清零。GPU 当前值只来自新鲜（不超过 2 秒）、与当前配置身份匹配的已完成单次提交样本；各阶段区间不能相加成帧延迟。
 
@@ -304,7 +314,7 @@
 | 请求模型 | 保存的 Auto、A、B 或继承选择。 |
 | 解析模型 | 经过兼容规则后的配置；Feature 创建条目也是请求，明确未确认。 |
 | 运行时网络：回读不可用 | 本构建不能查询实际执行网络；求值成功不等于网络回读。 |
-| 工作尺寸、后端 | 最近观测的尺寸与路径，包括 NGX core／signed runtime、D3D12、D3D11 桥接、Vulkan 或桥接工具路径；暂无尺寸表示尚未观测。 |
+| 工作分辨率、后端 | 最近观测的尺寸与路径，包括 NGX core／signed runtime、D3D12、D3D11 桥接、Vulkan 或桥接工具路径；暂无尺寸表示尚未观测。 |
 | 资源／真实与中性引导 | 策略不等于实际资源。旧 Present 引导计数**不含**原生 FG／XeFG 的 Pre-FG 引导，不能作为全链总量。 |
 | 最近一帧 | 最近 NGX 结果；错误码对应失败步骤，“暂无”不是有效测量。 |
 | 模型求值／旁路／FG 前提交 | 不同事件的会话计数，不是显示帧数或 FPS；叠层可使每游戏帧多次求值。 |
@@ -327,15 +337,15 @@
 
 #### 手动 GPU A/B 对比
 
-此工具仅在当前 `0.2.0-dev.11` 开发源码提供，尚未包含于已发布版本。诊断页紧凑固定区提供 **采集基线**、**采集对照** 和 **清除**：先在 A 条件采集基线，再只改变一个 Pass 的实际工作尺寸后采集 B。每个 StageGroup 均需 **16 个有效原始完成样本**；沿用既有 **250 ms** 采样节奏，每次采集开始及 NR reset/rebuild 后均有 **1 秒稳定期**，单次采集 **10 秒超时**。采集中发生配置变化会使结果无效。A/B 之间必须只有一层的实际工作尺寸不同；Stage、模型创建请求、主要处理设置、FG、HDR/SR 显示尺寸、来源、路由和队列均须匹配。
+此工具仅在当前 `0.2.0-dev.11` 开发源码提供，尚未包含于已发布版本。诊断页紧凑固定区提供 **采集基线**、**采集对照** 和 **清除**：先在 A 条件采集基线，再只改变一个 Pass 的实际工作分辨率后采集 B。每个 StageGroup 均需 **16 个有效原始完成样本**；沿用既有 **250 ms** 采样节奏，每次采集开始及 NR reset/rebuild 后均有 **1 秒稳定期**，单次采集 **10 秒超时**。采集中发生配置变化会使结果无效。A/B 之间必须只有一层的实际工作分辨率不同；Stage、模型创建请求、主要处理设置、FG、HDR/SR 显示尺寸、来源、路由和队列均须匹配。
 
 ![手动 GPU A/B 对比诊断区](images/ui/gpu-comparison-zh.webp)
 
 *开发界面的离屏合成预览，仅展示布局，不是真实采集或实测数据。*
 
-完成后，工具汇总每个 Pass 的 NGX GPU span 中位数与中位数绝对偏差（MAD），以及每个 StageGroup 总 span 的中位数与 MAD，并显示 B−A 的绝对／相对变化。波动较大或差异不足时不提供建议；只有测量数据支持时，才能说降低某 Pass 的实际工作尺寸使该层测得的 NGX 耗时减少。工具无法判定两次采集的场景是否可比，也不能确认模型内部实际运行的网络；结果不保证 FPS 或画质，请检查真实场景画质。跨队列 span 不应相加并解释为帧延迟。比较数据只保存在内存，不导出或上传；工具不会自动改变尺寸或保存 Preset/Profile。
+完成后，工具汇总每个 Pass 的 NGX GPU span 中位数与中位数绝对偏差（MAD），以及每个 StageGroup 总 span 的中位数与 MAD，并显示 B−A 的绝对／相对变化。波动较大或差异不足时不提供建议；只有测量数据支持时，才能说降低某 Pass 的实际工作分辨率使该层测得的 NGX 耗时减少。工具无法判定两次采集的场景是否可比，也不能确认模型内部实际运行的网络；结果不保证 FPS 或画质，请检查真实场景画质。跨队列 span 不应相加并解释为帧延迟。比较数据只保存在内存，不导出或上传；工具不会自动改变尺寸或保存 Preset/Profile。
 
-测量及路径足够时，**Faster／加速**提供放大前运行、50% 尺寸或两者组合，并给出估计与撤销。这些操作改变介入点／工作尺寸，不是基准保证；特别是 Ray Reconstruction，应重新核对实际路径。
+测量及路径足够时，**Faster／加速**提供放大前运行、50% 尺寸或两者组合，并给出估计与撤销。这些操作改变介入点／工作分辨率，不是基准保证；特别是 Ray Reconstruction，应重新核对实际路径。
 
 #### 问题报告
 
@@ -443,11 +453,11 @@ Pre-FG service ROI、单个 HDR 样本、120 次 HDR Present、单个 P0 样本�
 ### 七个实用场景
 
 1. **首次安装并确认活动。** 按 README 核对前提、DLL 位置和安装步骤，打开 NR Nexus，先用一层和 Auto；在诊断中确认加载的 Runtime 与 NR 实际状态。同场景 F6 比较 Off／On；开发源码中，准备好替换管理字段后再明确选择 NR Profile。
-2. **在 DLSS 游戏中选择介入点。** 先从 Upscaled 开始，兼容 DLSS 输入可用时比较 Render；Ray Reconstruction 可能使它保留 Upscaled 路径。希望处理最终画面时选择 Present，再检查实际路径和资源策略。比较期间固定模型、层数和工作尺寸。
+2. **在 DLSS 游戏中选择介入点。** 先从 Upscaled 开始，兼容 DLSS 输入可用时比较 Render；Ray Reconstruction 可能使它保留 Upscaled 路径。希望处理最终画面时选择 Present，再检查实际路径和资源策略。比较期间固定模型、层数和工作分辨率。
 3. **比较 A/B 与叠层顺序。** 在已识别的双模型 Runtime 上，以相同介入点、尺寸和强度测试 A、B、AA、AB、BA、BB；明确指定各层模型，编辑前核对两项继承开关。每次等待历史稳定，再检查人脸、植被、高光及运动，不预设最佳组合。
 4. **确认 NR 与 FG 协同。** 保持游戏预期的原生 FG 或 XeFG 配置，分别读取 FG 活动、实际倍率和 NR 路径，观察近期 Pre-FG 提交及稳定路径；倍率未知不等于 FG 关闭。若显示 Present／Upscaled 回退或混合执行，先查原因再判断成本和生成帧一致性。
 5. **设置 Present 深度与运动策略。** 从可选资源和保留 HUD 开始，确认实际使用真实还是中性资源。仅在捕获资源不可靠且可接受中性数据时尝试从不；必须真实资源则用必需，并接受缺失时跳过。中性资源不会重建真实场景运动，部分兼容 Present 可不依赖 DLSS，不代表所有游戏都可如此运行。
-6. **排查异常、闪烁或性能下降。** 退回一层并比较 Off／On，改参数前先看跳过原因和实测 NR GPU 时间。过度变色、压暗或光晕可调结果及非零柔性限制；精细细节不等于模型结构。运动不稳时核对资源与细节稳定／Stabilize 依赖。固定其他条件后再降低工作尺寸或比较模型，加速／撤销估计需实测；任何预设都不承诺修复已知 XeFG 闪烁。
+6. **排查异常、闪烁或性能下降。** 退回一层并比较 Off／On，改参数前先看跳过原因和实测 NR GPU 时间。过度变色、压暗或光晕可调结果及非零柔性限制；精细细节不等于模型结构。运动不稳时核对资源与细节稳定／Stabilize 依赖。固定其他条件后再降低工作分辨率或比较模型，加速／撤销估计需实测；任何预设都不承诺修复已知 XeFG 闪烁。
 7. **恢复默认，再逐项重启。** 备份该游戏 ReShade 设置，在高级→恢复全部默认中确认恢复；当前开发源码也恢复 Cyber Neon，并清除本游戏三个官方 Slot 的个人覆盖，保留自定义槽、方案库、其他游戏及上述支持例外。重新确认 Runtime 和实际活动后，按需逐项启用介入点、模型、附加层、独立编辑及 FG 配置。问题复现时查看诊断或审查本地报告，不把自动化工具失败当作某项设置已修复或插件故障的证明。
 
 <a id="zh-status"></a>
@@ -502,11 +512,11 @@ The 0.1.0 interface has four pages: **Quality**, **Multi-Pass**, **Diagnostics**
 
 **Current development source: page resets follow field ownership.** Quality restores the NR master switch, base model, location, resolution/shared upsampling, styling and results, including Pass 1 fields shared with Multi-Pass. Multi-Pass restores only pass count and independent Pass 2–4 fields, keeping those shared Pass 1 values. Advanced restores compatibility, HDR/depth/motion, hotkeys, screenshots and interface preferences, keeping Quality, independent passes and diagnostic controls. After confirmation, pending Slot edits save before the current association is detached; all six saved Slots and library files are kept, so reset values are not autosaved into the former Slot. See [Advanced](#en-advanced) for full-reset scope and exceptions.
 
-In the current development source, **Expand all / Collapse all** sit at the top right of each page; narrow windows use `+` / `-` with tooltips. The structured summary shows current status and **Runtime monitor**, then prioritizes input/output dimensions, Stage and GPU cost according to width. The monitor remains usable alongside the main settings and supports dragging, resizing and locking its geometry. Narrow panels use a collapsible summary; detailed history stays in Diagnostics. Requested settings, execution proof, stale samples and pending confirmation remain distinct. A model creation request does not establish the internal network. This update has not shipped in an installation package.
+In the current development source, **Expand all / Collapse all** sit at the top right of each page; narrow windows use `+` / `-` with tooltips. The compact summary prioritizes NR status, current NR GPU cost, **ReShade FPS** when available, and FG status. Working resolution and Stage are secondary on wide windows; narrow windows keep the performance summary compact. The independent monitor remains usable alongside the main settings and supports dragging, resizing and locking its geometry while the menu is open. It stays separate on narrow screens; detailed history stays in Diagnostics. Requested settings, execution proof, stale samples and pending confirmation remain distinct. A model creation request does not establish the internal network. This update has not shipped in an installation package.
 
 Defaults below are for a fresh configuration. Existing saved choices and migrations can retain different values. Settings normally save as you edit them; changing a model, pass count, location or working size may recreate features and briefly rebuild temporal history. Wait for a stable scene after a change before comparing.
 
-**Image note (applies to every image below, including the Chinese section):** these are state examples composed offscreen with the current production ImGui interface. They illustrate controls and layout, and do not represent in-game image quality, FPS, or measured runtime performance. Screenshots and captions match the language of each section.
+**Image note (applies to every image below, including the Chinese section):** these are offscreen production ImGui state examples, not in-game image quality, FPS or runtime performance measurements. Existing official images are retained; the text describes the latest development-source HUD and status bar. Screenshots and captions match the language of each section.
 
 The refreshed Quality, Multi-Pass, result, Diagnostics, Advanced and theme images show the **0.2.0-dev.10 development source**; the save-task crop is retained where still accurate. Profile and assisted-input controls visible in any image are development features, outside the published 0.1.0 package.
 
@@ -520,6 +530,8 @@ The refreshed Quality, Multi-Pass, result, Diagnostics, Advanced and theme image
 #### Enable and compare
 
 In the current development source, the **Neural Rendering** master switch comes first on Quality, above NR Profiles. Start there for an Off/On comparison, then choose or edit a profile. The profile summary reports saved settings and personal changes; use Diagnostics to confirm actual NR execution.
+
+**Current development source: F6 feedback and actual status are separate.** Pressing F6 immediately reports **NR enabled / NR disabled**, confirming the switch operation. Enabling starts **Checking runtime status**; normal operation on the ordinary path requires recent GPU completion evidence for the entire chain under the current settings. Completion confirmation works independently of optional GPU performance timing; without reliable proof, the ordinary path keeps checking without assuming completion. The FG path continues to show **NR submitted before FG** based on existing submission evidence; submission does not prove FG consumption/output or GPU duration. Routine status stays in the summary/runtime monitor instead of repeatedly showing success notifications. When unavailable, the current reason appears nearby.
 
 | Control | Default / options | What it does and when to use it |
 | --- | --- | --- |
@@ -652,7 +664,9 @@ Turning Adjust NR's look off does **not** turn off Detail stability or shared up
 
 Each pass processes the preceding result. These are not parallel alternatives and the node selector only selects which pass you edit. The chain diagram shows configuration. The selected node says Editing; other nodes say Configured. An asterisk indicates settings changed from defaults, not per-pass timing or runtime network confirmation.
 
-**Development source: per-pass stages.** Pass 1 keeps the Quality page's Hook Point. Passes 2–4 add **Stage: Same as previous / Render / Upscaled / Present**, independently of model, styling and result inheritance. The default keeps the old single-stage chain. Stages must move in order `Render → Upscaled → Present`; a backward request disables the chain and preserves your choices. Native DX12 and native DX11 Bridge DLSS SR/DLAA can split Render and Upscaled groups, for example `Pass 1 · Render · A → game DLSS SR → Pass 2 · Upscaled · B`. A/B combinations remain independent of stage. Render consumes the render image and supplies its result as the game's SR input; Upscaled consumes the game's SR output. The DX11 path requires an immediate context, shared-fence support and a private DX12 device on the same adapter. Each mixed-stage delivery waits for proven GPU completion with a bounded event wait, adding synchronization cost; failed Render delivery or failed game SR skips the following group and resets NR history.
+**Current development source: preview Stage changes before confirming.** In a multi-pass chain, choosing a Stage first previews every pass before and after the proposed change, keeping the technical names Render / Upscaled / Present. Review the whole chain, then select **Confirm change** to commit all proposed stage changes in one atomic batch. **Cancel** leaves settings unchanged. After applying, **Undo stage change** reverses that change while keeping later edits. If the current environment has no eligible capability, the control or preview shows the specific reason nearby and does not force the change.
+
+**Development source: per-pass stages.** Pass 1 keeps the Quality page's Hook Point. Passes 2–4 add **Stage: Same as previous / Render / Upscaled / Present**, independently of model, styling and result inheritance. The default keeps the old single-stage chain. Stages must move in order `Render → Upscaled → Present`; the whole-chain preview lists necessary adjustments to later passes. An invalid saved backward chain remains disabled with your choices preserved. Native DX12 and native DX11 Bridge DLSS SR/DLAA can split Render and Upscaled groups, for example `Pass 1 · Render · A → game DLSS SR → Pass 2 · Upscaled · B`. A/B combinations remain independent of stage. Render consumes the render image and supplies its result as the game's SR input; Upscaled consumes the game's SR output. The DX11 path requires an immediate context, shared-fence support and a private DX12 device on the same adapter. Each mixed-stage delivery waits for proven GPU completion with a bounded event wait, adding synchronization cost; failed Render delivery or failed game SR skips the following group and resets NR history.
 
 **Current development source (v0.2.0-dev.11): independent working resolution (partial support).** Passes 2–4 default to **Inherit base resolution** (`NRFollowInputRes` and `NRResolutionScale`), rather than inheriting the preceding pass's scale. They can instead use **Follow input** or a saved fixed scale of **33–100%** (default **100%**). Follow input takes the per-axis minimum of valid guides and this pass's Stage reference; without valid guides it falls back to the saved scale. Fixed scale also uses this pass's effective Stage reference, defined under Quality. Pass 1 reuses the same base controls as Quality. Game DLSS SR resolution is unchanged. Examples include `Render A 100% → game DLSS SR → Upscaled B 67%`, or Render 67% and Upscaled 100%. Returning to inherited mode retains the local scale. Resolution is independent of Stage, Model Preset, Look and Result; upsampling remains shared across the chain, with a shared-setting hint on Passes 2–4. The editor title combines the selected Pass, effective Stage and model request name; it does not confirm execution.
 
@@ -735,7 +749,7 @@ Corrupt/future profile files and read-only configuration are protected rather th
 
 #### Profile library: home, save and import
 
-Open **Manage profiles** on Quality or Advanced. **Profile library** opens on one home page with the current-profile summary, **Save current profile**, **Import profile**, the folded custom-profile tools and a searchable library list. Select a file before preview, rename, duplicate and deletion controls appear; deletion requires explicit confirmation and affects only the library file. The library refreshes on open and after library saves, renames, duplicates or deletions; **Refresh library** refreshes it again. The default shared library is `%LOCALAPPDATA%\NR Nexus\Presets\`, separate from this game's six profiles. Expand **Export file** in the save task to see the resolved library path and **Open preset folder**.
+Open **Manage profiles** on Quality. **Profile library** opens on one home page with the current-profile summary, **Save current profile**, **Import profile**, the folded custom-profile tools and a searchable library list. Select a file before preview, rename, duplicate and deletion controls appear; deletion requires explicit confirmation and affects only the library file. The library refreshes on open and after library saves, renames, duplicates or deletions; **Refresh library** refreshes it again. The default shared library is `%LOCALAPPDATA%\NR Nexus\Presets\`, separate from this game's six profiles. Expand **Export file** in the save task to see the resolved library path and **Open preset folder**.
 
 1. **Save current profile:** initially only the name field is shown; a fresh form uses **Quality + Multi-Pass**. **More options** exposes scope, optional author/description/source game and **Preview export fields**. The source is current game settings unless you came from a saved custom profile; **Use current game settings** switches back. Saved profile exports use Quality scopes; switch back to current game settings for a Full backup. **Save preset to library**, **Export file** and **Copy share text** remain visible. Saving writes the library file; copying puts JSON on the clipboard. Expand Export file for the destination, **Choose export file**, **Browse folder** and the explicit **Export preset file** action. Choosing a destination alone does not write. Replacement permission must be enabled to overwrite an existing file; once enabled, its checkbox remains visible even when options are collapsed.
 2. **Import profile:** start with **Choose preset file** or **Paste share text**; expand **Enter file path** only if you need a full local path and **Read preset file**. Reading only prepares a preview. Differences, apply and custom-profile assignment controls appear after a successful read. Review grouped differences, kept/unsupported/skipped fields and **Show unchanged fields**. Compatibility settings start excluded; full backups require scope confirmation. If settings changed, review the refreshed preview before **Confirm and apply preset**. **Cancel import** discards the pending preview without applying settings.
@@ -768,7 +782,13 @@ Read status and warnings first, then the resource and performance sections. They
 
 #### Recent status monitor
 
-The wide layout can open a separate, non-modal runtime monitor. It can be moved and resized, or locked in place. On narrow layouts it is embedded in a collapsible section; the full Diagnostics page and its counters remain available. The monitor has five sections: **Current conclusion, Execution chain, Dimensions, GPU and Current limits**.
+Quality groups the working ratio, estimated dimensions and actual dimensions from a current completed sample. Estimates use the last observed reference and do not confirm execution. Historical dimensions and Guide details remain under **Working resolution history** in Diagnostics.
+
+The development source supports an independent runtime monitor. Press **F11** by default to show or hide it without opening ReShade's menu; change its binding under **Advanced → Hotkeys**. **Keep monitor visible after closing the menu** defaults On. With this option Off, the next menu close also hides the monitor; its shortcut can still reopen it during gameplay. The monitor uses a separate window on narrow screens too.
+
+During gameplay it accepts no mouse or keyboard input. Open the menu to move, resize, lock, or switch between **compact and detailed** views. Position, size and view mode are saved. The first size fits the content and available screen space; live text updates do not keep resizing the window. Disabling ReShade effects does not hide this HUD; unloading ReShade removes its renderer. Runtime recreation discards old snapshots, retains geometry settings and reads the current state again.
+
+The default compact dashboard shows NR status, NR GPU cost, available ReShade FPS and FG status, followed by a vertical P1–P4 chain. Detailed view adds pass costs and warnings; raw counters and six-column tables remain in expandable evidence details; full Diagnostics and historical counters remain available. Display snapshots refresh at most about every 100ms and defer a read when the shared lock is busy. Necessary execution evidence and GPU completion checks remain active independently of this display cache. Unavailable FPS or FG duration measurements are never replaced by invented values.
 
 Recent status uses a 3-second window and needs at least 60 valid source frames spanning at least 750 ms. With no new sample for 2 seconds, status changes to pending confirmation; cumulative history counters are not cleared. A current GPU value requires a fresh (no older than 2 seconds), completed single-submission sample whose configuration identity matches the current settings. Stage spans are not added together as frame latency.
 
@@ -787,6 +807,8 @@ Recent status uses a 3-second window and needs at least 60 valid source frames s
 **FG activity, multiplier and NR route are separate observations.** A declaration can say FG is enabled without proving ongoing submission. Recent counters across stable observation windows determine the displayed route. Native FG/XeFG can bypass Present cadence sampling, so “multiplier unknown” does not mean FG is off. Present cadence is an observation, not an FG verdict. A lifetime success count alone does not prove that NR is still running before FG now.
 
 Route messages distinguish **Pre-FG confirmed**, **Pre-FG observed; multiplier unknown**, **every presented frame**, **game frames only**, **fallback to Present**, **fallback to Upscaled**, **mixed Pre-FG and fallback**, and **unconfirmed**. Mixed or fallback states require reading the detailed reason before judging cost or frame consistency. At Render/Upscaled, extra passes still cost work but are not inherently executed on every present.
+
+**ReShade FPS** uses the same source as the host OSD after a warm-up. It does not separately identify game render FPS or FG output FPS. Missing readings remain unavailable; FG GPU duration is not measured.
 
 #### GPU time and Faster options
 

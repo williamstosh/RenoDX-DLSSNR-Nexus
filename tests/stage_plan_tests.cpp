@@ -38,6 +38,8 @@ int main() {
   constexpr std::array explicit_stages = {Stage::RENDER, Stage::UPSCALED, Stage::PRESENT};
   constexpr std::array all_stages = {Stage::RENDER, Stage::UPSCALED, Stage::PRESENT};
 
+#include "stage_change_cases.hpp"
+
   for (uint32_t count = 1, combinations = 1; count <= 4; ++count, combinations *= 4) {
     for (uint32_t hook = 0; hook < hook_stages.size(); ++hook) {
       context = "legacy count=" + std::to_string(count) + " hook=" + std::to_string(hook);

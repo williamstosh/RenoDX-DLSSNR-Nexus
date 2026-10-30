@@ -12,6 +12,7 @@ namespace adapter = runtime::preset_ui;
 namespace profile = runtime::profile_ui;
 using Json = presets::Json;
 std::string error;
+renodx::addons::dlss5::gpu_timers::comparison_settings = runtime::comparison_ui::CaptureSettings;
 std::cout << std::unitbuf;
 std::cerr << std::unitbuf;
 std::cout << "capability-ui: synthetic production adapter checks; no GPU execution\n";
@@ -49,6 +50,9 @@ const auto reject_unchanged = [&](const Json& settings) {
   Check(profile::Snapshot() == snapshot && Bytes() == bytes && writes.size() == write_count,
         "Rejected profile preserves INI and current settings without writes.");
 };
+
+#include "stage_edit_runtime_cases.hpp"
+#include "stage_gpu_runtime_cases.hpp"
 
 // A stale native FG owner must follow the existing planner's route boundary:
 // only experimental Present chains treat it as an owner of a mixed NR chain.

@@ -216,6 +216,7 @@
   check(manager::selected == ux_selected && !manager::confirm_delete, "task navigation keeps selection and resets deletion consent");
 
   // Actual title drag and resize grip input exercise the production window.
+  const auto slot_memory = manager::slot_geometry[static_cast<int>(runtime::profile_ui::SlotTask::RENAME)];
   const ImVec2 ux_before_drag = ux_window->Pos;
   const ImVec2 ux_title(ux_window->Pos.x + ux_window->Size.x * 0.5f, ux_window->Pos.y + font_size * 0.5f);
   io.AddMousePosEvent(ux_title.x, ux_title.y); ux_frame();
@@ -230,6 +231,11 @@
   io.AddMousePosEvent(ux_grip.x + 45.f, ux_grip.y + 35.f); ux_frame(); ux_frame();
   io.AddMouseButtonEvent(0, false); ux_frame(); ux_frame();
   check(ux_window->Size.x > ux_before_resize.x + 10.f, "resize grip supports mouse resize");
+  const auto& current_slot_memory = manager::slot_geometry[static_cast<int>(runtime::profile_ui::SlotTask::RENAME)];
+  check(current_slot_memory.valid == slot_memory.valid
+            && current_slot_memory.relative_position.x == slot_memory.relative_position.x
+            && current_slot_memory.relative_position.y == slot_memory.relative_position.y,
+        "library mouse move and resize keep Slot task position memory independent");
 
   // CloseButton ID is test-only ImGui inspection, never used in production.
   ux_mouse_click(items.at(ux_window->GetID("#CLOSE")).rect.GetCenter());

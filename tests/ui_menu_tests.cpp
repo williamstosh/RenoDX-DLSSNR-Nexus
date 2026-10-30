@@ -153,6 +153,8 @@ inline BOOL WINAPI Foreground(HWND window) {
 namespace runtime = renodx::addons::dlss5::internal;
 namespace ui = renodx::addons::dlss5::ui;
 using Json = nlohmann::json;
+#include "monitor_performance_cases.hpp"
+#include "monitor_session_cases.hpp"
 
 struct Item {
   ImGuiID id = 0;
@@ -287,6 +289,7 @@ int main() {
     io.Fonts->GetTexDataAsRGBA32(&atlas, &atlas_width, &atlas_height);
     io.Fonts->SetTexID(1);
     runtime::ui_welcomed = true;
+    renodx::addons::dlss5::gpu_timers::comparison_settings = runtime::comparison_ui::CaptureSettings;
     runtime::ui_language_choice = 1;
     runtime::direct_runtime_requirements.file_version = "310.9.16.0";
     runtime::direct_runtime_requirements.dual_models = true;
@@ -368,6 +371,8 @@ int main() {
     bool preset_fixture = false;
     bool preset_latin_font = false;
     const ui::MonitorInputs* monitor_fixture = nullptr;
+    bool hud_fixture = false;
+    bool independent_hud_fixture = false;
     ui::MonitorState synthetic_monitor_state;
     const auto frame = [&](const ui::StatusCard* diagnostic_case = nullptr) {
       items.clear();
@@ -378,7 +383,8 @@ int main() {
       ImGui::NewFrame();
       ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
       ImGui::SetNextWindowSize(ImVec2(panel_width, panel_height));
-      ImGui::Begin("NR Nexus menu fixture", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
+      ImGui::Begin("NR Nexus menu fixture", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar
+          | (independent_hud_fixture ? ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav : 0));
       auto& context = *ImGui::GetCurrentContext();
       const ImGuiStyle style_before = ImGui::GetStyle();
       const int color_depth = context.ColorStack.Size;
@@ -390,7 +396,16 @@ int main() {
         ImGui::PushClipRect(ImVec2(-10.f, -10.f), ImVec2(-1.f, -1.f), true);
       }
       const auto panel_start = std::chrono::steady_clock::now();
-      if (preset_fixture) {
+      if (independent_hud_fixture) {
+        ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0.f, 0.f), io.DisplaySize, IM_COL32(6, 14, 25, 255));
+        // Synthetic scene marker makes a deliberately hidden HUD distinguishable
+        // from a missing or failed capture without fabricating a game image.
+        ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(20.f, io.DisplaySize.y - 52.f),
+            ImVec2(280.f, io.DisplaySize.y - 20.f), IM_COL32(13, 34, 48, 255));
+        ImGui::GetBackgroundDrawList()->AddText(ImVec2(28.f, io.DisplaySize.y - 46.f),
+            IM_COL32(120, 155, 180, 255), "Synthetic host frame");
+        runtime::OnHudOverlay(nullptr);
+      } else if (preset_fixture) {
         if (preset_latin_font) ImGui::PushFont(latin_only_font, font_size);
         runtime::RefreshUiLanguage();
         ui::SetTheme(runtime::ui_theme_choice.load());
@@ -418,6 +433,9 @@ int main() {
         if (ui::DrawStatusSummary(monitor_fixture->card, monitor_fixture->recent.partial ? 1u : 0u, fields)) {
           synthetic_monitor_state.open = !synthetic_monitor_state.open;
         }
+        if (io.DisplaySize.x >= 1200.f && synthetic_monitor_state.open && !synthetic_monitor_state.geometry.valid) {
+          ImGui::SetNextWindowFocus();
+        }
         ui::DrawRuntimeMonitor(*monitor_fixture, &synthetic_monitor_state);
         ImGui::TextWrapped("Synthetic window evidence fixture; no game execution, internal network or GPU performance claim.");
         runtime::DrawModernLayout(nullptr, renodx::addons::dlss5::ComputeNrVerdict(runtime::CollectFunnelInputs()), monitor_fixture->card);
@@ -428,6 +446,14 @@ int main() {
         runtime::DrawRuntimeStatus(*diagnostic_case);
       } else {
         runtime::OnOverlay(nullptr);
+        if (hud_fixture) {
+          // Font/mesh preparation can exceed a real Toast's lifetime. Capture
+          // its initial visible phase without changing production timing.
+          runtime::profile_feedback_until_ns = runtime::SteadyNowNs() + runtime::kHudToastNs;
+          const auto* focused = ImGui::GetCurrentContext()->NavWindow;
+          runtime::OnHudOverlay(nullptr);
+          check(ImGui::GetCurrentContext()->NavWindow == focused, "operation HUD must not take navigation focus");
+        }
       }
       if (clipped_callback) {
         ImGui::PopClipRect();
@@ -560,6 +586,10 @@ int main() {
     const auto capture = [&](const char* name, const ui::StatusCard* diagnostic_case = nullptr, bool settle = true) {
       // Store the actual ImGui mesh and atlas; the optional CPU renderer uses
       // these without substituting HTML controls or a second menu definition.
+      const std::string_view requested_capture(name);
+      if (requested_capture.find("tooltip") == std::string_view::npos && !ImGui::IsMouseDown(0) && !ImGui::IsMouseDown(1)) {
+        io.AddMousePosEvent(-100.f, -100.f);
+      }
       if (settle) {
         frame(diagnostic_case);
         frame(diagnostic_case);
@@ -625,9 +655,33 @@ int main() {
     if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr) {
 #include "ui_snapshot_cases.hpp"
     }
+    if (std::getenv("NR_NEXUS_MONITOR_PERFORMANCE") != nullptr) {
+      RunMonitorPerformanceCases(check);
+      ImGui::DestroyContext();
+      return 0;
+    }
 
     frame();
     frame();
+    RunMonitorSessionCases(check, [&](const ui::MonitorInputs& inputs) {
+      const auto* saved_fixture = monitor_fixture;
+      const auto saved_state = synthetic_monitor_state;
+      const auto saved_flush = runtime::flush_profile_storage;
+      monitor_fixture = &inputs;
+      synthetic_monitor_state.open = true;
+      synthetic_monitor_state.detailed = true;
+      try {
+        frame();
+      } catch (...) {
+        monitor_fixture = saved_fixture;
+        synthetic_monitor_state = saved_state;
+        runtime::flush_profile_storage = saved_flush;
+        throw;
+      }
+      monitor_fixture = saved_fixture;
+      synthetic_monitor_state = saved_state;
+      runtime::flush_profile_storage = saved_flush;
+    });
     if (std::getenv("NR_NEXUS_UX_REPRO") != nullptr) {
       namespace profile = runtime::profile_ui;
       const auto deadline = GetTickCount64() + 10000;
@@ -771,6 +825,7 @@ int main() {
     }
     {
       namespace timers = renodx::addons::dlss5::gpu_timers;
+      if (!runtime::ui_runtime_monitor_state.detailed) click(find("monitor_details"));
       const auto original = timers::stage_stats[1];
       const bool was_enabled = runtime::enabled.load();
       runtime::enabled = true;
@@ -783,6 +838,7 @@ int main() {
       sample.passes[0] = {.id = 0, .model = 1, .width = 640, .height = 360,
           .output_width = 640, .output_height = 360, .eval_us = 100,
           .state = timers::SampleState::VALID};
+      runtime::monitor_snapshot.attempted_ns = 0;
       frame(); frame();
       const auto measured_pass = [](const TextItem& item) {
         return item.text.find("640x360") != std::string::npos
@@ -790,6 +846,7 @@ int main() {
       };
       check(std::ranges::any_of(rendered_text, measured_pass), "details expose dimensions from a GPU-complete pass sample");
       sample.measured_ns -= 3'000'000'000;
+      runtime::monitor_snapshot.attempted_ns = 0;
       frame(); frame();
       check(std::ranges::none_of(rendered_text, measured_pass), "details reject stale pass dimensions instead of showing configured values as actual");
       sample = original;
@@ -997,6 +1054,7 @@ int main() {
           "Hook Point display order is not Render, Upscaled, Present");
     for (const auto& [label, stored] : {std::pair{"Render", 1u}, {"Upscaled", 0u}, {"Present", 2u}}) {
       click(find(label));
+      if (runtime::stage_edit::pending) click(find("confirm_stage_change"));
       check(runtime::hook_point.load() == stored, "Hook Point UI changed historical storage encoding");
       click(find("nr_resolution_follow"));
       check(runtime::nr_follow_input_res.load(), "Follow input is unavailable at a supported Hook Point");
@@ -1111,8 +1169,13 @@ int main() {
     hover(chain_nodes().at(3), chain_tip.c_str(), nullptr);
     click(chain_nodes().at(1));
     check(runtime::ui_selected_pass == 1, "pass navigation failed");
-    check(has_text(ui::text::kPassStage) && has_text("Working size details (?)"),
-          "pass editor exposes technical resolution evidence on demand");
+    check(has_text(ui::text::kPassStage) && std::ranges::any_of(rendered_text, [](const auto& text) {
+      return text.text.starts_with(ui::Tr("Actual working resolution"));
+    }),
+          "pass editor keeps the estimate and actual working resolution beside its controls");
+    check(!has_text("Recorded working sizes"), "ordinary pass editor does not repeat historical resolution evidence");
+    runtime::ui_menu_page = 2;
+    frame(); frame();
     click(find("##Recorded working sizes"));
     {
       const auto historical_hook = runtime::hook_point.load();
@@ -1153,6 +1216,8 @@ int main() {
       sample = old_sample;
       runtime::hook_point = historical_hook;
     }
+    runtime::ui_menu_page = 1;
+    frame(); frame();
     const auto saved_hook = runtime::hook_point.load();
     runtime::hook_point = runtime::kHookPresent;
     runtime::kSetPassStage[0].Commit(1.f);

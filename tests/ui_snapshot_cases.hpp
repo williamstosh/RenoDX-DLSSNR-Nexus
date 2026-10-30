@@ -26,6 +26,28 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
   const char* pages[] = {"quality", "multipass", "diagnostics", "advanced"};
   std::vector<Scenario> scenarios;
   if (!docs_only) {
+    for (const int language : {1, 14}) {
+      const std::string suffix = (language == 1 ? "-en" : "-zh");
+      for (const char* action : {"a-stage-preview", "a-stage-cancel", "a-stage-confirm", "a-f6-on", "a-f6-off", "a-checking", "a-active"}) {
+        scenarios.push_back({.id = std::string(action) + suffix, .page = 1, .action = action,
+                             .language = language, .width = 1100.f});
+      }
+    }
+    scenarios.push_back({.id = "a-stage-narrow", .page = 1, .action = "a-stage-preview", .width = 600.f, .font = 24.f});
+    for (const int language : {1, 14}) {
+      const std::string suffix = language == 1 ? "-en" : "-zh";
+      for (const char* action : {"b-hud-compact", "b-hud-detailed", "b-hud-edit", "b-hud-hidden", "b-hud-keep", "b-hud-menuclose"}) {
+        scenarios.push_back({.id = std::string(action) + suffix, .action = action, .language = language, .width = 1500.f});
+      }
+    }
+    scenarios.push_back({.id = "b-hud-narrow", .action = "b-hud-compact", .width = 620.f, .font = 24.f});
+    scenarios.push_back({.id = "b-hud-dpi", .action = "b-hud-detailed", .width = 1800.f, .font = 30.f});
+    for (const int language : {1, 14}) {
+      const std::string suffix = language == 1 ? "-en" : "-zh";
+      scenarios.push_back({.id = "c-hud-single" + suffix, .action = "c-hud-single", .language = language, .width = 1500.f});
+      scenarios.push_back({.id = "c-hud-pair" + suffix, .action = "c-hud-pair", .language = language, .width = 1500.f});
+      scenarios.push_back({.id = "c-quality-narrow" + suffix, .action = "viewport", .language = language, .width = 640.f, .font = 24.f});
+    }
     for (const char* action : {"r3-normal", "r3-yellow", "r3-pending", "r3-recovered",
                                "r3-pass1", "r3-pass2", "r3-pass4", "r3-monitor-open", "r3-monitor-close"}) {
       scenarios.push_back({.id = action, .action = action, .width = 1600.f});
@@ -62,6 +84,11 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     scenarios.push_back({.id = "status-details", .action = "status-details"});
     for (const char* action : {"slot-context", "official-context", "slot-rename", "slot-copy", "slot-export", "slot-import", "slot-clear"}) {
       scenarios.push_back({.id = action, .action = action});
+    }
+    for (const int language : {1, 14}) {
+      const std::string suffix = language == 1 ? "-en" : "-zh";
+      scenarios.push_back({.id = "c-slot-context-narrow" + suffix, .action = "slot-context", .language = language, .width = 640.f, .font = 24.f});
+      scenarios.push_back({.id = "c-slot-rename-wide" + suffix, .action = "slot-rename", .language = language, .width = 1600.f});
     }
     for (int page = 0; page < 4; ++page) {
       for (const char* state : {"expanded", "collapsed"}) {
@@ -225,6 +252,15 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
         == registry["expected"].end()) continue;
     const auto profile_state_before = profile::state;
     monitor_fixture = nullptr;
+    hud_fixture = false;
+    independent_hud_fixture = false;
+    runtime::monitor_requested = false;
+    runtime::monitor_snapshot = {};
+    runtime::monitor_observation_epoch.fetch_add(1);
+    runtime::stage_edit::pending = false;
+    runtime::stage_edit::error.clear();
+    runtime::stage_edit::notice.clear();
+    runtime::stage_edit::undo.clear();
     synthetic_monitor_state = {};
     runtime::ui_runtime_monitor_state.open = false;
     if (!ImGui::GetCurrentContext()->OpenPopupStack.empty()) ImGui::ClosePopupToLevel(0, true);
@@ -273,6 +309,21 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       runtime::pass_preset[pass] = 0;
       runtime::pass_resolution_mode[pass] = 0;
       runtime::pass_resolution_scale[pass] = 1.f;
+    }
+    if (scenario.action.starts_with("a-")) {
+      runtime::d3d12_swapchain_seen = true;
+      runtime::d3d11_swapchain_seen = false;
+      runtime::vulkan_present_seen = false;
+      runtime::stage_source_rr = false;
+      runtime::native_fg_declaration = runtime::NativeFgDeclaration::kOff;
+      runtime::native_fg_public_off = true;
+      runtime::direct_runtime_requirements.dual_models = true;
+      runtime::hook_point = runtime::kHookRender;
+      runtime::stack_passes = 2;
+      runtime::pass_stage[0] = 2;
+      runtime::ui_selected_pass = 0;
+      runtime::nr_follow_input_res = false;
+      runtime::nr_resolution_scale = 1.f;
     }
     if (scenario.action.starts_with("r2-")) {
       runtime::nr_follow_input_res = scenario.action == "r2-follow";
@@ -515,7 +566,80 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
         .title = "Synthetic diagnostic fixture",
         .body = "Deterministic test state; not a game measurement or runtime failure.",
         .fix = {"Synthetic repair instruction"}, .fix_count = 1};
-    if (synthetic_window) {
+    ui::StatusCard phase_a_card;
+    if (scenario.action.starts_with("a-stage-")) {
+      const auto original = profile::Snapshot();
+      const bool segmented = std::ranges::any_of(items, [&](const auto& entry) { return entry.second.label == ui::Tr("Present"); });
+      if (!segmented) click(find("##stage_value"));
+      check(!find(ui::Tr("Present")).disabled, "stage preview must be reachable through the real control");
+      click(find(ui::Tr("Present")));
+      check(runtime::stage_edit::pending && profile::Snapshot() == original, "stage selection opens preview without mutation");
+      check(!find("cancel_stage_change").disabled && !find("confirm_stage_change").disabled, "stage preview provides cancel and confirm");
+      if (scenario.action == "a-stage-cancel") {
+        click(find("cancel_stage_change"));
+        check(!runtime::stage_edit::pending && profile::Snapshot() == original, "real Cancel keeps original configuration");
+      } else if (scenario.action == "a-stage-confirm") {
+        click(find("confirm_stage_change"));
+        check(!runtime::stage_edit::pending && runtime::hook_point.load() == 2
+                  && runtime::pass_stage[0].load() == 3, "real Confirm publishes the complete candidate chain");
+      }
+      interaction = "real Stage selection and transaction modal; synthetic configuration only";
+    } else if (scenario.action.starts_with("b-hud-") || scenario.action.starts_with("c-hud-")) {
+      if (scenario.action == "c-hud-single") { runtime::stack_passes = 1; }
+      if (scenario.action == "c-hud-pair") { runtime::stack_passes = 2; }
+      const bool edit = scenario.action == "b-hud-edit";
+      const bool closing = scenario.action == "b-hud-keep" || scenario.action == "b-hud-menuclose";
+      runtime::ui_runtime_monitor_state = {.detailed = scenario.action == "b-hud-detailed"};
+      runtime::ui_monitor_saved_detailed = runtime::ui_runtime_monitor_state.detailed;
+      runtime::monitor_hotkey = VK_F11;
+      runtime::monitor_key_edge = {};
+      runtime::hud_enabled = false;
+      runtime::hud_overlay_open = edit || closing;
+      runtime::PollMonitorKey(false, true, edit || closing);
+      runtime::PollMonitorKey(false, true, edit || closing);
+      runtime::PollMonitorKey(true, true, edit || closing);
+      check(runtime::monitor_requested.load(), "F11 opens the independent monitor without opening Home");
+      if (closing) {
+        const auto flush = runtime::flush_profile_storage;
+        runtime::flush_profile_storage = nullptr;
+        runtime::monitor_keep_visible = scenario.action == "b-hud-keep";
+        runtime::OnReshadeOpenOverlay(nullptr, false, reshade::api::input_source::keyboard);
+        runtime::flush_profile_storage = flush;
+        check(runtime::monitor_requested.load() == runtime::monitor_keep_visible.load(), "Home close obeys the keep-visible option");
+      }
+      if (scenario.action == "b-hud-hidden") {
+        runtime::PollMonitorKey(false, true, false);
+        runtime::PollMonitorKey(true, true, false);
+        check(!runtime::monitor_requested.load(), "the next F11 edge hides the monitor");
+      }
+      independent_hud_fixture = !edit;
+      frame(); frame();
+      if (runtime::monitor_requested.load()) {
+        const auto* window = ImGui::FindWindowByName("###nr_runtime_monitor");
+        check(window != nullptr && window->Active, "independent HUD is drawn with Home closed");
+        if (!edit) check((window->Flags & ImGuiWindowFlags_NoInputs) == ImGuiWindowFlags_NoInputs,
+            "gameplay HUD accepts neither mouse nor keyboard input");
+      }
+      interaction = "production F11 edge / Home visibility / independent draw; synthetic runtime, no game input or performance claim";
+    } else if (scenario.action == "a-f6-on" || scenario.action == "a-f6-off") {
+      const bool on = scenario.action == "a-f6-on";
+      runtime::enabled = !on;
+      runtime::hud_enabled = true;
+      runtime::ToggleNrFromHotkey(VK_F6, true);
+      check(runtime::enabled.load() == on && runtime::profile_feedback_until_ns.load() > runtime::SteadyNowNs(),
+            "F6 operation feedback is immediate without any execution evidence");
+      runtime::hud_overlay_open = true;
+      hud_fixture = true;
+      interaction = "production F6 handler and existing HUD draw; synthetic input, no game focus claim";
+    } else if (scenario.action == "a-checking" || scenario.action == "a-active") {
+      auto verdict = renodx::addons::dlss5::ComputeNrVerdict(runtime::CollectFunnelInputs());
+      verdict.state = renodx::addons::dlss5::NrState::kEngaged;
+      ui::CardInputs evidence{.verdict = verdict, .active_features = 1};
+      evidence.recent = ui::RecentHealth{.gpu_completed = scenario.action == "a-active"};
+      phase_a_card = ui::ComputeStatusCard(evidence);
+      diagnostic = &phase_a_card;
+      interaction = "synthetic checking / completed GPU evidence card; no measured performance values";
+    } else if (synthetic_window) {
       if (scenario.action == "r3-recovered") {
         ui::RecentHealthWindow recent;
         std::uint64_t eligible = 0, injected = 0, gaps = 0;
@@ -571,7 +695,10 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       interaction = "real reset-page command; confirmation only, no persistence or reset";
     } else if (scenario.action == "status-details") {
       click(find("status_details"));
-      click(find("nr_monitor_inline"));
+      if (!runtime::ui_runtime_monitor_state.detailed) click(find("monitor_details"));
+      const auto* monitor = ImGui::FindWindowByName("###nr_runtime_monitor");
+      check(monitor != nullptr && monitor->Active && (monitor->Flags & ImGuiWindowFlags_ChildWindow) == 0,
+            "narrow runtime details remain an independent window");
       check(!find("status_close").disabled && !find("status_open_diagnostics").disabled,
             "runtime details must open without changing the selected page");
       for (const char* id : {"status_close", "status_open_diagnostics"}) {
@@ -579,7 +706,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
         check(action.rect.Min.y >= action.window->InnerRect.Min.y && action.rect.Max.y <= action.window->InnerRect.Max.y,
               "runtime detail navigation must remain visible outside the scrolling status body");
       }
-      interaction = "click real monitor entry and narrow disclosure; GPU-complete data is synthetic";
+      interaction = "click real independent monitor entry and detailed view; GPU-complete data is synthetic";
     } else if (scenario.action.starts_with("diagnostics-")) {
       diagnostic = &card;
       frame(diagnostic); frame(diagnostic); frame(diagnostic);
@@ -838,6 +965,18 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       }
       interaction = "real A/B buttons; 16 synthetic completed samples per side; no game or performance claim";
     }
+    if (scenario.action.find("tooltip") == std::string::npos) {
+      io.AddMousePosEvent(-100.f, -100.f);
+      frame(diagnostic);
+      frame(diagnostic);
+    }
+    if (hud_fixture) {
+      const auto* foreground = ImGui::GetForegroundDrawList(ImGui::GetMainViewport());
+      const auto* data = ImGui::GetDrawData();
+      check(foreground->VtxBuffer.Size != 0 && data->CmdListsCount != 0
+                && data->CmdLists[data->CmdListsCount - 1] == foreground,
+            "F6 notice must reach the foreground mesh above the menu, not only submit hidden text");
+    }
     capture(scenario.id.c_str(), diagnostic, false);
     Json regions = Json::object();
     if (scenario.action == "gpu-pass-diagnostics") {
@@ -967,6 +1106,14 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       profile::observed_snapshot = profile::Snapshot();
     }
     monitor_fixture = nullptr;
+    hud_fixture = false;
+    independent_hud_fixture = false;
+    runtime::monitor_requested = false;
+    runtime::monitor_keep_visible = true;
+    runtime::hud_enabled = true;
+    runtime::hud_overlay_open = false;
+    runtime::profile_feedback_until_ns = 0;
+    runtime::stage_edit::pending = false;
     runtime::ui_runtime_monitor_state.open = false;
     if (scenario.action.starts_with("r2-") || scenario.action == "r3-fixed-scale") {
       runtime::nr_follow_input_res = false;

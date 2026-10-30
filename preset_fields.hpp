@@ -163,6 +163,8 @@ inline const std::vector<FieldRule>& FieldRules() {
 
       {.key = "NeuralUplift", .label = "Neural Rendering", .group = "General", .minimum = 0, .maximum = 1, .category = FieldRule::GENERAL},
       {.key = "NRToggleKey", .label = "Toggle NR", .group = "Hotkeys", .minimum = 0x08, .maximum = 0xFE, .category = FieldRule::GENERAL},
+      {.key = "NRMonitorKey", .label = "Show / hide runtime monitor", .group = "Hotkeys", .minimum = 0x08, .maximum = 0xFE, .category = FieldRule::GENERAL},
+      {.key = "UiMonitorKeepVisible", .label = "Keep monitor visible after closing the menu", .group = "Interface", .minimum = 0, .maximum = 1, .category = FieldRule::GENERAL},
       {.key = "NROfficialCycleKey", .label = "Cycle official profiles", .group = "Hotkeys", .minimum = 0x08, .maximum = 0xFE, .category = FieldRule::GENERAL},
       {.key = "NRCustomCycleKey", .label = "Cycle custom profiles", .group = "Hotkeys", .minimum = 0x08, .maximum = 0xFE, .category = FieldRule::GENERAL},
       {.key = "NROfficialCycleEnabled", .label = "Enable official profile key", .group = "Hotkeys", .minimum = 0, .maximum = 1, .category = FieldRule::GENERAL},

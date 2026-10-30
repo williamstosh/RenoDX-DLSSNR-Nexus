@@ -19,6 +19,7 @@
 #include "chain_ux_cases.hpp"
 #include "recent_health_cases.hpp"
 #include "runtime_monitor_cases.hpp"
+#include "monitor_hud_cases.hpp"
 
 namespace ui = renodx::addons::dlss5::ui;
 
@@ -392,7 +393,7 @@ int main() {
           "Off summary does not present retained NR submissions or GPU measurements as execution");
     char action[160];
     std::snprintf(action, sizeof(action), ui::Tr(ui::text::kStatusDetails), 0u);
-    check(output.find(ui::Tr("Runtime monitor")) != std::string::npos, "Off summary preserves its monitor action");
+    check(output.find(ui::Tr("Monitor")) != std::string::npos, "Off summary preserves its monitor action");
     ImGui::End();
     ImGui::Render();
   }
@@ -453,6 +454,7 @@ int main() {
     }
   }
   RunRuntimeMonitorCases(check);
+  RunMonitorHudCases(check);
   std::printf("summary scenarios=%u languages=%d max_delta_y=%.3f px checks=%u failures=%u\n",
               scenarios, ui::kLanguageCount, max_delta, checks, failures);
   ImGui::DestroyContext();

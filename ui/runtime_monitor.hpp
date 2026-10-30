@@ -31,6 +31,8 @@ struct MonitorPass {
   std::string actual_size;
   std::string gpu_cost;
   MonitorGpuState gpu_state = MonitorGpuState::UNAVAILABLE;
+  bool execution_confirmed = false;
+  std::string stage_reason;
 };
 
 struct MonitorRecentHealth {
@@ -53,6 +55,7 @@ struct MonitorInputs {
   std::string current_limit;
   // Same monotonic nanosecond clock as recent.last_sample_ns; zero means unknown.
   std::int64_t now_ns = 0;
+  StatusSummaryFields summary;
 };
 
 // Physical screen coordinates with the UI scale used when they were saved.
@@ -68,13 +71,15 @@ struct MonitorGeometry {
 
 struct MonitorState {
   bool open = false;
-  bool pin = false;  // Locks movement/resizing; does not outlive the overlay callback.
+  bool pin = false;  // Locks movement/resizing while editing.
   MonitorGeometry geometry;
+  bool detailed = false;  // The caller persists this together with pin and geometry.
 };
 
 struct MonitorActions {
   bool open_diagnostics = false;
   bool geometry_changed = false;
+  bool settings_changed = false;
 };
 
 inline MonitorGeometry ClampMonitorGeometry(MonitorGeometry geometry, ImVec2 work_pos, ImVec2 work_size,
@@ -97,7 +102,7 @@ inline MonitorGeometry ClampMonitorGeometry(MonitorGeometry geometry, ImVec2 wor
   geometry.size.x = std::clamp(finite(geometry.size.x * ratio, 520.f * ui_scale),
       (std::min)(320.f * ui_scale, work_size.x), work_size.x);
   geometry.size.y = std::clamp(finite(geometry.size.y * ratio, 640.f * ui_scale),
-      (std::min)(240.f * ui_scale, work_size.y), work_size.y);
+      (std::min)(160.f * ui_scale, work_size.y), work_size.y);
   geometry.position.x = std::clamp(finite(geometry.position.x, work_pos.x), work_pos.x,
                                  work_pos.x + work_size.x - geometry.size.x);
   geometry.position.y = std::clamp(finite(geometry.position.y, work_pos.y), work_pos.y,
@@ -109,14 +114,17 @@ inline MonitorGeometry ClampMonitorGeometry(MonitorGeometry geometry, ImVec2 wor
   return geometry;
 }
 
-// Call inside the panel on every frame. Narrow panels use an inline disclosure;
-// wide panels use an independent Begin window. The caller owns reopening via state.open.
+// Legacy callers draw inside a panel and may use a narrow inline disclosure.
+// Independent callers need no parent window. Passive drawing never accepts input;
+// the caller owns visibility and supplies interactive=true when Home opens editing.
 inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorState* state,
-                                        const MonitorGeometry* saved_geometry = nullptr) {
+                                        const MonitorGeometry* saved_geometry = nullptr,
+                                        bool interactive = true, bool independent = false) {
   MonitorActions actions;
   if (state == nullptr || !state->open) return actions;
-  const ImVec2 menu_pos = ImGui::GetWindowPos();
-  const ImVec2 menu_size = ImGui::GetWindowSize();
+  const bool standalone = independent || !interactive;
+  const ImVec2 menu_pos = (interactive ? ImGui::GetWindowPos() : ImVec2(0.f, 0.f));
+  const ImVec2 menu_size = (interactive ? ImGui::GetWindowSize() : ImVec2(0.f, 0.f));
   // The pinned ReShade function table exposes neither viewport getter.
   // Its overlay coordinates cover the single main display surface.
   const ImVec2 work_pos(0.f, 0.f);
@@ -125,8 +133,8 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
   const float gap = ImGui::GetFontSize();
   const float right_space = work_pos.x + work_size.x - menu_pos.x - menu_size.x - gap;
   const float left_space = menu_pos.x - work_pos.x - gap;
-  const bool inline_mode = (std::max)(right_space, left_space) < 320.f * ui_scale
-      || ImGui::GetContentRegionAvail().x < ImGui::GetFontSize() * 25.f;
+  const bool inline_mode = !standalone && ((std::max)(right_space, left_space) < 320.f * ui_scale
+      || ImGui::GetContentRegionAvail().x < ImGui::GetFontSize() * 25.f);
   StyleScope theme;
   PushPanelTheme(theme);
   theme.Color(ImGuiCol_TitleBg, CurrentTheme().bg_control)
@@ -136,9 +144,35 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
   if (inline_mode) {
     visible = ImGui::CollapsingHeader((std::string(Tr("Runtime monitor")) + "###nr_monitor_inline").c_str());
   } else {
+    const bool initialize_geometry = !state->geometry.valid;
     if (!state->geometry.valid) {
       if (saved_geometry != nullptr && saved_geometry->valid) {
         state->geometry = *saved_geometry;
+      } else if (standalone) {
+        const float count = static_cast<float>(std::clamp(inputs.pass_count, 1u, 4u));
+        float adjustment_height = 0.f;
+        for (unsigned i = 0; i < (std::min)(inputs.pass_count, 4u); ++i) {
+          const auto& pass = inputs.passes[i];
+          if (!pass.requested_stage.empty() && !pass.effective_stage.empty()
+              && pass.requested_stage != pass.effective_stage) {
+            adjustment_height += 60.f;
+          } else if (!pass.stage_reason.empty()) {
+            adjustment_height += 22.f;
+          }
+          if (!pass.requested_model.empty() && !pass.created_model_request.empty()
+              && pass.requested_model != pass.created_model_request) {
+            adjustment_height += 44.f;
+          }
+        }
+        const bool side = interactive && (std::max)(right_space, left_space) >= 320.f * ui_scale;
+        const bool right = right_space >= left_space;
+        state->geometry = {.position = side ? ImVec2(right ? menu_pos.x + menu_size.x + gap : work_pos.x, menu_pos.y)
+                                           : ImVec2(work_pos.x + gap, work_pos.y + gap),
+                           .size = ImVec2((std::min)((state->detailed ? 620.f : 480.f) * ui_scale,
+                                                     side ? (right ? right_space : left_space) : work_size.x),
+                                         ((state->detailed ? 340.f + 156.f * count : 132.f + 62.f * count)
+                                             + adjustment_height) * ui_scale),
+                           .ui_scale = ui_scale, .valid = true};
       } else {
         const bool right = right_space >= left_space;
         const float side_width = (right ? right_space : left_space);
@@ -153,27 +187,64 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
     const bool corrected = previous.position.x != state->geometry.position.x || previous.position.y != state->geometry.position.y
         || previous.size.x != state->geometry.size.x || previous.size.y != state->geometry.size.y
         || previous.ui_scale != state->geometry.ui_scale;
-    actions.geometry_changed = corrected;
+    actions.geometry_changed = initialize_geometry || corrected;
     // Only apply corrected geometry. Reapplying it each frame would defeat dragging.
-    ImGui::SetNextWindowPos(state->geometry.position, corrected ? ImGuiCond_Always : ImGuiCond_Appearing);
-    ImGui::SetNextWindowSize(state->geometry.size, corrected ? ImGuiCond_Always : ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(state->geometry.position,
+                            initialize_geometry || corrected ? ImGuiCond_Always : ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(state->geometry.size,
+                             initialize_geometry || corrected ? ImGuiCond_Always : ImGuiCond_Appearing);
     ImGui::SetNextWindowSizeConstraints(
-        ImVec2((std::min)(320.f * ui_scale, work_size.x), (std::min)(240.f * ui_scale, work_size.y)),
+        ImVec2((std::min)(320.f * ui_scale, work_size.x), (std::min)(160.f * ui_scale, work_size.y)),
         work_size);
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoSavedSettings;
+    if (standalone) {
+      flags |= ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoCollapse;
+      // A previous editable/legacy window may have been collapsed. Gameplay
+      // has no title control with which to recover its contents.
+      ImGui::SetNextWindowCollapsed(false, ImGuiCond_Always);
+    }
+    if (!interactive) {
+      flags |= ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse
+          | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus;
+    }
     if (state->pin) {
       flags |= ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
     }
-    visible = ImGui::Begin((std::string(Tr("Runtime monitor")) + "###nr_runtime_monitor").c_str(), &state->open, flags);
+    visible = ImGui::Begin((std::string(Tr("Runtime monitor")) + "###nr_runtime_monitor").c_str(),
+                           interactive ? &state->open : nullptr, flags);
   }
   if (visible) {
-    if (!inline_mode) {
-      actions.geometry_changed |= ImGui::Checkbox(Tr("Lock position and size"), &state->pin);
-      ItemTooltip("%s", Tr("Locks movement and resizing. Visibility follows the host overlay."));
-    }
-    actions.open_diagnostics = ImGui::Button((std::string(Tr("Open Diagnostics")) + "###status_open_diagnostics").c_str());
-    if (ImGui::Button((std::string(Tr("Close monitor")) + "###status_close").c_str())) {
-      state->open = false;
+    if (interactive) {
+      bool first_tool = true;
+      const auto tool = [&](const char* label, const char* id, const char* tip) {
+        const float width = ImGui::CalcTextSize(Tr(label)).x + ImGui::GetStyle().FramePadding.x * 2.f;
+        const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        if (!first_tool && ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + width <= right) {
+          ImGui::SameLine();
+        }
+        first_tool = false;
+        const bool pressed = ImGui::SmallButton((std::string(Tr(label)) + id).c_str());
+        ItemTooltip("%s", Tr(tip));
+        return pressed;
+      };
+      if (!inline_mode) {
+        const bool pin_changed = tool(state->pin ? "Unlock" : "Lock", "###monitor_pin", "Lock position and size");
+        if (pin_changed) {
+          state->pin = !state->pin;
+        }
+        actions.geometry_changed |= pin_changed;
+        actions.settings_changed |= pin_changed;
+        if (tool(state->detailed ? "Compact" : "Details", "###monitor_details", "Detailed monitor")) {
+          state->detailed = !state->detailed;
+          actions.settings_changed = true;
+        }
+      }
+      actions.open_diagnostics = tool("Diagnostics", "###status_open_diagnostics", "Open Diagnostics");
+      if (tool("Close", "###status_close", "Close monitor")) {
+        state->open = false;
+      }
+    } else {
+      ImGui::TextWrapped("%s", Tr("Open the menu to edit the monitor."));
     }
     const auto row = [](const char* label, const std::string& value) {
       ImGui::TableNextRow();
@@ -182,49 +253,135 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
       ImGui::TableNextColumn();
       ImGui::TextWrapped("%s", value.empty() ? Tr("Pending confirmation") : value.c_str());
     };
-    const auto begin_section = [](const char* id, const char* label) {
-      ImGui::SeparatorText(Tr(label));
-      if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) return false;
-      ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthStretch, 0.38f);
-      ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch, 0.62f);
-      return true;
+    ImGui::TextColored(ToneColor(inputs.card.tone), "%s", Tr("Status"));
+    ImGui::TextWrapped("%s", inputs.current_conclusion.empty() ? Tr(inputs.card.title) : inputs.current_conclusion.c_str());
+    const float font = ImGui::GetFontSize();
+    const int metric_columns = (ImGui::GetContentRegionAvail().x >= font * 32.f ? 3 : 1);
+    if (ImGui::BeginTable("monitor_dashboard", metric_columns, ImGuiTableFlags_SizingStretchSame)) {
+      const auto metric = [](const char* label, const std::string& value) {
+        ImGui::TableNextColumn();
+        ImGui::TextColored(CurrentTheme().text_secondary, "%s", Tr(label));
+        ImGui::TextWrapped("%s", value.empty() ? "—" : value.c_str());
+      };
+      metric("NR GPU", inputs.summary.gpu);
+      metric("ReShade FPS", inputs.summary.fps);
+      metric("FG", inputs.summary.fg);
+      ImGui::EndTable();
+    }
+    const auto field = [](const char* label, const std::string& value) {
+      ImGui::TextWrapped("%s: %s", Tr(label), value.empty() ? Tr("Pending confirmation") : value.c_str());
     };
-    if (begin_section("conclusion", "Current conclusion")) {
-      row("Status", inputs.current_conclusion.empty() ? Tr(inputs.card.title) : inputs.current_conclusion);
-      const bool has_age = inputs.recent.available && inputs.recent.last_sample_ns > 0
-          && inputs.now_ns >= inputs.recent.last_sample_ns;
-      const bool stale = has_age && inputs.now_ns - inputs.recent.last_sample_ns > RecentHealthWindow::kStaleNs;
-      row("Recent evidence", Tr(stale ? "Stale recent sample"
-          : (!inputs.recent.available || !inputs.recent.ready ? "Pending confirmation"
-             : (inputs.recent.partial ? "Partial window" : "Ready"))));
-      if (inputs.recent.available) {
-        row("Eligible / injected / gaps", std::to_string(inputs.recent.eligible) + " / "
-            + std::to_string(inputs.recent.injected) + " / " + std::to_string(inputs.recent.gaps));
-      }
-      if (has_age) {
-        char age[64];
-        std::snprintf(age, sizeof(age), Tr("%.1f s ago"),
-                      static_cast<double>(inputs.now_ns - inputs.recent.last_sample_ns) / 1'000'000'000.);
-        row("Recent sample age", age);
-      } else {
-        row("Recent sample age", "");
-      }
-      ImGui::EndTable();
-    }
-    const unsigned count = (std::min)(inputs.pass_count, 4u);
-    const MonitorPass empty_pass;
-    if (inline_mode && begin_section("compact_execution", "Execution chain")) {
-      std::string stages;
-      for (unsigned i = 0; i < count; ++i) {
-        if (!stages.empty()) stages += " / ";
-        stages += "P" + std::to_string(i + 1) + " " + inputs.passes[i].requested_stage;
-      }
-      row("Requested stage", stages);
-      row("GPU cost", count != 0 && inputs.passes[0].gpu_state == MonitorGpuState::CURRENT
-          ? inputs.passes[0].gpu_cost : Tr("Pending confirmation"));
-      ImGui::EndTable();
-    }
     if (!inline_mode) {
+      ImGui::SeparatorText(Tr("Execution chain"));
+      const unsigned count = (std::min)(inputs.pass_count, 4u);
+      if (count == 0) {
+        ImGui::TextWrapped("%s", Tr("Pending confirmation"));
+      }
+      ImVec2 previous_node;
+      for (unsigned i = 0; i < count; ++i) {
+        const auto& pass = inputs.passes[i];
+        ImGui::PushID(static_cast<int>(i));
+        const ImVec2 node(ImGui::GetCursorScreenPos().x + font * 0.4f,
+                          ImGui::GetCursorScreenPos().y + font * 0.5f);
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        if (i != 0) {
+          draw->AddLine(previous_node, node, ImGui::GetColorU32(CurrentTheme().node_border), 2.f);
+        }
+        draw->AddCircleFilled(node, font * 0.25f,
+                              ImGui::GetColorU32(pass.execution_confirmed ? CurrentTheme().good : CurrentTheme().idle));
+        previous_node = node;
+        ImGui::Indent(font * 1.3f);
+        ImGui::TextColored(CurrentTheme().accent, "P%u  %s", i + 1,
+            state->detailed ? "" : pass.effective_stage.c_str());
+        const bool stage_adjusted = !pass.requested_stage.empty() && !pass.effective_stage.empty()
+            && pass.requested_stage != pass.effective_stage;
+        if (state->detailed) {
+          field("Stage", pass.effective_stage);
+          ImGui::TextColored(pass.execution_confirmed ? CurrentTheme().good : CurrentTheme().idle, "%s",
+                             Tr(pass.execution_confirmed ? "Execution confirmed" : "Pending confirmation"));
+        }
+        if (stage_adjusted) {
+          ImGui::TextColored(CurrentTheme().warn, "%s", Tr("Stage adjusted"));
+          field("Requested stage", pass.requested_stage);
+          ImGui::TextWrapped("%s", pass.stage_reason.empty()
+              ? Tr("Requested stage differs from effective stage.") : pass.stage_reason.c_str());
+        } else if (!pass.stage_reason.empty()) {
+          ImGui::TextWrapped("%s", pass.stage_reason.c_str());
+        }
+        if (state->detailed) {
+          field("Configured model", pass.requested_model);
+        } else {
+          ImGui::TextWrapped("%s  |  %s", pass.requested_model.c_str(), pass.requested_size.c_str());
+          ItemTooltip("%s / %s", Tr("Configured model"), Tr("Working ratio"));
+        }
+        if (!pass.requested_model.empty() && !pass.created_model_request.empty()
+            && pass.requested_model != pass.created_model_request) {
+          ImGui::TextColored(CurrentTheme().warn, "%s", Tr("Model request adjusted"));
+          field("Created model request", pass.created_model_request);
+        }
+        if (state->detailed) {
+          field("Working ratio", pass.requested_size);
+          field("Observed working size", pass.actual_size);
+        } else {
+          const std::string completion = std::string(Tr(pass.execution_confirmed
+              ? "Execution confirmed" : "Pending confirmation"))
+              + (pass.execution_confirmed && !pass.actual_size.empty() ? "  " + pass.actual_size : "");
+          ImGui::TextColored(pass.execution_confirmed ? CurrentTheme().good : CurrentTheme().idle, "%s", completion.c_str());
+        }
+        if (state->detailed) {
+          field("GPU cost", pass.gpu_state == MonitorGpuState::CURRENT ? pass.gpu_cost
+              : Tr(pass.gpu_state == MonitorGpuState::STALE ? "Stale GPU sample" : "Pending confirmation"));
+          if (interactive && ImGui::TreeNodeEx((std::string(Tr("Pass evidence")) + "###monitor_pass_evidence").c_str(),
+                                               ImGuiTreeNodeFlags_NoAutoOpenOnLog)) {
+            field("Execution proof", pass.execution_proof);
+            field("Created model request", pass.created_model_request);
+            field("Model evidence", pass.actual_model_proof);
+            ImGui::TreePop();
+          }
+        }
+        ImGui::Unindent(font * 1.3f);
+        ImGui::Spacing();
+        ImGui::PopID();
+      }
+    } else {
+      field("Stage", inputs.summary.stage);
+    }
+    if (!inline_mode && state->detailed) {
+      field("Dimensions", inputs.summary.resolution);
+      field("Measurement scope", inputs.gpu_scope);
+      field("Limitation", inputs.current_limit);
+      ImGui::TextWrapped("%s", Tr("A created model request does not prove the internal network actually used."));
+    }
+    // Passive gameplay submits no disclosure controls; edit mode owns raw evidence.
+    if (!inline_mode && state->detailed && interactive
+        && ImGui::CollapsingHeader((std::string(Tr("Raw evidence")) + "###monitor_raw_evidence").c_str(),
+                                   ImGuiTreeNodeFlags_NoAutoOpenOnLog)) {
+      ImGui::SeparatorText(Tr("Recent evidence"));
+      if (ImGui::BeginTable("conclusion", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthStretch, 0.38f);
+        ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch, 0.62f);
+        const bool has_age = inputs.recent.available && inputs.recent.last_sample_ns > 0
+            && inputs.now_ns >= inputs.recent.last_sample_ns;
+        const bool stale = has_age && inputs.now_ns - inputs.recent.last_sample_ns > RecentHealthWindow::kStaleNs;
+        row("Recent evidence", Tr(stale ? "Stale recent sample"
+            : (!inputs.recent.available || !inputs.recent.ready ? "Pending confirmation"
+               : (inputs.recent.partial ? "Partial window" : "Ready"))));
+        if (inputs.recent.available) {
+          row("Eligible / injected / gaps", std::to_string(inputs.recent.eligible) + " / "
+              + std::to_string(inputs.recent.injected) + " / " + std::to_string(inputs.recent.gaps));
+        }
+        if (has_age) {
+          char age[64];
+          std::snprintf(age, sizeof(age), Tr("%.1f s ago"),
+                        static_cast<double>(inputs.now_ns - inputs.recent.last_sample_ns) / 1'000'000'000.);
+          row("Recent sample age", age);
+        } else {
+          row("Recent sample age", "");
+        }
+        ImGui::EndTable();
+      }
+      const unsigned count = (std::min)(inputs.pass_count, 4u);
+      const MonitorPass empty_pass;
       // Wrapped headers keep adjacent columns readable when the window is resized.
       const auto begin_pass_table = [](const char* id, const char* title,
                                        const char* const* headers, int columns) {
@@ -289,11 +446,6 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
           }
           cell(pass.gpu_state == MonitorGpuState::UNAVAILABLE ? "" : pass.gpu_cost);
         }
-        ImGui::EndTable();
-      }
-      if (begin_section("limits", "Current limits")) {
-        row("Limitation", inputs.current_limit);
-        row("Model evidence", Tr("A created model request does not prove the internal network actually used."));
         ImGui::EndTable();
       }
     }

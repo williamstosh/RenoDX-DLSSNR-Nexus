@@ -315,6 +315,34 @@ int main() {
       "Restore",
   };
   const char* runtime_strings[] = {
+      "Checking NR",
+      "Needs attention",
+      "Checking Neural Rendering",
+      "Waiting for a fresh GPU result for the current settings.",
+      "Neural Rendering needs attention",
+      "Check the warnings below while NR checks the current settings.",
+      "Settings changed. Cancel and choose the stage again.",
+      "Undo stage change",
+      "Confirm execution chain change",
+      "Review the complete chain. Only the stages shown below will change.",
+      "Before",
+      "After",
+      "Inherited",
+      "Confirm change",
+      "Execution chain updated.",
+      "Stage change undone. Later edits were kept.",
+      "NR enabled",
+      "NR disabled",
+      "Checking runtime status",
+      "NR running normally",
+      "NR submitted before FG",
+        "Locks movement and resizing.",
+        "Detailed monitor",
+        "Open the menu to edit the monitor.",
+        "Show / hide runtime monitor",
+        "Keep monitor visible after closing the menu",
+        "Default F11 toggles the monitor. Open the menu to move, resize or edit it.",
+        "Monitor key conflicts with another shortcut. Choose a different key.",
       text::kEditingPass,
       text::kResolutionFollow,
       text::kResolutionSavedScale,
@@ -373,6 +401,42 @@ int main() {
       "Personal changes have been automatically saved.",
       "Undo",
   };
+  const char* stage_c_strings[] = {
+      "Lock",
+      "Unlock",
+      "Compact",
+      "Details",
+      "Diagnostics",
+      "Close",
+      "NR GPU",
+      "ReShade FPS",
+      "FG",
+      "Stage",
+      "Execution confirmed",
+      "Stage adjusted",
+      "Requested stage differs from effective stage.",
+      "Configured model",
+      "Model request adjusted",
+      "Working ratio",
+      "Pass evidence",
+      "Raw evidence",
+      "Working resolution",
+      "ReShade overlay cadence. This is not a separate measurement of game render FPS or generated output FPS.",
+      "Observed frame generation route. FG GPU duration is unavailable.",
+      "Estimated working resolution: %ux%u",
+      "Estimated working resolution",
+      "Actual working resolution",
+      "Estimate uses the last observed reference. Actual dimensions require a current completed sample.",
+      "Working resolution history",
+      "On",
+      "Off",
+      "Unknown",
+      "Official template: 1 Render pass, model B, scale 0.67, Default style.",
+      "Official template: 1 Upscaled pass, model A, scale 0.67, Default style.",
+      "Official template: Render B (Cinematic), then Upscaled A (Default); both at scale 0.67.",
+      "Configured working ratio and current completed working dimensions when available.",
+  };
+  if (FormatConversions("Estimated working resolution: %ux%u") != "%u|%u|") return 7;
   for (int language = 0; language < kLanguageCount; ++language) {
     SelectLanguage(language);
     const std::string_view welcome = Tr(text::kWelcomeTitle);
@@ -446,6 +510,16 @@ int main() {
         return 7;
       }
     }
+    for (const char* english : stage_c_strings) {
+      if (!check_preset_translation(english)) return 7;
+      const bool technical_label = std::string_view(english) == "NR GPU";
+      const bool shared_word = std::string_view(kLanguages[language].code) == "fr"
+                               && std::string_view(english) == "Compact";
+      if (language != 0 && !technical_label && !shared_word && std::string_view(Tr(english)) == english) {
+        std::fprintf(stderr, "Untranslated stage C text: language=%s key=%s\n", kLanguages[language].code, english);
+        return 7;
+      }
+    }
     const std::string_view code = kLanguages[language].code;
     if (code == "zh-Hans" || code == "zh-Hant") {
       const bool simplified = code == "zh-Hans";
@@ -454,6 +528,14 @@ int main() {
         const char* simplified;
         const char* traditional;
       } terms[] = {
+          {"Working resolution", "工作分辨率", "工作分辨率"},
+          {"Estimated working resolution", "预计工作分辨率", "預計工作分辨率"},
+          {"Actual working resolution", "实际工作分辨率", "實際工作分辨率"},
+          {"Working resolution history", "工作分辨率历史", "工作分辨率歷史"},
+          {"Requested working size", "请求工作分辨率", "要求工作分辨率"},
+          {"Observed working size", "观测工作分辨率", "觀測工作分辨率"},
+          {"Recorded working sizes", "已记录工作分辨率", "已記錄工作分辨率"},
+          {"Last recorded model work: %ux%u", "最近记录的模型工作分辨率：%ux%u", "最近記錄的模型工作分辨率：%ux%u"},
           {"Quality", "画质", "畫質"},
           {"Multi-Pass", "叠层", "疊層"},
           {"Advanced", "高级", "進階"},

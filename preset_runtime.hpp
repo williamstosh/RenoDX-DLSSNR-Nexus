@@ -350,7 +350,8 @@ inline std::string notice;
 // ReShade's setters update its configuration cache. Verify them before
 // publishing any runtime values; this is not a disk/GPU atomic transaction.
 inline bool Apply(const presets::Document& document, bool compatibility, bool remember, std::string* error,
-                  bool restore_missing = false, const ScopeSnapshot* restore_scope = nullptr, bool builtin_reset = false) {
+                  bool restore_missing = false, const ScopeSnapshot* restore_scope = nullptr, bool builtin_reset = false,
+                  const Json* expected = nullptr) {
   SettleSlider(true);
   auto differences = Preview(document, compatibility, builtin_reset);
   for (const auto& row : differences) {
@@ -393,6 +394,14 @@ inline bool Apply(const presets::Document& document, bool compatibility, bool re
     }
   }
   RuntimeLock runtime_lock(runtime_mutex);
+  if (expected != nullptr) {
+    for (const auto& [key, value] : expected->items()) {
+      if (ReadSetting(key) != value) {
+        *error = "Settings changed. Cancel and choose the stage again.";
+        return false;
+      }
+    }
+  }
   if (!builtin_reset) {
     Json candidate = Json::object();
     bool capability_changed = false;
@@ -583,10 +592,10 @@ inline bool Apply(const presets::Document& document, bool compatibility, bool re
   return true;
 }
 
-inline bool Undo(std::string* error) {
+inline bool Undo(std::string* error, std::vector<Difference>* history = &undo) {
   presets::Document document{.metadata = Json::object(), .scope = presets::Scope::FULL, .settings = Json::object()};
   std::optional<ScopeSnapshot> restore_scope;
-  for (const auto& row : undo) {
+  for (const auto& row : *history) {
     if (ReadSetting(row.key) == row.after) {
       if (row.scope_before) {
         std::shared_lock config_lock(present_restore_configuration.mutex);
@@ -603,9 +612,11 @@ inline bool Undo(std::string* error) {
   if (!Apply(document, true, false, error, true, (restore_scope ? &*restore_scope : nullptr))) {
     return false;
   }
-  undo.clear();
-  active_name.clear();
-  active_settings.clear();
+  history->clear();
+  if (history == &undo) {
+    active_name.clear();
+    active_settings.clear();
+  }
   notice = "Import undone. Later edits were kept.";
   return true;
 }
@@ -675,6 +686,7 @@ struct ManagerGeometry {
   ImVec2 last_size = ImVec2(0.f, 0.f);
 };
 inline ManagerGeometry manager_geometry;
+inline ManagerGeometry slot_geometry[7];
 
 inline void Navigate(int next) {
   mode = next;
@@ -1447,6 +1459,10 @@ inline void DrawEntry(bool multipass = false, bool management_only = false) {
       static presets::Document document;
       static profiles::Slot target_before;
       static std::string saved_destination;
+      static profile_ui::SlotAnchor anchor;
+      static bool restore_position = false;
+      // Auto-fit resolves content size after the popup's first measurement frame.
+      static int placement_frames = 0;
       Pump();
       bool busy;
       {
@@ -1456,6 +1472,9 @@ inline void DrawEntry(bool multipass = false, bool management_only = false) {
       if (profile_ui::slot_task != Task::NONE && !busy) {
         task = profile_ui::slot_task;
         index = profile_ui::task_index;
+        anchor = profile_ui::slot_anchor;
+        restore_position = slot_geometry[static_cast<int>(task)].valid;
+        placement_frames = 2;
         profile_ui::slot_task = Task::NONE;
         SettleSlider(true);
         profile_ui::Observe();
@@ -1510,9 +1529,16 @@ inline void DrawEntry(bool multipass = false, bool management_only = false) {
             }
           }
         }
-        ImGui::OpenPopup("###nr_slot_operation");
       }
       if (task != Task::NONE) {
+        const char* ids[] = {"none", "rename", "copy", "import", "export", "clear", "restore"};
+        const std::string popup_id = std::string("###nr_slot_operation_") + ids[static_cast<int>(task)];
+        auto& geometry = slot_geometry[static_cast<int>(task)];
+        const bool dangerous = task == Task::CLEAR || task == Task::RESTORE
+            || (task == Task::COPY && target_before.populated);
+        if (placement_frames == 2) {
+          ImGui::OpenPopup(popup_id.c_str());
+        }
         const char* title = "Profile actions";
         switch (task) {
         case Task::RENAME:
@@ -1545,10 +1571,34 @@ inline void DrawEntry(bool multipass = false, bool management_only = false) {
             ImVec2(width, (std::max)(1.f, display.y - em * 2.f)));
         bool open = true;
         if (ImGui::BeginPopupModal(
-                (std::string(ui::Tr(title)) + "###nr_slot_operation").c_str(),
+                (std::string(ui::Tr(title)) + popup_id).c_str(),
                 &open,
                 ImGuiWindowFlags_AlwaysAutoResize |
                     ImGuiWindowFlags_NoSavedSettings)) {
+          const ImVec2 minimum(0.f, 0.f);
+          const auto work_size = ImGui::GetIO().DisplaySize;
+          const auto size = ImGui::GetWindowSize();
+          const ImVec2 span((std::max)(0.f, work_size.x - size.x),
+                            (std::max)(0.f, work_size.y - size.y));
+          auto position = ImGui::GetWindowPos();
+          if (placement_frames > 0) {
+            if (restore_position) {
+              position = ImVec2(minimum.x + span.x * geometry.relative_position.x,
+                                minimum.y + span.y * geometry.relative_position.y);
+            } else if (!dangerous && anchor.valid) {
+              position = profile_ui::SlotWindowPosition(anchor, size);
+            } else {
+              position = ImVec2(minimum.x + span.x * 0.5f, minimum.y + span.y * 0.5f);
+            }
+            --placement_frames;
+          }
+          position.x = std::clamp(position.x, minimum.x, minimum.x + span.x);
+          position.y = std::clamp(position.y, minimum.y, minimum.y + span.y);
+          ImGui::SetWindowPos(position);
+          geometry.relative_position = ImVec2(
+              span.x > 0.f ? (position.x - minimum.x) / span.x : 0.f,
+              span.y > 0.f ? (position.y - minimum.y) / span.y : 0.f);
+          geometry.valid = true;
           ImGui::PushTextWrapPos(0.f);
           ImGui::TextWrapped("%s", profile_ui::Name(index).c_str());
           const auto& current = profile_ui::state.slots[index];
@@ -1732,7 +1782,7 @@ inline void DrawEntry(bool multipass = false, bool management_only = false) {
           ImGui::PopTextWrapPos();
           ImGui::EndPopup();
         }
-        if (!ImGui::IsPopupOpen("###nr_slot_operation")) {
+        if (!ImGui::IsPopupOpen(popup_id.c_str())) {
           task = Task::NONE;
         }
       }

@@ -222,7 +222,11 @@ struct StatusSummaryFields {
   std::string resolution;
   std::string stage;
   std::string gpu;
-  const char* resolution_tip = "Observed input and output dimensions. These are separate from requested working sizes.";
+  std::string fps;
+  std::string fg;
+  const char* fps_tip = "ReShade overlay cadence. This is not a separate measurement of game render FPS or generated output FPS.";
+  const char* fg_tip = "Observed frame generation route. FG GPU duration is unavailable.";
+  const char* resolution_tip = "Configured working ratio and current completed working dimensions when available.";
   const char* stage_tip = "Execution evidence for the current chain. A requested stage is not proof of execution.";
   const char* gpu_tip = "Completed GPU timestamp samples only. Missing or stale samples are not current execution cost.";
 };
@@ -236,97 +240,76 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, co
       .Var(ImGuiStyleVar_WindowPadding, ImVec2(tokens::kCardPadding + kStripeWidth, tokens::kCardPadding));
   const float font = ImGui::GetFontSize();
   const float available = (std::max)(1.f, ImGui::GetContentRegionAvail().x - ImGui::GetStyle().WindowPadding.x * 2.f);
-  const int field_count = (available >= font * 52.f ? 3 : (available >= font * 32.f ? 2 : 1));
-  const float field_width = (available - ImGui::GetStyle().ItemSpacing.x * (field_count - 1)) / field_count;
-  const float full_action_width = ImGui::CalcTextSize((std::string(Tr("Runtime monitor")) + " !").c_str()).x
-      + ImGui::GetStyle().FramePadding.x * 2.f;
-  const char* action_title = Tr(full_action_width > available ? "Monitor" : "Runtime monitor");
-  const std::string action = std::string(action_title) + (warning_count != 0 ? " !" : "");
-  const float action_width = (std::min)(available,
-      ImGui::CalcTextSize((std::string(action_title) + " !").c_str()).x + ImGui::GetStyle().FramePadding.x * 2.f);
-  const bool stacked_action = available - action_width < font * 10.f;
-  const float title_width = (stacked_action ? available : available - action_width - ImGui::GetStyle().ItemSpacing.x);
+  const float gap = ImGui::GetStyle().ItemSpacing.x;
+  const float action_width = (std::min)(available, ImGui::CalcTextSize((std::string(Tr("Monitor")) + " !").c_str()).x
+      + ImGui::GetStyle().FramePadding.x * 2.f);
+  const float title_width = (std::max)(1.f, available - action_width - gap);
+  const bool auxiliary = available >= font * 56.f;
+  const int columns = (available >= font * 28.f ? 3 : 2);
+  const float field_width = (available - gap * (columns - 1)) / columns;
+  const float heading_height = ImGui::GetFrameHeight();
+  const float height = ImGui::GetStyle().WindowPadding.y * 2.f + heading_height
+      + ImGui::GetStyle().ItemSpacing.y + ImGui::GetTextLineHeight()
+      + (auxiliary ? ImGui::GetTextLineHeightWithSpacing() : 0.f);
   char title[256];
   FormatCardTitle(title, sizeof(title), card);
   const char* short_title = title;
   switch (card.id) {
-    case CardId::kActive: short_title = Tr("Active"); break;
+    case CardId::kActive: short_title = Tr(card.fg_submitted_frames.has_value() ? "NR submitted before FG" : "NR running normally"); break;
     case CardId::kActiveWithIssues: short_title = Tr("Active with warnings"); break;
     case CardId::kPartlyActive: short_title = Tr("Partly active"); break;
-    case CardId::kStarting: short_title = Tr("Confirming"); break;
+    case CardId::kStarting: short_title = Tr(card.tone == CardTone::kWarn ? "Needs attention" : "Checking NR"); break;
     default: break;
   }
-  const std::string heading = std::string(GlyphIcon(card.glyph)) + " " + short_title;
-  const char* names[] = {"Resolution", "Execution stage", "GPU"};
-  const std::string* values[] = {&fields.resolution, &fields.stage, &fields.gpu};
-  std::array<std::string, 3> field_text;
-  for (int i = 0; i < field_count; ++i) {
-    field_text[i] = std::string(Tr(names[i])) + ": "
-        + (values[i]->empty() ? Tr("Pending confirmation") : values[i]->c_str());
-  }
-  const auto wrapped_height = [](const char* value, float width) {
-    return ImGui::CalcTextSize(value, nullptr, false, (std::max)(1.f, width)).y;
-  };
-  // Measure representative complete fields so the envelope follows the font
-  // and translation, without reserving multiple empty lines on wide panels.
-  const float title_height = (std::max)(wrapped_height(heading.c_str(), title_width),
-      std::ceil(font * 32.f / (std::max)(font, title_width)) * ImGui::GetTextLineHeight());
-  const std::array<std::string, 3> reserved_fields = {
-      std::string(Tr("Resolution")) + ": 99999x99999 -> 99999x99999",
-      std::string(Tr("Execution stage")) + ": Render -> Upscaled -> Present",
-      std::string(Tr("GPU")) + ": " + Tr("Pending confirmation")};
-  float field_height = 0.f;
-  for (int i = 0; i < field_count; ++i) {
-    const std::string pending = std::string(Tr(names[i])) + ": " + Tr("Pending confirmation");
-    field_height = (std::max)({field_height, wrapped_height(field_text[i].c_str(), field_width),
-                             wrapped_height(reserved_fields[i].c_str(), field_width),
-                             wrapped_height(pending.c_str(), field_width)});
-    if (i == 1) {
-      const std::string pending_stage = std::string(Tr(names[i])) + ": " + Tr("Execution stage pending confirmation");
-      field_height = (std::max)(field_height, wrapped_height(pending_stage.c_str(), field_width));
-    }
-  }
-  field_height += ImGui::GetStyle().ItemSpacing.y;
-  const float height = title_height + (stacked_action ? ImGui::GetFrameHeightWithSpacing() : 0.f)
-      + ImGui::GetStyle().ItemSpacing.y + field_height
-      + ImGui::GetStyle().WindowPadding.y * 2.f;
   bool details = false;
-  if (ImGui::BeginChild("##nr_status_summary", ImVec2(0.f, height),
-                        ImGuiChildFlags_AlwaysUseWindowPadding,
+  if (ImGui::BeginChild("##nr_status_summary", ImVec2(0.f, height), ImGuiChildFlags_AlwaysUseWindowPadding,
                         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
     const ImVec2 origin = ImGui::GetWindowPos();
-    ImGui::GetWindowDrawList()->AddRectFilled(
-        origin, ImVec2(origin.x + kStripeWidth, origin.y + ImGui::GetWindowSize().y),
+    ImGui::GetWindowDrawList()->AddRectFilled(origin, ImVec2(origin.x + kStripeWidth, origin.y + ImGui::GetWindowSize().y),
         ToU32(ToneColor(card.tone)), tokens::kRadiusCard, ImDrawFlags_RoundCornersLeft);
     const ImVec2 heading_at = ImGui::GetCursorPos();
+    ImGui::AlignTextToFramePadding();
     {
       StyleScope tone;
       tone.Color(ImGuiCol_Text, ToneColor(card.tone));
-      ImGui::PushTextWrapPos(heading_at.x + title_width);
-      ImGui::TextUnformatted(heading.c_str());
-      ImGui::PopTextWrapPos();
+      const std::string heading = std::string(GlyphIcon(card.glyph)) + " " + short_title;
+      ImGui::TextUnformatted(Ellipsize(heading.c_str(), title_width).c_str());
+      ItemTooltip("%s\n%s", title, card.body != nullptr ? Tr(card.body) : "");
     }
-    if (card.body != nullptr && card.body[0] != '\0') {
-      ItemTooltip("%s\n%s", title, Tr(card.body));
-    } else if (short_title != title) {
-      ItemTooltip("%s", title);
-    }
-    ImGui::SetCursorPos(ImVec2(stacked_action ? heading_at.x : heading_at.x + available - action_width,
-                             stacked_action ? heading_at.y + title_height : heading_at.y));
+    ImGui::SetCursorPos(ImVec2(heading_at.x + available - action_width, heading_at.y));
+    const std::string action = std::string(Tr("Monitor")) + (warning_count != 0 ? " !" : "");
     details = ImGui::Button((action + "###status_details").c_str(), ImVec2(action_width, 0.f));
     ItemTooltip("%s", Tr("Open the movable runtime monitor. Diagnostics remain available separately."));
-    ImGui::SetCursorPos(ImVec2(heading_at.x, heading_at.y + title_height
-        + (stacked_action ? ImGui::GetFrameHeightWithSpacing() : 0.f) + ImGui::GetStyle().ItemSpacing.y));
-    const char* tips[] = {fields.resolution_tip, fields.stage_tip, fields.gpu_tip};
-    const ImVec2 fields_at = ImGui::GetCursorPos();
-    for (int i = 0; i < field_count; ++i) {
-      ImGui::SetCursorPos(ImVec2(fields_at.x + i * (field_width + ImGui::GetStyle().ItemSpacing.x), fields_at.y));
-      ImGui::BeginGroup();
-      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + field_width);
-      ImGui::TextUnformatted(field_text[i].c_str());
-      ImGui::PopTextWrapPos();
-      ImGui::EndGroup();
-      if (tips[i] != nullptr && tips[i][0] != '\0') ItemTooltip("%s", Tr(tips[i]));
+    const float metric_y = heading_at.y + heading_height + ImGui::GetStyle().ItemSpacing.y;
+    const char* names[] = {"NR GPU", "ReShade FPS", "FG"};
+    const std::string* values[] = {&fields.gpu, &fields.fps, &fields.fg};
+    const char* tips[] = {fields.gpu_tip, fields.fps_tip, fields.fg_tip};
+    for (int column = 0; column < columns; ++column) {
+      const int index = (columns == 2 && column == 1 && fields.fps.empty() ? 2 : column);
+      const std::string metric = std::string(Tr(names[index])) + "  "
+          + (values[index]->empty() ? "—" : values[index]->c_str());
+      ImGui::SetCursorPos(ImVec2(heading_at.x + column * (field_width + gap), metric_y));
+      const char* value = values[index]->empty() ? "—" : values[index]->c_str();
+      const float value_width = ImGui::CalcTextSize(value).x;
+      const auto label = Ellipsize(Tr(names[index]), (std::max)(0.f, field_width - value_width - font * 0.4f));
+      const std::string shown = label.empty() ? value : label + " " + value;
+      ImGui::TextUnformatted(Ellipsize(shown.c_str(), field_width).c_str());
+      ItemTooltip("%s\n%s", metric.c_str(), tips[index] != nullptr ? Tr(tips[index]) : "");
+    }
+    if (auxiliary) {
+      const float width = (available - gap) * 0.5f;
+      const char* labels[] = {"Working resolution", "Execution stage"};
+      const std::string* values[] = {&fields.resolution, &fields.stage};
+      const char* tips[] = {fields.resolution_tip, fields.stage_tip};
+      StyleScope muted;
+      muted.Color(ImGuiCol_Text, CurrentTheme().text_secondary);
+      for (int column = 0; column < 2; ++column) {
+        const std::string text = std::string(Tr(labels[column])) + "  "
+            + (values[column]->empty() ? "—" : values[column]->c_str());
+        ImGui::SetCursorPos(ImVec2(heading_at.x + column * (width + gap), metric_y + ImGui::GetTextLineHeightWithSpacing()));
+        ImGui::TextUnformatted(Ellipsize(text.c_str(), width).c_str());
+        ItemTooltip("%s\n%s", text.c_str(), tips[column] != nullptr ? Tr(tips[column]) : "");
+      }
     }
   }
   ImGui::EndChild();
@@ -345,9 +328,10 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, co
   if (!off && execution != nullptr) fields.stage = execution;
   if (!off && card.nr_gpu_ms > 0.f) {
     char gpu[96];
-    std::snprintf(gpu, sizeof(gpu), Tr("NR GPU %.1f ms"), card.nr_gpu_ms);
+    std::snprintf(gpu, sizeof(gpu), "%.1f ms", card.nr_gpu_ms);
     fields.gpu = gpu;
   }
+  fields.fg = Tr(card.fg_declared || card.frame_gen_multiplier > 1 ? "On" : "Unknown");
   return DrawStatusSummary(card, warning_count, fields);
 }
 

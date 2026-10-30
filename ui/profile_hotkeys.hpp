@@ -41,8 +41,9 @@ struct ProfileKeyEdge {
   }
 };
 
-inline bool HotkeyConflict(const std::array<std::uint32_t, 4>& keys,
-                           const std::array<bool, 4>& enabled, std::size_t action) {
+template <std::size_t Count = 4>
+inline bool HotkeyConflict(const std::array<std::uint32_t, Count>& keys,
+                           const std::array<bool, Count>& enabled, std::size_t action) {
   for (std::size_t i = 0; i < keys.size(); ++i) {
     if (i != action && enabled[i] && keys[i] == keys[action]) return true;
   }
