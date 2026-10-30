@@ -171,7 +171,7 @@ function Get-TestProjectInputs {
 
 function Invoke-TestProcess {
     param([string]$Executable, [string]$Directory, [string]$Name, [string[]]$Arguments = @(),
-        [ValidateRange(1,45000)][int]$TimeoutMilliseconds = 45000)
+        [ValidateRange(1,180000)][int]$TimeoutMilliseconds = 45000)
     $start = @{ FilePath=$Executable; WorkingDirectory=$Directory; WindowStyle='Hidden'; PassThru=$true
         RedirectStandardOutput=(Join-Path $Directory "$Name.stdout.log"); RedirectStandardError=(Join-Path $Directory "$Name.stderr.log") }
     $owner = $null

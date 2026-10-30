@@ -56,7 +56,10 @@ if ($LASTEXITCODE -ne 0) { throw "Production menu test build failed: $OutputDire
 $previousSnapshotMode = $env:NR_NEXUS_UI_SNAPSHOTS
 try {
     if ($SnapshotMode) { $env:NR_NEXUS_UI_SNAPSHOTS = $SnapshotMode }
-    Invoke-TestProcess $menuExecutable $menuDirectory 'menu'
+    # The complete production matrix renders over 13,000 frames across themes,
+    # languages and DPI sizes. Keep its bound separate from focused 45s cases
+    # so slower hosted runners can finish the same assertions without retries.
+    Invoke-TestProcess $menuExecutable $menuDirectory 'menu' -TimeoutMilliseconds 180000
 } finally { $env:NR_NEXUS_UI_SNAPSHOTS = $previousSnapshotMode }
 $timer.Stop()
 @{build='passed';run='passed';retention=$RetentionMode;seconds=$timer.Elapsed.TotalSeconds

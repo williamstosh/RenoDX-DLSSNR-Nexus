@@ -240,6 +240,7 @@ extern "C" __declspec(dllexport) void ReShadeSetConfigValue(
 
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
+  std::puts("production menu phase=initialize");
   const auto profile_fixture_root = std::filesystem::current_path() / L"profile-fixture-local";
   std::filesystem::create_directories(profile_fixture_root);
   SetEnvironmentVariableW(L"LOCALAPPDATA", profile_fixture_root.c_str());
@@ -1265,6 +1266,7 @@ int main() {
     runtime::use_auto_mask = true;
     runtime::skin_independent = true;
     runtime::StoreUiTheme(ui::ThemeId::CYBER_NEON);
+    std::printf("production menu phase=responsive-matrix start checks=%u frames=%u\n", checks, panel_frames);
     for (bool classic : {false, true}) {
       runtime::ui_classic_layout = classic;
       for (float font : {13.f, 26.f, 39.f}) {
@@ -1316,6 +1318,7 @@ int main() {
         }
       }
     }
+    std::printf("production menu phase=responsive-matrix passed checks=%u frames=%u\n", checks, panel_frames);
     runtime::ui_classic_layout = false;
     runtime::ui_menu_page = 2;
     check(runtime::BeginIssueReport("ui-fixture"), "report entry cannot start the description step");
