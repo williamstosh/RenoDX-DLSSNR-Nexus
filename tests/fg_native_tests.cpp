@@ -1376,7 +1376,16 @@ int main(int argc, char** argv) {
           "concurrent Home read during model recording must keep the proven service active");
     Check(verdict_lines() == normal_lines, "normal PREPARED/SUBMITTED cycles do not emit change lines");
     {
-      const auto legacy_gaps = native::present_gaps.exchange(6864);
+      funnel_accounting_tests::Restore restore;
+      restore.Atomic(&native::present_gaps);
+      restore.Atomic(&native::native_fg_owns);
+      restore.Value(&native::card_observation.window);
+      restore.Value(&native::card_observation.configuration);
+      restore.Value(&native::card_observation.declines);
+      restore.Value(&native::card_observation.declines_sampled_ns);
+      restore.Value(&native::card_observation.last_decline_ns);
+      restore.Value(&native::card_observation.last_decline);
+      native::present_gaps.store(6864);
       const auto observed = native::CollectFunnelInputs();
       const auto inputs = native::CollectCardInputs(
           renodx::addons::dlss5::ComputeNrVerdict(observed), native::SteadyNowNs());
@@ -1386,12 +1395,19 @@ int main(int argc, char** argv) {
                 && observed.injected == 1,
             "native card needs cumulative proven frame submissions, not the current 0/1 handoff");
       native::native_fg_owns.store(false);
-      Check(native::CollectCardInputs(
-                renodx::addons::dlss5::ComputeNrVerdict(native::CollectFunnelInputs()), native::SteadyNowNs())
-                .present_gaps == 6864,
-            "ordinary final-Present gap evidence must remain visible on its own route");
+      const auto ordinary_verdict = renodx::addons::dlss5::ComputeNrVerdict(native::CollectFunnelInputs());
+      const auto observation_ns = native::SteadyNowNs();
+      const auto baseline = native::CollectCardInputs(ordinary_verdict, observation_ns);
+      Check(baseline.recent.has_value() && baseline.present_gaps == 0,
+            "ordinary final-Present starts a recent baseline instead of reviving historical gaps");
+      native::present_gaps.fetch_add(3);
+      Check(native::CollectCardInputs(ordinary_verdict, observation_ns + 100'000'000LL).present_gaps == 3,
+            "new ordinary final-Present gap evidence remains visible on its own route");
+      Check(native::CollectCardInputs(ordinary_verdict,
+                observation_ns + renodx::addons::dlss5::ui::RecentHealthWindow::kWindowNs + 200'000'000LL)
+                .present_gaps == 0 && native::present_gaps.load() == 6867,
+            "expired gaps leave the current card without deleting historical diagnostics");
       native::native_fg_owns.store(true);
-      native::present_gaps.store(legacy_gaps);
     }
     // Drive the production card/HUD tick through a healthy cycle and a real
     // failure. A neutral recording must neither re-arm nor lose recovery.
