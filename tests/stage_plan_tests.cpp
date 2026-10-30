@@ -13,6 +13,7 @@
 #include <nr_model.hpp>
 #include <evaluate_chain.hpp>
 #include <stage_plan.hpp>
+#include <capability.hpp>
 
 int main() {
   namespace planner = renodx::addons::dlss5::stage_plan;
@@ -292,6 +293,229 @@ int main() {
               && plan.groups[0].count == plan.pass_count,
           "out-of-range pass counts retain the one-to-four-pass limit");
   }
+  namespace capability = renodx::addons::dlss5::capability;
+  using capability::Status;
+  using CapabilityReason = capability::Reason;
+  capability::Input capability_input{
+      .api = capability::Api::DX12,
+      .backend = capability::Backend::NATIVE,
+      .runtime = capability::Runtime::AVAILABLE,
+      .fg = capability::Fg::OFF,
+      .plan = planner::Build({.pass_count = 2}),
+      .main_resolution = {.follow_input = false, .scale = 1.f},
+      .resolutions = {{{.mode = 2, .scale = 0.67f}}},
+      .geometry = {{{.reference_width = 1920, .reference_height = 1080, .guide_width = 1280, .guide_height = 720},
+                    {.reference_width = 3840, .reference_height = 2160, .guide_width = 1920, .guide_height = 1080},
+                    {.reference_width = 3840, .reference_height = 2160, .guide_width = 1920, .guide_height = 1080}}}};
+  const auto base_input = capability_input;
+  context = "capability group-count matrix";
+  // Enumerate every ordered Render/Upscaled split, including four logical
+  // passes arranged as 2+2. Each physical group, not total pass count, owns
+  // the two-size limit. Repeat with both scale directions and FG On/Unknown.
+  for (const bool bridge : {false, true}) {
+    for (uint32_t count = 1; count <= 4; ++count) {
+      for (uint32_t render_count = 0; render_count <= count; ++render_count) {
+        for (uint32_t sizes = 0; sizes < (1u << count); ++sizes) {
+          for (const auto fg : {capability::Fg::OFF, capability::Fg::ON, capability::Fg::UNKNOWN}) {
+            capability_input = base_input;
+            capability_input.api = (bridge ? capability::Api::DX11 : capability::Api::DX12);
+            capability_input.backend = (bridge ? capability::Backend::DX11_BRIDGE : capability::Backend::NATIVE);
+            capability_input.fg = fg;
+            planner::Configuration config{.pass_count = count, .hook_point = (render_count == 0 ? 0u : 1u)};
+            if (render_count > 0 && render_count < count) config.stages[render_count - 1] = 2;
+            capability_input.plan = planner::Build(config, {.mixed_dx12 = !bridge, .mixed_dx11 = bridge});
+            capability_input.main_resolution.scale = ((sizes & 1) != 0 ? 0.67f : 1.f);
+            for (uint32_t pass = 1; pass < count; ++pass) {
+              capability_input.resolutions[pass - 1] = {.mode = 2, .scale = ((sizes & (1u << pass)) != 0 ? 0.67f : 1.f)};
+            }
+            bool expected = true;
+            uint32_t failed_group = capability::kNoIndex;
+            for (uint32_t index = 0; index < capability_input.plan.group_count; ++index) {
+              const auto group = capability_input.plan.groups[index];
+              if (group.count <= 2) continue;
+              for (uint32_t pass = group.begin + 1; pass < group.begin + group.count; ++pass) {
+                if (((sizes >> pass) & 1u) != ((sizes >> group.begin) & 1u)) {
+                  expected = false;
+                  failed_group = index;
+                }
+              }
+            }
+            const auto queried = capability::Query(capability_input);
+            check(queried.CanSubmit() == expected, "native size eligibility follows each effective group count");
+            check(!queried.execution_proven, "eligible configurations do not imply execution proof");
+            for (uint32_t index = 0; index < queried.group_count; ++index) {
+              check(queried.groups[index].independent_sizes_allowed == (capability_input.plan.groups[index].count == 2),
+                    "executor pair selection can reuse the queried group policy directly");
+            }
+            if (!expected) {
+              check(queried.configuration.reason == CapabilityReason::GROUP_SIZE_MISMATCH
+                        && queried.configuration.group == failed_group
+                        && queried.configuration.pass < count,
+                    "group-size rejection identifies the failing logical pass and group");
+            }
+          }
+        }
+      }
+    }
+  }
+  context = "Present pair FG declaration and ownership";
+  for (const bool bridge : {false, true}) {
+    for (const auto fg : {capability::Fg::OFF, capability::Fg::ON, capability::Fg::UNKNOWN}) {
+      for (uint32_t owners = 0; owners < 8; ++owners) {
+        capability_input = base_input;
+        capability_input.api = (bridge ? capability::Api::DX11 : capability::Api::DX12);
+        capability_input.backend = (bridge ? capability::Backend::DX11_BRIDGE : capability::Backend::NATIVE);
+        capability_input.plan = planner::Build({.pass_count = 2, .hook_point = 2});
+        capability_input.fg = fg;
+        capability_input.fg_owns_input = (owners & 1) != 0;
+        capability_input.xefg_enabled = (owners & 2) != 0;
+        capability_input.auto_fg_fallback = (owners & 4) != 0;
+        const auto queried = capability::Query(capability_input);
+        check(queried.CanSubmit() == (fg == capability::Fg::OFF && owners == 0),
+              "Present different sizes require explicit Off and no active competing route");
+        if (owners == 0 && fg == capability::Fg::UNKNOWN) {
+          check(queried.configuration.status == Status::NEEDS_PROOF
+                    && queried.configuration.reason == CapabilityReason::FG_OFF_REQUIRED,
+                "unknown FG is never silently treated as Off");
+        }
+        capability_input.resolutions[0].mode = 0;
+        const auto same_size = capability::Query(capability_input);
+        check(same_size.CanSubmit(), "legacy same-size Present is not given a new FG Off requirement");
+        check(same_size.groups[0].independent_sizes_allowed == (fg == capability::Fg::OFF && owners == 0),
+              "same-size eligibility does not grant the independent Present executor branch");
+      }
+    }
+  }
+  context = "B1 per-frame proof";
+  capability_input = base_input;
+  capability_input.plan = planner::Build({.pass_count = 2, .stages = {3}}, {.mixed_present_dx12 = true});
+  auto queried = capability::Query(capability_input);
+  check(!queried.CanSubmit() && queried.configuration.status == Status::NEEDS_PROOF
+            && queried.configuration.reason == CapabilityReason::B1_FRAME_PROOF_REQUIRED
+            && queried.configuration.pass == 1 && queried.configuration.group == 1,
+        "Build success alone never grants B1 frame admission");
+  capability_input.b1_frame_proven = true;
+  check(capability::Query(capability_input).CanSubmit() && !capability::Query(capability_input).execution_proven,
+        "B1 source proof grants eligibility, not successful NR execution");
+  capability_input.current_execution_proven = true;
+  check(capability::Query(capability_input).execution_proven, "current execution proof is reported separately");
+  capability_input.fg = capability::Fg::ON;
+  check(!capability::Query(capability_input).CanSubmit() && !capability::Query(capability_input).execution_proven,
+        "dynamic FG change overrides historical B1 and execution proofs");
+  capability_input = base_input;
+  capability_input.plan = planner::Build({.pass_count = 2, .hook_point = 2});
+  capability_input.native_prefg_resolution_experiment = true;
+  capability_input.current_execution_proven = true;
+  queried = capability::Query(capability_input);
+  check(queried.configuration.status == Status::EXPERIMENTAL && !queried.CanSubmit() && !queried.execution_proven
+            && queried.configuration.reason == CapabilityReason::NATIVE_PREFG_BLOCKED,
+        "retained native Pre-FG prototype never becomes supported even with claimed execution evidence");
+
+  context = "capability unknown environment and legacy value retention";
+  for (const auto api : {capability::Api::UNKNOWN, capability::Api::DX11, capability::Api::DX12,
+                         capability::Api::VULKAN, capability::Api::OTHER}) {
+    for (const auto backend : {capability::Backend::UNKNOWN, capability::Backend::NATIVE,
+                               capability::Backend::DX11_BRIDGE, capability::Backend::STREAMLINE_FALLBACK}) {
+      for (const auto runtime : {capability::Runtime::UNKNOWN, capability::Runtime::AVAILABLE, capability::Runtime::UNAVAILABLE}) {
+        capability_input = base_input;
+        capability_input.api = api;
+        capability_input.backend = backend;
+        capability_input.runtime = runtime;
+        const auto saved = capability_input;
+        queried = capability::Query(capability_input);
+        const bool supported = runtime == capability::Runtime::AVAILABLE
+            && ((api == capability::Api::DX12 && backend == capability::Backend::NATIVE)
+                || (api == capability::Api::DX11 && backend == capability::Backend::DX11_BRIDGE));
+        check(queried.CanSubmit() == supported, "unknown/unavailable/mismatched backend cannot admit new independent modes");
+        check(capability_input.api == saved.api && capability_input.backend == saved.backend
+                  && capability_input.runtime == saved.runtime && capability_input.plan.requested == saved.plan.requested
+                  && capability_input.resolutions[0].mode == saved.resolutions[0].mode
+                  && capability_input.resolutions[0].scale == saved.resolutions[0].scale,
+              "capability query leaves saved stage, mode and scale choices intact in every environment");
+      }
+    }
+  }
+  capability_input = base_input;
+  capability_input.api = capability::Api::VULKAN;
+  capability_input.resolutions[0].mode = 0;
+  check(capability::Query(capability_input).CanSubmit(), "Vulkan legacy inherited single-stage path is preserved");
+  capability_input.main_resolution.scale = .67f;
+  check(!capability::Query(capability_input).CanSubmit(), "Vulkan cannot advertise unimplemented base working-size scaling");
+  capability_input.main_resolution.scale = 1.f;
+  capability_input.plan = planner::Build({.hook_point = 1});
+  check(!capability::Query(capability_input).CanSubmit(), "Vulkan cannot advertise an unimplemented Render insertion point");
+  capability_input.plan = planner::Build({.pass_count = 2, .hook_point = 1, .stages = {2}});
+  check(!capability::Query(capability_input).CanSubmit(), "Vulkan mixed stages remain blocked regardless of a DX12-built plan");
+  capability_input = base_input;
+  capability_input.plan = planner::Build({.pass_count = 2, .hook_point = 1, .stages = {2}}, {.ray_reconstruction = true});
+  queried = capability::Query(capability_input);
+  check(queried.CanSubmit() && queried.plan_reason == Reason::RR_AFTER
+            && capability_input.plan.At(Stage::RENDER).count == 0,
+        "RR eligibility exposes the existing Upscaled fallback without claiming real PreSR support");
+  capability_input.plan = planner::Build({.pass_count = 2, .stages = {3}});
+  queried = capability::Query(capability_input);
+  check(!queried.CanSubmit() && queried.plan_reason == Reason::MIXED_PRESENT,
+        "query cannot revive a planner-rejected route");
+
+  context = "resolved dimensions, inheritance and dynamic changes";
+  capability_input = base_input;
+  capability_input.plan = planner::Build({.pass_count = 3});
+  capability_input.main_resolution = {.follow_input = true, .scale = 1.f};
+  capability_input.resolutions[0] = {.mode = 2, .scale = 0.5f};
+  queried = capability::Query(capability_input);
+  check(queried.CanSubmit() && queried.working_sizes[0] == queried.working_sizes[1],
+        "different controls resolving to equal actual size remain legal in a three-pass group");
+  capability_input.geometry[1].guide_width = 1280;
+  queried = capability::Query(capability_input);
+  check(!queried.CanSubmit() && queried.configuration.reason == CapabilityReason::GROUP_SIZE_MISMATCH,
+        "dynamic Guide changes recompute actual size and reject newly incompatible groups");
+  capability_input.geometry[1] = {};
+  queried = capability::Query(capability_input);
+  check(!queried.CanSubmit() && queried.configuration.status == Status::NEEDS_PROOF
+            && queried.configuration.reason == CapabilityReason::DIMENSIONS_UNKNOWN,
+        "missing geometry cannot prove three-pass size equivalence");
+  capability_input.geometry[1] = {.reference_width = 3840, .reference_height = 2160};
+  queried = capability::Query(capability_input);
+  check(!queried.CanSubmit() && queried.configuration.status == Status::NEEDS_PROOF
+            && queried.configuration.reason == CapabilityReason::DIMENSIONS_UNKNOWN,
+        "a reference rectangle without current Guide evidence cannot prove a Follow-input mismatch");
+  capability_input.resolutions[0].mode = 0;
+  check(capability::Query(capability_input).CanSubmit(), "identical settings establish same-size eligibility without observed dimensions");
+  const std::array<capability::Resolution, 3> inheritance = {{{.mode = 2, .scale = 0.67f}, {.mode = 0}, {.mode = 1}}};
+  check(capability::ResolveResolution(2, {.follow_input = false, .scale = 0.8f}, inheritance).scale == 0.8f,
+        "inheritance uses Pass 1 rather than the preceding independent pass");
+  check(capability::ResolveWorkingSize({.follow_input = true}, {.reference_width = 100, .reference_height = 50,
+          .guide_width = 200, .guide_height = 100}) == capability::Size{100, 50}, "Guide dimensions clamp to stage reference");
+  check(capability::ResolveWorkingSize({.follow_input = true, .scale = 0.67f}, {.reference_width = 101, .reference_height = 51})
+            == capability::Size{68, 34}, "missing Guide uses the executor's rounded scale fallback");
+  capability_input = base_input;
+  capability_input.resolutions[0].scale = std::numeric_limits<float>::quiet_NaN();
+  check(capability::Query(capability_input).configuration.reason == CapabilityReason::INVALID_RESOLUTION,
+        "non-finite active scales cannot reach integer dimension conversion");
+  capability_input.resolutions[0] = {.mode = 3};
+  check(capability::Query(capability_input).configuration.reason == CapabilityReason::INVALID_RESOLUTION,
+        "invalid active mode is rejected without sanitizing the saved value");
+  capability_input.plan = planner::Build({.pass_count = 1});
+  check(capability::Query(capability_input).CanSubmit(), "invalid inactive future pass does not block the active chain");
+  capability_input = base_input;
+  capability_input.plan.groups[0].count = 5;
+  check(capability::Query(capability_input).configuration.reason == CapabilityReason::INVALID_PLAN,
+        "malformed plan cannot index past resolution inputs");
+  for (uint32_t reason = 0; reason <= static_cast<uint32_t>(CapabilityReason::NATIVE_PREFG_BLOCKED); ++reason) {
+    check(std::string_view(capability::ReasonText(static_cast<CapabilityReason>(reason))) != "Unknown capability reason",
+          "every capability reason has a diagnostic explanation");
+  }
+  context = "Present three/four-pass groups";
+  for (uint32_t count : {3u, 4u}) {
+    capability_input = base_input;
+    capability_input.plan = planner::Build({.pass_count = count, .hook_point = 2});
+    queried = capability::Query(capability_input);
+    check(!queried.CanSubmit() && queried.configuration.reason == CapabilityReason::GROUP_SIZE_MISMATCH,
+          "three/four-pass Present rejects different sizes even with FG explicitly Off");
+    capability_input.resolutions[0].mode = 0;
+    check(capability::Query(capability_input).CanSubmit(), "legacy same-size three/four-pass Present remains eligible");
+  }
+
   context = "mixed source terminal accounting";
   namespace nr = renodx::addons::dlss5;
   const auto declines = [](nr::NrDeclineReason reason) {

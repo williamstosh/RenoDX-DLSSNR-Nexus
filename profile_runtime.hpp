@@ -48,6 +48,8 @@ struct UndoState {
   int previous_active = -1;
   bool available = false;
   bool configuration = false;
+  const char* action_label = "NR Profiles";
+  int action_index = -1;
 };
 inline data::State state;
 inline Json defaults_snapshot = Json::object();
@@ -94,6 +96,27 @@ struct ResetTransaction {
 };
 inline ResetTransaction reset;
 
+// Supplied before LoadConfiguration/migrations write any NR defaults. Unknown,
+// unreadable INI, legacy keys and an explicit detach all count as EXISTING.
+enum class FirstInstallEvidence { UNKNOWN, EXISTING, PROVEN_EMPTY };
+struct FirstInstallTransaction {
+  bool pending = false;
+  data::State before;
+  Json configuration = Json::object();
+  Json target = Json::object();
+  uint64_t commit_epoch = 0;
+  uint64_t reload_epoch = 0;
+  std::function<bool(const Json&, std::string*)> supported;
+};
+inline FirstInstallTransaction first_install;
+inline bool fresh_storage = false;
+
+// Host callbacks run on the profile/UI thread, without the storage mutex.
+// Validate the complete proposed configuration; an empty callback preserves the
+// existing field/preview validation. The host owns import/dialog exclusion.
+inline std::function<bool(const Json&, std::string*)> capability_validator;
+inline std::function<bool()> interaction_busy;
+
 inline bool Resetting() {
   return reset.phase != ResetPhase::NONE;
 }
@@ -108,7 +131,7 @@ inline Json ResetConfiguration() {
     result[rule.key] = {{"value", preset_ui::ReadSetting(rule.key)},
                         {"raw", (raw ? Json(*raw) : Json(nullptr))}};
   }
-  for (const auto* key : {"ProfileGameId", "ConfigVersion", "NRPresentRestoreScopeConfigVersion",
+  for (const auto* key : {"ProfileGameId", "ProfileBalancedInitialized", "ConfigVersion", "NRPresentRestoreScopeConfigVersion",
                           "NRPresentSdrRestoreConfigVersion", "NRPresentHdrPedestalConfigVersion"}) {
     const auto raw = ReadPresentRestoreRaw(key);
     result[key] = (raw ? Json(*raw) : Json(nullptr));
@@ -149,6 +172,7 @@ struct Worker {
   std::string id;
   std::string error;
   bool relocated = false;
+  bool fresh = false;
 };
 inline Worker worker;
 
@@ -198,6 +222,8 @@ inline DWORD WINAPI WorkerMain(LPVOID module) {
         }
         return value;
       };
+      const bool new_identity = id.empty();
+      bool fresh = false;
       data::State result = data::EmptyState(owner);
       std::filesystem::path path;
       bool relocated = false;
@@ -220,6 +246,43 @@ inline DWORD WINAPI WorkerMain(LPVOID module) {
             }
           } else if (GetLastError() != ERROR_FILE_NOT_FOUND) {
             error = "Could not read game profiles. Current settings were kept.";
+          } else {
+            fresh = new_identity;
+            if (fresh) {
+              // An absent INI binding cannot prove first use when this game's
+              // older Slot file survives. Inspect only the bounded profile root
+              // on the storage worker; unknown/unreadable data is not freshness.
+              std::error_code scan_error;
+              std::filesystem::directory_iterator entries(path.parent_path().parent_path(), scan_error);
+              uint32_t inspected = 0;
+              if (scan_error) {
+                fresh = false;
+              }
+              const std::filesystem::directory_iterator end;
+              for (; entries != end && !scan_error; entries.increment(scan_error)) {
+                const auto& entry = *entries;
+                if (++inspected > presets::MAX_LIBRARY_ENTRIES) {
+                  fresh = false;
+                  break;
+                }
+                if (entry.path() == path.parent_path()) continue;
+                const DWORD flags = GetFileAttributesW(entry.path().c_str());
+                if (flags == INVALID_FILE_ATTRIBUTES || (flags & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+                  fresh = false;
+                  break;
+                }
+                if ((flags & FILE_ATTRIBUTE_DIRECTORY) == 0) continue;
+                data::State existing;
+                std::string read_error;
+                if (!data::Read(entry.path() / L"slots.json", Validate, &existing, &read_error) || existing.owner == owner) {
+                  fresh = false;
+                  break;
+                }
+              }
+              if (scan_error) {
+                fresh = false;
+              }
+            }
           }
         }
       }
@@ -228,6 +291,7 @@ inline DWORD WINAPI WorkerMain(LPVOID module) {
       worker.id = std::move(id);
       worker.path = std::move(path);
       worker.relocated = relocated;
+      worker.fresh = fresh && error.empty();
       worker.error = std::move(error);
       worker.ready = true;
       worker.busy = false;
@@ -343,7 +407,7 @@ inline void Changed(bool urgent = false) {
 }
 
 inline void Observe() {
-  if (Resetting() || reset.recovery_failed) return;
+  if (Resetting() || reset.recovery_failed || first_install.pending) return;
   const auto reloaded = profile_reload_epoch.load(std::memory_order_relaxed);
   if (loaded && reloaded != observed_reload_epoch) {
     observed_reload_epoch = reloaded;
@@ -382,7 +446,11 @@ inline void Observe() {
   Changed();
 }
 
-inline bool ApplySnapshot(const Json& settings, std::string* error) {
+inline bool ValidateSnapshot(const Json& settings, std::string* error) {
+  if (!settings.is_object()) {
+    *error = "Profile contains unsupported settings. Current settings were kept.";
+    return false;
+  }
   for (const auto& [key, value] : settings.items()) {
     if (!Validate(key, value)) {
       *error = "Profile contains unsupported settings. Current settings were kept.";
@@ -396,10 +464,31 @@ inline bool ApplySnapshot(const Json& settings, std::string* error) {
       return false;
     }
   }
-  return preset_ui::Apply(document, false, false, error);
+  if (capability_validator) {
+    auto proposed = Snapshot();
+    proposed.update(settings);
+    try {
+      if (!capability_validator(proposed, error)) {
+        if (error->empty()) {
+          *error = "Profile contains unsupported settings. Current settings were kept.";
+        }
+        return false;
+      }
+    } catch (const std::exception& exception) {
+      *error = exception.what();
+      return false;
+    }
+  }
+  return true;
 }
 
-inline void ExecuteAction() {
+inline bool ApplySnapshot(const Json& settings, std::string* error) {
+  if (!ValidateSnapshot(settings, error)) return false;
+  return preset_ui::Apply(
+      {.metadata = Json::object(), .scope = presets::Scope::FULL, .settings = settings}, false, false, error);
+}
+
+inline void ExecuteAction(bool persist = true) {
   const auto action = pending_action;
   const int index = pending_index;
   pending_action = Action::NONE;
@@ -471,7 +560,8 @@ inline void ExecuteAction() {
     state.slots[index].overrides = slot.overrides;
     state.slots[index].snapshot = target;
     state.slots[index].template_version = data::TEMPLATE_VERSION;
-    undo = {.before = before, .after = state, .previous_active = previous_active, .available = true};
+    undo = {.before = before, .after = state, .previous_active = previous_active, .available = true,
+            .action_label = "Restore official defaults", .action_index = index};
     Changed(true);
     notice = "Official defaults restored.";
     return;
@@ -490,13 +580,62 @@ inline void ExecuteAction() {
   observed_epoch = profile_commit_epoch.load();
   undo = {.before = before, .after = state, .running_before = running_before,
           .running_after = state.last_applied, .previous_active = previous_active,
-          .available = true, .configuration = true};
-  Changed(true);
+          .available = true, .configuration = true,
+          .action_label = (action == Action::RESTORE ? "Restore official defaults" : "Apply"),
+          .action_index = index};
+  if (persist) {
+    Changed(true);
+  }
   notice = (action == Action::RESTORE ? "Official defaults restored." : "Profile applied. Runtime execution is pending confirmation.");
 }
 
+// Host entry point: invoke only after runtime capability discovery. The callback
+// must verify the requested Stage/resolution/model contract, without applying it.
+// Persist the proposed association first, so IO failures cannot change settings.
+inline bool TryInitializeBalanced(FirstInstallEvidence evidence,
+                                 const std::function<bool(const Json&, std::string*)>& supported) {
+  if (evidence != FirstInstallEvidence::PROVEN_EMPTY || !supported || !fresh_storage
+      || !loaded || !ResetWritable() || dirty || Busy() || save_failed || active >= 0
+      || Resetting() || reset.recovery_failed || first_install.pending
+      || slot_task != SlotTask::NONE || (interaction_busy && interaction_busy())
+      || pending_action != Action::NONE || state.revision != 0 || !state.selected.empty()
+      || !state.last_applied.empty() || ReadPresentRestoreRaw("ProfileGameId").has_value()
+      || ReadPresentRestoreRaw("ProfileBalancedInitialized").has_value()) return false;
+  for (std::size_t index = 0; index < state.slots.size(); ++index) {
+    const auto& slot = state.slots[index];
+    if (!slot.overrides.empty() || !slot.snapshot.empty() || (index >= 3 && slot.populated)) return false;
+  }
+  Json target;
+  std::string error;
+  try {
+    target = data::Resolve(1, state.slots[1], defaults_snapshot, Validate);
+    if (!ValidateSnapshot(target, &error) || !supported(target, &error)) return false;
+  } catch (const std::exception& exception) {
+    notice = exception.what();
+    return false;
+  }
+  reshade::set_config_value(nullptr, kConfigSection, "ProfileBalancedInitialized", "1");
+  if (ReadPresentRestoreRaw("ProfileBalancedInitialized") != "1") {
+    notice = "Could not save first-install marker. Current settings were kept.";
+    return false;
+  }
+  fresh_storage = false;
+  first_install = {.pending = true, .before = state, .target = target,
+                   .commit_epoch = profile_commit_epoch.load(), .reload_epoch = profile_reload_epoch.load(),
+                   .supported = supported};
+  state.selected = std::string(data::SLOT_IDS[1]);
+  state.last_applied = target;
+  state.slots[1].snapshot = target;
+  state.slots[1].template_version = data::TEMPLATE_VERSION;
+  Changed(true);
+  first_install.configuration = ResetConfiguration();
+  return true;
+}
+
 inline void Request(Action action, int index = -1) {
+  if (first_install.pending) return;
   if (Resetting() || reset.recovery_failed) return;
+  if (interaction_busy && interaction_busy()) return;
   if (!loaded || !writable || pending_action != Action::NONE) return;
   SettleSlider(true);
   Observe();
@@ -513,7 +652,52 @@ inline void Request(Action action, int index = -1) {
   } else ExecuteAction();
 }
 
+inline bool SlotAvailable(int index, std::string* error) {
+  if (index < 0 || index >= 6 || !state.slots[index].populated) return false;
+  try {
+    const auto settings = data::Resolve(index, state.slots[index], defaults_snapshot, Validate);
+    if (capability_validator && !capability_validator(settings, error)) {
+      if (error != nullptr && error->empty()) {
+        *error = "Profile contains unsupported settings. Current settings were kept.";
+      }
+      return false;
+    }
+    return true;
+  } catch (const std::exception& exception) {
+    if (error != nullptr) {
+      *error = exception.what();
+    }
+    return false;
+  }
+}
+
+// Frame/hotkey entry point. Candidate selection is read-only; Request retains
+// slider settling, dirty flush, transactional Apply and the existing Undo.
+inline bool Cycle(bool custom) {
+  if (!loaded || !ResetWritable() || Busy() || save_failed || first_install.pending
+      || Resetting() || reset.recovery_failed || pending_action != Action::NONE
+      || slot_task != SlotTask::NONE || (interaction_busy && interaction_busy())) return false;
+  SettleSlider(true);
+  Observe();
+  const int begin = (custom ? 3 : 0);
+  const int current = (active >= begin && active < begin + 3 ? active - begin : -1);
+  bool populated = false;
+  std::string error;
+  for (int offset = 1; offset <= (custom ? 3 : 1); ++offset) {
+    const int index = begin + (current + offset) % 3;
+    if (!state.slots[index].populated || (custom && state.slots[index].snapshot.empty())) continue;
+    populated = true;
+    if (!SlotAvailable(index, &error)) continue;
+    Request(Action::SWITCH, index);
+    return pending_action == Action::SWITCH
+           || notice == "Profile applied. Runtime execution is pending confirmation.";
+  }
+  notice = (populated ? error : "Empty slot. Save current settings or copy an official profile to create it.");
+  return false;
+}
+
 inline void RequestReset(int target) {
+  if (first_install.pending) return;
   if (reset.recovery_failed) return;
   if (Resetting() || pending_action != Action::NONE) {
     reset_notice = "Another profile action is pending. Reset was not started.";
@@ -568,6 +752,7 @@ inline void Tick() {
         const auto& display_name = state.slots[edit_index].name;
         std::memcpy(rename, display_name.c_str(), display_name.size() + 1);
         loaded = true;
+        fresh_storage = worker.fresh;
         observed_snapshot = Snapshot();
         observed_epoch = profile_commit_epoch.load();
         observed_reload_epoch = profile_reload_epoch.load();
@@ -587,6 +772,48 @@ inline void Tick() {
       worker.loading = false;
       worker.wake = presets::internal::Handle();
     }
+  }
+  if (first_install.pending) {
+    if (Busy()) return;
+    const auto before = first_install.before;
+    const auto revision = state.revision;
+    const bool unchanged = profile_commit_epoch.load() == first_install.commit_epoch
+                           && profile_reload_epoch.load() == first_install.reload_epoch
+                           && ResetConfiguration() == first_install.configuration && ResetWritable();
+    std::string capability_error;
+    bool supported = false;
+    if (!save_failed && !dirty && unchanged) {
+      try {
+        supported = first_install.supported(first_install.target, &capability_error);
+      } catch (const std::exception& exception) {
+        capability_error = exception.what();
+      }
+    }
+    if (supported) {
+      pending_action = Action::SWITCH;
+      pending_index = 1;
+      ExecuteAction(false);
+      if (active == 1 && Snapshot() == first_install.target) {
+        undo.before = before;
+        first_install = {};
+        return;
+      }
+    }
+    // ApplySnapshot owns the existing batch rollback on failure. No setting has
+    // been touched if the durable preparation or concurrent-edit check failed.
+    state = before;
+    state.revision = revision;
+    active = -1;
+    first_install = {};
+    observed_snapshot = Snapshot();
+    observed_epoch = profile_commit_epoch.load();
+    notice = "First-install profile was not applied. Current settings were kept.";
+    // Clear a prepared disk association after application failure/cancellation.
+    // The marker and nonzero revision prevent retry even if this cleanup fails.
+    if (!save_failed) {
+      Changed(true);
+    }
+    return;
   }
   if (Resetting()) {
     if (reset.phase != ResetPhase::ROLLBACK && reset.error.empty()
@@ -735,6 +962,7 @@ inline void Initialize() {
   Tick();
   if (loaded || !writable || Busy()) return;
   defaults_snapshot = Snapshot(true);
+  fresh_storage = false;
   const auto saved_id = ReadPresentRestoreRaw("ProfileGameId");
   std::unique_lock lock(worker.mutex);
   worker.id = saved_id.value_or("");
@@ -762,6 +990,7 @@ inline std::string Name(int index) {
 }
 
 inline void Assign(int index, const Json& settings, bool select = false) {
+  if (first_install.pending) return;
   if (Resetting() || reset.recovery_failed) return;
   if (!loaded || !writable || index < 3 || index >= 6) return;
   for (const auto& [key, value] : settings.items()) {
@@ -784,7 +1013,8 @@ inline void Assign(int index, const Json& settings, bool select = false) {
     active = -1;
     state.selected.clear();
   }
-  undo = {.before = before, .after = state, .previous_active = previous_active, .available = true};
+  undo = {.before = before, .after = state, .previous_active = previous_active, .available = true,
+          .action_label = "Save current settings to this slot", .action_index = index};
   Changed(true);
   notice = "Custom slot saved. Select it to apply its settings.";
 }
@@ -848,6 +1078,7 @@ inline void DrawSlotMenu(int index) {
 }
 
 inline void RenameSlot(int index, const std::string& value) {
+  if (first_install.pending) return;
   if (Resetting() || reset.recovery_failed) return;
   if (!loaded || !writable || index < 3 || index >= 6 ||
       !state.slots[index].populated)
@@ -863,12 +1094,14 @@ inline void RenameSlot(int index, const std::string& value) {
   undo = {.before = before,
           .after = state,
           .previous_active = active,
-          .available = true};
+          .available = true,
+          .action_label = "Rename slot", .action_index = index};
   Changed(true);
   notice = "Slot renamed.";
 }
 
 inline void ClearSlot(int index) {
+  if (first_install.pending) return;
   if (Resetting() || reset.recovery_failed) return;
   if (!loaded || !writable || index < 3 || index >= 6 ||
       !state.slots[index].populated)
@@ -887,7 +1120,8 @@ inline void ClearSlot(int index) {
   undo = {.before = before,
           .after = state,
           .previous_active = previous_active,
-          .available = true};
+          .available = true,
+          .action_label = "Clear slot", .action_index = index};
   Changed(true);
   notice = "Slot cleared. Running game settings were kept.";
 }
@@ -918,7 +1152,11 @@ inline std::string SlotLabel(int index, bool compact = false) {
 
 inline void DrawSlotContext(int index) {
   const bool right_click = ImGui::IsItemClicked(ImGuiMouseButton_Right);
-  ui::ItemTooltip("%s\n%s\n%s", SlotLabel(index).c_str(),
+  std::string unavailable;
+  if (loaded && state.slots[index].populated && !SlotAvailable(index, &unavailable)) {
+    ui::ItemTooltip("%s\n%s", ui::Tr("Unavailable in current environment"), unavailable.c_str());
+  } else {
+  ui::ItemTooltip("%s\n%s\n%s%s%s", SlotLabel(index).c_str(),
                   ui::Tr(state.slots[index].populated
                              ? "Left-click to apply; right-click to manage."
                              : "Left-click to create; right-click to manage."),
@@ -926,7 +1164,10 @@ inline void DrawSlotContext(int index) {
                                  !dirty && !Busy() && !save_failed
                              ? "Personal changes have been automatically saved."
                              : "Saved settings do not confirm NR execution. "
-                               "See Diagnostics for runtime status."));
+                               "See Diagnostics for runtime status."),
+                  (index < 3 && data::DEVELOPMENT_CANDIDATE ? "\n" : ""),
+                  (index < 3 && data::DEVELOPMENT_CANDIDATE ? ui::Tr("Development candidate") : ""));
+  }
   if (right_click) {
     ImGui::OpenPopup("slot_context");
   }
@@ -951,23 +1192,43 @@ inline bool DrawQuick() {
   const float available = ImGui::GetContentRegionAvail().x;
   const float start = ImGui::GetCursorPosX();
   const float manage_width = (std::min)(
-      available * 0.48f, ImGui::CalcTextSize(ui::Tr("Manage profiles")).x +
+      available * 0.40f, ImGui::CalcTextSize(ui::Tr("Manage profiles")).x +
                              ImGui::GetStyle().FramePadding.x * 2.f);
+  const float undo_width = (std::min)(available * 0.24f,
+      ImGui::CalcTextSize(ui::Tr("Undo")).x + ImGui::GetStyle().FramePadding.x * 2.f);
   {
     ui::StyleScope title;
     title.FontSize(ui::ModuleFontSize());
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(
         ui::Ellipsize(ui::Tr("NR Profiles"),
-                      (std::max)(1.f, available - manage_width - gap))
+                      (std::max)(1.f, available - manage_width - undo_width - gap * 2.f))
             .c_str());
   }
+  ImGui::SameLine(start + available - manage_width - undo_width - gap);
+  ImGui::BeginDisabled(!undo.available || !loaded || !writable || Busy()
+                       || pending_action != Action::NONE || Resetting() || reset.recovery_failed
+                       || first_install.pending || (interaction_busy && interaction_busy()));
+  const auto undo_label = ui::Ellipsize(ui::Tr("Undo"),
+      (std::max)(1.f, undo_width - ImGui::GetStyle().FramePadding.x * 2.f)) + "###undo_profile";
+  if (ImGui::Button(undo_label.c_str(), ImVec2(undo_width, 0.f))) {
+    Request(Action::UNDO);
+  }
+  ImGui::EndDisabled();
+  ui::ItemTooltip("%s: %s\n%s", ui::Tr("Undo"), ui::Tr(undo.action_label), Name(undo.action_index).c_str());
   ImGui::SameLine(start + available - manage_width);
-  const bool manage =
-      ui::ActionButton(ui::Tr("Manage profiles"), "open_presets");
+  const auto manage_label = ui::Ellipsize(ui::Tr("Manage profiles"),
+      (std::max)(1.f, manage_width - ImGui::GetStyle().FramePadding.x * 2.f)) + "###open_presets";
+  const bool manage = ImGui::Button(manage_label.c_str(), ImVec2(manage_width, 0.f));
+  ui::ItemTooltip("%s", ui::Tr("Manage profiles"));
   ImGui::BeginDisabled(!loaded || !writable || pending_action != Action::NONE);
   const char* labels[] = {"NR Lite", "NR Balanced", "NR Max"};
   int selected = -1;
+  bool blocked[6]{};
+  for (int i = 0; i < 6; ++i) {
+    std::string reason;
+    blocked[i] = loaded && state.slots[i].populated && !SlotAvailable(i, &reason);
+  }
   if (available < font * 18.f) {
     ImGui::SetNextItemWidth(-1.f);
     const std::string preview = (active >= 0 && active < 3 ? SlotLabel(active, true) : ui::Tr("Official profiles"));
@@ -975,9 +1236,11 @@ inline bool DrawQuick() {
                           ui::Ellipsize(preview.c_str(), available - font * 3.f).c_str())) {
       for (int i = 0; i < 3; ++i) {
         ImGui::PushID(i);
+        ImGui::BeginDisabled(blocked[i]);
         if (ImGui::Selectable(SlotLabel(i).c_str(), active == i)) {
           selected = i;
         }
+        ImGui::EndDisabled();
         DrawSlotContext(i);
         ImGui::PopID();
       }
@@ -991,10 +1254,12 @@ inline bool DrawQuick() {
         ImGui::SameLine();
       }
       const auto label = SlotLabel(i, available < font * 35.f);
+      ImGui::BeginDisabled(blocked[i]);
       if (ui::ProfileSlotButton(ui::Tr(labels[i]), label.c_str(),
                                 ImVec2(width, 0.f), active == i)) {
         selected = i;
       }
+      ImGui::EndDisabled();
       // Each official context popup belongs to its stable segment identity.
       ImGui::PushID(labels[i]);
       DrawSlotContext(i);
@@ -1022,6 +1287,7 @@ inline bool DrawQuick() {
                  ? ""
                  : std::string(" · ") + ui::Tr("Empty slot"));
         const ImVec2 at = ImGui::GetCursorScreenPos();
+        ImGui::BeginDisabled(blocked[i]);
         if (ImGui::Selectable("##custom_profile_choice", active == i, 0,
                               ImVec2(0.f, ImGui::GetTextLineHeight()))) {
           chosen_custom = i;
@@ -1030,6 +1296,7 @@ inline bool DrawQuick() {
             at, ImGui::GetColorU32(ImGuiCol_Text),
             ui::Ellipsize(label.c_str(), ImGui::GetContentRegionAvail().x)
                 .c_str());
+        ImGui::EndDisabled();
         DrawSlotContext(i);
         ImGui::PopID();
       }
@@ -1043,10 +1310,12 @@ inline bool DrawQuick() {
       }
       ImGui::PushID(i);
       const auto label = SlotLabel(i, available < font * 35.f);
+      ImGui::BeginDisabled(blocked[i]);
       if (ui::ProfileSlotButton("##custom_slot", label.c_str(),
                                 ImVec2(width, 0.f), active == i)) {
         chosen_custom = i;
       }
+      ImGui::EndDisabled();
       DrawSlotContext(i);
       ImGui::PopID();
     }
@@ -1113,31 +1382,9 @@ inline bool DrawQuick() {
     ImGui::PopTextWrapPos();
     ImGui::EndPopup();
   }
-  if (ui::ActionButton(ui::Tr("Profile actions"), "profile_actions")) {
-    ImGui::OpenPopup("profile_actions_menu");
-  }
   if (active < 0 && loaded) {
     ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Current game settings")).x);
     ImGui::TextDisabled("%s", ui::Tr("Current game settings"));
-  }
-  popup_width();
-  if (ImGui::BeginPopup("profile_actions_menu")) {
-    if (active >= 0 && active < 3) {
-      DrawSlotMenu(active);
-    }
-    for (int i = 0; i < 6; ++i) {
-      ImGui::PushID(i);
-      const auto name = Name(i);
-      const float width = (std::max)(1.f, (std::min)(font * 22.f, ImGui::GetIO().DisplaySize.x - font * 2.f));
-      ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.f),
-          ImVec2(width, ImGui::GetIO().DisplaySize.y * 0.9f));
-      if (ImGui::BeginMenu(ui::Ellipsize(name.c_str(), font * 24.f).c_str())) {
-        DrawSlotMenu(i);
-        ImGui::EndMenu();
-      }
-      ImGui::PopID();
-    }
-    ImGui::EndPopup();
   }
   const bool restore = slot_task == SlotTask::RESTORE;
   if (restore) {
@@ -1206,9 +1453,6 @@ inline bool DrawQuick() {
                          ? "Saved settings do not confirm NR execution. See "
                            "Diagnostics for runtime status."
                          : notice.c_str()));
-    if (undo.available && ui::ActionButton(ui::Tr("Undo"), "undo_profile")) {
-      Request(Action::UNDO);
-    }
   }
   if (important) {
     ui::StyleScope warning;

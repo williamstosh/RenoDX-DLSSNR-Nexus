@@ -31,6 +31,7 @@ inline void CaptureSettings(comparison::Identity* identity) {
       const std::string_view key(setting->key);
       if (!key.starts_with("NR") && key != "NeuralUplift") continue;
       if (key.starts_with("NRScreenshot") || key == "NRToggleKey" || key == "NRGpuTimers"
+          || key.starts_with("NROfficialCycle") || key.starts_with("NRCustomCycle")
           || key == "NRCostMeter" || key == "NREditTrace") continue;
       const bool resolution = key == "NRFollowInputRes" || key == "NRResolutionScale"
           || key.ends_with("ResolutionMode") || key.ends_with("ResolutionScale");

@@ -92,6 +92,7 @@
 #include "runtime_lock.hpp"
 #include "nr_model.hpp"
 #include "stage_plan.hpp"
+#include "capability.hpp"
 #include "capture_arena.hpp"
 #include "command_state.hpp"
 #include "evaluate_chain.hpp"
@@ -101,6 +102,8 @@
 #include "ui/state_card.hpp"
 #include "ui/strings.hpp"
 #include "ui/widgets.hpp"
+#include "ui/profile_hotkeys.hpp"
+#include "ui/runtime_monitor.hpp"
 #include "ui/text_input.hpp"
 #include "submission_tracker.hpp"
 #include "fg_xefg.hpp"
@@ -2000,9 +2003,36 @@ inline std::atomic_uint32_t toggle_hotkey = defaults::kToggleHotkey;
 inline std::atomic_uint32_t screenshot_hotkey = defaults::kScreenshotHotkey;
 inline std::atomic_bool toggle_hotkey_was_down = false;
 inline std::atomic_uint32_t hotkey_capture_target = 0;
+inline std::atomic_uint32_t official_cycle_key{VK_F9};
+inline std::atomic_uint32_t custom_cycle_key{VK_F10};
+inline std::atomic_bool official_cycle_enabled{false};
+inline std::atomic_bool custom_cycle_enabled{false};
+inline std::atomic_uint32_t profile_cycle_request{0};
+inline std::shared_mutex profile_keys_mutex;
+inline std::array<ui::ProfileKeyEdge, 2> profile_key_edges;
+// Shared by the gameplay and ReShade input readers.
+inline std::atomic_bool hud_overlay_open{false};
+
+inline bool ProfileKeyConflict(std::size_t action) {
+  return ui::HotkeyConflict({toggle_hotkey.load(), screenshot_hotkey.load(),
+      official_cycle_key.load(), custom_cycle_key.load()},
+      {true, true, official_cycle_enabled.load(), custom_cycle_enabled.load()}, action);
+}
+
+inline void PollProfileKeys(bool official_down, bool custom_down, bool permitted) {
+  std::unique_lock lock(profile_keys_mutex);
+  const bool downs[] = {official_down, custom_down};
+  const uint32_t keys[] = {official_cycle_key.load(), custom_cycle_key.load()};
+  const bool on[] = {official_cycle_enabled.load(), custom_cycle_enabled.load()};
+  for (std::size_t i = 0; i < profile_key_edges.size(); ++i) {
+    if (profile_key_edges[i].Poll(keys[i], on[i], downs[i], permitted && !ProfileKeyConflict(i + 2), hud_overlay_open.load())) {
+      uint32_t empty = 0;
+      profile_cycle_request.compare_exchange_strong(empty, static_cast<uint32_t>(i + 1));
+    }
+  }
+}
 // ReShade's overlay is open (OnReshadeOpenOverlay): the HUD hides and the
 // hotkeys switch from GetAsyncKeyState to ReShade's own input.
-inline std::atomic_bool hud_overlay_open{false};
 // ReShade's live effect runtimes, for the overlay listeners (see OnPresent).
 // Guarded by overlay_listener_mutex, which is also held while they change.
 inline std::mutex overlay_listener_mutex;
@@ -2078,6 +2108,8 @@ inline void OnNativeFgOptions(bool mode_enabled) noexcept {
   }
 }
 inline std::atomic_uint64_t configuration_generation = 1;
+inline std::atomic_uint64_t profile_commit_epoch{0};
+inline std::atomic_uint64_t profile_reload_epoch{0};
 inline std::atomic_uint32_t preset = defaults::kPreset;
 inline std::atomic_uint32_t pass_preset[kMaxNrPasses - 1] = {0u, 0u, 0u};
 inline std::atomic_uint32_t pass_stage[kMaxNrPasses - 1] = {0u, 0u, 0u};
@@ -9470,16 +9502,11 @@ inline void ComputeNrWorkingResolution(
     uint32_t& nr_height,
     uint32_t pass = 0) {
   const auto settings = EffectivePassResolution(pass);
-  if (settings.follow_input && guide_width != 0 && guide_height != 0) {
-    nr_width = std::min(guide_width, reference_width);
-    nr_height = std::min(guide_height, reference_height);
-  } else {
-    const float scale = std::clamp(settings.scale, 0.33f, 1.f);
-    nr_width = std::max(1u, static_cast<uint32_t>(
-        std::lround(static_cast<double>(reference_width) * scale)));
-    nr_height = std::max(1u, static_cast<uint32_t>(
-        std::lround(static_cast<double>(reference_height) * scale)));
-  }
+  const auto size = capability::ResolveWorkingSize({.follow_input = settings.follow_input, .scale = settings.scale},
+      {.reference_width = reference_width, .reference_height = reference_height,
+       .guide_width = guide_width, .guide_height = guide_height});
+  nr_width = size.width;
+  nr_height = size.height;
 }
 
 // One workset owns the proxy/NN surfaces for every pass in a stage group.
@@ -10375,9 +10402,8 @@ inline bool ProcessInline(
   // which sidesteps the low-res Color contract the signed runtime rejects.
   uint32_t nr_input_width = width;
   uint32_t nr_input_height = height;
-  const bool independent_pair = group.count == 2
-      && (present == nullptr || PresentResolutionPairAllowed(*present)
-          || NativePreFgResolutionPairAllowed(*present));
+  const bool independent_pair = capability::SupportsIndependentSizes(group.stage, group.count,
+      present == nullptr || PresentResolutionPairAllowed(*present) || NativePreFgResolutionPairAllowed(*present));
   if (independent_pair) {
     ComputeNrWorkingResolution(width, height, current.input_width, current.input_height,
                                nr_input_width, nr_input_height, group.begin);
@@ -12238,7 +12264,7 @@ inline bool ProcessInlinePreSR(
   // guide/color arrangement, and the same F8 rule, as the after path.
   uint32_t nr_input_width = width;
   uint32_t nr_input_height = height;
-  const bool independent_pair = group.count == 2;
+  const bool independent_pair = capability::SupportsIndependentSizes(group.stage, group.count, false);
   if (independent_pair) {
     ComputeNrWorkingResolution(width, height, current.input_width, current.input_height,
                                nr_input_width, nr_input_height, group.begin);
@@ -18275,6 +18301,11 @@ inline void PollHotkeys() {
   DWORD foreground_process = 0;
   GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
   const bool focused = foreground_process == GetCurrentProcessId();
+  if (!hud_overlay_open.load(std::memory_order_relaxed)) {
+    PollProfileKeys((GetAsyncKeyState(static_cast<int>(official_cycle_key.load())) & 0x8000) != 0,
+        (GetAsyncKeyState(static_cast<int>(custom_cycle_key.load())) & 0x8000) != 0,
+        focused && hotkey_capture_target.load() == 0);
+  }
   // With the overlay open the key reads as up here, which also releases the
   // latch OnOverlayHotkeys shares: one reader per state, so an InputProcessing
   // mode that lets the key through to the game cannot toggle twice per press.
@@ -18349,6 +18380,13 @@ inline void PollHotkeys() {
 // The screenshot latch is shared with a poll that still runs; a second
 // request for one press is ignored while the first capture is armed.
 inline void OnOverlayHotkeys(reshade::api::effect_runtime* runtime) {
+  DWORD foreground_process = 0;
+  GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
+  if (hud_overlay_open.load()) {
+    PollProfileKeys(runtime->is_key_down(official_cycle_key.load()), runtime->is_key_down(custom_cycle_key.load()),
+        foreground_process == GetCurrentProcessId() && !ImGui::IsAnyItemActive()
+        && !ImGui::GetIO().WantTextInput && hotkey_capture_target.load() == 0);
+  }
   if (!hud_overlay_open.load(std::memory_order_relaxed)
       || ImGui::IsAnyItemActive()
       || hotkey_capture_target.load(std::memory_order_relaxed) != 0) {
@@ -19177,6 +19215,16 @@ inline void TickHealth(const NrVerdict& verdict, int64_t now_ns, bool frame) {
 // The card tick's last partly-active judgement (ui::kPartialEnterRatio):
 // every reader of the card sees the same band edge.
 inline std::atomic_bool card_partial_latched{false};
+struct CardObservation {
+  std::shared_mutex mutex;
+  ui::RecentHealthWindow window;
+  uint64_t configuration = 0;
+  std::array<uint64_t, static_cast<size_t>(NrDeclineReason::kCount)> declines{};
+  int64_t declines_sampled_ns = 0;
+  int64_t last_decline_ns = 0;
+  const char* last_decline = nullptr;
+};
+inline CardObservation card_observation;
 
 inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
                                         int64_t now_ns) {
@@ -19236,7 +19284,67 @@ inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
   // The flicker at Present, with the verdict's top decline in the player's
   // words.
   in.present_gaps = in.fg_submitted_frames.has_value() ? 0 : present_gaps.load(std::memory_order_relaxed);
-  if (verdict.reason != nullptr) {
+  if (!in.fg_submitted_frames.has_value()) {
+    // Include runtime route changes as well as editable execution controls.
+    // History reset epochs also include scene cuts and are deliberately not a
+    // configuration identity: a camera cut must not erase a real skip streak.
+    uint64_t configuration = 1469598103934665603ULL;
+    const auto mix = [&](uint64_t value) { configuration = (configuration ^ value) * 1099511628211ULL; };
+    mix(enabled.load());
+    mix(configuration_generation.load());
+    mix(profile_commit_epoch.load());
+    mix(profile_reload_epoch.load());
+    mix(hook_point.load());
+    mix(stack_passes.load());
+    mix(preset.load());
+    mix(stage_source_rr.load());
+    mix(static_cast<uint32_t>(native_fg_declaration.load()));
+    mix(d3d12_present_seen.load());
+    mix(D3D11OnlySession());
+    mix(vulkan_present_seen.load());
+    mix(auto_fg_fallback_active.load());
+    mix(nr_follow_input_res.load());
+    mix(std::bit_cast<uint32_t>(nr_resolution_scale.load()));
+    mix(std::bit_cast<uint32_t>(intensity.load()));
+    mix(style.load());
+    for (uint32_t pass = 1; pass < kMaxNrPasses; ++pass) {
+      mix(pass_stage[pass - 1].load());
+      mix(pass_preset[pass - 1].load());
+      mix(pass_resolution_mode[pass - 1].load());
+      mix(std::bit_cast<uint32_t>(pass_resolution_scale[pass - 1].load()));
+      mix(std::bit_cast<uint32_t>(pass_intensity[pass - 1].load()));
+    }
+    std::unique_lock observation_lock(card_observation.mutex);
+    in.recent = card_observation.window.Observe(configuration, verdict.eligible,
+        verdict.injected, in.present_gaps, now_ns);
+    in.present_gaps = in.recent->gaps;
+    if (card_observation.configuration != configuration
+        || now_ns - card_observation.declines_sampled_ns >= 100'000'000LL) {
+      const bool changed = card_observation.configuration != configuration;
+      if (changed) {
+        card_observation.last_decline = nullptr;
+        card_observation.last_decline_ns = 0;
+      }
+      uint64_t largest = 0;
+      for (size_t i = 0; i < card_observation.declines.size(); ++i) {
+        const auto count = nr_decline_counts[i].load(std::memory_order_relaxed);
+        const auto previous = card_observation.declines[i];
+        const auto delta = (count >= previous ? count - previous : 0);
+        card_observation.declines[i] = count;
+        if (!changed && !NrTerminalIsIneligible(i) && kSkipReasonText[i] != nullptr && delta > largest) {
+          largest = delta;
+          card_observation.last_decline = kSkipReasonText[i];
+          card_observation.last_decline_ns = now_ns;
+        }
+      }
+      card_observation.configuration = configuration;
+      card_observation.declines_sampled_ns = now_ns;
+    }
+    if (now_ns - card_observation.last_decline_ns <= ui::RecentHealthWindow::kWindowNs) {
+      in.gap_reason = card_observation.last_decline;
+    }
+  }
+  if (!in.recent && verdict.reason != nullptr) {
     for (size_t i = 0; i < std::size(kSkipReasonText); ++i) {
       if (std::strcmp(kNrDeclineTags[i], verdict.reason) == 0) in.gap_reason = kSkipReasonText[i];
     }
@@ -19273,6 +19381,12 @@ inline std::atomic_bool hud_pill{false};
 // visible pill but cannot consume recovery before a proven submission.
 inline bool hud_recovery_pending = false;
 inline std::atomic_int64_t hud_toast_until_ns{0};
+struct ProfileFeedback {
+  std::shared_mutex mutex;
+  std::string message;
+};
+inline ProfileFeedback profile_feedback;
+inline std::atomic_int64_t profile_feedback_until_ns{0};
 inline constexpr int64_t kHudToastNs = 2'000'000'000LL;
 inline std::atomic<float> hud_position_x{50.f};
 inline std::atomic<float> hud_position_y{0.f};
@@ -19496,6 +19610,7 @@ inline void OnHudOverlay(reshade::api::effect_runtime* /*runtime*/) {
   const bool pill = ui::ShowsOnHud(card);
   const int64_t toast_ns =
       hud_toast_until_ns.load(std::memory_order_relaxed) - now_ns;
+  const bool profile_notice = profile_feedback_until_ns.load() > now_ns;
   // The issue notice (rc11): a warn row of the health ledger entered, or is
   // still active five minutes on.  Below the pill (NR not working says more)
   // and above the green toast, which an issue keeps from being green anyway.
@@ -19511,7 +19626,7 @@ inline void OnHudOverlay(reshade::api::effect_runtime* /*runtime*/) {
       health_notice_until_ns.load(std::memory_order_relaxed) - now_ns;
   const bool notice = !pill && notice_ns > 0
                       && hud_enabled.load(std::memory_order_relaxed);
-  if (!pill && !notice && (toast_ns <= 0 || card.tone != ui::CardTone::kGood)) return;
+  if (!profile_notice && !pill && !notice && (toast_ns <= 0 || card.tone != ui::CardTone::kGood)) return;
   // One line per kind and session: the proof the HUD was entered, which no
   // counter of the listener's registration can give.
   static std::atomic_bool logged_pill{false};
@@ -19526,7 +19641,7 @@ inline void OnHudOverlay(reshade::api::effect_runtime* /*runtime*/) {
             + (notice ? std::string(" row=") + health::kRows[notice_row].slug
                       : std::string()));
   }
-  const int64_t fade_ns = notice ? notice_ns : toast_ns;
+  const int64_t fade_ns = (profile_notice ? profile_feedback_until_ns.load() - now_ns : notice ? notice_ns : toast_ns);
   ui::StyleScope hud;
   hud.Var(ImGuiStyleVar_Alpha,
           pill ? 1.f : (std::min)(1.f, static_cast<float>(fade_ns) / 1e9f))
@@ -19554,7 +19669,10 @@ inline void OnHudOverlay(reshade::api::effect_runtime* /*runtime*/) {
     // A tooltip's width (tokens::kTooltipEm): the hint and a long translated
     // ledger title ran as one strip across the top of the screen.
     ImGui::PushTextWrapPos(ImGui::GetFontSize() * ui::tokens::kTooltipEm);
-    if (notice) {
+    if (profile_notice) {
+      std::shared_lock feedback_lock(profile_feedback.mutex);
+      ImGui::TextWrapped("%s", profile_feedback.message.c_str());
+    } else if (notice) {
       const uint32_t others = health::CountedIssues(
           health_active_mask.load(std::memory_order_relaxed)) - 1u;
       ui::CardHeading({.tone = ui::CardTone::kWarn,
@@ -19570,7 +19688,7 @@ inline void OnHudOverlay(reshade::api::effect_runtime* /*runtime*/) {
     } else {
       ui::CardHeading(card);
     }
-    if (pill) {
+    if (pill && !profile_notice) {
       ui::StyleScope hint;
       hint.FontSize(ui::SmallFontSize())
           .Color(ImGuiCol_Text, ui::CurrentTheme().text_secondary);
@@ -20924,6 +21042,7 @@ inline void OnPresent(
            !overlay_open && hud_enabled.load(std::memory_order_relaxed)
                && (hud_pill.load(std::memory_order_relaxed)
                    || present_ns < hud_toast_until_ns.load(std::memory_order_relaxed)
+                   || present_ns < profile_feedback_until_ns.load(std::memory_order_relaxed)
                    || present_ns < health_notice_until_ns.load(std::memory_order_relaxed)),
            OnHudOverlay);
     listen(&hotkeys_listening, overlay_open, OnOverlayHotkeys);
@@ -21214,8 +21333,6 @@ inline std::atomic_bool ui_welcomed{false};
 // step 2g (tools/field/check_ui_reachability.py) holds that, and that every
 // key LoadConfiguration reads has a control in both layouts.
 enum class SettingEffect : uint8_t { kNone, kHostHistory, kHistory, kRecreate };
-inline std::atomic_uint64_t profile_commit_epoch{0};
-inline std::atomic_uint64_t profile_reload_epoch{0};
 
 inline void ApplySettingEffect(SettingEffect effect) {
   if (effect == SettingEffect::kRecreate) {
@@ -21514,6 +21631,10 @@ inline constexpr Setting kSetToggleKey{
 inline constexpr Setting kSetScreenshotKey{
     "NRScreenshotKey", &screenshot_hotkey, defaults::kScreenshotHotkey,
     SettingEffect::kNone};
+inline constexpr Setting kSetOfficialCycleKey{"NROfficialCycleKey", &official_cycle_key, VK_F9, SettingEffect::kNone};
+inline constexpr Setting kSetCustomCycleKey{"NRCustomCycleKey", &custom_cycle_key, VK_F10, SettingEffect::kNone};
+inline constexpr Setting kSetOfficialCycleEnabled{"NROfficialCycleEnabled", &official_cycle_enabled, false, SettingEffect::kNone};
+inline constexpr Setting kSetCustomCycleEnabled{"NRCustomCycleEnabled", &custom_cycle_enabled, false, SettingEffect::kNone};
 inline constexpr Setting kSetScreenshotSource{
     "NRScreenshotSource", &screenshot::source_mode, 0u, SettingEffect::kNone};
 inline constexpr Setting kSetScreenshotFormat{
@@ -21899,6 +22020,7 @@ inline constexpr const Setting* kStackingSettings[] = {
     &kSetPassAutoMask[2], &kSetPassUiCorrection[0], &kSetPassUiCorrection[1],
     &kSetPassUiCorrection[2]};
 inline constexpr const Setting* kHotkeySettings[] = {
+    &kSetOfficialCycleKey, &kSetCustomCycleKey, &kSetOfficialCycleEnabled, &kSetCustomCycleEnabled,
     &kSetToggleKey,        &kSetScreenshotKey,         &kSetScreenshotSource,
     &kSetScreenshotFormat, &kSetScreenshotLayout,      &kSetScreenshotJpegQuality,
     &kSetScreenshotMaxMB};
@@ -21920,7 +22042,114 @@ inline constexpr SettingGroup kSettingSections[] = {
     kLookResultSettings, kPassLookResultSettings, kHookPointSettings,   kPerformanceSettings, kStackingSettings,
     kHotkeySettings,      kDiagnosticsSettings, kFixesSettings};
 
+// The same planner and size policy serve controls, profiles and import preview.
+// No saved values are rewritten by a query, including unavailable legacy data.
+inline capability::Result QueryConfigurationCapability(const presets::Json& values = presets::Json::object()) {
+  // Preview and transactional application already own the non-recursive lock.
+  std::optional<RuntimeLock> lock;
+  if (!runtime_lock::State::HeldByThisThread()) {
+    lock.emplace(runtime_mutex);
+  }
+  const auto number = [&](const char* key, double current) {
+    const auto found = values.find(key);
+    if (found == values.end()) return current;
+    if (found->is_boolean()) return found->get<bool>() ? 1.0 : 0.0;
+    return (found->is_number() ? found->get<double>() : current);
+  };
+  capability::Input input;
+  input.api = (D3D12SessionKnown() ? capability::Api::DX12 : D3D11OnlySession() ? capability::Api::DX11
+      : vulkan_present_seen.load() ? capability::Api::VULKAN : capability::Api::UNKNOWN);
+  input.backend = (input.api == capability::Api::DX11
+      ? (Dx11NativeRoute() ? capability::Backend::DX11_BRIDGE : capability::Backend::STREAMLINE_FALLBACK)
+      : input.api == capability::Api::UNKNOWN ? capability::Backend::UNKNOWN : capability::Backend::NATIVE);
+  const auto funnel = CollectFunnelInputs();
+  input.runtime = (funnel.runtime_available ? capability::Runtime::AVAILABLE
+      : nr_runtime_fault.load() != 0 ? capability::Runtime::UNAVAILABLE : capability::Runtime::UNKNOWN);
+  const auto declaration = native_fg_declaration.load();
+  input.fg = (declaration == NativeFgDeclaration::kOff && native_fg_public_off.load() ? capability::Fg::OFF
+      : declaration == NativeFgDeclaration::kOn ? capability::Fg::ON : capability::Fg::UNKNOWN);
+  input.fg_owns_input = fg::xefg::OwnsStream() || native_fg_owns.load();
+  input.xefg_enabled = fg::xefg::Enabled();
+  input.auto_fg_fallback = auto_fg_fallback_active.load();
+  input.native_prefg_resolution_experiment = experimental_native_prefg_resolution.load();
+  stage_plan::Configuration config{
+      .pass_count = static_cast<uint32_t>(number("NRPasses", stack_passes.load())),
+      .hook_point = static_cast<uint32_t>(number("NRHookPoint", hook_point.load()))};
+  for (uint32_t pass = 1; pass < kMaxNrPasses; ++pass) {
+    const std::string prefix = "NRPass" + std::to_string(pass + 1);
+    config.stages[pass - 1] = static_cast<uint32_t>(number((prefix + "Stage").c_str(), pass_stage[pass - 1].load()));
+    input.resolutions[pass - 1] = {
+        .mode = static_cast<uint32_t>(number((prefix + "ResolutionMode").c_str(), pass_resolution_mode[pass - 1].load())),
+        .scale = static_cast<float>(number((prefix + "ResolutionScale").c_str(), pass_resolution_scale[pass - 1].load()))};
+  }
+  input.plan = stage_plan::Build(config, {
+      .mixed_dx12 = input.api == capability::Api::DX12,
+      .mixed_dx11 = input.backend == capability::Backend::DX11_BRIDGE,
+      .ray_reconstruction = stage_source_rr.load(),
+      .present_available = input.api != capability::Api::VULKAN && input.backend != capability::Backend::STREAMLINE_FALLBACK
+          && !present_unusable.load(),
+      .fg_owns_input = fg::xefg::OwnsStream() || input.auto_fg_fallback
+          || (experimental_present_chain.load() && (input.xefg_enabled || mixed_present_fg_seen.load()
+              || native_fg_owns.load() || declaration == NativeFgDeclaration::kOn)),
+      .mixed_present_dx12 = experimental_present_chain.load()});
+  if (config.hook_point != kHookPresent && !experimental_present_chain.load()) {
+    input.fg_owns_input = fg::xefg::OwnsStream();
+  }
+  input.main_resolution = {
+      .follow_input = number("NRFollowInputRes", nr_follow_input_res.load()) != 0.0,
+      .scale = static_cast<float>(number("NRResolutionScale", nr_resolution_scale.load()))};
+  for (size_t stage = 0; stage < stage_telemetry.size(); ++stage) {
+    const auto& observed = stage_telemetry[stage];
+    // Historical geometry can be shown, but cannot prove current Guide identity.
+    input.geometry[stage] = {.reference_width = observed.width, .reference_height = observed.height};
+  }
+  auto result = capability::Query(input);
+  for (uint32_t pass = 0; pass < input.plan.pass_count; ++pass) {
+    const std::string key = (pass == 0 ? "NRPreset" : "NRPass" + std::to_string(pass + 1) + "Preset");
+    const auto model = static_cast<uint32_t>(number(key.c_str(), pass == 0 ? preset.load() : pass_preset[pass - 1].load()));
+    if (model == 2 && !direct_runtime_requirements.dual_models && result.CanSubmit()) {
+      result.configuration = {.status = capability::Status::NEEDS_PROOF, .reason = capability::Reason::MODEL_UNCONFIRMED, .pass = pass};
+    }
+  }
+  return result;
+}
+
+inline bool ValidateConfigurationCapability(const presets::Json& values, std::string* error) {
+  const auto result = QueryConfigurationCapability(values);
+  if (result.CanSubmit() && result.plan_reason != stage_plan::Reason::RR_AFTER
+      && result.plan_reason != stage_plan::Reason::PRESENT_AFTER) return true;
+  if (error != nullptr) {
+    *error = ui::Tr(result.configuration.reason == capability::Reason::PLAN_REJECTED
+        || (result.CanSubmit() && result.plan_reason != stage_plan::Reason::NONE)
+        ? stage_plan::ReasonText(result.plan_reason) : capability::ReasonText(result.configuration.reason));
+  }
+  return false;
+}
+
+inline bool IsCapabilitySetting(std::string_view key) {
+  return key == "NRHookPoint" || key == "NRPasses" || key == "NRPreset" || key == "NRFollowInputRes"
+      || key == "NRResolutionScale" || (key.starts_with("NRPass")
+          && (key.ends_with("Stage") || key.ends_with("Preset") || key.ends_with("ResolutionMode") || key.ends_with("ResolutionScale")));
+}
+
+inline bool CanChooseSetting(const Setting& setting, float value, std::string* reason = nullptr) {
+  if (!IsCapabilitySetting(setting.key) || std::abs(value - setting.Get()) < 0.00001f) return true;
+  // Recovery to inherited sizes is always available, even before device discovery.
+  if (std::string_view(setting.key).ends_with("ResolutionMode") && value == 0.f) return true;
+  return ValidateConfigurationCapability({{setting.key, value}}, reason);
+}
+
 #include "gpu_comparison_ui.hpp"
+
+inline bool CurrentGpuSample(const gpu_timers::Stats& sample, int64_t now_ns) {
+  if (!enabled.load() || !sample.valid || sample.measured_ns <= 0 || now_ns < sample.measured_ns
+      || now_ns - sample.measured_ns > gpu_timers::internal::kSampleAgeNs) return false;
+  gpu_comparison::Identity current;
+  comparison_ui::CaptureSettings(&current);
+  return sample.identity.configuration_generation == current.configuration_generation
+      && sample.identity.settings_hash == current.settings_hash && sample.identity.resolution_hash == current.resolution_hash
+      && sample.identity.route == current.route && sample.identity.fg == current.fg;
+}
 
 inline bool AnyModified(std::initializer_list<SettingGroup> groups) {
   for (const SettingGroup& group : groups) {
@@ -22182,10 +22411,17 @@ inline void ChoiceSetting(const ui::PanelText& text, const Setting& setting,
     }
   }
   bool changed = false;
+  std::array<bool, 8> disabled{};
+  std::array<std::string, 8> reasons;
+  std::array<const char*, 8> tips{};
+  for (int i = 0; i < count && i < static_cast<int>(disabled.size()); ++i) {
+    disabled[i] = !CanChooseSetting(setting, static_cast<float>(stored_values.empty() ? i : stored_values[i]), &reasons[i]);
+    tips[i] = (disabled[i] ? reasons[i].c_str() : option_tips.empty() ? items[i] : option_tips[i]);
+  }
   if (text.modern) {
     ui::RowLabel(label, tooltip);
     const int clicked = ui::Segmented("##value", items.data(), count, index, nullptr,
-                                      option_tips.empty() ? items.data() : option_tips.data());
+                                      tips.data(), disabled.data());
     changed = clicked >= 0 && clicked != index;
     if (changed) {
       index = clicked;
@@ -22196,18 +22432,23 @@ inline void ChoiceSetting(const ui::PanelText& text, const Setting& setting,
       ui::ItemTooltip("%s", tooltip);
     }
     const int clicked = ui::Segmented("##value", items.data(), count, index, nullptr,
-                                      option_tips.empty() ? items.data() : option_tips.data(), nullptr, true);
+                                      tips.data(), disabled.data(), true);
     changed = clicked >= 0 && clicked != index;
     if (changed) {
       index = clicked;
     }
   }
   if (changed) {
-    setting.Commit(static_cast<float>(stored_values.empty() ? index : stored_values[index]));
+    const float choice = static_cast<float>(stored_values.empty() ? index : stored_values[index]);
+    if (CanChooseSetting(setting, choice)) {
+      setting.Commit(choice);
+    }
   }
   if (text.modern && setting.Modified()
       && ui::ResetButton("reset", fallback_index >= 0 && fallback_index < count ? items[fallback_index] : nullptr)) {
-    setting.Commit(setting.fallback);
+    if (CanChooseSetting(setting, setting.fallback)) {
+      setting.Commit(setting.fallback);
+    }
   }
   ImGui::PopID();
 }
@@ -22769,11 +23010,14 @@ inline void DrawResolutionObserved(const ui::PanelText& text, uint32_t pass = 0)
     case stage_plan::Stage::UPSCALED: break;
     case stage_plan::Stage::PRESENT: reference = ui::text::kResolutionReferencePresent; break;
   }
-  ImGui::TextWrapped("%s", text.Tr(reference));
-  ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionGuideUnknown));
-  if (stage == stage_plan::Stage::PRESENT) {
-    ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionPresentGuides));
-  }
+  ImGui::TextUnformatted(text.Tr("Working size details (?)"));
+  ui::ItemTooltip("%s\n%s\n%s\n%s", text.Tr(reference), text.Tr(ui::text::kResolutionGuideUnknown),
+      text.Tr(ui::text::kResolutionSharedUpsample),
+      text.Tr(stage == stage_plan::Stage::PRESENT ? ui::text::kResolutionPresentGuides : ui::text::kPassResolutionTip));
+  const bool show_recorded = ImGui::TreeNode("##Recorded working sizes");
+  ImGui::SameLine();
+  ImGui::TextWrapped("%s", text.Tr("Recorded working sizes"));
+  if (!show_recorded) return;
   StageTelemetry observed;
   gpu_timers::Stats gpu;
   {
@@ -22801,8 +23045,6 @@ inline void DrawResolutionObserved(const ui::PanelText& text, uint32_t pass = 0)
         if (sample.id == pass && sample.state == gpu_timers::SampleState::VALID
             && size.model_recorded && sample.model == observed.resolved_requests[pass]
             && sample.width == size.effective_width && sample.height == size.effective_height) {
-          // Timer publication has no settings identity. Even a recent exact
-          // completion cannot prove that subsequently edited settings ran.
           ImGui::TextWrapped(text.Tr(ui::text::kResolutionCompletedSample), sample.width, sample.height);
           break;
         }
@@ -22812,6 +23054,7 @@ inline void DrawResolutionObserved(const ui::PanelText& text, uint32_t pass = 0)
     ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionUnavailable));
   }
   ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionCurrentPending));
+  ImGui::TreePop();
 }
 
 // Shared by the Quality editor and Pass 1; the stored fractions are unchanged.
@@ -22834,6 +23077,9 @@ inline void DrawResolutionControls(const ui::PanelText& text) {
   int preset = -1;
   std::array<std::string, std::size(kResolutionPresets)> labels;
   std::array<const char*, std::size(kResolutionPresets)> items;
+  std::array<bool, std::size(kResolutionPresets)> disabled{};
+  std::array<std::string, std::size(kResolutionPresets)> reasons;
+  std::array<const char*, std::size(kResolutionPresets)> tips{};
   constexpr const char* kIds[] = {"###nr_resolution_full", "###nr_resolution_quality",
                                 "###nr_resolution_balanced", "###nr_resolution_performance", "###nr_resolution_follow"};
   for (size_t i = 0; i < std::size(kResolutionPresets); ++i) {
@@ -22843,10 +23089,16 @@ inline void DrawResolutionControls(const ui::PanelText& text) {
     }
     labels[i] = std::string(text.Tr(ui::text::kResolutionLabels[i])) + kIds[i];
     items[i] = labels[i].c_str();
+    disabled[i] = !ValidateConfigurationCapability({{"NRFollowInputRes", candidate.follow},
+        {"NRResolutionScale", candidate.follow ? scale : candidate.scale}}, &reasons[i]);
+    if (static_cast<int>(i) == preset) {
+      disabled[i] = false;
+    }
+    tips[i] = (disabled[i] ? reasons[i].c_str() : ui::text::kResolutionTips[i]);
   }
   ui::RowLabel(ui::text::kResolution, ui::text::kResolutionTip);
   const int clicked = ui::Segmented("##resolution", items.data(), static_cast<int>(items.size()), preset,
-                                    ui::text::kResolutionTip, ui::text::kResolutionTips, nullptr, !text.modern);
+                                    ui::text::kResolutionTip, tips.data(), disabled.data(), !text.modern);
   if (clicked >= 0 && clicked != preset) {
     const auto& chosen = kResolutionPresets[clicked];
     CommitResolutionMode(chosen.mode, chosen.follow, chosen.follow ? scale : chosen.scale);
@@ -22874,7 +23126,8 @@ inline void DrawResolutionControls(const ui::PanelText& text) {
       ImGui::SliderFloat(ui::ControlLabel("Resolution scale").c_str(), &ui_res_pct, 33.f, 100.f, "%.0f%%");
     }
     ImGui::EndDisabled();
-    if (!following && ui_res_pct != original_pct) {
+    if (!following && ui_res_pct != original_pct
+        && CanChooseSetting(kSetResolutionScale, std::clamp(ui_res_pct, 33.f, 100.f) / 100.f)) {
       kSetResolutionScale.Store(std::clamp(ui_res_pct, 33.f, 100.f) / 100.f);
       kSetResolutionScale.Persist();
     }
@@ -22882,7 +23135,7 @@ inline void DrawResolutionControls(const ui::PanelText& text) {
       ResolutionResetButton("resolution_scale_reset");
     }
     if (following) {
-      ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionSavedScale));
+      ui::ItemTooltip("%s", text.Tr(ui::text::kResolutionSavedScale));
     }
   }
   // Beside the resolution since rc5, independent of Adjust NR's look: it is how
@@ -22924,15 +23177,21 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
       " its own history (Chained history, under Fixes).");
   char pass_tip_text[kMaxNrPasses][128];
   const char* pass_tips[kMaxNrPasses];
+  bool pass_disabled[kMaxNrPasses]{};
+  std::string pass_reasons[kMaxNrPasses];
   for (uint32_t pass = 0; pass < kMaxNrPasses; ++pass) {
     std::snprintf(pass_tip_text[pass], sizeof(pass_tip_text[pass]), text.Tr(ui::text::kPassCountTip), pass + 1);
     pass_tips[pass] = pass_tip_text[pass];
+    pass_disabled[pass] = !CanChooseSetting(kSetStackPasses, static_cast<float>(pass + 1), &pass_reasons[pass]);
+    if (pass_disabled[pass]) {
+      pass_tips[pass] = pass_reasons[pass].c_str();
+    }
   }
   bool passes_changed = false;
   if (text.modern) {
     ui::RowLabel(text.stack_passes, passes_tip);
     const int clicked = ui::Segmented("##passes", kPassSegments,
-                                      static_cast<int>(kMaxNrPasses), ui_passes, nullptr, pass_tips);
+                                      static_cast<int>(kMaxNrPasses), ui_passes, nullptr, pass_tips, pass_disabled);
     passes_changed = clicked >= 0 && clicked != ui_passes;
     if (passes_changed) ui_passes = clicked;
   } else {
@@ -22945,10 +23204,18 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
     ui::ItemTooltip("%s", passes_tip);
   }
   if (passes_changed) {
-    kSetStackPasses.Commit(static_cast<float>(
-        std::clamp(ui_passes + 1, 1, static_cast<int>(kMaxNrPasses))));
+    const float choice = static_cast<float>(std::clamp(ui_passes + 1, 1, static_cast<int>(kMaxNrPasses)));
+    if (CanChooseSetting(kSetStackPasses, choice)) {
+      kSetStackPasses.Commit(choice);
+    }
   }
   const auto stage_plan = RequestedStagePlan();
+  const auto queried = QueryConfigurationCapability();
+  if (!queried.CanSubmit()) {
+    ImGui::TextWrapped("%s: %s", text.Tr("Current limitation"),
+        text.Tr(queried.configuration.reason == capability::Reason::PLAN_REJECTED
+            ? stage_plan::ReasonText(queried.plan_reason) : capability::ReasonText(queried.configuration.reason)));
+  }
   if (!stage_plan.valid) {
     ImGui::TextWrapped("%s: %s", text.Tr(ui::text::kStageBlocked),
                        text.Tr(stage_plan::ReasonText(stage_plan.reason)));
@@ -23124,15 +23391,34 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
       ChoiceSetting(text, kSetPassResolutionMode[pass - 1], ui::text::kWorkingResolution,
                     resolution_choices, ui::text::kPassResolutionTip);
       if (pass_resolution_mode[pass - 1].load() == 2) {
+        constexpr const char* kFixedLabels[] = {"100%", "67%", "58%", "50%"};
+        constexpr float kFixedValues[] = {1.f, .67f, .58f, .50f};
+        int selected = -1;
+        bool blocked[4]{};
+        std::string reasons[4];
+        const char* tips[4];
+        for (int i = 0; i < 4; ++i) {
+          if (std::abs(pass_resolution_scale[pass - 1].load() - kFixedValues[i]) < 0.0001f) {
+            selected = i;
+          }
+          blocked[i] = !CanChooseSetting(kSetPassResolutionScale[pass - 1], kFixedValues[i], &reasons[i]);
+          tips[i] = (blocked[i] ? reasons[i].c_str() : kFixedLabels[i]);
+        }
+        ImGui::SetNextItemWidth(-1.f);
+        const int clicked = ui::Segmented("##pass_resolution_presets", kFixedLabels, 4, selected, nullptr, tips, blocked);
+        if (clicked >= 0) {
+          kSetPassResolutionScale[pass - 1].Commit(kFixedValues[clicked]);
+        }
         const float original_percentage = pass_resolution_scale[pass - 1].load() * 100.f;
         float percentage = original_percentage;
         if (text.modern) {
-          ui::RowLabel("Resolution scale", ui::text::kPassResolutionTip);
+          ui::RowLabel(selected < 0 ? "Custom" : "Resolution scale", ui::text::kPassResolutionTip);
           ui::Slider("##pass_resolution_scale", &percentage, 33.f, 100.f, "%.0f%%", ui::text::kPassResolutionTip);
         } else {
-          ImGui::SliderFloat(ui::ControlLabel("Resolution scale").c_str(), &percentage, 33.f, 100.f, "%.0f%%");
+          ImGui::SliderFloat(ui::ControlLabel(selected < 0 ? "Custom" : "Resolution scale").c_str(), &percentage, 33.f, 100.f, "%.0f%%");
         }
-        if (percentage != original_percentage) {
+        if (percentage != original_percentage
+            && CanChooseSetting(kSetPassResolutionScale[pass - 1], std::clamp(percentage, 33.f, 100.f) / 100.f)) {
           kSetPassResolutionScale[pass - 1].Store(std::clamp(percentage, 33.f, 100.f) / 100.f);
           kSetPassResolutionScale[pass - 1].Persist();
         }
@@ -23146,15 +23432,14 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
         const auto inherited = EffectivePassResolution(pass);
         if (inherited.follow_input) {
           ImGui::TextWrapped("%s: %s", text.Tr(ui::text::kWorkingResolution), text.Tr(ui::text::kResolutionFollow));
-          ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionSavedScale));
         } else {
           ImGui::TextWrapped("%s: %.2f%%", text.Tr("Resolution scale"), inherited.scale * 100.f);
         }
       }
-      ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionSharedUpsample));
       DrawResolutionObserved(text, pass);
     }
-    ImGui::TextWrapped("%s", text.Tr(ui::text::kStageResolutionNote));
+    ImGui::TextUnformatted(text.Tr("Stage and resolution help (?)"));
+    ui::ItemTooltip("%s", text.Tr(ui::text::kStageResolutionNote));
     if (vulkan_present_seen.load() && pass != 0 && pass_resolution_mode[pass - 1].load() != 0) {
       ImGui::TextWrapped("%s", text.Tr(ui::text::kResolutionBackend));
     }
@@ -24112,33 +24397,51 @@ inline void DrawSectionHotkeys(const ui::PanelText& text) {
   hotkey_button(text.Pick("NR Toggle Key", "Toggle NR"), kSetToggleKey, kSetScreenshotKey, 1);
   hotkey_button(text.Pick("Screenshot Key", "Screenshot"), kSetScreenshotKey, kSetToggleKey,
                 2);
+  ToggleSetting(text, kSetOfficialCycleEnabled, "Enable official profile key",
+                "Recommended F9: Lite, Balanced, Max. Disabled by default. Other software may use the same key.");
+  hotkey_button("Cycle official profiles", kSetOfficialCycleKey, kSetCustomCycleKey, 3);
+  ToggleSetting(text, kSetCustomCycleEnabled, "Enable custom profile key",
+                "Recommended F10: cycle saved, available custom slots. Empty slots are skipped.");
+  hotkey_button("Cycle custom profiles", kSetCustomCycleKey, kSetOfficialCycleKey, 4);
+  if (ProfileKeyConflict(2) || ProfileKeyConflict(3)) {
+    ImGui::TextWrapped("%s", ui::Tr("Duplicate add-on key: profile cycling is disabled until rebound."));
+  }
   const uint32_t capture_target = hotkey_capture_target.load(std::memory_order_relaxed);
   if (capture_target != 0) {
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
       hotkey_capture_target = 0;
     } else {
-      const uint32_t other = capture_target == 1
-          ? screenshot_hotkey.load(std::memory_order_relaxed)
-          : toggle_hotkey.load(std::memory_order_relaxed);
       for (int key_index = ImGuiKey_NamedKey_BEGIN; key_index < ImGuiKey_NamedKey_END;
            ++key_index) {
         const ImGuiKey key = static_cast<ImGuiKey>(key_index);
         if (!ImGui::IsKeyPressed(key, false)) continue;
         const uint32_t vk = VkFromImGuiKey(key);
-        if (vk == 0 || vk == other) continue;
+        if (vk == 0) continue;
+        const uint32_t bindings[] = {toggle_hotkey.load(), screenshot_hotkey.load(), official_cycle_key.load(), custom_cycle_key.load()};
+        bool conflict = false;
+        for (uint32_t i = 0; i < std::size(bindings); ++i) {
+          conflict |= i + 1 != capture_target && bindings[i] == vk;
+        }
+        if (conflict) continue;
         if (capture_target == 1) {
           toggle_hotkey = vk;
           // The rebind keystroke is still physically held; prime the edge
           // latch so the new binding does not fire itself immediately.
           toggle_hotkey_was_down.store(true, std::memory_order_relaxed);
-        } else {
+        } else if (capture_target == 2) {
           screenshot_hotkey = vk;
           screenshot::internal::hotkey_was_down.store(
               true, std::memory_order_relaxed);
+        } else {
+          (capture_target == 3 ? kSetOfficialCycleKey : kSetCustomCycleKey).Commit(static_cast<float>(vk));
+          std::unique_lock key_lock(profile_keys_mutex);
+          profile_key_edges[capture_target - 3] = {.held = true, .binding = vk,
+              .enabled = (capture_target == 3 ? official_cycle_enabled.load() : custom_cycle_enabled.load())};
         }
+        const char* config_keys[] = {"NRToggleKey", "NRScreenshotKey", "NROfficialCycleKey", "NRCustomCycleKey"};
         reshade::set_config_value(
             nullptr, kConfigSection,
-            capture_target == 1 ? "NRToggleKey" : "NRScreenshotKey", vk);
+            config_keys[capture_target - 1], vk);
         Log(
             reshade::log::level::info,
             std::string("hotkey rebound: ")
@@ -24700,6 +25003,54 @@ inline void DrawDiagnostics(const NrVerdict& verdict) {
 #include "report_flow.hpp"
 #include "preset_runtime.hpp"
 
+inline ui::MonitorState ui_runtime_monitor_state;
+inline bool ui_monitor_geometry_dirty = false;
+inline bool ui_monitor_saved_pin = false;
+inline profile_ui::FirstInstallEvidence first_install_evidence = profile_ui::FirstInstallEvidence::UNKNOWN;
+
+// ReShade's frame callback owns profile transactions even with the add-on panel
+// closed. Key readers only queue an action; no JSON/file work is added to hooks.
+inline void OnProfilePresent(reshade::api::effect_runtime* runtime) {
+  if (shutting_down.load()) return;
+  {
+    std::unique_lock lock(overlay_listener_mutex);
+    if (!live_effect_runtimes.empty() && runtime != live_effect_runtimes.front()) return;
+  }
+  profile_ui::capability_validator = ValidateConfigurationCapability;
+  profile_ui::interaction_busy = [] { return preset_ui::manager_geometry.was_open; };
+  profile_ui::Initialize();
+  profile_ui::TryInitializeBalanced(first_install_evidence, ValidateConfigurationCapability);
+  const auto request = profile_cycle_request.exchange(0);
+  bool manager_busy = false;
+  {
+    std::shared_lock lock(preset_ui::worker.mutex);
+    manager_busy = preset_ui::worker.busy || preset_ui::worker.ready;
+  }
+  static int pending_feedback = -1;
+  DWORD foreground_process = 0;
+  GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
+  if (request != 0 && !manager_busy && hotkey_capture_target.load() == 0
+      && foreground_process == GetCurrentProcessId()) {
+    if (profile_ui::Cycle(request == 2)) {
+      pending_feedback = (profile_ui::pending_index >= 0 ? profile_ui::pending_index : profile_ui::active);
+    }
+    else {
+      std::unique_lock feedback_lock(profile_feedback.mutex);
+      profile_feedback.message = (profile_ui::notice.empty() ? ui::Tr("Profile switch unavailable") : ui::Tr(profile_ui::notice.c_str()));
+      profile_feedback_until_ns = SteadyNowNs() + kHudToastNs;
+    }
+  }
+  profile_ui::Tick();
+  if (pending_feedback >= 0 && profile_ui::pending_action == profile_ui::Action::NONE && !profile_ui::Busy()) {
+    std::unique_lock feedback_lock(profile_feedback.mutex);
+    profile_feedback.message = (profile_ui::active == pending_feedback
+        ? std::string(ui::Tr("Switched profile")) + ": " + profile_ui::Name(pending_feedback)
+        : ui::Tr("Profile switch unavailable"));
+    profile_feedback_until_ns = SteadyNowNs() + kHudToastNs;
+    pending_feedback = -1;
+  }
+}
+
 inline int ui_reset_target = -1;
 inline bool ui_reset_open = false;
 
@@ -25151,6 +25502,7 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
 }
 
 inline void DrawPanelBody(reshade::api::effect_runtime* runtime) {
+  profile_ui::capability_validator = ValidateConfigurationCapability;
   const NrVerdict verdict = ComputeNrVerdict(CollectFunnelInputs());
   const int64_t observed_ns = SteadyNowNs();
   const ui::CardInputs card_inputs = CollectCardInputs(verdict, observed_ns);
@@ -25185,48 +25537,97 @@ inline void DrawPanelBody(reshade::api::effect_runtime* runtime) {
     }();
     const auto now = gpu_timers::NowNs();
     for (size_t stage = 0; stage < samples.size(); ++stage) {
-      if (samples[stage].valid && now - samples[stage].measured_ns <= gpu_timers::internal::kSampleAgeNs) {
+      if (CurrentGpuSample(samples[stage], now)) {
         if (!execution.empty()) execution += " + ";
         execution += stage_plan::Name(static_cast<stage_plan::Stage>(stage));
       }
     }
   }
   if (execution.empty()) execution = ui::Tr("Execution stage pending confirmation");
-  if (ui::DrawStatusSummary(card, warnings, execution.c_str())) {
-    ImGui::OpenPopup("###nr_status_details");
+  if (execution == ui::Tr("Execution stage pending confirmation")) {
+    card.nr_gpu_ms = 0.f;
+    card.nr_present_ms = 0.f;
   }
-  const ImVec2 display = ImGui::GetIO().DisplaySize;
-  const float detail_width = (std::min)(ImGui::GetFontSize() * 44.f, display.x * 0.92f);
-  ImGui::SetNextWindowSize(ImVec2(detail_width, display.y * 0.72f));
-  ImGui::SetNextWindowSizeConstraints(ImVec2((std::min)(detail_width, 240.f), 100.f),
-                                     ImVec2(display.x * 0.96f, display.y * 0.9f));
-  if (ImGui::BeginPopup((std::string(ui::Tr("Runtime details")) + "###nr_status_details").c_str())) {
-    ImGui::PushTextWrapPos(0.f);
-    ui::SectionCaption("Runtime details", nullptr, false);
-    if (ui::ActionButton(ui::Tr("Open Diagnostics"), "status_open_diagnostics")) {
-      ui_open_diagnostics = true;
-      ImGui::CloseCurrentPopup();
+  if (ui::DrawStatusSummary(card, warnings, execution.c_str())) {
+    ui_runtime_monitor_state.open = !ui_runtime_monitor_state.open;
+  }
+  if (ui_runtime_monitor_state.open) {
+    ui::MonitorInputs monitor{.card = card};
+    monitor.now_ns = observed_ns;
+    if (card_inputs.recent) {
+      const auto& recent = *card_inputs.recent;
+      monitor.recent = {.available = true, .ready = recent.ready, .partial = recent.partial,
+          .eligible = recent.eligible, .injected = recent.injected, .gaps = recent.gaps,
+          .last_sample_ns = recent.last_sample_ns};
     }
-    ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Close")).x + ImGui::GetStyle().FramePadding.x * 2.f);
-    if (ui::ActionButton(ui::Tr("Close"), "status_close")) ImGui::CloseCurrentPopup();
-    // Keep navigation visible while complete status and long repair messages
-    // scroll in their own bounded region.
-    if (ImGui::BeginChild("##nr_status_detail_body", ImVec2(0.f, 0.f), ImGuiChildFlags_None,
-                          ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
-      ui::StatusCard detail = card;
-      detail.action = ui::CardAction::kNone;
-      ui::DrawStatusCard(detail, enabled.load());
-      DrawObservedNrPasses();
-      ImGui::TextWrapped("%s", ui::Tr("Fallback and compatibility"));
-      ImGui::TextWrapped("%s", ui::Tr(card.path_note != nullptr ? card.path_note : card.body));
-      if (card.fg_declared || card.observed_fg_route != ui::FgRoute::kUnknown) {
-        ImGui::TextWrapped(ui::Tr(ui::FrameGenText(card)), card.frame_gen_multiplier);
+    monitor.gpu_scope = ui::Tr("Completed single submissions; stage spans are not frame latency.");
+    const auto queried = QueryConfigurationCapability();
+    monitor.current_limit = (queried.CanSubmit() ? ui::Tr("No configuration blocker; execution needs current evidence.")
+        : ui::Tr(queried.configuration.reason == capability::Reason::PLAN_REJECTED
+            ? stage_plan::ReasonText(queried.plan_reason) : capability::ReasonText(queried.configuration.reason)));
+    if (card_inputs.gap_reason != nullptr) {
+      monitor.current_limit += "\n";
+      monitor.current_limit += ui::Tr(card_inputs.gap_reason);
+    }
+    for (size_t issue = 0; issue < health::kRowCount; ++issue) {
+      if (((health_mask >> issue) & 1u) != 0 && health::Counted(health::kRows[issue])) {
+        monitor.current_limit += "\n";
+        monitor.current_limit += ui::Tr(health::kRows[issue].title);
+        break;
       }
-      DrawHealthIssues();
     }
-    ImGui::EndChild();
-    ImGui::PopTextWrapPos();
-    ImGui::EndPopup();
+    const auto plan = RequestedStagePlan();
+    monitor.pass_count = plan.pass_count;
+    const auto dimensions = [](uint32_t width, uint32_t height) {
+      return std::to_string(width) + " x " + std::to_string(height);
+    };
+    for (uint32_t pass = 0; pass < plan.pass_count; ++pass) {
+      RuntimeLock lock(runtime_mutex);
+      auto& row = monitor.passes[pass];
+      const auto stage = static_cast<size_t>(plan.effective[pass]);
+      row.requested_stage = stage_plan::Name(plan.requested[pass]);
+      row.effective_stage = (vulkan_present_seen.load() ? "Upscaled"
+          : plan.valid ? stage_plan::Name(plan.effective[pass]) : ui::Tr("Blocked"));
+      row.requested_model = nr_model::PresetName(pass == 0 || pass_preset[pass - 1].load() == 0
+          ? preset.load() : pass_preset[pass - 1].load());
+      const auto settings = CurrentPassResolution(pass);
+      row.requested_size = (settings.follow_input ? ui::Tr("Follow input")
+          : std::to_string(static_cast<int>(std::lround(settings.scale * 100.f))) + "%");
+      const auto& timing = gpu_timers::stage_stats[stage];
+      const bool current = CurrentGpuSample(timing, observed_ns);
+      row.execution_proof = ui::Tr("Pending confirmation");
+      row.actual_model_proof = ui::Tr("Pending confirmation");
+      row.actual_size = ui::Tr("No current completed sample");
+      for (const auto& sample : timing.passes) {
+        if (sample.id != pass || sample.state != gpu_timers::SampleState::VALID) continue;
+        row.created_model_request = nr_model::PresetName(sample.model);
+        if (current) {
+          row.execution_proof = ui::Tr("GPU complete: single submission");
+          row.actual_size = dimensions(sample.width, sample.height);
+        }
+        char cost[96];
+        std::snprintf(cost, sizeof(cost), "%.3f ms", sample.total_us / 1000.f);
+        row.gpu_cost = cost;
+        row.gpu_state = (current ? ui::MonitorGpuState::CURRENT : ui::MonitorGpuState::STALE);
+      }
+    }
+    const auto actions = ui::DrawRuntimeMonitor(monitor, &ui_runtime_monitor_state);
+    if (actions.open_diagnostics) {
+      ui_open_diagnostics = true;
+    }
+    ui_monitor_geometry_dirty |= actions.geometry_changed;
+    ui_monitor_geometry_dirty |= ui_monitor_saved_pin != ui_runtime_monitor_state.pin;
+    if (ui_monitor_geometry_dirty && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      const auto& geometry = ui_runtime_monitor_state.geometry;
+      reshade::set_config_value(nullptr, kConfigSection, "UiMonitorX", geometry.position.x);
+      reshade::set_config_value(nullptr, kConfigSection, "UiMonitorY", geometry.position.y);
+      reshade::set_config_value(nullptr, kConfigSection, "UiMonitorWidth", geometry.size.x);
+      reshade::set_config_value(nullptr, kConfigSection, "UiMonitorHeight", geometry.size.y);
+      reshade::set_config_value(nullptr, kConfigSection, "UiMonitorScale", geometry.ui_scale);
+      reshade::set_config_value(nullptr, kConfigSection, "UiMonitorPinned", ui_runtime_monitor_state.pin);
+      ui_monitor_geometry_dirty = false;
+      ui_monitor_saved_pin = ui_runtime_monitor_state.pin;
+    }
   }
   ui::SectionGap();
   if (profile_ui::Resetting()) {
@@ -25692,6 +26093,20 @@ inline void LoadConfiguration() {
     }
   }
   const auto global_version_raw = ReadPresentRestoreRaw("ConfigVersion");
+  for (const auto* key : {"ProfileGameId", "ProfileBalancedInitialized", "UiTheme", "UiLanguage", "UiMode"}) {
+    if (ReadPresentRestoreRaw(key)) {
+      section_has_settings = true;
+    }
+  }
+  first_install_evidence = (section_known && !section_has_settings && !global_version_raw
+      ? profile_ui::FirstInstallEvidence::PROVEN_EMPTY : profile_ui::FirstInstallEvidence::EXISTING);
+  auto& monitor_geometry = ui_runtime_monitor_state.geometry;
+  monitor_geometry.valid = reshade::get_config_value(nullptr, kConfigSection, "UiMonitorWidth", monitor_geometry.size.x)
+      && reshade::get_config_value(nullptr, kConfigSection, "UiMonitorHeight", monitor_geometry.size.y)
+      && reshade::get_config_value(nullptr, kConfigSection, "UiMonitorX", monitor_geometry.position.x)
+      && reshade::get_config_value(nullptr, kConfigSection, "UiMonitorY", monitor_geometry.position.y);
+  reshade::get_config_value(nullptr, kConfigSection, "UiMonitorScale", monitor_geometry.ui_scale);
+  reshade::get_config_value(nullptr, kConfigSection, "UiMonitorPinned", ui_runtime_monitor_state.pin);
   uint32_t raw_global_version = 0;
   bool global_writable = true;
   if (global_version_raw) {
@@ -25794,6 +26209,8 @@ inline void LoadConfiguration() {
   bool saved_neural_floor_guard = defaults::kNeuralFloorGuard;
   uint32_t saved_toggle_key = defaults::kToggleHotkey;
   uint32_t saved_screenshot_key = defaults::kScreenshotHotkey;
+  uint32_t saved_official_cycle_key = VK_F9, saved_custom_cycle_key = VK_F10;
+  bool saved_official_cycle_enabled = false, saved_custom_cycle_enabled = false;
   uint32_t saved_worksets = kDefaultMaxWorksets;
   uint32_t saved_passes = defaults::kStackPasses;
   float saved_pass_values[kMaxNrPasses - 1][3] = {};
@@ -25998,6 +26415,10 @@ inline void LoadConfiguration() {
   reshade::get_config_value(nullptr, kConfigSection, "NRToggleKey", saved_toggle_key);
   reshade::get_config_value(
       nullptr, kConfigSection, "NRScreenshotKey", saved_screenshot_key);
+  reshade::get_config_value(nullptr, kConfigSection, "NROfficialCycleKey", saved_official_cycle_key);
+  reshade::get_config_value(nullptr, kConfigSection, "NRCustomCycleKey", saved_custom_cycle_key);
+  reshade::get_config_value(nullptr, kConfigSection, "NROfficialCycleEnabled", saved_official_cycle_enabled);
+  reshade::get_config_value(nullptr, kConfigSection, "NRCustomCycleEnabled", saved_custom_cycle_enabled);
   uint32_t saved_worksets_read = saved_worksets;
   reshade::get_config_value(nullptr, kConfigSection, "NRMaxWorksets", saved_worksets_read);
   saved_worksets = saved_worksets_read;
@@ -26653,6 +27074,10 @@ inline void LoadConfiguration() {
   neural_floor_guard = saved_neural_floor_guard;
   toggle_hotkey =
       saved_toggle_key >= 0x08 && saved_toggle_key <= 0xFE ? saved_toggle_key : VK_F6;
+  official_cycle_key = (saved_official_cycle_key >= 0x08 && saved_official_cycle_key <= 0xFE ? saved_official_cycle_key : VK_F9);
+  custom_cycle_key = (saved_custom_cycle_key >= 0x08 && saved_custom_cycle_key <= 0xFE ? saved_custom_cycle_key : VK_F10);
+  official_cycle_enabled = saved_official_cycle_enabled;
+  custom_cycle_enabled = saved_custom_cycle_enabled;
   screenshot_hotkey = saved_screenshot_key >= 0x08 && saved_screenshot_key <= 0xFE
       ? saved_screenshot_key
       : VK_F5;
@@ -27388,6 +27813,7 @@ inline void Use(DWORD reason, HMODULE module, LPVOID reserved) {
       debug::Mark("attach:begin");
       lastgasp::Mark("attach:begin");
       internal::LoadConfiguration();
+      gpu_timers::comparison_settings = internal::comparison_ui::CaptureSettings;
       debug::Mark("attach:config-loaded");
       internal::Log(
           reshade::log::level::info,
@@ -27442,6 +27868,7 @@ inline void Use(DWORD reason, HMODULE module, LPVOID reserved) {
       reshade::register_event<reshade::addon_event::destroy_command_queue>(
           internal::OnDestroyCommandQueueEvent);
       reshade::register_overlay(internal::kOverlayTitle, internal::OnOverlay);
+      reshade::register_event<reshade::addon_event::reshade_present>(internal::OnProfilePresent);
       reshade::register_event<reshade::addon_event::reshade_open_overlay>(
           internal::OnReshadeOpenOverlay);
       if (internal::InitUiCapture()) {
@@ -27462,6 +27889,7 @@ inline void Use(DWORD reason, HMODULE module, LPVOID reserved) {
       lastgasp::MarkOnce("ngx:hooks-installed");
       break;
     case DLL_PROCESS_DETACH:
+      reshade::unregister_event<reshade::addon_event::reshade_present>(internal::OnProfilePresent);
       fg::xefg::Stop();
       fg::native_options::Stop();
       debug::Mark("detach:begin");

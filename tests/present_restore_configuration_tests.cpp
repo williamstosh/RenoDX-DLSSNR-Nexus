@@ -248,6 +248,8 @@ int main(int argc, char** argv) {
         } else if (test_case == "pass-result-invalid") {
           addon += "NRPass2LookFollowPass1=0\r\nNRPass2LookMode=1\r\nNRPass2LookStrength=nan\r\nNRPass2LookHalo=99\r\nNRPass2LookDetailRadius=-1\r\nNRPass2LookStabilize=9\r\nNRPass2LookStabilizeMs=9999\r\nNRPass2DetailStability=9\r\n";
         }
+      } else if (test_case == "capability-ui") {
+        addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\n";
       } else if (test_case.starts_with("nr-resolution-") || test_case == "profiles") {
         addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\n"
                  "NRFollowInputRes=0\r\nNRResolutionScale=0.58\r\n";
@@ -356,6 +358,9 @@ int main(int argc, char** argv) {
             "Different modes with matching actual pixels do not create a false resolution conflict.");
       runtime::LoadConfiguration();
     }
+    if (test_case == "capability-ui") {
+#include "capability_runtime_cases.hpp"
+    }
     if (test_case == "profiles") {
 #include "profile_runtime_cases.hpp"
       RunProfileRuntimeCases(base_directory / "profile-runtime-cases");
@@ -369,6 +374,12 @@ int main(int argc, char** argv) {
       namespace model = renodx::addons::dlss5::nr_model;
       using Json = presets::Json;
       using Category = presets::FieldRule::Category;
+      // These transaction/codec cases require synthetic API/model evidence;
+      // the profile suite's scoped environment has already been restored.
+      runtime::d3d12_swapchain_seen = true;
+      runtime::direct_runtime_requirements.dual_models = true;
+      runtime::native_fg_declaration = runtime::NativeFgDeclaration::kOff;
+      runtime::native_fg_public_off = true;
       const auto fixture_root = base_directory;
       const auto fixture_ini = ini_path;
       const auto capture = []() { return adapter::Capture(presets::Scope::FULL, {{"name", "Synthetic test"}}); };
@@ -497,7 +508,15 @@ int main(int argc, char** argv) {
         }
       }
       const auto stage_original = capture();
-      const Json stage_settings{{"NRPasses", 4u}, {"NRPass2Stage", 2u}, {"NRPass3Stage", 0u}, {"NRPass4Stage", 3u}};
+      const Json invalid_stages{{"NRPasses", 4u}, {"NRPass2Stage", 2u}, {"NRPass3Stage", 0u}, {"NRPass4Stage", 3u}};
+      const auto invalid_stage_bytes = Bytes();
+      std::string invalid_stage_error;
+      Check(!adapter::Apply({.scope = presets::Scope::QUALITY_MULTIPASS, .settings = invalid_stages},
+                            false, false, &invalid_stage_error)
+                && !invalid_stage_error.empty() && Bytes() == invalid_stage_bytes
+                && capture().settings == stage_original.settings,
+            "Unproven four-pass mixed Present request is rejected without changing saved configuration.");
+      const Json stage_settings{{"NRPasses", 4u}, {"NRPass2Stage", 2u}, {"NRPass3Stage", 0u}, {"NRPass4Stage", 2u}};
       const presets::Document stage_request{.scope = presets::Scope::QUALITY_MULTIPASS, .settings = stage_settings};
       const auto stage_rows = adapter::Preview(stage_request, false);
       for (const auto& [key, value] : stage_settings.items()) {
@@ -1197,7 +1216,7 @@ int main(int argc, char** argv) {
       }
       Check(Read("UnregisteredPersistentKnob") == "42", "reset preserves unregistered key");
     } else if (test_case.starts_with("nr-model-") || test_case.starts_with("nr-stage-") || test_case.starts_with("pass-result-")
-               || test_case.starts_with("nr-resolution-") || test_case == "profiles"
+               || test_case.starts_with("nr-resolution-") || test_case == "profiles" || test_case == "capability-ui"
                || test_case == "native-prefg-resolution-config") {
       CheckPair("1");
       Check(!Configuration().inherited && Configuration().scope == scope::Scope::FINAL_PRESENT_AND_PRE_FG,

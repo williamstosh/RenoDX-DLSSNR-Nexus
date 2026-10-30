@@ -21,6 +21,7 @@
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <unordered_map>
@@ -216,17 +217,79 @@ inline bool ProcessingChainButton(const ProcessingChainNode& node, ImVec2 size, 
   return pressed;
 }
 
+struct StatusSummaryFields {
+  // Already formatted snapshot values. No runtime state is read by this widget.
+  std::string resolution;
+  std::string stage;
+  std::string gpu;
+  const char* resolution_tip = "Observed input and output dimensions. These are separate from requested working sizes.";
+  const char* stage_tip = "Execution evidence for the current chain. A requested stage is not proof of execution.";
+  const char* gpu_tip = "Completed GPU timestamp samples only. Missing or stale samples are not current execution cost.";
+};
+
 // Only the compact child participates in settings layout. The caller opens
 // complete runtime details without expanding the summary's default height.
-inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, const char* execution = nullptr) {
+inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, const StatusSummaryFields& fields) {
   StyleScope frame;
   frame.FontSize(BodyFontSize())
       .Color(ImGuiCol_ChildBg, CurrentTheme().bg_card)
       .Var(ImGuiStyleVar_WindowPadding, ImVec2(tokens::kCardPadding + kStripeWidth, tokens::kCardPadding));
-  const bool narrow = ImGui::GetContentRegionAvail().x < ImGui::GetFontSize() * 24.f;
-  const float height = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y
-                       + ImGui::GetTextLineHeightWithSpacing() * (narrow ? 2.f : 1.f)
-                       + ImGui::GetStyle().WindowPadding.y * 2.f;
+  const float font = ImGui::GetFontSize();
+  const float available = (std::max)(1.f, ImGui::GetContentRegionAvail().x - ImGui::GetStyle().WindowPadding.x * 2.f);
+  const int field_count = (available >= font * 52.f ? 3 : (available >= font * 32.f ? 2 : 1));
+  const float field_width = (available - ImGui::GetStyle().ItemSpacing.x * (field_count - 1)) / field_count;
+  const float full_action_width = ImGui::CalcTextSize((std::string(Tr("Runtime monitor")) + " !").c_str()).x
+      + ImGui::GetStyle().FramePadding.x * 2.f;
+  const char* action_title = Tr(full_action_width > available ? "Monitor" : "Runtime monitor");
+  const std::string action = std::string(action_title) + (warning_count != 0 ? " !" : "");
+  const float action_width = (std::min)(available,
+      ImGui::CalcTextSize((std::string(action_title) + " !").c_str()).x + ImGui::GetStyle().FramePadding.x * 2.f);
+  const bool stacked_action = available - action_width < font * 10.f;
+  const float title_width = (stacked_action ? available : available - action_width - ImGui::GetStyle().ItemSpacing.x);
+  char title[256];
+  FormatCardTitle(title, sizeof(title), card);
+  const char* short_title = title;
+  switch (card.id) {
+    case CardId::kActive: short_title = Tr("Active"); break;
+    case CardId::kActiveWithIssues: short_title = Tr("Active with warnings"); break;
+    case CardId::kPartlyActive: short_title = Tr("Partly active"); break;
+    case CardId::kStarting: short_title = Tr("Confirming"); break;
+    default: break;
+  }
+  const std::string heading = std::string(GlyphIcon(card.glyph)) + " " + short_title;
+  const char* names[] = {"Resolution", "Execution stage", "GPU"};
+  const std::string* values[] = {&fields.resolution, &fields.stage, &fields.gpu};
+  std::array<std::string, 3> field_text;
+  for (int i = 0; i < field_count; ++i) {
+    field_text[i] = std::string(Tr(names[i])) + ": "
+        + (values[i]->empty() ? Tr("Pending confirmation") : values[i]->c_str());
+  }
+  const auto wrapped_height = [](const char* value, float width) {
+    return ImGui::CalcTextSize(value, nullptr, false, (std::max)(1.f, width)).y;
+  };
+  // Measure representative complete fields so the envelope follows the font
+  // and translation, without reserving multiple empty lines on wide panels.
+  const float title_height = (std::max)(wrapped_height(heading.c_str(), title_width),
+      std::ceil(font * 32.f / (std::max)(font, title_width)) * ImGui::GetTextLineHeight());
+  const std::array<std::string, 3> reserved_fields = {
+      std::string(Tr("Resolution")) + ": 99999x99999 -> 99999x99999",
+      std::string(Tr("Execution stage")) + ": Render -> Upscaled -> Present",
+      std::string(Tr("GPU")) + ": " + Tr("Pending confirmation")};
+  float field_height = 0.f;
+  for (int i = 0; i < field_count; ++i) {
+    const std::string pending = std::string(Tr(names[i])) + ": " + Tr("Pending confirmation");
+    field_height = (std::max)({field_height, wrapped_height(field_text[i].c_str(), field_width),
+                             wrapped_height(reserved_fields[i].c_str(), field_width),
+                             wrapped_height(pending.c_str(), field_width)});
+    if (i == 1) {
+      const std::string pending_stage = std::string(Tr(names[i])) + ": " + Tr("Execution stage pending confirmation");
+      field_height = (std::max)(field_height, wrapped_height(pending_stage.c_str(), field_width));
+    }
+  }
+  field_height += ImGui::GetStyle().ItemSpacing.y;
+  const float height = title_height + (stacked_action ? ImGui::GetFrameHeightWithSpacing() : 0.f)
+      + ImGui::GetStyle().ItemSpacing.y + field_height
+      + ImGui::GetStyle().WindowPadding.y * 2.f;
   bool details = false;
   if (ImGui::BeginChild("##nr_status_summary", ImVec2(0.f, height),
                         ImGuiChildFlags_AlwaysUseWindowPadding,
@@ -235,79 +298,57 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, co
     ImGui::GetWindowDrawList()->AddRectFilled(
         origin, ImVec2(origin.x + kStripeWidth, origin.y + ImGui::GetWindowSize().y),
         ToU32(ToneColor(card.tone)), tokens::kRadiusCard, ImDrawFlags_RoundCornersLeft);
-    // A missing measurement still consumes its line. Wrapping is disabled
-    // locally even when the surrounding ReShade panel enables it.
-    const auto line = [](const char* value, const ImVec4& color, float width, const char* explanation = nullptr) {
-      StyleScope text;
-      text.Color(ImGuiCol_Text, color);
-      std::string single_line(value);
-      std::replace(single_line.begin(), single_line.end(), '\n', ' ');
-      std::replace(single_line.begin(), single_line.end(), '\r', ' ');
-      ImGui::PushTextWrapPos(-1.f);
-      ImGui::TextUnformatted(Ellipsize(single_line.c_str(), width).c_str());
+    const ImVec2 heading_at = ImGui::GetCursorPos();
+    {
+      StyleScope tone;
+      tone.Color(ImGuiCol_Text, ToneColor(card.tone));
+      ImGui::PushTextWrapPos(heading_at.x + title_width);
+      ImGui::TextUnformatted(heading.c_str());
       ImGui::PopTextWrapPos();
-      if (explanation != nullptr) {
-        ItemTooltip("%s\n%s", value, explanation);
-      } else {
-        ItemTooltip("%s", value);
-      }
-    };
-    char title[256];
-    FormatCardTitle(title, sizeof(title), card);
-    const std::string heading = std::string(GlyphIcon(card.glyph)) + " " + title;
-    const bool off_by_user = card.id == CardId::kOffByUser;
-    const float right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
-    const std::string action = std::string(Tr("Details")) + (warning_count != 0 ? " !" : "");
-    const float action_width = ImGui::CalcTextSize(action.c_str()).x + ImGui::GetStyle().FramePadding.x * 2.f;
-    ImGui::AlignTextToFramePadding();
-    line(heading.c_str(), ToneColor(card.tone),
-         (std::max)(1.f, ImGui::GetContentRegionAvail().x - action_width - ImGui::GetStyle().ItemSpacing.x),
-         off_by_user ? Tr(card.body) : nullptr);
-    ImGui::SameLine(right - action_width);
-    details = ImGui::Button((action + "###status_details").c_str());
-    char label[160];
-    std::snprintf(label, sizeof(label), Tr(text::kStatusDetails), warning_count);
-    ItemTooltip("%s", label);
-    if (off_by_user) {
-      // Reserve the normal detail row so toggling NR never moves the tabs.
-      // Session counters and previous GPU samples are not current Off activity.
-      ImGui::Dummy(ImVec2(0.f, ImGui::GetTextLineHeight()));
-    } else {
-      char sizes[96];
-      if (card.input_width != 0 && card.output_width != 0) {
-        std::snprintf(sizes, sizeof(sizes), "%ux%u -> %ux%u", card.input_width,
-                      card.input_height, card.output_width, card.output_height);
-      } else {
-        std::snprintf(sizes, sizeof(sizes), "%s", Tr("Resolution unavailable"));
-      }
-      std::string summary = sizes;
-      if (execution != nullptr) summary += std::string(" | ") + execution;
-      if (card.nr_gpu_ms > 0.f) {
-        char cost[96];
-        std::snprintf(cost, sizeof(cost), Tr("NR GPU %.1f ms"), card.nr_gpu_ms);
-        summary += std::string(" | ") + cost;
-      } else {
-        summary += std::string(" | ") + Tr("NR cost unavailable");
-      }
-      // At narrow widths reserve one extra line, independent of changing values.
-      // Remaining text is accessible both on hover and in the details window.
-      const float width = ImGui::GetContentRegionAvail().x;
-      if (narrow) {
-        auto measured = MeasureProcessingChainNode({summary, "", ""}, width + ImGui::GetStyle().FramePadding.x * 2.f);
-        while (!measured.lines.empty() && measured.lines.back().text.empty()) measured.lines.pop_back();
-        for (size_t row = 0; row < (std::min)(size_t{2}, measured.lines.size()); ++row) {
-          const bool last = row == 1 && measured.lines.size() > 2;
-          std::string shown = measured.lines[row].text;
-          if (last) shown += "...";
-          line(shown.c_str(), CurrentTheme().text_secondary, width, summary.c_str());
-        }
-      } else {
-        line(summary.c_str(), CurrentTheme().text_secondary, width);
-      }
+    }
+    if (card.body != nullptr && card.body[0] != '\0') {
+      ItemTooltip("%s\n%s", title, Tr(card.body));
+    } else if (short_title != title) {
+      ItemTooltip("%s", title);
+    }
+    ImGui::SetCursorPos(ImVec2(stacked_action ? heading_at.x : heading_at.x + available - action_width,
+                             stacked_action ? heading_at.y + title_height : heading_at.y));
+    details = ImGui::Button((action + "###status_details").c_str(), ImVec2(action_width, 0.f));
+    ItemTooltip("%s", Tr("Open the movable runtime monitor. Diagnostics remain available separately."));
+    ImGui::SetCursorPos(ImVec2(heading_at.x, heading_at.y + title_height
+        + (stacked_action ? ImGui::GetFrameHeightWithSpacing() : 0.f) + ImGui::GetStyle().ItemSpacing.y));
+    const char* tips[] = {fields.resolution_tip, fields.stage_tip, fields.gpu_tip};
+    const ImVec2 fields_at = ImGui::GetCursorPos();
+    for (int i = 0; i < field_count; ++i) {
+      ImGui::SetCursorPos(ImVec2(fields_at.x + i * (field_width + ImGui::GetStyle().ItemSpacing.x), fields_at.y));
+      ImGui::BeginGroup();
+      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + field_width);
+      ImGui::TextUnformatted(field_text[i].c_str());
+      ImGui::PopTextWrapPos();
+      ImGui::EndGroup();
+      if (tips[i] != nullptr && tips[i][0] != '\0') ItemTooltip("%s", Tr(tips[i]));
     }
   }
   ImGui::EndChild();
   return details;
+}
+
+inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, const char* execution = nullptr) {
+  StatusSummaryFields fields;
+  const bool off = card.id == CardId::kOffByUser;
+  if (!off && card.input_width != 0 && card.input_height != 0 && card.output_width != 0 && card.output_height != 0) {
+    char sizes[96];
+    std::snprintf(sizes, sizeof(sizes), "%ux%u -> %ux%u", card.input_width, card.input_height,
+                  card.output_width, card.output_height);
+    fields.resolution = sizes;
+  }
+  if (!off && execution != nullptr) fields.stage = execution;
+  if (!off && card.nr_gpu_ms > 0.f) {
+    char gpu[96];
+    std::snprintf(gpu, sizeof(gpu), Tr("NR GPU %.1f ms"), card.nr_gpu_ms);
+    fields.gpu = gpu;
+  }
+  return DrawStatusSummary(card, warning_count, fields);
 }
 
 // The glyph in the card's tone and the title, at the title size: the card's

@@ -34,6 +34,20 @@ const auto RunProfileRuntimeCases = [&](const std::filesystem::path& outputdir) 
   if (profile::Busy()) throw std::runtime_error("Profile worker must be idle before these cases.");
   const auto original_configuration = profile::Snapshot();
   const auto original_failed_key = failed_key;
+  const auto original_capability_validator = profile::capability_validator;
+  const auto original_interaction_busy = profile::interaction_busy;
+  // Synthetic DX12/model evidence makes the disk/transaction fixture eligible
+  // under the shared capability gate; it is not a GPU execution proof.
+  struct CapabilityEnvironmentGuard {
+    bool dx12_seen = runtime::d3d12_swapchain_seen.load();
+    bool dual_models = runtime::direct_runtime_requirements.dual_models;
+    ~CapabilityEnvironmentGuard() {
+      runtime::d3d12_swapchain_seen = dx12_seen;
+      runtime::direct_runtime_requirements.dual_models = dual_models;
+    }
+  } capability_environment_guard;
+  runtime::d3d12_swapchain_seen = true;
+  runtime::direct_runtime_requirements.dual_models = true;
   unsigned sequence = 0;
   std::string error;
 
@@ -66,6 +80,10 @@ const auto RunProfileRuntimeCases = [&](const std::filesystem::path& outputdir) 
     profile::dirty = profile::save_failed = false;
     profile::active = -1;
     profile::undo = {};
+    profile::first_install = {};
+    profile::capability_validator = {};
+    profile::interaction_busy = {};
+    profile::fresh_storage = false;
     profile::pending_action = profile::Action::NONE;
     profile::pending_index = -1;
     profile::serial = 0;
@@ -486,6 +504,91 @@ const auto RunProfileRuntimeCases = [&](const std::filesystem::path& outputdir) 
   Check(profile::state.slots[0].overrides == before_external, "External reload does not rewrite official overrides.");
   settle();
 
+  // Cycle is the real hotkey boundary, reusing the disk-backed action worker.
+  seed();
+  Check(profile::Cycle(false), "Unassociated official Cycle starts with Lite.");
+  settle();
+  Check(profile::active == 0 && disk().selected == "official_lite", "Official Cycle really applies and persists Lite.");
+  runtime::kSetIntensity.Commit(0.625f);
+  profile::Observe();
+  settle();
+  const auto lite_edited = profile::Snapshot();
+  const auto overrides_before_cycle = profile::state.slots[0].overrides;
+  Check(profile::Cycle(false), "Official Cycle advances from current official profile.");
+  settle();
+  Check(profile::active == 1 && profile::state.slots[0].overrides == overrides_before_cycle,
+        "Cycle preserves autosaved outgoing official overrides.");
+  profile::Request(profile::Action::UNDO);
+  settle();
+  Check(profile::active == 0 && profile::Snapshot() == lite_edited, "Cycle Undo restores outgoing profile and edited values.");
+  select(2);
+  Check(profile::Cycle(false), "Official Cycle wraps Max to Lite.");
+  settle();
+  Check(profile::active == 0, "Official wrap applies Lite.");
+  const auto before_empty_cycle = profile::Snapshot();
+  const auto state_before_empty_cycle = encoded(profile::state);
+  Check(!profile::Cycle(true) && !profile::notice.empty(), "All-empty custom Cycle reports feedback.");
+  Check(profile::Snapshot() == before_empty_cycle && encoded(profile::state) == state_before_empty_cycle,
+        "All-empty custom Cycle keeps running configuration and saved state.");
+  profile::Assign(3, {{"NRIntensity", 0.25f}});
+  settle();
+  profile::Assign(5, {{"NRIntensity", 0.75f}});
+  settle();
+  profile::capability_validator = [](const Json& proposed, std::string* error) {
+    if (proposed["NRIntensity"] != 0.25f) return true;
+    *error = "Synthetic unsafe custom candidate.";
+    return false;
+  };
+  Check(profile::Cycle(true), "Custom Cycle skips unsafe and empty slots.");
+  settle();
+  Check(profile::active == 5 && profile::Snapshot()["NRIntensity"] == 0.75f, "Custom Cycle applies next safe nonempty slot.");
+  profile::capability_validator = [](const Json&, std::string*) { return false; };
+  const auto before_unsafe_cycle = profile::Snapshot();
+  const auto undo_before_unsafe_cycle = profile::undo.running_before;
+  Check(!profile::Cycle(true) && !profile::notice.empty(), "All-unsafe custom Cycle reports rejection.");
+  Check(!profile::ApplySnapshot({{"NRIntensity", 0.5f}}, &error)
+            && profile::Snapshot() == before_unsafe_cycle && profile::undo.running_before == undo_before_unsafe_cycle,
+        "ApplySnapshot capability failure preserves settings and previous Undo.");
+  profile::capability_validator = [](const Json&, std::string*) -> bool { throw std::runtime_error("Synthetic capability failure."); };
+  Check(!profile::Cycle(false) && !profile::ApplySnapshot({{"NRIntensity", 0.5f}}, &error),
+        "Throwing capability callback cannot apply or escape the action boundary.");
+  profile::capability_validator = {};
+  profile::interaction_busy = [] { return true; };
+  Check(!profile::Cycle(false) && !profile::Cycle(true), "Import/dialog ownership excludes both Cycle paths.");
+  profile::interaction_busy = {};
+  profile::slot_task = profile::SlotTask::IMPORT;
+  Check(!profile::Cycle(false), "Queued slot import excludes Cycle.");
+  profile::slot_task = profile::SlotTask::NONE;
+  profile::reset.phase = profile::ResetPhase::FLUSH;
+  Check(!profile::Cycle(false), "Reset excludes Cycle.");
+  profile::reset = {};
+  profile::first_install.pending = true;
+  Check(!profile::Cycle(false), "First-install transaction excludes Cycle.");
+  profile::first_install = {};
+  {
+    std::unique_lock lock(profile::worker.mutex);
+    profile::worker.busy = true;
+  }
+  Check(!profile::Cycle(false), "Busy storage excludes Cycle.");
+  {
+    std::unique_lock lock(profile::worker.mutex);
+    profile::worker.busy = false;
+  }
+  // Delay application behind the real dirty flush, then revoke capability.
+  profile::dirty = true;
+  ++profile::serial;
+  Check(profile::Cycle(false) && profile::pending_action == profile::Action::SWITCH,
+        "Dirty Cycle queues Request behind outgoing autosave.");
+  profile::capability_validator = [](const Json&, std::string*) { return false; };
+  settle();
+  Check(profile::active == 5 && profile::Snapshot() == before_unsafe_cycle,
+        "Capability is rechecked after asynchronous flush and failure keeps current profile.");
+  profile::capability_validator = {};
+  Check(profile::Cycle(false), "Official Cycle from a custom association starts Lite.");
+  settle();
+  Check(profile::active == 0, "Cross-family official Cycle selects Lite.");
+
+  #include "profile_first_install_cases.hpp"
   #include "profile_reset_cases.hpp"
 
   // Finish all real writes before restoring fixture configuration/environment.
@@ -495,4 +598,6 @@ const auto RunProfileRuntimeCases = [&](const std::filesystem::path& outputdir) 
   failed_key.clear();
   Check(profile::ApplySnapshot(original_configuration, &error), "Restore configuration after profile integration cases.");
   failed_key = original_failed_key;
+  profile::capability_validator = original_capability_validator;
+  profile::interaction_busy = original_interaction_busy;
 };

@@ -163,6 +163,10 @@ inline const std::vector<FieldRule>& FieldRules() {
 
       {.key = "NeuralUplift", .label = "Neural Rendering", .group = "General", .minimum = 0, .maximum = 1, .category = FieldRule::GENERAL},
       {.key = "NRToggleKey", .label = "Toggle NR", .group = "Hotkeys", .minimum = 0x08, .maximum = 0xFE, .category = FieldRule::GENERAL},
+      {.key = "NROfficialCycleKey", .label = "Cycle official profiles", .group = "Hotkeys", .minimum = 0x08, .maximum = 0xFE, .category = FieldRule::GENERAL},
+      {.key = "NRCustomCycleKey", .label = "Cycle custom profiles", .group = "Hotkeys", .minimum = 0x08, .maximum = 0xFE, .category = FieldRule::GENERAL},
+      {.key = "NROfficialCycleEnabled", .label = "Enable official profile key", .group = "Hotkeys", .minimum = 0, .maximum = 1, .category = FieldRule::GENERAL},
+      {.key = "NRCustomCycleEnabled", .label = "Enable custom profile key", .group = "Hotkeys", .minimum = 0, .maximum = 1, .category = FieldRule::GENERAL},
       {.key = "NRScreenshotKey", .label = "Screenshot", .group = "Hotkeys", .minimum = 0x08, .maximum = 0xFE, .category = FieldRule::GENERAL},
       {.key = "NRScreenshotSource", .label = "Capture source", .group = "Screenshots", .minimum = 0, .maximum = 2, .category = FieldRule::GENERAL},
       {.key = "NRScreenshotFormat", .label = "File format", .group = "Screenshots", .minimum = 0, .maximum = 2, .category = FieldRule::GENERAL},

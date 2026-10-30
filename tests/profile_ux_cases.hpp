@@ -104,6 +104,16 @@
     frame();
     frame();
   };
+  const auto right_click_lite = [&]() {
+    const auto* window = find("open_presets").window;
+    const ImGuiID scope = ImHashStr("##official_profiles", 0,
+        ImHashStr("nr_profiles", 0, ImHashStr("presets", 0, window->ID)));
+    const auto item = items.at(ImHashStr(ui::Tr("NR Lite"), 0, scope));
+    io.AddMousePosEvent(item.rect.GetCenter().x, item.rect.GetCenter().y);
+    frame();
+    io.AddMouseButtonEvent(1, true); frame();
+    io.AddMouseButtonEvent(1, false); frame(); frame();
+  };
   const auto running_before_manage = profile::Snapshot();
   const int active_before_manage = profile::active;
   right_click_slot(3);
@@ -195,6 +205,14 @@
     frame(); frame(); frame();
     check(find("##nr_enable").rect.Min.y < find("open_presets").rect.Min.y,
           "responsive layout keeps NR switch first");
+    const auto undo_header = find("undo_profile");
+    const auto manage_header = find("open_presets");
+    check(std::abs(undo_header.rect.Min.y - manage_header.rect.Min.y) < 1.f
+              && undo_header.rect.Max.x <= manage_header.rect.Min.x,
+          "Undo and management share one header row without overlap");
+    check(std::none_of(items.begin(), items.end(), [](const auto& entry) {
+      return entry.second.label == "###profile_actions";
+    }), "redundant profile actions entry is removed");
     const float content_width = find("open_presets").window->WorkRect.GetWidth();
     if (content_width < font_size * 18.f) {
       const auto* window = find("open_presets").window;
@@ -227,7 +245,7 @@
   settle_profile_ux();
   const auto before_restore = profile::Snapshot();
   const auto before_override = profile::state.slots[0].overrides;
-  click(find("profile_actions"));
+  right_click_lite();
   click(find("restore_profile"));
   frame(); frame();
   const auto* confirm = ImGui::FindWindowByName("恢复官方默认？###restore_profile_confirm");
@@ -243,11 +261,13 @@
   click(find("cancel_restore"));
   check(profile::Snapshot() == before_restore && profile::state.slots[0].overrides == before_override,
         "restore cancellation preserves personal values");
-  click(find("profile_actions"));
+  right_click_lite();
   click(find("restore_profile"));
   click(find("confirm_restore"));
   settle_profile_ux();
   check(profile::state.slots[0].overrides.empty(), "confirmed restore affects current official slot");
+  check(std::string_view(profile::undo.action_label) == "Restore official defaults",
+        "header Undo describes the actual restore action");
   click(find("undo_profile"));
   settle_profile_ux();
   check(profile::Snapshot() == before_restore && profile::state.slots[0].overrides == before_override,

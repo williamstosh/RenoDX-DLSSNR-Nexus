@@ -133,6 +133,7 @@ inline BOOL WINAPI Foreground(HWND window) {
 #define ShowWindow native_window_fixture::Show
 #define SetForegroundWindow native_window_fixture::Foreground
 #undef IMGUI_VERSION_NUM
+#include "ui/runtime_monitor.hpp"
 #include "dlssnr.hpp"
 #undef ShowWindow
 #undef SetForegroundWindow
@@ -212,10 +213,11 @@ extern "C" __declspec(dllexport) bool ReShadeGetBasePath(char* path, size_t* siz
 extern "C" __declspec(dllexport) bool ReShadeGetConfigValue(
     void*, reshade::api::effect_runtime*, const char* section, const char* key, char* value, size_t* size) {
   char buffer[32768]{};
-  // ReShade distinguishes a missing key from a present empty value. The
-  // Win32 count alone is zero for both, so retain a missing-key sentinel.
-  const DWORD count = GetPrivateProfileStringA(section, key, "\x01", buffer, sizeof(buffer), ".\\ReShade.ini");
-  if (count == 1 && buffer[0] == '\x01') {
+  // The pinned ReShade stores an empty INI value as an empty vector and its
+  // Add-on getter returns false. Initial-install classification reads the
+  // section before any automatic writes, independently of this value query.
+  const DWORD count = GetPrivateProfileStringA(section, key, "", buffer, sizeof(buffer), ".\\ReShade.ini");
+  if (count == 0) {
     *size = 0;
     return false;
   }
@@ -287,6 +289,11 @@ int main() {
     runtime::ui_language_choice = 1;
     runtime::direct_runtime_requirements.file_version = "310.9.16.0";
     runtime::direct_runtime_requirements.dual_models = true;
+    // Synthetic capability evidence for menu interaction, never a GPU claim.
+    runtime::d3d12_present_seen = true;
+    runtime::direct_load_state = runtime::DirectLoadState::Ready;
+    runtime::native_fg_declaration = runtime::NativeFgDeclaration::kOff;
+    runtime::native_fg_public_off = true;
     runtime::last_input_width = runtime::last_output_width = 3840;
     runtime::last_input_height = runtime::last_output_height = 2160;
     runtime::dlss_render_share = 4.f / 9.f;
@@ -330,7 +337,7 @@ int main() {
     load_theme_case((section + "NRIntensity=1.3\n").c_str(), ui::ThemeId::NEXUS_DARK);
     load_theme_case((section + "ConfigVersion=8\n").c_str(), ui::ThemeId::NEXUS_DARK);
     load_theme_case((section + "UiTheme=invalid-theme\nNRIntensity=1.3\n").c_str(), ui::ThemeId::CYBER_NEON);
-    load_theme_case((section + "UiTheme=\n").c_str(), ui::ThemeId::CYBER_NEON);
+    load_theme_case((section + "UiTheme=\n").c_str(), ui::ThemeId::NEXUS_DARK);
     const std::string future_ini = section + "ConfigVersion=4294967295\nNRIntensity=1.3\n";
     load_theme_case(future_ini.c_str(), ui::ThemeId::NEXUS_DARK);
     {
@@ -359,6 +366,8 @@ int main() {
     bool clipped_callback = false;
     bool preset_fixture = false;
     bool preset_latin_font = false;
+    const ui::MonitorInputs* monitor_fixture = nullptr;
+    ui::MonitorState synthetic_monitor_state;
     const auto frame = [&](const ui::StatusCard* diagnostic_case = nullptr) {
       items.clear();
       snapshot_regions.clear();
@@ -395,6 +404,23 @@ int main() {
         }
         runtime::preset_ui::DrawManager();
         if (preset_latin_font) ImGui::PopFont();
+      } else if (monitor_fixture != nullptr) {
+        runtime::RefreshUiLanguage();
+        ui::SetTheme(runtime::ui_theme_choice.load());
+        ui::StyleScope theme;
+        ui::PushPanelTheme(theme);
+        ImGui::BeginChild("##r3_window_evidence", ImVec2(io.DisplaySize.x >= 1200.f ? 650.f : 0.f, 0.f));
+        const ui::StatusSummaryFields fields{
+            .resolution = monitor_fixture->passes[0].actual_size,
+            .stage = monitor_fixture->passes[0].execution_proof,
+            .gpu = monitor_fixture->passes[0].gpu_cost};
+        if (ui::DrawStatusSummary(monitor_fixture->card, monitor_fixture->recent.partial ? 1u : 0u, fields)) {
+          synthetic_monitor_state.open = !synthetic_monitor_state.open;
+        }
+        ui::DrawRuntimeMonitor(*monitor_fixture, &synthetic_monitor_state);
+        ImGui::TextWrapped("Synthetic window evidence fixture; no game execution, internal network or GPU performance claim.");
+        runtime::DrawModernLayout(nullptr, renodx::addons::dlss5::ComputeNrVerdict(runtime::CollectFunnelInputs()), monitor_fixture->card);
+        ImGui::EndChild();
       } else if (diagnostic_case != nullptr) {
         ui::StyleScope theme;
         ui::PushPanelTheme(theme);
@@ -617,7 +643,10 @@ int main() {
       profile::active = 0;
       profile::state.slots[0].overrides["NRIntensity"] = 0.625f;
       frame(); frame();
-      click(find("profile_actions"));
+      const auto lite_center = find(ui::Tr("NR Lite")).rect.GetCenter();
+      io.AddMousePosEvent(lite_center.x, lite_center.y); frame();
+      io.AddMouseButtonEvent(1, true); frame();
+      io.AddMouseButtonEvent(1, false); frame(); frame();
       click(find("restore_profile"));
       capture("ux-restore-repro");
       bool found = false;
@@ -718,7 +747,27 @@ int main() {
     check(status_found, "status navigation entry missing");
     click(status_entry);
     check(runtime::ui_menu_page == 0 && !find("status_open_diagnostics").disabled,
-          "status details must preserve the page and expose the full diagnostics action");
+          "nonmodal monitor preserves the page and exposes diagnostics");
+    {
+      const auto* monitor = ImGui::FindWindowByName("###nr_runtime_monitor");
+      check(monitor != nullptr && monitor->Active
+            && (monitor->Flags & (ImGuiWindowFlags_Popup | ImGuiWindowFlags_Modal)) == 0,
+            "runtime monitor is an independent nonmodal window");
+      const Item enable_control = find("##nr_enable");
+      check(!enable_control.disabled, "opening monitor keeps main controls enabled");
+      const bool previous_enabled = runtime::enabled.load();
+      click(enable_control);
+      check(runtime::enabled.load() != previous_enabled && monitor->Active,
+            "main NR switch remains interactive while monitor stays open");
+      click(find("##nr_enable"));
+      check(runtime::enabled.load() == previous_enabled && monitor->Active,
+            "main switch can be restored without closing the monitor");
+      click(find("status_close"));
+      frame();
+      check(!monitor->Active, "explicit close stops monitor submission");
+      click(find("status_details"));
+      check(monitor->Active, "summary entry reopens the nonmodal monitor");
+    }
     {
       namespace timers = renodx::addons::dlss5::gpu_timers;
       const auto original = timers::stage_stats[1];
@@ -728,13 +777,15 @@ int main() {
       sample = {};
       sample.valid = true;
       sample.measured_ns = timers::NowNs();
+      runtime::comparison_ui::CaptureSettings(&sample.identity);
       sample.samples = 1;
       sample.passes[0] = {.id = 0, .model = 1, .width = 640, .height = 360,
           .output_width = 640, .output_height = 360, .eval_us = 100,
           .state = timers::SampleState::VALID};
       frame(); frame();
       const auto measured_pass = [](const TextItem& item) {
-        return item.text.find("640x360 -> 640x360") != std::string::npos;
+        return item.text.find("640x360") != std::string::npos
+            || item.text.find("640 x 360") != std::string::npos;
       };
       check(std::ranges::any_of(rendered_text, measured_pass), "details expose dimensions from a GPU-complete pass sample");
       sample.measured_ns -= 3'000'000'000;
@@ -745,6 +796,7 @@ int main() {
     }
     click(find("status_open_diagnostics"));
     check(runtime::ui_menu_page == 2, "status details did not navigate to Diagnostics");
+    if (runtime::ui_runtime_monitor_state.open) click(find("status_close"));
     click(find("Quality"));
     const bool enabled_before = runtime::enabled.load();
     click(find("##nr_enable"));
@@ -919,6 +971,21 @@ int main() {
     frame();
     check(find("##pass_resolution_scale").id != 0 && runtime::nr_resolution_scale.load() == .67f,
           "independent Pass 2 scale changes the base scale");
+    for (int pass = 1; pass < 4; ++pass) {
+      runtime::stack_passes = 4;
+      runtime::ui_selected_pass = pass;
+      runtime::pass_resolution_mode[pass - 1] = 2;
+      frame(); frame();
+      for (const auto& [label, value] : {std::pair{"100%", 1.f}, {"67%", .67f}, {"58%", .58f}, {"50%", .5f}}) {
+        const Item choice = find(label);
+        const float previous = runtime::pass_resolution_scale[pass - 1].load();
+        click(choice);
+        check(std::abs(runtime::pass_resolution_scale[pass - 1].load() - (choice.disabled ? previous : value)) < .0001f,
+              "Pass 2-4 presets apply supported values and preserve blocked combinations");
+      }
+      runtime::pass_resolution_mode[pass - 1] = 0;
+    }
+    runtime::ui_selected_pass = 1;
     runtime::ui_menu_page = 0;
     frame();
     check(runtime::nr_resolution_scale.load() == .67f, "Quality does not retain the Pass 1 edit");
@@ -1043,8 +1110,9 @@ int main() {
     hover(chain_nodes().at(3), chain_tip.c_str(), nullptr);
     click(chain_nodes().at(1));
     check(runtime::ui_selected_pass == 1, "pass navigation failed");
-    check(has_text(ui::text::kPassStage) && has_text(ui::text::kResolutionCurrentPending),
-          "pass editor separates stage selection from model and execution evidence");
+    check(has_text(ui::text::kPassStage) && has_text("Working size details (?)"),
+          "pass editor exposes technical resolution evidence on demand");
+    click(find("##Recorded working sizes"));
     {
       const auto historical_hook = runtime::hook_point.load();
       runtime::hook_point = runtime::kHookUpscaled;

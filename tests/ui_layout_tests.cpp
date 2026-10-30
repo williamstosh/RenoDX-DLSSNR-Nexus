@@ -15,7 +15,10 @@
 
 #include "ui/fg_route.hpp"
 #include "ui/widgets.hpp"
+#include "ui/runtime_monitor.hpp"
 #include "chain_ux_cases.hpp"
+#include "recent_health_cases.hpp"
+#include "runtime_monitor_cases.hpp"
 
 namespace ui = renodx::addons::dlss5::ui;
 
@@ -43,6 +46,7 @@ int main() {
   };
 
   RunChainUxCases(check);
+  RunRecentHealthCases(check);
 
   const auto luminance = [](const ImVec4& color) {
     const auto linear = [](float value) {
@@ -388,7 +392,7 @@ int main() {
           "Off summary does not present retained NR submissions or GPU measurements as execution");
     char action[160];
     std::snprintf(action, sizeof(action), ui::Tr(ui::text::kStatusDetails), 0u);
-    check(output.find(ui::Tr("Details")) != std::string::npos, "Off summary preserves its details action");
+    check(output.find(ui::Tr("Runtime monitor")) != std::string::npos, "Off summary preserves its monitor action");
     ImGui::End();
     ImGui::Render();
   }
@@ -413,7 +417,11 @@ int main() {
         for (ui::CardTone tone : {ui::CardTone::kGood, ui::CardTone::kWarn, ui::CardTone::kBad, ui::CardTone::kIdle}) {
           auto card = active;
           card.tone = tone;
-          check(std::abs(frame(card, size.x, size.y, 4, true, false) - anchor) <= 0.01f,
+          const float measured_y = frame(card, size.x, size.y, 4, true, false);
+          if (failures < 2 && std::abs(measured_y - anchor) > 0.01f) {
+            std::printf("summary mismatch language=%d width=%.0f font=%.0f idle=%.0f active=%.0f\n", language, size.x, size.y, anchor, measured_y);
+          }
+          check(std::abs(measured_y - anchor) <= 0.01f,
                 "all-theme summary geometry remains stable");
         }
       }
@@ -444,6 +452,7 @@ int main() {
       }
     }
   }
+  RunRuntimeMonitorCases(check);
   std::printf("summary scenarios=%u languages=%d max_delta_y=%.3f px checks=%u failures=%u\n",
               scenarios, ui::kLanguageCount, max_delta, checks, failures);
   ImGui::DestroyContext();

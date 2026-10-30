@@ -345,7 +345,7 @@ inline constexpr const char* kNoneYet = "none yet";
 inline constexpr const char* kFooter = NR_NEXUS_NAME " %s | DLSSNR %s | %s";
 // i18n: begin - display strings (ui/lang tables)
 
-inline constexpr const char* kResolution = "Resolution";
+inline constexpr const char* kResolution = "NR working resolution";
 inline constexpr const char* kLook = "LOOK";
 inline constexpr const char* kResetLook = "Reset look";
 // The LOOK's two groups (v7.1, PLAN_NR_LOOK_V71.md): the model's own

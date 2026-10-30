@@ -208,6 +208,7 @@ struct Difference {
   const char* status = "Unchanged";
   bool apply = false;
   std::optional<ScopeSnapshot> scope_before;
+  std::string capability_reason;
 };
 
 // Page ownership follows the stored field, not every place that edits it.
@@ -319,6 +320,25 @@ inline std::vector<Difference> Preview(const presets::Document& document, bool c
     }
     differences.push_back({.key = rule.key, .before = current, .after = current, .rule = &rule, .status = "Kept (not in preset)"});
   }
+  if (!builtin_reset) {
+    Json candidate = Json::object();
+    bool capability_changed = false;
+    for (const auto& row : differences) {
+      if (row.apply) {
+        candidate[row.key] = row.after;
+        capability_changed |= IsCapabilitySetting(row.key);
+      }
+    }
+    std::string reason;
+    if (capability_changed && !ValidateConfigurationCapability(candidate, &reason)) {
+      for (auto& row : differences) {
+        if (row.apply && IsCapabilitySetting(row.key)) {
+          row.status = "Unavailable in current environment";
+          row.capability_reason = reason;
+        }
+      }
+    }
+  }
   return differences;
 }
 
@@ -333,6 +353,23 @@ inline bool Apply(const presets::Document& document, bool compatibility, bool re
                   bool restore_missing = false, const ScopeSnapshot* restore_scope = nullptr, bool builtin_reset = false) {
   SettleSlider(true);
   auto differences = Preview(document, compatibility, builtin_reset);
+  for (const auto& row : differences) {
+    if (!builtin_reset && IsCapabilitySetting(row.key) && std::string_view(row.status) == "Unsupported") {
+      *error = "Requested execution option is unavailable. Current settings were kept.";
+      return false;
+    }
+  }
+  if (!builtin_reset) {
+    Json candidate = Json::object();
+    bool capability_changed = false;
+    for (const auto& row : differences) {
+      if (row.apply) {
+        candidate[row.key] = row.after;
+        capability_changed |= IsCapabilitySetting(row.key);
+      }
+    }
+    if (capability_changed && !ValidateConfigurationCapability(candidate, error)) return false;
+  }
   if (restore_missing) {
     for (auto& row : differences) {
       const bool scope_restore = row.key == "NRPresentRestoreScope" && restore_scope != nullptr;
@@ -356,6 +393,15 @@ inline bool Apply(const presets::Document& document, bool compatibility, bool re
     }
   }
   RuntimeLock runtime_lock(runtime_mutex);
+  if (!builtin_reset) {
+    Json candidate = Json::object();
+    bool capability_changed = false;
+    for (const auto& row : changes) {
+      candidate[row.key] = row.after;
+      capability_changed |= IsCapabilitySetting(row.key);
+    }
+    if (capability_changed && !ValidateConfigurationCapability(candidate, error)) return false;
+  }
   std::unique_lock config_lock(present_restore_configuration.mutex);
   std::unique_lock policy_lock(hdr_pedestal_policy_state.mutex);
   if (!present_restore_configuration.global_writable) {
@@ -907,6 +953,9 @@ inline void DrawRows(const std::vector<Difference>& differences) {
       ImGui::TextWrapped("%s", row.rule != nullptr ? ui::Tr(row.rule->label) : row.key.c_str());
       ImGui::TextColored(row.apply ? ui::CurrentTheme().accent : ui::CurrentTheme().text_secondary,
                          "%s", ui::Tr(row.status));
+      if (!row.capability_reason.empty()) {
+        ui::ItemTooltip("%s", row.capability_reason.c_str());
+      }
       if (row.key == "EnableHooks" || row.key == "DX11Source" || row.key == "ForeignNr") {
         ImGui::TextWrapped("%s", ui::Tr("Requires game restart"));
       } else if (row.rule != nullptr && row.rule->category == presets::FieldRule::Category::COMPATIBILITY) {

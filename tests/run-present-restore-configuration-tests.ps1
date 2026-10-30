@@ -48,6 +48,11 @@ try {
     $libraries = $buildInputs.Libraries
     $inputs = @($testSource, $PSCommandPath, $projectPath,
         (Join-Path $addonDirectory 'dlssnr.hpp'),
+        (Join-Path $addonDirectory 'capability.hpp'),
+        (Join-Path $addonDirectory 'stage_plan.hpp'),
+        (Join-Path $addonDirectory 'gpu_timers.hpp'),
+        (Join-Path $addonDirectory 'gpu_comparison_ui.hpp'),
+        (Join-Path $PSScriptRoot 'capability_runtime_cases.hpp'),
         (Join-Path $addonDirectory 'present_path.hpp'),
         (Join-Path $addonDirectory 'present_hdr_pedestal_policy.hpp'),
         (Join-Path $addonDirectory 'diagnostic_policy.hpp'),
@@ -63,6 +68,7 @@ try {
         (Join-Path $addonDirectory 'profile_store.hpp'),
         (Join-Path $addonDirectory 'profile_templates.hpp'),
         (Join-Path $PSScriptRoot 'profile_runtime_cases.hpp'),
+        (Join-Path $PSScriptRoot 'profile_first_install_cases.hpp'),
         (Join-Path $PSScriptRoot 'profile_reset_cases.hpp'),
         (Join-Path $ShaderIncludeDirectory 'embed/shaders.h'))
     $hashes = @{}
@@ -138,7 +144,7 @@ try {
         'nr-model-default', 'nr-model-explicit', 'nr-model-invalid', 'nr-model-legacy',
         'nr-stage-default', 'nr-stage-explicit', 'nr-stage-invalid',
         'pass-result-default', 'pass-result-custom', 'pass-result-invalid', 'presets',
-        'nr-resolution-default', 'nr-resolution-explicit', 'nr-resolution-invalid', 'native-prefg-resolution-config', 'profiles')
+        'nr-resolution-default', 'nr-resolution-explicit', 'nr-resolution-invalid', 'native-prefg-resolution-config', 'profiles', 'capability-ui')
     if ($Case.Count) {
         foreach ($requested in $Case) {
             if ($requested -notin $cases) { throw "Unknown configuration case: $requested" }
@@ -186,7 +192,7 @@ try {
             throw "PENDING: input changed during runtime checks: $inputPath; results invalidated."
         }
     }
-    if ($cases -contains 'presets') {
+    if ($cases -contains 'presets' -and $failedCases -notcontains 'presets') {
         $inventoryPath = Join-Path $outputDirectory 'presets/preset-field-inventory.json'
         $inventory = Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json
         if (-not $inventory.fields.Count) { throw 'Preset field inventory is empty.' }

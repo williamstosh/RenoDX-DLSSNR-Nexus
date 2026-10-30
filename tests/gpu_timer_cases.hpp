@@ -26,6 +26,8 @@ int Run() {
     ComPtr<ID3D12Debug> debug;
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) debug->EnableDebugLayer();
     Gpu gpu;
+    timers::comparison_settings = native::comparison_ui::CaptureSettings;
+    Check(!timers::ComparisonActive(), "normal timing identity does not require A/B capture");
     std::cout << "TIMER fixed CPU storage: segment=" << sizeof(timers::Segment)
               << " pass=" << sizeof(timers::PassStats) << " snapshot=" << sizeof(timers::Stats)
               << " ring=" << sizeof(timers::internal::segments)
@@ -96,12 +98,18 @@ int Run() {
     Check(!timers::stats.valid && timers::stats.state == State::DISCARDED, "Reset discards unsubmitted timer");
     record();
     const auto published = timers::published_segments;
+    const auto recorded_identity = timers::internal::segments[timers::internal::current.idx].comparison.identity;
+    Check(recorded_identity.configuration_generation == native::configuration_generation.load()
+              && recorded_identity.settings_hash != 0 && !timers::ComparisonActive(),
+          "ordinary timing freezes production settings identity without A/B capture");
     finish(1, true, false);
     Check(timers::published_segments == published, "CPU recording and GPU completion do not publish without Poll");
     timers::Poll(true, false);
     Check(timers::stats.valid && timers::stats.state == State::VALID
               && timers::published_segments == published + 1 && timers::stats.queue == gpu.queue.Get(),
           "closed single real queue submission publishes with its frequency");
+    Check(timers::stats.identity == recorded_identity,
+          "published ordinary GPU sample retains recording identity");
     Check(timers::stats.passes[1].state == State::NOT_EXECUTED && timers::stats.passes[1].total_us == 0
               && timers::stats.passes[2].total_us == 0 && timers::stats.passes[3].total_us == 0
               && !timers::stats.passes[0].look_measured,

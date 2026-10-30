@@ -34,18 +34,16 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 | **Render／Upscaled／Present** | 在 DLSS 超分前、DLSS 输出或 ReShade 效果前的最终游戏画面上应用 NR；实际执行取决于 API、资源和 FG 路由。 |
 | **NR 协同原生 DLSS FG/MFG 或 XeFG** | 配合已有 FG 后端运行，查看实际观测路径与活动，不把配置倍率当作 FG 已生效的证明。 |
 | **输出效果与时序稳定** | 调整亮度／颜色限制、细节、光晕和时序行为；SDR/HDR 兼容策略仍独立可配。 |
-| **实时诊断与报告** | 查看 NR 活动、请求／解析模型、资源及可用时的 GPU 时间；当前 v0.2.0-dev.10 开发源码可关联最多四层的实际 Stage／Pass、模型请求、工作／输出尺寸与 GPU 区间，并提供手动 GPU A/B 对比：仅改变一层实际工作尺寸，在其余条件匹配时比较 GPU 统计；波动大或差异不足时不给建议，只有测量支持时才说明降低尺寸使该层 NGX 耗时减少。它不保证 FPS 或画质，且尚未包含于已发布版本。见[诊断指南](docs/USER_GUIDE.md#zh-diagnostics)。准备可选诊断与需用户检查提交的 Issue 草稿。 |
+| **实时诊断与报告** | 查看 NR 活动、请求／解析模型、资源及可用时的 GPU 时间；当前 v0.2.0-dev.11 开发源码可关联最多四层的实际 Stage／Pass、模型请求、工作／输出尺寸与 GPU 区间，并提供手动 GPU A/B 对比：仅改变一层实际工作尺寸，在其余条件匹配时比较 GPU 统计；波动大或差异不足时不给建议，只有测量支持时才说明降低尺寸使该层 NGX 耗时减少。它不保证 FPS 或画质，且尚未包含于已发布版本。见[诊断指南](docs/USER_GUIDE.md#zh-diagnostics)。准备可选诊断与需用户检查提交的 Issue 草稿。 |
 | **15 种界面语言** | Auto 自动跟随 ReShade，也可手动选择。显示取决于 ReShade 已加载的字体，语言清单与缺字回退说明见指南。 |
+| **运行监视器（开发中）** | 近期源帧健康度与会话历史分别呈现。可拖动、缩放的非模态监视器支持边调参边观察，窄屏使用紧凑折叠摘要；能力校验保留可用路径、阻止当前无效选择，不删除已保存值。 |
 | **四套界面主题** | Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED 只改变菜单视觉，不影响 NR 图像处理。 |
-| **六个 NR Profile Slot（开发中）** | 每游戏三个官方开发候选及三个自定义 Slot，独立保留覆盖值，可捕获／重命名／清空自定义快照、撤销 Slot 操作或恢复当前官方默认值。编辑自动保存，首次升级保留当前配置，保存失败不切换。 |
+| **六个 NR Profile Slot（开发中）** | 每游戏三个官方开发候选及三个自定义 Slot，独立保留覆盖值，可捕获／重命名／清空自定义快照、撤销 Slot 操作或恢复当前官方默认值。编辑自动保存；F9 官方与 F10 自定义方案轮换分别启用且默认关闭。首次自动应用 Balanced 仅限空配置、新建方案存储及能力检查均获确认。 |
 | **本地共享方案（开发中）** | 主页面左键应用／创建方案，右键打开槽位管理与紧凑操作窗；“管理方案”保留完整可搜索方案库。导入先验证并预览差异，覆盖须确认；导出可选择目标路径，选择路径不会立即写入。当前源码包含此交互更新，尚未随包发布。操作见[方案与方案库指南](docs/USER_GUIDE.md#zh-presets)。 |
 | **辅助输入（尚未发布）** | 原位 IME 输入异常时，点击字段标题旁的键盘图标按钮（悬停可查看“辅助输入：打开兼容文本编辑窗口，输入中文等文字。”），或右键可编辑的预设字段、Slot 名称或报告文字并选“辅助输入…”，打开同一个可选的 Windows 原生 Unicode 编辑窗。区域提示中的键盘图形仅作说明，不能点击。“应用”将文字带回表单，“取消”丢弃编辑；保存仍需主动执行。此功能不改变原位输入，原生窗口表现仍需在目标游戏中验证。见[指南](docs/USER_GUIDE.md#zh-presets)。 |
 
-Slot 和预设管理仅在当前开发源码中提供，**0.1.0 稳定包不包含这些功能**。官方 Lite 为
-Render／1 层／B／跟随输入，Balanced 为 Upscaled／1 层／A／跟随输入，Max 为
-Present／2 层／A+B／100%；三者保存比例均为 1.0，前两者不再叠加一次降分辨率。
-其余管理字段继承注册默认值。这些均为开发候选，尚未完成实机画质／性能验收，
-Release／Debug 构建及受影响自动化检查已通过，Runtime 兼容门槛仍有效。
+Slot 和预设管理仅在当前开发源码中提供，**0.1.0 稳定包不包含这些功能**。官方候选均为 0.67 工作比例：Lite 为 Render／B／单层；Balanced 为 Upscaled／A／单层；Max 为 Render／B／0.67（电影感、Mask 开启、Skin 0.75）→ Upscaled／A／0.67（默认风格、Mask 开启、Skin 0.75），两层设置独立。其余管理字段继承注册默认值。这些均为开发候选，尚未完成实机画质／性能验收，Runtime 兼容门槛仍有效。
+首次自动应用 Balanced 仅在 NR 配置被确证为空、方案存储被确证为新建且候选通过当前能力检查时才会尝试；已有、未知、不可读、旧版、损坏、显式解绑或身份不匹配的配置均保留当前设置。
 Slot 自动保存与共享库文件、ReShade 正常设置分别处理，强退可能丢失待保存的 Slot 编辑；
 只读／损坏保护、迁移及 revision 冲突恢复见指南。
 
@@ -53,12 +51,12 @@ Slot 自动保存与共享库文件、ReShade 正常设置分别处理，强退�
 
 模型外观控制 NR 生成什么，结果编辑则塑造每层模型已经返回的改变量。模型选择、外观继承、
 结果继承彼此独立，附加层既可沿用第 1 层，也可保留各自保存的编辑。第 1 层选择起始介入点，
-后续层可继承或选择合法的后续阶段。**当前 0.2.0-dev.10 开发源码：独立工作分辨率（阶段性支持）**：
+后续层可继承或选择合法的后续阶段。**当前 0.2.0-dev.11 开发源码：独立工作分辨率（阶段性支持）**：
 第 2–4 层可继承基础分辨率（非上一层）、选择 Follow input 或使用 33–100% 固定比例，例如
 `Render A 100% → 游戏 DLSS SR → Upscaled B 67%`。不改游戏 DLSS SR 分辨率；
 不含 Present 的原生 DX11 Bridge／DX12 链中，同一 Render 或 Upscaled StageGroup 的两个 Pass 可使用各自工作尺寸，例如
 `Upscaled A 100% → B 67%` 或反向比例；Render 双层同样支持两方向，例如
-`Render A 100% → Render B 67% → 游戏 DLSS SR`。当前 0.2.0-dev.10 开发源码还允许普通原生 DX11 Bridge／DX12 Present 双 Pass 使用不同工作尺寸，前提是已收到成功的进程级公共 FG Off 声明。没有该成功声明时，即使未观测到 FG 活动，仍拒绝该双 Pass 异尺寸组合；该声明作用于进程，不区分各个 viewport。该 Present 能力拒绝 FG 未知／On、Pre-FG 及 B1／混合链，不改变既有 Render／Upscaled 支持。新增 DX11 Present 双 Pass 已通过 WARP／硬件定向 GPU 自动化；真实游戏、NVIDIA 网络及性能收益未验收。同组 3 层以上仍要求
+`Render A 100% → Render B 67% → 游戏 DLSS SR`。当前 0.2.0-dev.11 开发源码还允许普通原生 DX11 Bridge／DX12 Present 双 Pass 使用不同工作尺寸，前提是已收到成功的进程级公共 FG Off 声明。没有该成功声明时，即使未观测到 FG 活动，仍拒绝该双 Pass 异尺寸组合；该声明作用于进程，不区分各个 viewport。该 Present 能力拒绝 FG 未知／On、Pre-FG 及 B1／混合链，不改变既有 Render／Upscaled 支持。新增 DX11 Present 双 Pass 已通过 WARP／硬件定向 GPU 自动化；真实游戏、NVIDIA 网络及性能收益未验收。同组 3 层以上仍要求
 实际工作尺寸一致；不支持的尺寸组合会明确拒绝该组并保留设置。Upscaled 同阶段实现已通过定向 WARP／硬件 GPU 自动化；Render 双层的 DX12／Bridge 核心已实现，Bridge 本轮三组 HDR 场景及 DX12 本轮八场景／二十阶段均已通过 WARP／硬件 GPU 自动化，
 真实网络、实机画质及性能收益未验收。
 新增独立模式仅限 native DX11/DX12；Vulkan 明确拒绝非继承模式，默认继承保留旧行为。
@@ -251,20 +249,26 @@ and four menu themes.
 | **Render / Upscaled / Present** | Apply NR before DLSS upscaling, to its output, or to the final game image before ReShade effects. Actual execution depends on API, resources and FG routing. |
 | **NR + native DLSS FG/MFG or XeFG** | Coordinate NR with the existing FG backend; inspect the observed path and activity rather than assuming a configured multiplier proves FG is active. |
 | **Output shaping and temporal stability** | Adjust brightness/color limits, detail, halos and temporal behavior. SDR/HDR compatibility policies remain independently configurable. |
-| **Live diagnostics and reports** | Inspect NR activity, requested/resolved models, resources and GPU time when available. The current v0.2.0-dev.10 source binds GPU spans to actual Stage/Pass IDs, model requests and working/output dimensions across up to four passes, and offers manual GPU A/B comparison by changing one Pass's actual working size while matching the other conditions. It gives no suggestion when variation is high or the difference is too small; a reduction in that layer's measured NGX time is reported only when supported by the data. It does not promise FPS or image quality and is not in a released package. See the [diagnostics guide](docs/USER_GUIDE.md#en-diagnostics). Prepare optional diagnostics and a reviewed GitHub Issue draft. |
+| **Live diagnostics and reports** | Inspect NR activity, requested/resolved models, resources and GPU time when available. The current v0.2.0-dev.11 source binds GPU spans to actual Stage/Pass IDs, model requests and working/output dimensions across up to four passes, and offers manual GPU A/B comparison by changing one Pass's actual working size while matching the other conditions. It gives no suggestion when variation is high or the difference is too small; a reduction in that layer's measured NGX time is reported only when supported by the data. It does not promise FPS or image quality and is not in a released package. See the [diagnostics guide](docs/USER_GUIDE.md#en-diagnostics). Prepare optional diagnostics and a reviewed GitHub Issue draft. |
 | **Multilingual interface — 15 languages** | Let Auto follow ReShade or choose a language manually. Display depends on ReShade's loaded font; the guide lists languages and explains missing-glyph fallback. |
+| **Runtime monitor (development)** | Recent source-frame health is separate from session history. A movable, resizable nonmodal monitor stays usable alongside settings; narrow panels use a compact disclosure. Configuration checks retain supported routes and block unavailable choices without deleting stored values. |
 | **Four interface themes** | Cyber Neon, Nexus Dark, Fluent Light and Midnight OLED change the menu's appearance, independently of image processing. |
-| **Six NR Profile Slots (development)** | Three official development candidates plus three custom Slots for each game. Keep independent overrides, capture/rename/clear custom snapshots, undo profile actions or restore one official Slot. Slot edits save automatically; first upgrade keeps current game settings and a failed save blocks switching. |
+| **Six NR Profile Slots (development)** | Three official development candidates plus three custom Slots for each game. Keep independent overrides, capture/rename/clear custom snapshots, undo profile actions or restore one official Slot. Slot edits save automatically; F9 official and F10 custom cycling have separate switches and are off by default. Balanced is applied automatically only when an empty configuration, fresh profile storage and capability check are all confirmed. |
 | **Local, shareable presets (development)** | Left-click to apply/create quick profiles; right-click for slot management and compact tasks. Manage profiles retains the full searchable library. Imports validate and preview differences before confirmed replacement; exports allow a chosen destination, and choosing a path alone does not write. This interaction update is in current source and has not shipped in a package. See the [profile and preset guide](docs/USER_GUIDE.md#en-presets). |
 | **Assisted input (unreleased)** | When inline IME input is garbled, click the keyboard-icon button beside a field title (hover for “Assisted input: Open the compatibility text editor for Chinese and other text.”), or right-click an editable preset field, Slot name or report text field and choose **Assisted input...**. Both open the same optional native Windows Unicode editor. The icon in the section hint is static and not clickable. **Apply** returns text to the form; **Cancel** discards it, and saving remains explicit. This does not change inline input; native-window behavior still requires validation in the target game. See the [guide](docs/USER_GUIDE.md#en-presets). |
 
 Slots and preset management are available in the current development source;
-the **0.1.0 stable package does not include them**. Official Lite (Render, 1 pass, B,
-follow input), Balanced (Upscaled, 1 pass, A, follow input), and Max (Present,
-2 passes, A+B, 100%) all store scale 1.0; the first two do not add a second
-resolution reduction. Other managed fields inherit registered defaults. These
-are development candidates, without in-game image-quality/performance validation;
-Release/Debug builds and focused automated checks passed. Runtime compatibility gates still apply.
+the **0.1.0 stable package does not include them**. All official candidates use a
+0.67 working scale: Lite is Render/B/one pass; Balanced is Upscaled/A/one pass;
+Max is Render/B/0.67 (Cinematic style, Mask on, Skin 0.75) → Upscaled/A/0.67
+(Default style, Mask on, Skin 0.75), with independent settings for each pass.
+Other managed values inherit actual registered defaults. These remain development
+candidates without in-game image-quality or performance validation. Runtime
+compatibility gates still apply. Balanced is applied automatically only when the NR
+configuration is positively confirmed empty, profile storage is confirmed fresh,
+and the candidate passes current capability checks; existing, unknown, unreadable,
+legacy, corrupt, explicitly detached or identity-mismatched configurations keep
+their current settings.
 Slot autosave is separate from shared-library files and ReShade's normal settings;
 force-closing may lose pending Slot edits. See the guide for read-only/corrupt-file
 protection, migration and revision-conflict recovery.
@@ -275,14 +279,14 @@ Model-look controls steer what NR generates; result editing reshapes the change
 returned by each pass. Model choice, look inheritance and result inheritance are
 separate, so additional layers can follow Pass 1 or keep their own saved edits.
 Pass 1 selects the initial processing location; later passes can inherit or
-select a legal later stage. **Current development source (v0.2.0-dev.10): independent working
+select a legal later stage. **Current development source (v0.2.0-dev.11): independent working
 resolution (partial support)**. Passes 2–4 can inherit
 the base resolution (not the preceding pass), choose Follow input or use a fixed 33–100% scale, for example
 `Render A 100% → game DLSS SR → Upscaled B 67%`. This leaves game DLSS SR
 resolution unchanged. In a native DX11 Bridge or DX12 chain without Present, two passes in one Render or Upscaled StageGroup can use
 separate working sizes, such as `Upscaled A 100% → B 67%`, or the reverse scales. Render supports both directions too,
 for example `Render A 100% → Render B 67% → game DLSS SR`.
-The current v0.2.0-dev.10 development source also permits exactly two ordinary Present passes on native DX11 Bridge or DX12 with different working sizes, after a successful public FG Off declaration for the process. Without that successful declaration, the pair remains rejected, even if no FG activity is observed. The declaration applies to the process, not to individual viewports. This Present capability rejects unknown/On FG, Pre-FG and B1/mixed chains, without changing existing Render/Upscaled support. The new DX11 Present pair passed targeted WARP/hardware GPU automation; game operation, the NVIDIA network and performance gains remain unverified.
+The current v0.2.0-dev.11 development source also permits exactly two ordinary Present passes on native DX11 Bridge or DX12 with different working sizes, after a successful public FG Off declaration for the process. Without that successful declaration, the pair remains rejected, even if no FG activity is observed. The declaration applies to the process, not to individual viewports. This Present capability rejects unknown/On FG, Pre-FG and B1/mixed chains, without changing existing Render/Upscaled support. The new DX11 Present pair passed targeted WARP/hardware GPU automation; game operation, the NVIDIA network and performance gains remain unverified.
 Groups of 3+ passes still require matching actual sizes;
 unsupported mismatches explicitly reject the group and retain settings.
 The Upscaled implementation passed targeted WARP/hardware GPU automation.

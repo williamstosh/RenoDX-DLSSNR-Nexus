@@ -28,6 +28,7 @@
 #pragma once
 
 #include "fg_route.hpp"
+#include "recent_health.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -212,6 +213,8 @@ struct CardInputs {
   // Recording the next frame immediately after a proven submission keeps
   // the service active; a completed but unsubmitted recording does not.
   bool fg_continuing_submission = false;
+  // Absent only for legacy consumers that supply their own verdict snapshot.
+  std::optional<RecentHealth> recent;
 };
 
 inline constexpr std::size_t kMaxFixSteps = 3;
@@ -547,10 +550,18 @@ inline StatusCard ComputeStatusCard(const CardInputs& in) {
         return card;
       }
       card.issues = in.issues;
+      if (in.recent.has_value() && !continuing && !in.fg_submitted_frames.has_value()
+          && !in.recent->ready) {
+        Set(card, CardId::kStarting, CardTone::kIdle, CardGlyph::kWaiting,
+            "Confirming current configuration",
+            "Waiting for enough recent source frames. No current execution result is confirmed.");
+        return card;
+      }
       const bool whole = continuing
-          || in.verdict.eligible < kPartialMinEligible
+          || (in.recent.has_value() ? !in.recent->partial
+          : in.verdict.eligible < kPartialMinEligible
           || in.verdict.ratio
-                 >= (in.partial_latched ? kPartialLeaveRatio : kPartialEnterRatio);
+                 >= (in.partial_latched ? kPartialLeaveRatio : kPartialEnterRatio));
       if (whole && in.issues != 0) {
         // Engaged is not the same as well: the SH2 session ran its
         // stabilizer without motion on 80.5% of frames under a green card.

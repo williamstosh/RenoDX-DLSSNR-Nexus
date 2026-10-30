@@ -180,6 +180,9 @@ struct Stats {
   int64_t measured_ns = 0;
   const void* queue = nullptr;  // Compared only; never dereferenced.
   uint32_t samples = 0;
+  // Frozen at recording; UI consumers must not match a newer configuration to
+  // an old completed sample merely because stage/model/dimensions are equal.
+  gpu_comparison::Identity identity;
 };
 inline Stats stats;
 inline Stats stage_stats[3];
@@ -411,6 +414,7 @@ inline bool Publish(const Segment& s, bool log, const void* queue) {
   next.state = SampleState::VALID;
   next.sequence = s.sequence;
   next.measured_ns = NowNs();
+  next.identity = s.comparison.identity;
   next.queue = queue;
   next.samples = 1;
   if (s.comparison.sequence != 0 && ComparisonActive()) {
@@ -438,6 +442,7 @@ inline bool Publish(const Segment& s, bool log, const void* queue) {
   // Never mix queues, pass identities, models or working sizes in one average.
   const auto& previous = window.samples[(window.next + kDisplaySamples - 1) % kDisplaySamples];
   bool same_contract = window.count != 0 && previous.queue == next.queue
+      && previous.identity == next.identity
       && previous.width == next.width && previous.height == next.height
       && next.measured_ns - previous.measured_ns <= kSampleAgeNs;
   for (uint32_t pass = 0; pass < kTimerMaxPasses && same_contract; ++pass) {
@@ -566,13 +571,15 @@ inline bool Begin(
   s.expired = false;
   s.passes = {};
   s.comparison = {};
+  s.comparison.identity.device_session = device_session;
+  if (comparison_settings != nullptr) {
+    comparison_settings(&s.comparison.identity);
+  }
   if (ComparisonActive()) {
     s.comparison.stage = StageIndex(path);
     s.comparison.sequence = s.sequence;
     s.comparison.recorded_ns = NowNs();
     s.comparison.pass_count = pass_count;
-    s.comparison.identity.device_session = device_session;
-    if (comparison_settings != nullptr) comparison_settings(&s.comparison.identity);
   }
   for (uint32_t pass = 0; pass < std::min(pass_count, kTimerMaxPasses); ++pass) {
     s.passes[pass].id = pass_begin + pass;

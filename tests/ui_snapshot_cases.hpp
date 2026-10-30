@@ -26,6 +26,21 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
   const char* pages[] = {"quality", "multipass", "diagnostics", "advanced"};
   std::vector<Scenario> scenarios;
   if (!docs_only) {
+    for (const char* action : {"r3-normal", "r3-yellow", "r3-pending", "r3-recovered",
+                               "r3-pass1", "r3-pass2", "r3-pass4", "r3-monitor-open", "r3-monitor-close"}) {
+      scenarios.push_back({.id = action, .action = action, .width = 1600.f});
+    }
+    scenarios.push_back({.id = "r3-monitor-narrow", .action = "r3-monitor-narrow", .width = 700.f});
+    scenarios.push_back({.id = "r3-invalid-combination", .page = 1, .action = "cross-stage-backward"});
+    scenarios.push_back({.id = "r3-hotkey", .page = 3, .action = "r3-hotkey"});
+    scenarios.push_back({.id = "r3-fixed-scale", .action = "r3-fixed-scale"});
+    scenarios.push_back({.id = "r3-custom-scale", .page = 1, .action = "r3-custom-scale"});
+    for (const auto& theme : ui::kThemes) {
+      for (const char* state : {"r3-normal", "r3-yellow", "r3-pending"}) {
+        scenarios.push_back({.id = std::string(state) + "-" + theme.slug, .action = state,
+                             .theme = theme.id, .width = 1600.f});
+      }
+    }
     scenarios.push_back({.id = "r2-quality", .action = "r2-quality"});
     scenarios.push_back({.id = "r2-quality-wide-en", .action = "r2-quality", .language = 1, .width = 1400.f});
     scenarios.push_back({.id = "r2-quality-follow", .action = "r2-follow"});
@@ -209,6 +224,9 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     if (std::find(registry["expected"].begin(), registry["expected"].end(), scenario.id)
         == registry["expected"].end()) continue;
     const auto profile_state_before = profile::state;
+    monitor_fixture = nullptr;
+    synthetic_monitor_state = {};
+    runtime::ui_runtime_monitor_state.open = false;
     if (!ImGui::GetCurrentContext()->OpenPopupStack.empty()) ImGui::ClosePopupToLevel(0, true);
     io.AddMousePosEvent(-100.f, -100.f);
     runtime::ui_theme_choice = scenario.theme;
@@ -344,6 +362,71 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       }
     }
     profile::active = -1;
+    ui::MonitorInputs window_evidence;
+    const bool synthetic_window = scenario.action.starts_with("r3-")
+        && scenario.action != "r3-hotkey" && scenario.action != "r3-fixed-scale" && scenario.action != "r3-custom-scale";
+    if (synthetic_window) {
+      window_evidence.card = {.tone = ui::CardTone::kGood, .glyph = ui::CardGlyph::kCheck,
+                              .title = "Neural Rendering is on"};
+      window_evidence.current_conclusion = "Synthetic clean window";
+      window_evidence.recent = {.available = true, .ready = true, .eligible = 120, .injected = 120,
+                                .last_sample_ns = 1'000'000'000LL};
+      window_evidence.now_ns = 1'500'000'000LL;
+      window_evidence.pass_count = (scenario.action == "r3-pass1" ? 1u : (scenario.action == "r3-pass4" ? 4u : 2u));
+      runtime::hook_point = runtime::kHookRender;
+      runtime::stack_passes = window_evidence.pass_count;
+      runtime::preset = 2;
+      runtime::nr_follow_input_res = false;
+      runtime::nr_resolution_scale = .67f;
+      for (unsigned index = 0; index < window_evidence.pass_count; ++index) {
+        auto& pass = window_evidence.passes[index];
+        const char* stage = (index == 0 ? "Render" : "Upscaled");
+        const char* model = (index == 0 ? "B" : "A");
+        if (index != 0) {
+          runtime::pass_stage[index - 1] = 2;
+          runtime::pass_preset[index - 1] = 1;
+        }
+        pass = {.requested_stage = stage, .effective_stage = stage,
+                .execution_proof = "Synthetic completed submission", .requested_model = model,
+                .created_model_request = model, .requested_size = "67%",
+                .actual_size = "2560x1440", .gpu_cost = "1.2 ms", .gpu_state = ui::MonitorGpuState::CURRENT};
+      }
+      window_evidence.gpu_scope = "Synthetic completed submission; not a performance measurement";
+      window_evidence.current_limit = "Synthetic window evidence only; no game or GPU inference";
+      if (scenario.action == "r3-yellow") {
+        window_evidence.card.tone = ui::CardTone::kWarn;
+        window_evidence.card.glyph = ui::CardGlyph::kWarning;
+        window_evidence.recent.partial = true;
+        window_evidence.recent.injected = 80;
+        window_evidence.recent.gaps = 40;
+        window_evidence.current_conclusion = "Synthetic partial window";
+      } else if (scenario.action == "r3-pending") {
+        window_evidence.card.tone = ui::CardTone::kIdle;
+        window_evidence.recent = {};
+        window_evidence.current_conclusion = "Synthetic pending window";
+        for (auto& pass : window_evidence.passes) {
+          pass.effective_stage.clear();
+          pass.execution_proof.clear();
+          pass.created_model_request.clear();
+          pass.actual_size.clear();
+          pass.gpu_cost.clear();
+          pass.gpu_state = ui::MonitorGpuState::UNAVAILABLE;
+        }
+      }
+      monitor_fixture = &window_evidence;
+      synthetic_monitor_state.open = true;
+    } else if (scenario.action == "r3-fixed-scale") {
+      runtime::nr_follow_input_res = false;
+      runtime::nr_resolution_scale = .58f;
+    } else if (scenario.action == "r3-custom-scale") {
+      runtime::hook_point = runtime::kHookRender;
+      runtime::stack_passes = 2;
+      runtime::pass_stage[0] = 2;
+      runtime::nr_follow_input_res = false;
+      runtime::nr_resolution_scale = .67f;
+      runtime::pass_resolution_mode[0] = 2;
+      runtime::pass_resolution_scale[0] = .63f;
+    }
     panel_width = scenario.width;
     panel_height = (scenario.action == "viewport" ? 900.f : 1100.f);
     font_size = scenario.font;
@@ -355,7 +438,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     for (auto& scope : ui::fold_scopes) scope = {};
     settle();
     drain_workers();
-    if (scenario.action != "doc-default") {
+    if (scenario.action != "doc-default" && !synthetic_window) {
       // The manager inherits the page's fold scope; keep its custom tools folded until explicitly clicked.
       click(find(collapsed ? "collapse_all" : "expand_all"));
     }
@@ -399,6 +482,8 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       unsigned fold_count = 0;
       for (const auto& [id, item] : items) {
         if ((item.status & ImGuiItemStatusFlags_Openable) == 0) continue;
+        // This technical disclosure intentionally does not follow parameter folds.
+        if (item.label == "##Recorded working sizes") continue;
         ++fold_count;
         if (scenario.action != "doc-default") {
           check(((item.status & ImGuiItemStatusFlags_Opened) != 0) == !collapsed,
@@ -430,12 +515,63 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
         .title = "Synthetic diagnostic fixture",
         .body = "Deterministic test state; not a game measurement or runtime failure.",
         .fix = {"Synthetic repair instruction"}, .fix_count = 1};
-    if (scenario.action == "r2-reset-confirm") {
+    if (synthetic_window) {
+      if (scenario.action == "r3-recovered") {
+        ui::RecentHealthWindow recent;
+        std::uint64_t eligible = 0, injected = 0, gaps = 0;
+        std::int64_t now = 1'000'000'000LL;
+        recent.Observe(1, eligible, injected, gaps, now);
+        for (int tick = 0; tick < 12; ++tick) {
+          now += 100'000'000LL;
+          eligible += 10; injected += 5; gaps += 5;
+          recent.Observe(1, eligible, injected, gaps, now);
+        }
+        window_evidence.card.tone = ui::CardTone::kWarn;
+        window_evidence.current_conclusion = "Synthetic partial window";
+        settle();
+        ui::RecentHealth clean;
+        for (int tick = 0; tick < 40; ++tick) {
+          now += 100'000'000LL;
+          eligible += 10; injected += 10;
+          clean = recent.Observe(1, eligible, injected, gaps, now);
+        }
+        check(clean.ready && !clean.partial && clean.gaps == 0, "synthetic recent window recovers despite historical gaps");
+        window_evidence.card.tone = ui::CardTone::kGood;
+        window_evidence.current_conclusion = "Synthetic recovered window; historical gaps retained";
+        window_evidence.recent = {.available = true, .ready = clean.ready, .partial = clean.partial,
+                                  .eligible = clean.eligible, .injected = clean.injected, .gaps = clean.gaps,
+                                  .last_sample_ns = clean.last_sample_ns};
+        window_evidence.now_ns = now;
+        settle();
+      } else if (scenario.action == "r3-monitor-close") {
+        click(find("status_close"));
+        check(!synthetic_monitor_state.open, "monitor close fixture uses the real close button");
+      } else if (scenario.action == "r3-monitor-narrow") {
+        click(find("nr_monitor_inline"));
+        check(!find("status_close").disabled, "narrow monitor disclosure retains close action");
+      }
+      interaction = "production summary/monitor widgets with explicitly synthetic window evidence; no game, network or GPU validation";
+    } else if (scenario.action == "r3-fixed-scale") {
+      check(!find("##resolution_scale").disabled && std::abs(runtime::nr_resolution_scale.load() - .58f) < .001f,
+            "fixed-scale scene retains the saved editable value");
+      interaction = "production fixed-scale editor; synthetic fixture configuration";
+    } else if (scenario.action == "r3-custom-scale") {
+      check(!find("##pass_resolution_scale").disabled && std::abs(runtime::pass_resolution_scale[0].load() - .63f) < .001f,
+            "independent custom scale stays editable without changing stored encoding");
+      check(std::ranges::any_of(rendered_text, [](const auto& text) { return text.text == ui::Tr("Custom"); }),
+            "non-preset independent scale is labeled Custom");
+      interaction = "production independent 100/67/58/50 shortcuts and Custom 63% slider; synthetic configuration";
+    } else if (scenario.action == "r3-hotkey") {
+      check(find("NRToggleKey").id != 0 && find("NRScreenshotKey").id != 0,
+            "advanced hotkey controls are registered");
+      interaction = "production hotkey controls; bindings are not polled or saved by the snapshot";
+    } else if (scenario.action == "r2-reset-confirm") {
       click(find("reset_page"));
       check(!find("cancel_page_reset").disabled, "shared page reset confirmation is accessible");
       interaction = "real reset-page command; confirmation only, no persistence or reset";
     } else if (scenario.action == "status-details") {
       click(find("status_details"));
+      click(find("nr_monitor_inline"));
       check(!find("status_close").disabled && !find("status_open_diagnostics").disabled,
             "runtime details must open without changing the selected page");
       for (const char* id : {"status_close", "status_open_diagnostics"}) {
@@ -443,7 +579,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
         check(action.rect.Min.y >= action.window->InnerRect.Min.y && action.rect.Max.y <= action.window->InnerRect.Max.y,
               "runtime detail navigation must remain visible outside the scrolling status body");
       }
-      interaction = "click real runtime details; GPU-complete data is synthetic";
+      interaction = "click real monitor entry and narrow disclosure; GPU-complete data is synthetic";
     } else if (scenario.action.starts_with("diagnostics-")) {
       diagnostic = &card;
       frame(diagnostic); frame(diagnostic); frame(diagnostic);
@@ -518,10 +654,13 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       profile::active = 0;
       profile::state.slots[0].overrides["NRIntensity"] = 0.625f;
       settle();
-      click(find("profile_actions"));
+      const auto lite_center = find(ui::Tr("NR Lite")).rect.GetCenter();
+      io.AddMousePosEvent(lite_center.x, lite_center.y); frame();
+      io.AddMouseButtonEvent(1, true); frame();
+      io.AddMouseButtonEvent(1, false); frame(); settle();
       click(find("restore_profile"));
       check(!find("confirm_restore").disabled, "restore confirmation did not open");
-      interaction = "click profile_actions, restore_profile; no restore performed";
+      interaction = "right-click official slot and restore_profile; no restore performed";
     } else if (scenario.action.starts_with("preset-") || scenario.action.starts_with("auxiliary-")) {
       manager::Navigate(0);
       manager::save_options = manager::export_options = manager::import_path_options = false;
@@ -827,7 +966,9 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       profile::active = -1;
       profile::observed_snapshot = profile::Snapshot();
     }
-    if (scenario.action.starts_with("r2-")) {
+    monitor_fixture = nullptr;
+    runtime::ui_runtime_monitor_state.open = false;
+    if (scenario.action.starts_with("r2-") || scenario.action == "r3-fixed-scale") {
       runtime::nr_follow_input_res = false;
       runtime::nr_resolution_scale = 1.f;
     }
