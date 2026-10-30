@@ -2134,6 +2134,7 @@ inline constexpr Translation kZhHans[] = {
     {"Estimated working resolution: %ux%u", "预计工作分辨率：%ux%u"},
     {"Estimated working resolution", "预计工作分辨率"},
     {"Actual working resolution", "实际工作分辨率"},
+    {"Dynamic resolution or a pending size change can make the estimate differ from the completed working size.", "动态分辨率或尚未生效的尺寸切换，可能使预计值与已完成样本的工作尺寸不同。"},
     {"Estimate uses the last observed reference. Actual dimensions require a current completed sample.", "预计值使用最近观察到的参考分辨率。实际尺寸需有当前已完成的样本。"},
     {"Working resolution history", "工作分辨率历史"},
     {"On", "开"},

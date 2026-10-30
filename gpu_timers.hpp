@@ -187,6 +187,7 @@ struct Stats {
   // Frozen at recording; UI consumers must not match a newer configuration to
   // an old completed sample merely because stage/model/dimensions are equal.
   gpu_comparison::Identity identity;
+  int64_t recorded_ns = 0;
 };
 inline Stats stats;
 inline Stats stage_stats[3];
@@ -433,6 +434,7 @@ inline bool Publish(const Segment& s, bool log, const void* queue) {
   next.sequence = s.sequence;
   next.measured_ns = NowNs();
   next.identity = s.comparison.identity;
+  next.recorded_ns = static_cast<int64_t>(s.comparison.recorded_ns);
   next.queue = queue;
   next.samples = 1;
   if (s.comparison.sequence != 0 && ComparisonActive()) {
@@ -470,6 +472,10 @@ inline bool Publish(const Segment& s, bool log, const void* queue) {
         && a.output_width == b.output_width && a.output_height == b.output_height
         && a.state == b.state && a.look_measured == b.look_measured;
   }
+  for (uint32_t i = 0; i < window.count && same_contract; ++i) {
+    same_contract = next.measured_ns >= window.samples[i].measured_ns
+        && next.measured_ns - window.samples[i].measured_ns <= kSampleAgeNs;
+  }
   if (!same_contract) window = {};
   window.samples[window.next] = next;
   window.next = (window.next + 1) % kDisplaySamples;
@@ -504,11 +510,15 @@ inline bool Publish(const Segment& s, bool log, const void* queue) {
       layer.look_us = pass_average(&PassStats::look_us);
     }
     display.samples = window.count;
+    for (uint32_t i = 0; i < window.count; ++i) {
+      display.measured_ns = std::min(display.measured_ns, window.samples[i].measured_ns);
+      display.recorded_ns = std::min(display.recorded_ns, window.samples[i].recorded_ns);
+    }
     stage_stats[stage] = display;
     window.updated_ns = next.measured_ns;
   }
-  stage_stats[stage].measured_ns = next.measured_ns;
-  stage_stats[stage].sequence = next.sequence;
+  // A newer completion does not refresh the identity or age of an older
+  // displayed average. Only replacing the displayed values can do that.
   ++published_segments;
   ++stage_published[stage];
   measured_total_us += next.total_us;
@@ -600,14 +610,14 @@ inline bool Begin(
   s.expired = false;
   s.passes = {};
   s.comparison = {};
+  s.comparison.stage = StageIndex(path);
+  s.comparison.recorded_ns = NowNs();
   s.comparison.identity.device_session = device_session;
   if (comparison_settings != nullptr) {
     comparison_settings(&s.comparison.identity);
   }
   if (measure && ComparisonActive()) {
-    s.comparison.stage = StageIndex(path);
     s.comparison.sequence = s.sequence;
-    s.comparison.recorded_ns = NowNs();
     s.comparison.pass_count = pass_count;
   }
   for (uint32_t pass = 0; pass < std::min(pass_count, kTimerMaxPasses); ++pass) {
@@ -787,7 +797,8 @@ inline void Poll(bool exact_proofs, bool log) {
           if (s.sequence >= target.sequence) {
             target = Stats{.width = s.width, .height = s.height, .valid = true, .passes = s.passes,
                            .state = SampleState::VALID, .sequence = s.sequence, .measured_ns = NowNs(),
-                           .identity = s.comparison.identity};
+                           .identity = s.comparison.identity,
+                           .recorded_ns = static_cast<int64_t>(s.comparison.recorded_ns)};
             std::memcpy(target.path, s.path, sizeof(target.path));
             for (uint32_t pass = 0; pass < s.pass_count; ++pass) {
               target.passes[pass].state = SampleState::VALID;

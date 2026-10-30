@@ -2125,6 +2125,7 @@ inline constexpr Translation kEs[] = {
     {"Estimated working resolution: %ux%u", "Resolución de trabajo estimada: %ux%u"},
     {"Estimated working resolution", "Resolución de trabajo estimada"},
     {"Actual working resolution", "Resolución de trabajo real"},
+    {"Dynamic resolution or a pending size change can make the estimate differ from the completed working size.", "La resolución dinámica o un cambio de tamaño pendiente pueden hacer que la estimación difiera del tamaño de trabajo completado."},
     {"Estimate uses the last observed reference. Actual dimensions require a current completed sample.", "La estimación usa la última referencia observada. Las dimensiones reales requieren una muestra actual completada."},
     {"Working resolution history", "Historial de resolución de trabajo"},
     {"On", "Activado"},

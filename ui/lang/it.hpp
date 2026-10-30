@@ -2125,6 +2125,7 @@ inline constexpr Translation kIt[] = {
     {"Estimated working resolution: %ux%u", "Risoluzione di lavoro stimata: %ux%u"},
     {"Estimated working resolution", "Risoluzione di lavoro stimata"},
     {"Actual working resolution", "Risoluzione di lavoro effettiva"},
+    {"Dynamic resolution or a pending size change can make the estimate differ from the completed working size.", "La risoluzione dinamica o una modifica delle dimensioni in attesa può far differire la stima dalle dimensioni di lavoro completate."},
     {"Estimate uses the last observed reference. Actual dimensions require a current completed sample.", "La stima usa l’ultimo riferimento osservato. Le dimensioni effettive richiedono un campione attuale completato."},
     {"Working resolution history", "Cronologia della risoluzione di lavoro"},
     {"On", "Attivato"},

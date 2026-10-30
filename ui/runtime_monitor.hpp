@@ -243,8 +243,6 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
       if (tool("Close", "###status_close", "Close monitor")) {
         state->open = false;
       }
-    } else {
-      ImGui::TextWrapped("%s", Tr("Open the menu to edit the monitor."));
     }
     const auto row = [](const char* label, const std::string& value) {
       ImGui::TableNextRow();
@@ -253,15 +251,33 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
       ImGui::TableNextColumn();
       ImGui::TextWrapped("%s", value.empty() ? Tr("Pending confirmation") : value.c_str());
     };
-    ImGui::TextColored(ToneColor(inputs.card.tone), "%s", Tr("Status"));
-    ImGui::TextWrapped("%s", inputs.current_conclusion.empty() ? Tr(inputs.card.title) : inputs.current_conclusion.c_str());
+    ImGui::PushStyleColor(ImGuiCol_Text, ToneColor(inputs.card.tone));
+    const char* conclusion = (inputs.current_conclusion.empty() ? Tr(inputs.card.title) : inputs.current_conclusion.c_str());
+    if (inputs.current_conclusion.empty()) {
+      switch (inputs.card.id) {
+        case CardId::kOffByUser: conclusion = Tr("NR disabled"); break;
+        case CardId::kActive: conclusion = Tr(inputs.card.fg_submitted_frames.has_value()
+            ? "NR submitted before FG" : "NR running normally"); break;
+        case CardId::kStarting: conclusion = Tr(inputs.card.tone == CardTone::kWarn ? "Needs attention" : "Checking NR"); break;
+        default: break;
+      }
+    }
+    ImGui::TextWrapped("%s", conclusion);
+    ImGui::PopStyleColor();
     const float font = ImGui::GetFontSize();
-    const int metric_columns = (ImGui::GetContentRegionAvail().x >= font * 32.f ? 3 : 1);
+    const auto metric_width = [](const char* label, const std::string& value) {
+      return ImGui::CalcTextSize(Tr(label)).x + ImGui::CalcTextSize(value.empty() ? "—" : value.c_str()).x
+          + ImGui::GetStyle().ItemSpacing.x * 3.f;
+    };
+    const float widest_metric = (std::max)({metric_width("NR GPU", inputs.summary.gpu),
+        metric_width("ReShade FPS", inputs.summary.fps), metric_width("FG", inputs.summary.fg)});
+    const float metric_available = ImGui::GetContentRegionAvail().x;
+    const int metric_columns = (metric_available >= widest_metric * 3.f ? 3
+                                : (metric_available >= widest_metric * 2.f ? 2 : 1));
     if (ImGui::BeginTable("monitor_dashboard", metric_columns, ImGuiTableFlags_SizingStretchSame)) {
       const auto metric = [](const char* label, const std::string& value) {
         ImGui::TableNextColumn();
-        ImGui::TextColored(CurrentTheme().text_secondary, "%s", Tr(label));
-        ImGui::TextWrapped("%s", value.empty() ? "—" : value.c_str());
+        ImGui::TextWrapped("%s  %s", Tr(label), value.empty() ? "—" : value.c_str());
       };
       metric("NR GPU", inputs.summary.gpu);
       metric("ReShade FPS", inputs.summary.fps);
@@ -277,14 +293,25 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
       if (count == 0) {
         ImGui::TextWrapped("%s", Tr("Pending confirmation"));
       }
+      float pass_width = font * 16.f;
+      for (unsigned i = 0; i < count; ++i) {
+        const auto& pass = inputs.passes[i];
+        pass_width = (std::max)(pass_width, ImGui::CalcTextSize((pass.requested_model + "  |  " + pass.requested_size).c_str()).x
+            + font * 2.f);
+      }
+      const float pass_available = ImGui::GetContentRegionAvail().x;
+      const int pass_columns = (count >= 3 && pass_available >= pass_width * 3.f ? 3
+                                : (count >= 2 && pass_available >= pass_width * 2.f ? 2 : 1));
+      const bool pass_table = ImGui::BeginTable("monitor_passes", pass_columns, ImGuiTableFlags_SizingStretchSame);
       ImVec2 previous_node;
       for (unsigned i = 0; i < count; ++i) {
+        if (pass_table) ImGui::TableNextColumn();
         const auto& pass = inputs.passes[i];
         ImGui::PushID(static_cast<int>(i));
         const ImVec2 node(ImGui::GetCursorScreenPos().x + font * 0.4f,
                           ImGui::GetCursorScreenPos().y + font * 0.5f);
         ImDrawList* draw = ImGui::GetWindowDrawList();
-        if (i != 0) {
+        if (i != 0 && pass_columns == 1) {
           draw->AddLine(previous_node, node, ImGui::GetColorU32(CurrentTheme().node_border), 2.f);
         }
         draw->AddCircleFilled(node, font * 0.25f,
@@ -327,6 +354,9 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
               ? "Execution confirmed" : "Pending confirmation"))
               + (pass.execution_confirmed && !pass.actual_size.empty() ? "  " + pass.actual_size : "");
           ImGui::TextColored(pass.execution_confirmed ? CurrentTheme().good : CurrentTheme().idle, "%s", completion.c_str());
+          if (pass.gpu_state == MonitorGpuState::CURRENT && !pass.gpu_cost.empty()) {
+            ImGui::TextWrapped("%s: %s", Tr("GPU cost"), pass.gpu_cost.c_str());
+          }
         }
         if (state->detailed) {
           field("GPU cost", pass.gpu_state == MonitorGpuState::CURRENT ? pass.gpu_cost
@@ -343,6 +373,7 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
         ImGui::Spacing();
         ImGui::PopID();
       }
+      if (pass_table) ImGui::EndTable();
     } else {
       field("Stage", inputs.summary.stage);
     }
@@ -350,7 +381,9 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
       field("Dimensions", inputs.summary.resolution);
       field("Measurement scope", inputs.gpu_scope);
       field("Limitation", inputs.current_limit);
-      ImGui::TextWrapped("%s", Tr("A created model request does not prove the internal network actually used."));
+      if (interactive) {
+        ImGui::TextWrapped("%s", Tr("A created model request does not prove the internal network actually used."));
+      }
     }
     // Passive gameplay submits no disclosure controls; edit mode owns raw evidence.
     if (!inline_mode && state->detailed && interactive

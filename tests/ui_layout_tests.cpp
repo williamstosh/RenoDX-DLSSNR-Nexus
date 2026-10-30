@@ -384,8 +384,8 @@ int main() {
     ui::DrawStatusSummary(off, 0);
     const std::string output = ImGui::GetCurrentContext()->LogBuffer.c_str();
     ImGui::LogFinish();
-    const size_t title = output.find(off.title);
-    check(title != std::string::npos && output.find(off.title, title + 1) == std::string::npos,
+    const size_t title = output.find(ui::Tr("NR disabled"));
+    check(title != std::string::npos && output.find(ui::Tr("NR disabled"), title + 1) == std::string::npos,
           "Off summary displays its title exactly once");
     check(output.find(off.body) == std::string::npos,
           "Off reason stays in the heading tooltip instead of repeated visible rows");
@@ -393,7 +393,7 @@ int main() {
           "Off summary does not present retained NR submissions or GPU measurements as execution");
     char action[160];
     std::snprintf(action, sizeof(action), ui::Tr(ui::text::kStatusDetails), 0u);
-    check(output.find(ui::Tr("Monitor")) != std::string::npos, "Off summary preserves its monitor action");
+    check(output.find(ui::Tr("Runtime monitor")) != std::string::npos, "Off summary preserves its monitor action");
     ImGui::End();
     ImGui::Render();
   }

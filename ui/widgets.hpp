@@ -241,7 +241,7 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, co
   const float font = ImGui::GetFontSize();
   const float available = (std::max)(1.f, ImGui::GetContentRegionAvail().x - ImGui::GetStyle().WindowPadding.x * 2.f);
   const float gap = ImGui::GetStyle().ItemSpacing.x;
-  const float action_width = (std::min)(available, ImGui::CalcTextSize((std::string(Tr("Monitor")) + " !").c_str()).x
+  const float action_width = (std::min)(available, ImGui::CalcTextSize((std::string(Tr("Runtime monitor")) + " !").c_str()).x
       + ImGui::GetStyle().FramePadding.x * 2.f);
   const float title_width = (std::max)(1.f, available - action_width - gap);
   const bool auxiliary = available >= font * 56.f;
@@ -255,6 +255,7 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, co
   FormatCardTitle(title, sizeof(title), card);
   const char* short_title = title;
   switch (card.id) {
+    case CardId::kOffByUser: short_title = Tr("NR disabled"); break;
     case CardId::kActive: short_title = Tr(card.fg_submitted_frames.has_value() ? "NR submitted before FG" : "NR running normally"); break;
     case CardId::kActiveWithIssues: short_title = Tr("Active with warnings"); break;
     case CardId::kPartlyActive: short_title = Tr("Partly active"); break;
@@ -277,7 +278,7 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, co
       ItemTooltip("%s\n%s", title, card.body != nullptr ? Tr(card.body) : "");
     }
     ImGui::SetCursorPos(ImVec2(heading_at.x + available - action_width, heading_at.y));
-    const std::string action = std::string(Tr("Monitor")) + (warning_count != 0 ? " !" : "");
+    const std::string action = std::string(Tr("Runtime monitor")) + (warning_count != 0 ? " !" : "");
     details = ImGui::Button((action + "###status_details").c_str(), ImVec2(action_width, 0.f));
     ItemTooltip("%s", Tr("Open the movable runtime monitor. Diagnostics remain available separately."));
     const float metric_y = heading_at.y + heading_height + ImGui::GetStyle().ItemSpacing.y;

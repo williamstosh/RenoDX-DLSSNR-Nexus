@@ -181,7 +181,7 @@
 
 后一层处理前一层结果，不是并行方案。点节点只选择编辑对象，处理链表示配置；当前节点显示编辑中，其他为已配置。星号表示偏离默认，不表示逐层耗时或运行时网络确认。
 
-**当前开发源码：Stage 修改先预览、后确认。** 多 Pass 的 Stage 选择先展示完整处理链各层的更改前／更改后状态，保留 Render／Upscaled／Present 技术名称；检查相关层后点击“确认更改”，一次原子提交整批阶段修改。“取消”不改设置；提交后可用“撤销阶段更改”撤销该次修改，并保留之后的编辑。若当前环境没有合法能力，控件附近或预览中显示具体原因，不会强行提交。
+**当前开发源码：Stage 修改。** 单层修改或无需连带更改的选择直接应用；需要调整其他层时显示更改前后的预览，确认后一次提交，“取消”不改设置。若当前环境没有合法候选，控件附近显示原因并保留原设置。
 
 **开发源码：逐层阶段。** 第 1 层沿用画质页的介入点；第 2–4 层新增**阶段：与上一层相同／Render／Upscaled／Present**，与模型、外观及结果继承分别独立。默认保持旧版单阶段链。阶段必须按 `Render → Upscaled → Present` 前进；菜单会在整链预览中列出必要的后续层调整，不合法的已保存倒退链仍会停用并保留选择。原生 DX12 和原生 DX11 Bridge DLSS SR/DLAA 可以拆分 Render 和 Upscaled 分组，例如 `第 1 层 · Render · A → 游戏 DLSS SR → 第 2 层 · Upscaled · B`。A/B 组合不受阶段限制。Render 的结果作为游戏 SR 的真实输入，Upscaled 读取游戏 SR 输出。DX11 需要 immediate context、共享 Fence 支持及同适配器私有 DX12 设备；混合链每阶段通过有界事件等待确认 GPU 完成，会增加同步成本。Render 交付或游戏 SR 失败时跳过后组并重置 NR 历史。
 
@@ -252,11 +252,11 @@
 
 每个官方方案保存自己的**独立覆盖值（overrides）**，修改一个不改另一个；将字段调回模板值会移除该字段的覆盖。自定义方案保存快照，包含未启用层的保存值。普通编辑约 **500ms 防抖后自动保存**；切换先等待待保存方案数据成功，**保存失败不继续切换**。根据错误排查后使用重试；revision 冲突需停止并发编辑、重启重载，不自动合并。
 
-若目标配置已应用，但随后保存目标方案状态失败，当前运行设置会保留，方案显示为未保存。解决存储错误后重试，或使用撤销；这不是磁盘／GPU 原子事务。
+若目标配置已应用，但随后保存目标方案状态失败，当前运行设置会保留，方案显示为未保存。解决存储错误后重试；这不是磁盘／GPU 原子事务。
 
 **左键应用，右键管理**；空自定义方案为**左键创建，右键管理**。官方方案右键可恢复官方默认或导出，导出包含该槽位实际保存的个人修改。自定义方案右键可重命名、从官方原始模板复制、导出、导入或清空。常用操作直接打开小窗口，也可通过可见的“方案操作”及“管理方案”入口访问。按钮整合名称与状态，“已修改”表示偏离官方模板，悬浮说明区分已自动保存、保存中及保存失败，不代表未保存或 NR 实际执行。
 
-复制覆盖、导入覆盖、清空及恢复官方默认均须确认；导入仍先验证并显示差异，不直接应用到游戏。重命名只改槽位显示名称，不改稳定 ID 或独立 JSON 文件。清空同时恢复“自定义 N”的名称并解除当前槽位关联，保留运行配置及方案库文件。导出默认指向共享方案库，可浏览文件／目录或输入路径，成功后显示保存位置；选择路径本身不写入。可撤销的方案操作成功后显示“撤销”，导出等操作没有虚假撤销入口。配置撤销仍保留后续编辑，必要时解除选中关联。
+复制覆盖、导入覆盖、清空及恢复官方默认均须确认；导入仍先验证并显示差异，不直接应用到游戏。重命名只改槽位显示名称，不改稳定 ID 或独立 JSON 文件。清空同时恢复“自定义 N”的名称并解除当前槽位关联，保留运行配置及方案库文件。导出默认指向共享方案库，可浏览文件／目录或输入路径，成功后显示保存位置；选择路径本身不写入。管理操作中可用的撤销会保留后续编辑，必要时解除选中关联。
 
 完整**管理方案 → 方案库**继续提供不限数量的本地预设搜索、浏览、详情及独立文件的重命名、复制、删除和分享。默认折叠的自定义槽位工具仍可使用；槽位修改不会自动改写方案库中的独立文件。存入自定义槽位后需选择该槽位才应用到游戏；空槽位左键创建流程中的复制则创建后直接应用。
 
@@ -664,7 +664,7 @@ Turning Adjust NR's look off does **not** turn off Detail stability or shared up
 
 Each pass processes the preceding result. These are not parallel alternatives and the node selector only selects which pass you edit. The chain diagram shows configuration. The selected node says Editing; other nodes say Configured. An asterisk indicates settings changed from defaults, not per-pass timing or runtime network confirmation.
 
-**Current development source: preview Stage changes before confirming.** In a multi-pass chain, choosing a Stage first previews every pass before and after the proposed change, keeping the technical names Render / Upscaled / Present. Review the whole chain, then select **Confirm change** to commit all proposed stage changes in one atomic batch. **Cancel** leaves settings unchanged. After applying, **Undo stage change** reverses that change while keeping later edits. If the current environment has no eligible capability, the control or preview shows the specific reason nearby and does not force the change.
+**Current development source: Stage changes.** A single-pass change, or a change that does not affect other passes, applies immediately. When other passes must change, a preview shows the proposed differences; confirmation commits the batch and **Cancel** leaves settings unchanged. If no eligible candidate exists, the control shows the reason and keeps the original settings.
 
 **Development source: per-pass stages.** Pass 1 keeps the Quality page's Hook Point. Passes 2–4 add **Stage: Same as previous / Render / Upscaled / Present**, independently of model, styling and result inheritance. The default keeps the old single-stage chain. Stages must move in order `Render → Upscaled → Present`; the whole-chain preview lists necessary adjustments to later passes. An invalid saved backward chain remains disabled with your choices preserved. Native DX12 and native DX11 Bridge DLSS SR/DLAA can split Render and Upscaled groups, for example `Pass 1 · Render · A → game DLSS SR → Pass 2 · Upscaled · B`. A/B combinations remain independent of stage. Render consumes the render image and supplies its result as the game's SR input; Upscaled consumes the game's SR output. The DX11 path requires an immediate context, shared-fence support and a private DX12 device on the same adapter. Each mixed-stage delivery waits for proven GPU completion with a bounded event wait, adding synchronization cost; failed Render delivery or failed game SR skips the following group and resets NR history.
 
@@ -735,11 +735,11 @@ Other managed values inherit actual registered defaults; Max keeps each pass's s
 
 Each official Slot keeps its own **overrides**. Editing one does not change another; returning a field to that template's value removes its override. Custom Slots retain snapshots, including values saved for disabled passes. Ordinary edits are automatically saved after about **500ms** of debounce. A switch waits for pending Slot data to save; **saving failure prevents the switch**. Read the error and use Retry after resolving it. A revision conflict requires stopping concurrent edits and restarting to reload; there is no automatic merge.
 
-If the target configuration applies but saving its Slot state then fails, the applied game settings remain in place and the Slot is shown as unsaved. Resolve the storage error and retry, or use Undo; this is not an atomic disk/GPU transaction.
+If the target configuration applies but saving its Slot state then fails, the applied game settings remain in place and the Slot is shown as unsaved. Resolve the storage error and retry; this is not an atomic disk/GPU transaction.
 
 **Left-click to apply; right-click to manage.** Empty custom profiles use **left-click to create; right-click to manage**. Official profiles offer restore and export; exports include the slot's actual saved personal changes. Custom profiles offer rename, copy from an original official template, export, import and clear. Common tasks open compact windows directly and remain discoverable through visible **Profile actions** and **Manage profiles** entries. Buttons combine names and state. **Modified** means different from the official template; tooltips distinguish automatically saved, saving and failed states. It does not mean unsaved or prove NR execution.
 
-Copy/import replacement, clearing and official restoration require confirmation. Imports retain validation and difference preview and do not immediately apply to the game. Rename changes the display name, keeping the stable ID and independent JSON filenames. Clear restores the default Custom N name and detaches the current association, keeping running settings and library files. Export starts in the shared library, supports file/folder browsing or a typed path, and reports the destination after success; choosing a path alone does not write. Successful reversible profile operations offer **Undo**; exports do not advertise undo. Configuration undo still keeps later edits and may detach the selected association.
+Copy/import replacement, clearing and official restoration require confirmation. Imports retain validation and difference preview and do not immediately apply to the game. Rename changes the display name, keeping the stable ID and independent JSON filenames. Clear restores the default Custom N name and detaches the current association, keeping running settings and library files. Export starts in the shared library, supports file/folder browsing or a typed path, and reports the destination after success; choosing a path alone does not write. Undo where offered in management keeps later edits and may detach the selected association.
 
 The full **Manage profiles → Profile library** retains browsing, search, details, rename, duplicate, delete and sharing for any number of independent local files. The folded custom-slot tools remain available. Slot edits never automatically rewrite independent library files. After assigning to a custom slot, select it to apply to the game; copying through an empty quick slot's creation popup applies immediately after creation.
 

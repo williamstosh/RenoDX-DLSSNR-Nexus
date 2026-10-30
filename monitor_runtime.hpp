@@ -138,8 +138,22 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
   const auto proofs = std::array{gpu_timers::execution_stats[0], gpu_timers::execution_stats[1], gpu_timers::execution_stats[2]};
   std::array<bool, 3> timing_current{}, proof_current{};
   for (size_t stage = 0; stage < timings.size(); ++stage) {
-    timing_current[stage] = CurrentGpuSample(timings[stage], now);
-    proof_current[stage] = CurrentGpuSample(proofs[stage], now);
+    timing_current[stage] = CurrentGpuSample(timings[stage], now)
+        && timings[stage].state == gpu_timers::SampleState::VALID;
+    proof_current[stage] = CurrentGpuSample(proofs[stage], now)
+        && proofs[stage].state == gpu_timers::SampleState::VALID;
+    // A newer completion can prove a different working contract while an
+    // older timed recording is still fresh. Do not attach its cost to that size.
+    if (timing_current[stage] && proof_current[stage] && proofs[stage].sequence > timings[stage].sequence) {
+      for (size_t pass = 0; pass < timings[stage].passes.size(); ++pass) {
+        const auto& timed = timings[stage].passes[pass];
+        const auto& completed = proofs[stage].passes[pass];
+        timing_current[stage] &= timed.id == completed.id && timed.model == completed.model
+            && timed.width == completed.width && timed.height == completed.height
+            && timed.output_width == completed.output_width && timed.output_height == completed.output_height
+            && timed.state == completed.state;
+      }
+    }
   }
   std::array<PassResolutionSettings, kMaxNrPasses> resolutions;
   std::array<uint32_t, kMaxNrPasses> models{};
@@ -166,15 +180,31 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
   warnings += streamline_hooks_enabled.load() && hooks_enabled.load();
   warnings += card.present_gaps != 0;
   std::string execution;
-  bool measured = false;
   for (size_t stage = 0; stage < timings.size(); ++stage) {
     if (!timing_current[stage] && !proof_current[stage]) continue;
     if (!execution.empty()) execution += " + ";
     execution += stage_plan::Name(static_cast<stage_plan::Stage>(stage));
-    measured |= timing_current[stage];
   }
   if (execution.empty()) execution = ui::Tr("Execution stage pending confirmation");
-  if (!measured) card.nr_gpu_ms = card.nr_present_ms = 0.f;
+  // Stage samples have independent cadence and smoothing windows. Neither
+  // completion time nor queue equality establishes a shared execution cycle.
+  card.nr_gpu_ms = card.nr_present_ms = 0.f;
+  if (plan.valid && plan.group_count == 1) {
+    const auto& group = plan.groups[0];
+    const auto stage = static_cast<size_t>(group.stage);
+    const auto& timing = timings[stage];
+    bool complete = timing_current[stage];
+    for (uint32_t local = 0; local < gpu_timers::kTimerMaxPasses; ++local) {
+      const auto& pass = timing.passes[local];
+      if (local < group.count) {
+        complete &= pass.id == group.begin + local && pass.state == gpu_timers::SampleState::VALID
+            && pass.width != 0 && pass.height != 0;
+      } else {
+        complete &= pass.state != gpu_timers::SampleState::VALID;
+      }
+    }
+    if (complete) card.nr_gpu_ms = timing.total_us / 1000.f;
+  }
   ui::StatusSummaryFields summary;
   summary.fps = monitor_cadence.text;
   summary.stage = execution;
@@ -225,9 +255,11 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
       const auto& timing = timings[stage];
       const auto& proof = proofs[stage];
       const auto* completed = timing_current[stage] ? &timing : proof_current[stage] ? &proof : nullptr;
+      if (proof_current[stage] && (completed == nullptr || proof.sequence > completed->sequence)) completed = &proof;
       if (completed != nullptr) {
         for (const auto& sample : completed->passes) {
-          if (sample.id != pass || sample.state != gpu_timers::SampleState::VALID) continue;
+          if (sample.id != pass || sample.state != gpu_timers::SampleState::VALID
+              || sample.width == 0 || sample.height == 0) continue;
           row.created_model_request = nr_model::PresetName(sample.model);
           row.execution_proof = ui::Tr("GPU complete: single submission");
           row.execution_confirmed = true;
@@ -260,9 +292,9 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
   cached.valid_until_ns = now + ui::RecentHealthWindow::kStaleNs;
   for (size_t stage = 0; stage < timings.size(); ++stage) {
     if (timing_current[stage]) cached.valid_until_ns = (std::min)(cached.valid_until_ns,
-        timings[stage].measured_ns + gpu_timers::internal::kSampleAgeNs);
+        timings[stage].recorded_ns + gpu_timers::internal::kSampleAgeNs);
     if (proof_current[stage]) cached.valid_until_ns = (std::min)(cached.valid_until_ns,
-        proofs[stage].measured_ns + gpu_timers::internal::kSampleAgeNs);
+        proofs[stage].recorded_ns + gpu_timers::internal::kSampleAgeNs);
   }
   cached.complete = need_monitor;
   ++cached.refreshes;

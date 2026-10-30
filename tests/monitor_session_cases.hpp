@@ -355,6 +355,7 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   preserve(identity_reads);
   identity = {.configuration_generation = r::configuration_generation.load(),
               .settings_hash = 17, .resolution_hash = 23};
+  identity.device_session = timers::device_session;
   identity_reads = 0;
   timers::comparison_settings = +[](addon::gpu_comparison::Identity* output) {
     ++identity_reads;
@@ -378,6 +379,7 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   measured.valid = true;
   measured.state = timers::SampleState::VALID;
   measured.measured_ns = r::SteadyNowNs();
+  measured.recorded_ns = measured.measured_ns;
   measured.identity = identity;
   measured.total_us = 1250;
   measured.sequence = 1;
@@ -389,6 +391,53 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
             && current.monitor.passes[0].gpu_state == ui::MonitorGpuState::CURRENT
             && current.monitor.passes[0].gpu_cost == "1.250 ms" && identity_reads != 0,
         "fresh production snapshot displays the exact current synthetic timestamp sample");
+  r::nr_cost_gpu_ms = 99.f;
+  r::nr_cost_present_ms = 88.f;
+  r::monitor_snapshot.attempted_ns = 0;
+  const auto exact_cost = r::RefreshMonitorSnapshot(true);
+  check(exact_cost.card.nr_gpu_ms == 1.25f && exact_cost.card.nr_present_ms == 0.f
+            && exact_cost.summary.gpu == "1.2 ms",
+        "single-stage monitor cost comes from its current completed group, never retained global cost");
+  const auto saved_measured = measured;
+  for (const auto state : {timers::SampleState::PENDING, timers::SampleState::REPLAYED,
+                           timers::SampleState::EXPIRED}) {
+    measured.state = state;
+    r::monitor_snapshot.attempted_ns = 0;
+    const auto rejected = r::RefreshMonitorSnapshot(true);
+    check(rejected.summary.gpu.empty() && !rejected.monitor.passes[0].execution_confirmed,
+          "valid flag alone cannot promote pending, replayed or expired samples");
+  }
+  measured = saved_measured;
+  auto& newer_proof = timers::execution_stats[stage];
+  newer_proof = measured;
+  newer_proof.sequence = measured.sequence + 1;
+  newer_proof.passes[0].width = 1715;
+  newer_proof.passes[0].height = 965;
+  r::monitor_snapshot.attempted_ns = 0;
+  const auto newer_size = r::RefreshMonitorSnapshot(true);
+  check(newer_size.monitor.passes[0].actual_size == "1715 x 965"
+            && newer_size.monitor.passes[0].gpu_cost.empty() && newer_size.summary.gpu.empty(),
+        "a newer completed working size cannot inherit an older timed contract's GPU cost");
+  newer_proof = {};
+  r::stack_passes = 2;
+  r::hook_point = r::kHookRender;
+  preserve_atomic(r::pass_stage[0]);
+  r::pass_stage[0] = 2;
+  auto& render = timers::stage_stats[0];
+  render = measured;
+  measured.passes[0].id = 1;
+  r::monitor_snapshot.attempted_ns = 0;
+  const auto cross_stage = r::RefreshMonitorSnapshot(true);
+  check(cross_stage.monitor.passes[0].execution_confirmed && cross_stage.monitor.passes[1].execution_confirmed
+            && cross_stage.summary.gpu.empty() && cross_stage.card.nr_gpu_ms == 0.f
+            && cross_stage.card.nr_present_ms == 0.f,
+        "same-configuration same-time Stage samples cannot establish a common execution cycle or total");
+  render = {};
+  measured = saved_measured;
+  r::stack_passes = 1;
+  r::hook_point = r::kHookUpscaled;
+  r::monitor_snapshot.attempted_ns = 0;
+  r::RefreshMonitorSnapshot(true);
   const auto reads_after_refresh = identity_reads;
   const auto refreshes_after_refresh = r::monitor_snapshot.refreshes;
   r::monitor_snapshot.attempted_ns = r::SteadyNowNs();
@@ -428,6 +477,7 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   proof.valid = true;
   proof.state = timers::SampleState::VALID;
   proof.measured_ns = r::SteadyNowNs();
+  proof.recorded_ns = proof.measured_ns;
   proof.identity = identity;
   proof.sequence = 2;
   proof.passes[0] = {.id = 0, .width = 2560, .height = 1440, .state = timers::SampleState::VALID};

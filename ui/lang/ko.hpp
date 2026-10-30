@@ -2125,6 +2125,7 @@ inline constexpr Translation kKo[] = {
     {"Estimated working resolution: %ux%u", "예상 작업 해상도: %ux%u"},
     {"Estimated working resolution", "예상 작업 해상도"},
     {"Actual working resolution", "실제 작업 해상도"},
+    {"Dynamic resolution or a pending size change can make the estimate differ from the completed working size.", "동적 해상도 또는 대기 중인 크기 변경으로 인해 예상값과 완료된 작업 크기가 다를 수 있습니다."},
     {"Estimate uses the last observed reference. Actual dimensions require a current completed sample.", "마지막으로 관측된 기준으로 추정합니다. 실제 크기에는 현재 완료된 샘플이 필요합니다."},
     {"Working resolution history", "작업 해상도 이력"},
     {"On", "켬"},

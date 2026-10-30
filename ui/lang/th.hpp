@@ -2125,6 +2125,7 @@ inline constexpr Translation kTh[] = {
     {"Estimated working resolution: %ux%u", "ความละเอียดการทำงานโดยประมาณ: %ux%u"},
     {"Estimated working resolution", "ความละเอียดการทำงานโดยประมาณ"},
     {"Actual working resolution", "ความละเอียดการทำงานจริง"},
+    {"Dynamic resolution or a pending size change can make the estimate differ from the completed working size.", "ความละเอียดแบบไดนามิกหรือการเปลี่ยนขนาดที่ยังรอดำเนินการอาจทำให้ค่าประมาณต่างจากขนาดการทำงานที่เสร็จสมบูรณ์"},
     {"Estimate uses the last observed reference. Actual dimensions require a current completed sample.", "ค่าประมาณใช้ค่าอ้างอิงที่สังเกตพบล่าสุด ขนาดจริงต้องมีตัวอย่างปัจจุบันที่เสร็จสมบูรณ์แล้ว"},
     {"Working resolution history", "ประวัติความละเอียดการทำงาน"},
     {"On", "เปิด"},

@@ -98,19 +98,13 @@ inline ImVec2 SlotWindowPosition(const SlotAnchor& anchor, ImVec2 size) {
   const float gap = ImGui::GetStyle().ItemSpacing.x;
   const ImVec2 minimum(0.f, 0.f);
   const auto maximum = ImGui::GetIO().DisplaySize;
-  ImVec2 position(anchor.maximum.x + gap, anchor.minimum.y);
-  const float right = maximum.x - anchor.menu_maximum.x - gap;
-  const float left = anchor.menu_minimum.x - minimum.x - gap;
-  if (right >= size.x || left >= size.x) {
-    position.x = (right >= size.x && (left < size.x
-                      || anchor.menu_maximum.x - anchor.maximum.x <= anchor.minimum.x - anchor.menu_minimum.x)
-                      ? anchor.menu_maximum.x + gap
-                      : anchor.menu_minimum.x - gap - size.x);
-  } else {
-    position.x = anchor.minimum.x;
-    position.y = (anchor.maximum.y + gap + size.y <= maximum.y
-                      ? anchor.maximum.y + gap
-                      : anchor.minimum.y - gap - size.y);
+  ImVec2 position(anchor.minimum.x, anchor.maximum.y + gap);
+  if (position.y + size.y > maximum.y) {
+    if (anchor.minimum.y - gap - size.y >= minimum.y) {
+      position.y = anchor.minimum.y - gap - size.y;
+    } else if (anchor.minimum.x - gap - size.x >= minimum.x) {
+      position = ImVec2(anchor.minimum.x - gap - size.x, anchor.minimum.y);
+    }
   }
   position.x = std::clamp(position.x, minimum.x, (std::max)(minimum.x, maximum.x - size.x));
   position.y = std::clamp(position.y, minimum.y, (std::max)(minimum.y, maximum.y - size.y));
@@ -1225,7 +1219,20 @@ inline void DrawSlotContext(int index) {
   }
   const auto display = ImGui::GetIO().DisplaySize;
   const float margin = ImGui::GetFontSize();
-  const float width = (std::max)(1.f, (std::min)(margin * 22.f, display.x - margin * 2.f));
+  const char* official_labels[] = {"Restore official defaults", "Export profile"};
+  const char* custom_labels[] = {"Rename slot", "Copy from official profile", "Export profile",
+                                 "Import profile", "Clear slot"};
+  float content_width = 0.f;
+  const auto measure = [&](const char* label) {
+    content_width = (std::max)(content_width, ImGui::CalcTextSize(ui::Tr(label)).x);
+  };
+  if (index < 3) {
+    for (const char* label : official_labels) measure(label);
+  } else {
+    for (const char* label : custom_labels) measure(label);
+  }
+  const float padding = ImGui::GetStyle().WindowPadding.x * 2.f + ImGui::GetStyle().FramePadding.x * 2.f;
+  const float width = (std::max)(1.f, (std::min)(content_width + padding, display.x - margin * 2.f));
   // Wrapped action buttons need an initial content width; auto-fit cannot grow
   // a popup whose labels were already wrapped to its provisional narrow width.
   ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.f),
@@ -1247,28 +1254,15 @@ inline bool DrawQuick() {
   const float manage_width = (std::min)(
       available * 0.40f, ImGui::CalcTextSize(ui::Tr("Manage profiles")).x +
                              ImGui::GetStyle().FramePadding.x * 2.f);
-  const float undo_width = (std::min)(available * 0.24f,
-      ImGui::CalcTextSize(ui::Tr("Undo")).x + ImGui::GetStyle().FramePadding.x * 2.f);
   {
     ui::StyleScope title;
     title.FontSize(ui::ModuleFontSize());
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(
         ui::Ellipsize(ui::Tr("NR Profiles"),
-                      (std::max)(1.f, available - manage_width - undo_width - gap * 2.f))
+                      (std::max)(1.f, available - manage_width - gap))
             .c_str());
   }
-  ImGui::SameLine(start + available - manage_width - undo_width - gap);
-  ImGui::BeginDisabled(!undo.available || !loaded || !writable || Busy()
-                       || pending_action != Action::NONE || Resetting() || reset.recovery_failed
-                       || first_install.pending || (interaction_busy && interaction_busy()));
-  const auto undo_label = ui::Ellipsize(ui::Tr("Undo"),
-      (std::max)(1.f, undo_width - ImGui::GetStyle().FramePadding.x * 2.f)) + "###undo_profile";
-  if (ImGui::Button(undo_label.c_str(), ImVec2(undo_width, 0.f))) {
-    Request(Action::UNDO);
-  }
-  ImGui::EndDisabled();
-  ui::ItemTooltip("%s: %s\n%s", ui::Tr("Undo"), ui::Tr(undo.action_label), Name(undo.action_index).c_str());
   ImGui::SameLine(start + available - manage_width);
   const auto manage_label = ui::Ellipsize(ui::Tr("Manage profiles"),
       (std::max)(1.f, manage_width - ImGui::GetStyle().FramePadding.x * 2.f)) + "###open_presets";
@@ -1498,13 +1492,6 @@ inline bool DrawQuick() {
                "existing fallback policy.");
     ImGui::TextUnformatted(ui::Ellipsize(message, available).c_str());
     ui::ItemTooltip("%s", message);
-  }
-  if (!notice.empty() && !important) {
-    ImGui::TextWrapped(
-        "%s", ui::Tr(notice == "Profile applied. Runtime execution is pending "
-                               "confirmation."
-                         ? SaveStatus()
-                         : notice.c_str()));
   }
   if (important) {
     ui::StyleScope warning;

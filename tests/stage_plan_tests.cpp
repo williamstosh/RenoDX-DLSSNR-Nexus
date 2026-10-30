@@ -40,6 +40,21 @@ int main() {
 
 #include "stage_change_cases.hpp"
 
+  {
+    namespace cap = renodx::addons::dlss5::capability;
+    const cap::EffectiveResolution scaled{.follow_input = false, .scale = .67f};
+    const auto render = cap::ResolveWorkingSize(scaled,
+        {.reference_width = 1715, .reference_height = 965, .guide_width = 1715, .guide_height = 965});
+    const auto upscaled = cap::ResolveWorkingSize(scaled,
+        {.reference_width = 2560, .reference_height = 1440, .guide_width = 1715, .guide_height = 965});
+    check(render == cap::Size{1149, 647} && upscaled == cap::Size{1715, 965},
+          "67 percent uses each Stage reference once: Render input versus Upscaled output");
+    check(cap::ResolveWorkingSize({.follow_input = true},
+              {.reference_width = 2560, .reference_height = 1440, .guide_width = 1715, .guide_height = 965})
+              == cap::Size{1715, 965},
+          "following Guide does not apply the configured percentage a second time");
+  }
+
   for (uint32_t count = 1, combinations = 1; count <= 4; ++count, combinations *= 4) {
     for (uint32_t hook = 0; hook < hook_stages.size(); ++hook) {
       context = "legacy count=" + std::to_string(count) + " hook=" + std::to_string(hook);

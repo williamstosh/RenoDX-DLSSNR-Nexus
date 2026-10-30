@@ -2125,6 +2125,7 @@ inline constexpr Translation kSl[] = {
     {"Estimated working resolution: %ux%u", "Ocenjena delovna ločljivost: %ux%u"},
     {"Estimated working resolution", "Ocenjena delovna ločljivost"},
     {"Actual working resolution", "Dejanska delovna ločljivost"},
+    {"Dynamic resolution or a pending size change can make the estimate differ from the completed working size.", "Dinamična ločljivost ali čakajoča sprememba velikosti lahko povzroči razliko med oceno in dokončano delovno velikostjo."},
     {"Estimate uses the last observed reference. Actual dimensions require a current completed sample.", "Ocena uporablja nazadnje opaženo referenco. Dejanske mere zahtevajo trenutni zaključen vzorec."},
     {"Working resolution history", "Zgodovina delovne ločljivosti"},
     {"On", "Vklop"},

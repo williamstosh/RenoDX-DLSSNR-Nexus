@@ -2125,6 +2125,7 @@ inline constexpr Translation kRu[] = {
     {"Estimated working resolution: %ux%u", "Предполагаемое рабочее разрешение: %ux%u"},
     {"Estimated working resolution", "Предполагаемое рабочее разрешение"},
     {"Actual working resolution", "Фактическое рабочее разрешение"},
+    {"Dynamic resolution or a pending size change can make the estimate differ from the completed working size.", "Динамическое разрешение или ожидающее изменение размера может привести к отличию оценки от завершённого рабочего размера."},
     {"Estimate uses the last observed reference. Actual dimensions require a current completed sample.", "Оценка использует последний наблюдаемый эталон. Для фактических размеров нужен текущий завершённый замер."},
     {"Working resolution history", "История рабочего разрешения"},
     {"On", "Вкл"},

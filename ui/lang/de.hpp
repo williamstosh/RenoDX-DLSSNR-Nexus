@@ -2125,6 +2125,7 @@ inline constexpr Translation kDe[] = {
     {"Estimated working resolution: %ux%u", "Geschätzte Arbeitsauflösung: %ux%u"},
     {"Estimated working resolution", "Geschätzte Arbeitsauflösung"},
     {"Actual working resolution", "Tatsächliche Arbeitsauflösung"},
+    {"Dynamic resolution or a pending size change can make the estimate differ from the completed working size.", "Dynamische Auflösung oder eine ausstehende Größenänderung kann dazu führen, dass die Schätzung von der abgeschlossenen Arbeitsgröße abweicht."},
     {"Estimate uses the last observed reference. Actual dimensions require a current completed sample.", "Die Schätzung verwendet die zuletzt beobachtete Referenz. Tatsächliche Abmessungen erfordern eine aktuelle abgeschlossene Messung."},
     {"Working resolution history", "Verlauf der Arbeitsauflösung"},
     {"On", "Ein"},

@@ -28,7 +28,9 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
   if (!docs_only) {
     for (const int language : {1, 14}) {
       const std::string suffix = (language == 1 ? "-en" : "-zh");
-      for (const char* action : {"a-stage-preview", "a-stage-cancel", "a-stage-confirm", "a-f6-on", "a-f6-off", "a-checking", "a-active"}) {
+      for (const char* action : {"a-stage-preview", "a-stage-cancel", "a-stage-confirm", "a-stage-direct", "a-stage-escape",
+                                 "a-stage-return-render", "a-stage-return-upscaled",
+                                 "a-f6-on", "a-f6-off", "a-checking", "a-active"}) {
         scenarios.push_back({.id = std::string(action) + suffix, .page = 1, .action = action,
                              .language = language, .width = 1100.f});
       }
@@ -568,20 +570,51 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
         .fix = {"Synthetic repair instruction"}, .fix_count = 1};
     ui::StatusCard phase_a_card;
     if (scenario.action.starts_with("a-stage-")) {
+      const bool returning = scenario.action.starts_with("a-stage-return-");
+      if (returning) {
+        runtime::hook_point = runtime::kHookPresent;
+        runtime::pass_stage[0] = 3u;
+        frame();
+      }
       const auto original = profile::Snapshot();
-      const bool segmented = std::ranges::any_of(items, [&](const auto& entry) { return entry.second.label == ui::Tr("Present"); });
+      const char* target = (scenario.action == "a-stage-return-render" ? "Render"
+          : scenario.action == "a-stage-direct" || scenario.action == "a-stage-return-upscaled" ? "Upscaled" : "Present");
+      const bool segmented = std::ranges::any_of(items, [&](const auto& entry) { return entry.second.label == ui::Tr(target); });
       if (!segmented) click(find("##stage_value"));
-      check(!find(ui::Tr("Present")).disabled, "stage preview must be reachable through the real control");
-      click(find(ui::Tr("Present")));
-      check(runtime::stage_edit::pending && profile::Snapshot() == original, "stage selection opens preview without mutation");
-      check(!find("cancel_stage_change").disabled && !find("confirm_stage_change").disabled, "stage preview provides cancel and confirm");
-      if (scenario.action == "a-stage-cancel") {
-        click(find("cancel_stage_change"));
-        check(!runtime::stage_edit::pending && profile::Snapshot() == original, "real Cancel keeps original configuration");
-      } else if (scenario.action == "a-stage-confirm") {
-        click(find("confirm_stage_change"));
-        check(!runtime::stage_edit::pending && runtime::hook_point.load() == 2
-                  && runtime::pass_stage[0].load() == 3, "real Confirm publishes the complete candidate chain");
+      check(!find(ui::Tr(target)).disabled, "stage preview must be reachable through the real control");
+      click(find(ui::Tr(target)));
+      if (scenario.action == "a-stage-direct") {
+        auto expected = original;
+        expected["NRHookPoint"] = 0u;
+        check(!runtime::stage_edit::pending && profile::Snapshot() == expected,
+              "real Stage selection directly commits only the chosen pass when no collateral stage changes");
+        check(!ImGui::IsPopupOpen("###nr_stage_change", ImGuiPopupFlags_AnyPopupId),
+              "direct stage edit does not open a confirmation modal");
+      } else {
+        check(runtime::stage_edit::pending && profile::Snapshot() == original, "stage selection opens preview without mutation");
+        check(!find("cancel_stage_change").disabled && !find("confirm_stage_change").disabled, "stage preview provides cancel and confirm");
+        if (scenario.action == "a-stage-cancel") {
+          click(find("cancel_stage_change"));
+          check(!runtime::stage_edit::pending && profile::Snapshot() == original, "real Cancel keeps original configuration");
+        } else if (returning) {
+          const uint32_t hook = (scenario.action == "a-stage-return-render" ? 1u : 0u);
+          auto expected = original;
+          expected.update({{"NRHookPoint", hook}, {"NRPass2Stage", 2u}});
+          click(find("confirm_stage_change"));
+          check(!runtime::stage_edit::pending && profile::Snapshot() == expected,
+                "real Present pair controls reach and commit Render/Upscaled candidates without altering other fields");
+        } else if (scenario.action == "a-stage-confirm") {
+          click(find("confirm_stage_change"));
+          check(!runtime::stage_edit::pending && runtime::hook_point.load() == 2
+                    && runtime::pass_stage[0].load() == 3, "real Confirm publishes the complete candidate chain");
+        } else if (scenario.action == "a-stage-escape") {
+          io.AddKeyEvent(ImGuiKey_Escape, true);
+          frame();
+          io.AddKeyEvent(ImGuiKey_Escape, false);
+          frame();
+          check(!runtime::stage_edit::pending && runtime::stage_edit::changes.empty()
+                    && profile::Snapshot() == original, "Escape cancels the staged transaction without publishing settings");
+        }
       }
       interaction = "real Stage selection and transaction modal; synthetic configuration only";
     } else if (scenario.action.starts_with("b-hud-") || scenario.action.starts_with("c-hud-")) {
@@ -732,8 +765,10 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
         io.AddMouseButtonEvent(ImGuiMouseButton_Right, false); frame(); settle();
         check(profile::active == before, "right-click snapshot must never switch the selected slot");
         const Item first_action = find(scenario.action == "official-context" ? "restore_profile" : "Rename slot");
-        check(first_action.window->Size.x >= (std::min)(font_size * 12.f, io.DisplaySize.x - font_size * 2.f),
-              "wrapped slot menus require a readable width rather than an auto-fit feedback collapse");
+        // Measure the popup rendered with its locked legacy atlas. CalcTextSize
+        // after Render() can bake a new size and invalidate that atlas between frames.
+        check(first_action.window->ContentSize.x <= first_action.window->InnerRect.GetWidth() + 1.f,
+              "slot menu width accommodates its translated action within the display");
         const char* action = nullptr;
         if (scenario.action == "slot-rename") action = "Rename slot";
         if (scenario.action == "slot-copy") action = "Copy from official profile";

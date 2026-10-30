@@ -2125,6 +2125,7 @@ inline constexpr Translation kFr[] = {
     {"Estimated working resolution: %ux%u", "Résolution de travail estimée : %ux%u"},
     {"Estimated working resolution", "Résolution de travail estimée"},
     {"Actual working resolution", "Résolution de travail réelle"},
+    {"Dynamic resolution or a pending size change can make the estimate differ from the completed working size.", "La résolution dynamique ou un changement de taille en attente peut créer un écart entre l’estimation et la taille de travail terminée."},
     {"Estimate uses the last observed reference. Actual dimensions require a current completed sample.", "L’estimation utilise la dernière référence observée. Les dimensions réelles nécessitent un échantillon actuel terminé."},
     {"Working resolution history", "Historique de la résolution de travail"},
     {"On", "Activé"},

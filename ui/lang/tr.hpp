@@ -2125,6 +2125,7 @@ inline constexpr Translation kTr[] = {
     {"Estimated working resolution: %ux%u", "Tahmini çalışma çözünürlüğü: %ux%u"},
     {"Estimated working resolution", "Tahmini çalışma çözünürlüğü"},
     {"Actual working resolution", "Gerçek çalışma çözünürlüğü"},
+    {"Dynamic resolution or a pending size change can make the estimate differ from the completed working size.", "Dinamik çözünürlük veya bekleyen boyut değişikliği, tahminin tamamlanan çalışma boyutundan farklı olmasına neden olabilir."},
     {"Estimate uses the last observed reference. Actual dimensions require a current completed sample.", "Tahmin, son gözlemlenen referansı kullanır. Gerçek boyutlar için güncel ve tamamlanmış bir örnek gerekir."},
     {"Working resolution history", "Çalışma çözünürlüğü geçmişi"},
     {"On", "Açık"},

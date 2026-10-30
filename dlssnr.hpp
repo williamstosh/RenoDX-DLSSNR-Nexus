@@ -9340,7 +9340,6 @@ inline void BindComparisonContext(const FeatureState& feature, const FeatureStat
     const stage_plan::Plan& plan, const PresentTarget* present = nullptr) {
   if (!gpu_timers::internal::current.active) return;
   auto& sample = gpu_timers::internal::segments[gpu_timers::internal::current.idx].comparison;
-  if (sample.sequence == 0) return;
   auto& identity = sample.identity;
   identity.source_generation = (present != nullptr ? present->diagnostic_source_generation : feature.source_generation);
   identity.source_feature = (present != nullptr ? present->diagnostic_source_feature : feature.source_feature);
@@ -19290,14 +19289,50 @@ struct CardObservation {
 inline CardObservation card_observation;
 
 inline bool CurrentGpuSample(const gpu_timers::Stats& sample, int64_t now_ns) {
-  if (!enabled.load() || !sample.valid || sample.measured_ns <= 0 || now_ns < sample.measured_ns
+  if (!enabled.load() || !sample.valid || sample.state != gpu_timers::SampleState::VALID
+      || sample.recorded_ns <= 0 || sample.recorded_ns > sample.measured_ns
+      || now_ns < sample.recorded_ns || now_ns - sample.recorded_ns > gpu_timers::internal::kSampleAgeNs
+      || sample.measured_ns <= 0 || now_ns < sample.measured_ns
       || now_ns - sample.measured_ns > gpu_timers::internal::kSampleAgeNs
       || gpu_timers::comparison_settings == nullptr) return false;
+  const auto stage = gpu_timers::StageIndex(sample.path);
+  if (sample.identity.source_generation != 0) {
+    const auto& observed = stage_telemetry[stage].last_evaluate;
+    if (sample.identity.stable_epoch != comparison_stable_epochs[stage]
+        || observed.source_released
+        || (observed.source_generation != 0 && observed.source_generation != sample.identity.source_generation)) return false;
+  }
   gpu_comparison::Identity current;
   gpu_timers::comparison_settings(&current);
   return sample.identity.configuration_generation == current.configuration_generation
+      && sample.identity.config_epoch == current.config_epoch
+      && sample.identity.device_session == gpu_timers::device_session
       && sample.identity.settings_hash == current.settings_hash && sample.identity.resolution_hash == current.resolution_hash
       && sample.identity.route == current.route && sample.identity.fg == current.fg;
+}
+
+inline capability::Size CurrentPassWorkingEstimate(uint32_t pass, int64_t now_ns, capability::Size* stage_reference = nullptr) {
+  if (stage_reference != nullptr) *stage_reference = {};
+  std::optional<RuntimeLock> lock;
+  if (!runtime_lock::State::HeldByThisThread()) lock.emplace(runtime_mutex);
+  const auto plan = RequestedStagePlan();
+  if (!plan.valid || pass >= plan.pass_count) return {};
+  const auto stage = static_cast<size_t>(plan.effective[pass]);
+  const gpu_timers::Stats* reference = nullptr;
+  for (const auto* sample : {&gpu_timers::stage_stats[stage], &gpu_timers::execution_stats[stage]}) {
+    if (!CurrentGpuSample(*sample, now_ns) || sample->identity.source_generation == 0
+        || gpu_timers::StageIndex(sample->path) != stage || sample->width == 0 || sample->height == 0) continue;
+    const bool has_pass = std::any_of(sample->passes.begin(), sample->passes.end(), [pass](const auto& layer) {
+      return layer.id == pass && layer.state == gpu_timers::SampleState::VALID;
+    });
+    if (has_pass && (reference == nullptr || sample->sequence > reference->sequence)) reference = sample;
+  }
+  if (reference == nullptr) return {};
+  if (stage_reference != nullptr) *stage_reference = {.width = reference->width, .height = reference->height};
+  const auto settings = CurrentPassResolution(pass);
+  if (settings.follow_input) return {};
+  return capability::ResolveWorkingSize({.scale = settings.scale},
+      {.reference_width = reference->width, .reference_height = reference->height});
 }
 
 inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
@@ -22297,6 +22332,10 @@ inline bool IsStageSetting(const Setting& setting) {
 }
 
 inline presets::Json ProposedStageValues(const Setting& setting, float value) {
+  if (!IsStageSetting(setting) || !std::isfinite(value) || value < 0.f
+      || value > (&setting == &kSetHookPoint ? 2.f : 3.f) || std::floor(value) != value) {
+    return presets::Json::object();
+  }
   std::optional<RuntimeLock> lock;
   if (!runtime_lock::State::HeldByThisThread()) lock.emplace(runtime_mutex);
   stage_plan::Configuration before{.pass_count = stack_passes.load(), .hook_point = hook_point.load()};
@@ -22305,7 +22344,17 @@ inline presets::Json ProposedStageValues(const Setting& setting, float value) {
     before.stages[pass - 1] = pass_stage[pass - 1].load();
     if (&setting == &kSetPassStage[pass - 1]) edited = pass;
   }
-  const auto after = stage_plan::ProposeStageChange(before, edited, static_cast<uint32_t>(value));
+  const auto stage_values = [&](const stage_plan::Configuration& candidate) {
+    presets::Json values{{"NRHookPoint", candidate.hook_point}};
+    for (uint32_t pass = 1; pass < before.pass_count; ++pass) {
+      values[kSetPassStage[pass - 1].key] = candidate.stages[pass - 1];
+    }
+    return values;
+  };
+  const auto after = stage_plan::ProposeStageChange(before, edited, static_cast<uint32_t>(value),
+      [&](const stage_plan::Configuration& candidate) {
+        return ValidateConfigurationCapability(stage_values(candidate), nullptr);
+      });
   presets::Json changes = presets::Json::object();
   if (after.hook_point != before.hook_point) changes["NRHookPoint"] = after.hook_point;
   for (uint32_t pass = 1; pass < before.pass_count; ++pass) {
@@ -22326,7 +22375,10 @@ inline bool CanChooseSetting(const Setting& setting, float value, std::string* r
   if (!IsCapabilitySetting(setting.key) || std::abs(value - setting.Get()) < 0.00001f) return true;
   // Recovery to inherited sizes is always available, even before device discovery.
   if (std::string_view(setting.key).ends_with("ResolutionMode") && value == 0.f) return true;
-  if (IsStageSetting(setting)) return ValidateConfigurationCapability(ProposedStageValues(setting, value), reason);
+  if (IsStageSetting(setting)) {
+    const auto changes = ProposedStageValues(setting, value);
+    return !changes.empty() && ValidateConfigurationCapability(changes, reason);
+  }
   return ValidateConfigurationCapability({{setting.key, value}}, reason);
 }
 
@@ -23197,22 +23249,39 @@ inline void DrawResolutionObserved(const ui::PanelText& text, uint32_t pass = 0,
     case stage_plan::Stage::PRESENT: reference = ui::text::kResolutionReferencePresent; break;
   }
   if (!historical) {
-    const auto settings = CurrentPassResolution(pass);
-    const bool render = stage == stage_plan::Stage::RENDER;
-    const uint32_t width = render ? last_input_width.load() : last_output_width.load();
-    const uint32_t height = render ? last_input_height.load() : last_output_height.load();
-    if (!settings.follow_input && width != 0 && height != 0) {
-      const auto estimate = capability::ResolveWorkingSize({.scale = settings.scale},
-          {.reference_width = width, .reference_height = height});
-      ImGui::TextWrapped(text.Tr("Estimated working resolution: %ux%u"), estimate.width, estimate.height);
-    } else {
-      ImGui::TextWrapped("%s: %s", text.Tr("Estimated working resolution"), text.Tr("Pending confirmation"));
-    }
-    ui::ItemTooltip("%s", text.Tr("Estimate uses the last observed reference. Actual dimensions require a current completed sample."));
+    capability::Size stage_reference;
+    const auto estimate = CurrentPassWorkingEstimate(pass, SteadyNowNs(), &stage_reference);
     const bool current = ui_monitor_view != nullptr && pass < ui_monitor_view->pass_count
         && ui_monitor_view->passes[pass].execution_confirmed;
-    ImGui::TextWrapped("%s: %s", text.Tr("Actual working resolution"),
+    const bool differs = current && estimate.width != 0 && estimate.height != 0
+        && ui_monitor_view->passes[pass].actual_size != std::to_string(estimate.width) + " x " + std::to_string(estimate.height);
+    ImGui::TextWrapped("P%u | %s: %s", pass + 1, text.Tr("Actual working resolution"),
         current ? ui_monitor_view->passes[pass].actual_size.c_str() : text.Tr("Pending confirmation"));
+    bool hovered = ImGui::IsItemHovered();
+    if (differs) {
+      ImGui::TextWrapped(text.Tr("Estimated working resolution: %ux%u"), estimate.width, estimate.height);
+      hovered |= ImGui::IsItemHovered();
+    }
+    if (hovered) {
+      ImGui::BeginTooltip();
+      ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.f);
+      if (estimate.width != 0 && estimate.height != 0) {
+        ImGui::TextWrapped(text.Tr("Estimated working resolution: %ux%u"), estimate.width, estimate.height);
+        ImGui::TextWrapped("%s %ux%u", text.Tr(reference), stage_reference.width, stage_reference.height);
+      } else {
+        ImGui::TextWrapped("%s: %s", text.Tr("Estimated working resolution"), text.Tr("Pending confirmation"));
+        ImGui::TextWrapped("%s", text.Tr(reference));
+      }
+      ImGui::TextWrapped("%s: %s", text.Tr("Actual working resolution"),
+          current ? ui_monitor_view->passes[pass].actual_size.c_str() : text.Tr("Pending confirmation"));
+      if (differs) {
+        ImGui::TextWrapped("%s", text.Tr("Dynamic resolution or a pending size change can make the estimate differ from the completed working size."));
+      }
+      ImGui::TextWrapped("%s", text.Tr("Estimate uses the last observed reference. Actual dimensions require a current completed sample."));
+      ImGui::TextWrapped("%s", text.Tr(ui::text::kPassResolutionTip));
+      ImGui::PopTextWrapPos();
+      ImGui::EndTooltip();
+    }
     return;
   }
   ImGui::TextUnformatted(text.Tr("Working size details (?)"));
@@ -25745,7 +25814,8 @@ inline void DrawPanelBody(reshade::api::effect_runtime* runtime) {
   ui::SectionGap();
   if (profile_ui::Resetting()) {
     ImGui::TextWrapped("%s", ui::Tr("Saving profiles and restoring defaults..."));
-  } else if (!profile_ui::reset_notice.empty()) {
+  } else if (!profile_ui::reset_notice.empty()
+             && profile_ui::reset_notice != "Defaults restored; custom profiles were kept.") {
     ImGui::TextWrapped("%s", ui::Tr(profile_ui::reset_notice.c_str()));
     if (!profile_ui::reset_error.empty()) {
       ImGui::TextWrapped("%s", ui::Tr(profile_ui::reset_error.c_str()));
@@ -25755,12 +25825,8 @@ inline void DrawPanelBody(reshade::api::effect_runtime* runtime) {
     profile_ui::RetryResetRecovery();
   }
   ImGui::BeginDisabled(profile_ui::Resetting() || profile_ui::reset.recovery_failed);
-  if (!stage_edit::notice.empty()) ImGui::TextWrapped("%s", ui::Tr(stage_edit::notice.c_str()));
   if (!stage_edit::pending && !stage_edit::error.empty()) {
     ImGui::TextWrapped("%s", ui::Tr(stage_edit::error.c_str()));
-  }
-  if (!stage_edit::undo.empty() && ui::ActionButton(ui::Tr("Undo stage change"), "undo_stage_change")) {
-    if (preset_ui::Undo(&stage_edit::error, &stage_edit::undo)) stage_edit::notice = "Stage change undone. Later edits were kept.";
   }
   if (ui_classic_layout.load()) {
     DrawClassicLayout(runtime, card);

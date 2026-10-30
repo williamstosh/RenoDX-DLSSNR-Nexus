@@ -73,6 +73,8 @@
     sample.state = timers::SampleState::VALID;
     sample.sequence = ++timers::internal::next_sequence;
     sample.measured_ns = tick_ns;
+    sample.recorded_ns = tick_ns;
+    sample.identity.device_session = timers::device_session;
     runtime::comparison_ui::CaptureSettings(&sample.identity);
     for (uint32_t local = 0; local < count; ++local) {
       sample.passes[local].id = first_pass + local;

@@ -2125,6 +2125,7 @@ inline constexpr Translation kPtBr[] = {
     {"Estimated working resolution: %ux%u", "Resolução de trabalho estimada: %ux%u"},
     {"Estimated working resolution", "Resolução de trabalho estimada"},
     {"Actual working resolution", "Resolução de trabalho real"},
+    {"Dynamic resolution or a pending size change can make the estimate differ from the completed working size.", "A resolução dinâmica ou uma mudança de tamanho pendente pode fazer a estimativa diferir do tamanho de trabalho concluído."},
     {"Estimate uses the last observed reference. Actual dimensions require a current completed sample.", "A estimativa usa a última referência observada. As dimensões reais exigem uma amostra atual concluída."},
     {"Working resolution history", "Histórico da resolução de trabalho"},
     {"On", "Ligado"},

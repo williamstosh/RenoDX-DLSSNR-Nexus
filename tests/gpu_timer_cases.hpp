@@ -113,6 +113,8 @@ int Run() {
           "closed single real queue submission publishes with its frequency");
     Check(timers::stats.identity == recorded_identity,
           "published ordinary GPU sample retains recording identity");
+    Check(timers::stats.recorded_ns > 0 && timers::stats.recorded_ns <= timers::stats.measured_ns,
+          "ordinary timing preserves recording age independently of delayed completion");
     Check(timers::stats.passes[1].state == State::NOT_EXECUTED && timers::stats.passes[1].total_us == 0
               && timers::stats.passes[2].total_us == 0 && timers::stats.passes[3].total_us == 0
               && !timers::stats.passes[0].look_measured,
@@ -320,6 +322,40 @@ int Run() {
                 << ": A1=16x16 B2=11x11, GPU copy model/readback\n";
     }
     timers::comparison.Reset();
+    native::stack_passes = 1;
+    native::hook_point = native::kHookRender;
+    native::nr_resolution_scale = .67f;
+    bool reference_proven = false;
+    for (uint32_t attempt = 0; attempt < native::kContractDebounceFrames + 40 && !reference_proven; ++attempt) {
+      const auto min_sequence = timers::internal::next_sequence + 1;
+      stage_execution_cases::evaluations.clear();
+      {
+        const addon::EvaluateChainScope chain;
+        native::PreSrSwap swap;
+        native::ProcessInlinePreSR(gpu.list.Get(), handle, &parameters, swap);
+        native::RestorePreSrColor(&parameters, swap);
+      }
+      for (auto& window : timers::internal::display_windows) window.updated_ns = 0;
+      finish();
+      const auto& render = timers::stage_stats[0];
+      if (stage_execution_cases::evaluations.size() != 1 || render.sequence < min_sequence
+          || !native::CurrentGpuSample(render, timers::NowNs())) continue;
+      const auto& call = stage_execution_cases::evaluations[0];
+      Check(call.input.width == 11 && call.input.height == 11
+                && native::last_input_width.load() == 11 && native::last_output_width.load() == 16,
+            "actual Render production success stores scaled NR input, not the reference, in last_input_width");
+      Check(render.width == 16 && render.height == 16 && render.identity.source_generation != 0
+                && render.passes[0].width == 11 && render.passes[0].height == 11,
+            "actual Render recording binds unscaled 16x16 Stage reference and scaled 11x11 working input");
+      Check(native::CurrentPassWorkingEstimate(0, timers::NowNs()) == addon::capability::Size{11, 11},
+            "production estimate uses the proven Stage reference once, never rescaling the NR input to 7x7");
+      Check(native::CurrentPassWorkingEstimate(0, render.recorded_ns + timers::internal::kSampleAgeNs + 1)
+                == addon::capability::Size{},
+            "expired Render reference cannot produce a current estimate");
+      reference_proven = true;
+    }
+    Check(reference_proven, "scaled Render regression reaches source-bound single-submission GPU completion");
+    std::cout << "PASS Render reference regression: actual 16x16 Stage -> 11x11 NR, estimate=11x11; ordinary sample identity\n";
     native::ForgetSourceHandleLocked(handle);
     finish();
     Check(native::worksets.empty() && !model_released_handles.empty(), "source retirement releases model worksets");
@@ -357,13 +393,24 @@ int Run() {
               && timers::stats.own_us == 40, "look is included in resolve, never added twice");
     auto& window = timers::internal::display_windows[1];
     const auto first_display = timers::stage_stats[1].total_us;
+    const auto first_sequence = timers::stage_stats[1].sequence;
+    const auto first_measured_ns = timers::stage_stats[1].measured_ns;
     window.updated_ns = timers::NowNs() + timers::internal::kDisplayIntervalNs;
     Check(publish(2) && publish(3) && timers::stage_stats[1].total_us == first_display,
           "display remains stable before half-second refresh");
+    Check(timers::stage_stats[1].sequence == first_sequence
+              && timers::stage_stats[1].measured_ns == first_measured_ns
+              && timers::stats.sequence > first_sequence,
+          "an unpublished newer sample cannot relabel the displayed average as newly measured");
     window.updated_ns = 0;
     Check(publish(4) && timers::stage_stats[1].samples == 4 && timers::stage_stats[1].total_us == 150
               && timers::stage_stats[1].passes[0].total_us == 100,
           "half-second refresh averages exactly four samples including per-pass fields");
+    Check(timers::stage_stats[1].measured_ns == first_measured_ns,
+          "a displayed average expires with its oldest contributing measurement");
+    window.samples[0].measured_ns = timers::NowNs() - timers::internal::kSampleAgeNs - 1;
+    Check(publish(1) && timers::stage_stats[1].samples == 1 && timers::stage_stats[1].total_us == 60,
+          "expired contributions cannot be refreshed by a newer matching completion");
     synthetic.passes[0].model = 2;
     Check(publish(1) && timers::stage_stats[1].samples == 1 && timers::stage_stats[1].total_us == 60,
           "model identity change resets display averaging");

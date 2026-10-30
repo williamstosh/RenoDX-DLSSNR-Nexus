@@ -31,28 +31,6 @@ struct Capabilities {
   bool mixed_present_dx12 = false;
 };
 
-// Only repair backwards explicit stages after the edited pass. Inheritance and
-// compatible overrides retain their stored meaning; capability validation still
-// decides whether the resulting complete chain can be submitted.
-inline Configuration ProposeStageChange(Configuration config, uint32_t pass, uint32_t choice) {
-  if (config.pass_count < 1 || config.pass_count > kMaxPasses || pass >= config.pass_count
-      || choice > (pass == 0 ? 2u : 3u)) return config;
-  if (pass == 0) config.hook_point = choice;
-  else config.stages[pass - 1] = choice;
-  Stage previous = (config.hook_point == 1 ? Stage::RENDER
-      : config.hook_point == 2 ? Stage::PRESENT : Stage::UPSCALED);
-  for (uint32_t index = 1; index < config.pass_count; ++index) {
-    auto& stored = config.stages[index - 1];
-    if (stored == 0) continue;
-    const auto requested = static_cast<Stage>(stored - 1);
-    if (index > pass && stored <= 3 && requested < previous) {
-      stored = static_cast<uint32_t>(previous) + 1;
-    } else {
-      previous = requested;
-    }
-  }
-  return config;
-}
 struct Group {
   Stage stage = Stage::UPSCALED;
   uint32_t begin = 0;
@@ -120,6 +98,10 @@ inline Plan Build(const Configuration& config, const Capabilities& caps = {}) {
     }
   }
   plan.effective = plan.requested;
+  if (config.hook_point > 2) {
+    plan.valid = false;
+    plan.reason = Reason::INVALID_STAGE;
+  }
   if (!plan.valid) return plan;
   if (plan.mixed) {
     if (!caps.mixed_dx12 && !caps.mixed_dx11) {
@@ -159,6 +141,72 @@ inline Plan Build(const Configuration& config, const Capabilities& caps = {}) {
     ++plan.groups[plan.group_count - 1].count;
   }
   return plan;
+}
+
+// Enumerate later active Stage values, fixing the user's selection, preceding
+// passes and inactive fields.
+// The caller checks the entire candidate against its actual backend, models and
+// working sizes. An ordered chain alone cannot establish runtime eligibility.
+template <typename Eligible>
+inline Configuration ProposeStageChange(Configuration config, uint32_t pass, uint32_t choice, Eligible eligible) {
+  if (config.pass_count < 1 || config.pass_count > kMaxPasses || pass >= config.pass_count
+      || choice > (pass == 0 ? 2u : 3u)) return config;
+  if ((pass == 0 ? config.hook_point : config.stages[pass - 1]) == choice) return config;
+  const auto before = config;
+  const auto old_plan = Build(before);
+  if (pass == 0) config.hook_point = choice;
+  else config.stages[pass - 1] = choice;
+  if (eligible(config)) return config;
+  Configuration best = config;
+  std::array<uint32_t, 3> best_score{UINT32_MAX, UINT32_MAX, UINT32_MAX};
+  const uint32_t combinations = 1u << (2 * (config.pass_count - pass - 1));
+  for (uint32_t code = 0; code < combinations; ++code) {
+    auto candidate = config;
+    uint32_t remaining = code;
+    for (uint32_t index = pass + 1; index < config.pass_count; ++index) {
+      candidate.stages[index - 1] = remaining % 4;
+      remaining /= 4;
+    }
+    const auto plan = Build(candidate, {.mixed_present_dx12 = true});
+    if (!plan.valid) continue;
+    std::array<uint32_t, 3> score{};
+    for (uint32_t index = 0; index < config.pass_count; ++index) {
+      if (index == pass) continue;
+      const uint32_t old_value = (index == 0 ? before.hook_point : before.stages[index - 1]);
+      const uint32_t new_value = (index == 0 ? candidate.hook_point : candidate.stages[index - 1]);
+      score[0] += old_value != new_value;
+      score[1] += index != 0 && ((old_value == 0) != (new_value == 0));
+      const auto old_stage = static_cast<uint32_t>(old_plan.requested[index]);
+      const auto new_stage = static_cast<uint32_t>(plan.requested[index]);
+      score[2] += (old_stage > new_stage ? old_stage - new_stage : new_stage - old_stage);
+    }
+    if (score >= best_score || !eligible(candidate)) continue;
+    best = candidate;
+    best_score = score;
+  }
+  // Retain the exact rejected request when no legal candidate exists so the
+  // normal capability gate can explain the failure without changing settings.
+  return best;
+}
+
+inline Configuration ProposeStageChange(Configuration config, uint32_t pass, uint32_t choice) {
+  return ProposeStageChange(config, pass, choice, [](const Configuration& candidate) {
+    const auto plan = Build(candidate);
+    return plan.valid && plan.reason == Reason::NONE;
+  });
+}
+
+// Inherited stages can change without a stored-value difference. Confirmation
+// covers those effective requests as well as repaired explicit overrides.
+inline bool RequiresConfirmation(const Configuration& before, const Configuration& after, uint32_t edited) {
+  const auto old_plan = Build(before);
+  const auto new_plan = Build(after);
+  for (uint32_t pass = 0; pass < new_plan.pass_count; ++pass) {
+    if (pass == edited) continue;
+    if (old_plan.requested[pass] != new_plan.requested[pass]
+        || (pass != 0 && before.stages[pass - 1] != after.stages[pass - 1])) return true;
+  }
+  return false;
 }
 
 }  // namespace renodx::addons::dlss5::stage_plan

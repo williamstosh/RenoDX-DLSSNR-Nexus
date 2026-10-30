@@ -2125,6 +2125,7 @@ inline constexpr Translation kJa[] = {
     {"Estimated working resolution: %ux%u", "推定動作解像度：%ux%u"},
     {"Estimated working resolution", "推定動作解像度"},
     {"Actual working resolution", "実際の動作解像度"},
+    {"Dynamic resolution or a pending size change can make the estimate differ from the completed working size.", "動的解像度や未反映のサイズ変更により、推定値と完了済みサンプルの処理解像度が異なる場合があります。"},
     {"Estimate uses the last observed reference. Actual dimensions require a current completed sample.", "最後に観測された基準から推定します。実際の寸法には現在の完了済みサンプルが必要です。"},
     {"Working resolution history", "動作解像度の履歴"},
     {"On", "オン"},

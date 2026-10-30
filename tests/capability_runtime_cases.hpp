@@ -206,12 +206,17 @@ runtime::d3d12_swapchain_seen = true;
 renodx::addons::dlss5::gpu_timers::Stats sample;
 const int64_t now = runtime::SteadyNowNs();
 sample.valid = true;
+sample.state = renodx::addons::dlss5::gpu_timers::SampleState::VALID;
 sample.measured_ns = now;
+sample.recorded_ns = now;
+sample.identity.device_session = renodx::addons::dlss5::gpu_timers::device_session;
 runtime::comparison_ui::CaptureSettings(&sample.identity);
 Check(runtime::CurrentGpuSample(sample, now), "Fresh timing with matching configuration identity is current.");
 for (auto member : {&renodx::addons::dlss5::gpu_comparison::Identity::configuration_generation,
                     &renodx::addons::dlss5::gpu_comparison::Identity::settings_hash,
                     &renodx::addons::dlss5::gpu_comparison::Identity::resolution_hash,
+                    &renodx::addons::dlss5::gpu_comparison::Identity::config_epoch,
+                    &renodx::addons::dlss5::gpu_comparison::Identity::device_session,
                     &renodx::addons::dlss5::gpu_comparison::Identity::route,
                     &renodx::addons::dlss5::gpu_comparison::Identity::fg}) {
   auto old = sample;
@@ -221,6 +226,29 @@ for (auto member : {&renodx::addons::dlss5::gpu_comparison::Identity::configurat
 Check(!runtime::CurrentGpuSample(sample, now - 1)
           && !runtime::CurrentGpuSample(sample, now + renodx::addons::dlss5::gpu_timers::internal::kSampleAgeNs + 1),
       "Future and expired timing samples cannot be current.");
+{
+  auto delayed = sample;
+  delayed.recorded_ns = now - renodx::addons::dlss5::gpu_timers::internal::kSampleAgeNs - 1;
+  Check(!runtime::CurrentGpuSample(delayed, now), "Fresh completion cannot rejuvenate an old recording.");
+  delayed = sample;
+  delayed.recorded_ns = 0;
+  Check(!runtime::CurrentGpuSample(delayed, now), "Missing recording age cannot prove current execution.");
+  const auto saved_observed = runtime::stage_telemetry[1].last_evaluate;
+  delayed = sample;
+  delayed.identity.source_generation = 42;
+  delayed.identity.stable_epoch = runtime::comparison_stable_epochs[1];
+  runtime::stage_telemetry[1].last_evaluate.source_generation = 43;
+  runtime::stage_telemetry[1].last_evaluate.source_released = false;
+  Check(!runtime::CurrentGpuSample(delayed, now), "A different current source rejects the old completed sample.");
+  runtime::stage_telemetry[1].last_evaluate.source_generation = 42;
+  Check(runtime::CurrentGpuSample(delayed, now), "Matching source and rebuild epoch retain current evidence.");
+  runtime::stage_telemetry[1].last_evaluate.source_released = true;
+  Check(!runtime::CurrentGpuSample(delayed, now), "Retired source evidence cannot remain current.");
+  runtime::stage_telemetry[1].last_evaluate.source_released = false;
+  ++delayed.identity.stable_epoch;
+  Check(!runtime::CurrentGpuSample(delayed, now), "A different rebuild epoch rejects retained completion.");
+  runtime::stage_telemetry[1].last_evaluate = saved_observed;
+}
 sample.valid = false;
 Check(!runtime::CurrentGpuSample(sample, now), "Invalid timing cannot be current.");
 sample.valid = true;

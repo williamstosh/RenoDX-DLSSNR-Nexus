@@ -227,11 +227,11 @@
     frame(); frame(); frame();
     check(find("##nr_enable").rect.Min.y < find("open_presets").rect.Min.y,
           "responsive layout keeps NR switch first");
-    const auto undo_header = find("undo_profile");
     const auto manage_header = find("open_presets");
-    check(std::abs(undo_header.rect.Min.y - manage_header.rect.Min.y) < 1.f
-              && undo_header.rect.Max.x <= manage_header.rect.Min.x,
-          "Undo and management share one header row without overlap");
+    check(manage_header.rect.GetWidth() > 0.f
+              && std::none_of(items.begin(), items.end(), [](const auto& entry) {
+                return entry.second.label.find("undo_profile") != std::string::npos;
+              }), "management remains available without a misleading header Undo");
     check(std::none_of(items.begin(), items.end(), [](const auto& entry) {
       return entry.second.label == "###profile_actions";
     }), "redundant profile actions entry is removed");
@@ -290,7 +290,7 @@
   check(profile::state.slots[0].overrides.empty(), "confirmed restore affects current official slot");
   check(std::string_view(profile::undo.action_label) == "Restore official defaults",
         "header Undo describes the actual restore action");
-  click(find("undo_profile"));
+  profile::Request(profile::Action::UNDO);
   settle_profile_ux();
   check(profile::Snapshot() == before_restore && profile::state.slots[0].overrides == before_override,
         "profile actions preserve undo after restoring defaults");
@@ -363,13 +363,13 @@
       bounded(context);
       check(!context->Rect().Overlaps(ImRect(profile::slot_anchor.minimum, profile::slot_anchor.maximum)),
             "context placement leaves its source Slot visible");
-      if (io.DisplaySize.x >= 1800.f) {
-        check(context->Pos.x >= menu_position.x + menu_size.x
-                  || context->Pos.x + context->Size.x <= menu_position.x,
-              "context menu uses the free side outside the host menu");
-        check(std::fabs(context->Pos.y - profile::slot_anchor.minimum.y) <= 1.f,
-              "context menu remains aligned with the original Slot, not the mouse");
-      }
+      const float below = context->Pos.y - profile::slot_anchor.maximum.y;
+      const float above = profile::slot_anchor.minimum.y - context->Pos.y - context->Size.y;
+      const float left = profile::slot_anchor.minimum.x - context->Pos.x - context->Size.x;
+      check((below >= 0.f && below <= font_size)
+                || (above >= 0.f && above <= font_size)
+                || (left >= 0.f && left <= font_size),
+            "context menu remains adjacent to the clicked Slot");
     };
     const auto settings_before_placement = profile::Snapshot();
     const auto slots_before_placement = profile::data::internal::Encode(profile::state);
@@ -411,9 +411,8 @@
         check((task_window->Flags & ImGuiWindowFlags_Modal) != 0
                   && std::strstr(task_window->Name, "###nr_slot_operation_rename") != nullptr,
               "rename retains the existing task lifecycle with its own stable window identity");
-        check(task_window->Pos.x >= menu_position.x + menu_size.x
-                  || task_window->Pos.x + task_window->Size.x <= menu_position.x,
-              "first rename task uses the original Slot's free menu side");
+        check(!task_window->Rect().Overlaps(ImRect(profile::slot_anchor.minimum, profile::slot_anchor.maximum)),
+              "first rename task stays near and does not cover its Slot when space permits");
         placement_click(find("close_slot_operation").rect.GetCenter());
       }
     }
@@ -421,8 +420,8 @@
     menu_position = ImVec2(600.f, 40.f);
     placement_frame(); placement_frame();
     open_context(5);
-    check(find("Rename slot").window->Pos.x >= menu_position.x + menu_size.x,
-          "when both sides fit, the rightmost Slot uses the nearer right side");
+    check(find("Rename slot").window->Pos.y > profile::slot_anchor.maximum.y,
+          "the rightmost Slot uses its nearby lower edge when it fits");
     placement_click(ImVec2(menu_position.x + 20.f, menu_position.y + font_size * 0.5f));
     check(ImGui::GetCurrentContext()->OpenPopupStack.empty(), "clicking outside dismisses the context menu");
     menu_position = ImVec2(20.f, 40.f);
@@ -454,7 +453,7 @@
     auto* export_window = find("choose_export").window;
     bounded(export_window);
     check(std::strstr(export_window->Name, "###nr_slot_operation_export") != nullptr
-              && export_window->Pos.x + export_window->Size.x <= menu_position.x,
+              && !export_window->Rect().Overlaps(ImRect(profile::slot_anchor.minimum, profile::slot_anchor.maximum)),
           "export has an independent first Slot anchor, unaffected by rename memory");
     placement_click(find("close_slot_operation").rect.GetCenter());
     for (const float scale : {18.f, 26.f}) {

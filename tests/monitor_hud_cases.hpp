@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <utility>
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -165,12 +166,27 @@ void RunMonitorHudCases(const Check& check) {
   io.DisplaySize = ImVec2(2400.f, 1400.f);
   ImGui::GetStyle().FontSizeBase = 13.f;
   inputs.pass_count = 4;
+  for (const int language : {0, ui::kLanguageCount - 2}) {
+    ui::SelectLanguage(language);
+    for (const auto [width, expected] : {std::pair{330.f, 1}, std::pair{600.f, 2}, std::pair{1200.f, 3}}) {
+      state = {.open = true, .pin = false,
+               .geometry = {.position = ImVec2(0.f, 0.f), .size = ImVec2(width, 700.f),
+                            .ui_scale = 1.f, .valid = true},
+               .detailed = false};
+      ImGui::SetWindowSize("###nr_runtime_monitor", ImVec2(width, 700.f), ImGuiCond_Always);
+      frame(); frame();
+      const auto* table = context.Tables.GetByKey(window->GetID("monitor_passes"));
+      check(table != nullptr && table->ColumnsCount == expected,
+            "actual ImGui pass table adapts to narrow, medium and wide saved geometry");
+    }
+  }
+  ui::SelectLanguage(0);
   state = {.open = true, .detailed = false};
   check(!ui::MonitorState{}.detailed, "new monitor sessions default to the compact dashboard");
   frame();
-  check(output.find("Open the menu to edit the monitor.") != std::string::npos
+  check(output.find("Open the menu to edit the monitor.") == std::string::npos
             && output.find("F11") == std::string::npos && output.find("Home") == std::string::npos,
-        "passive edit hint does not assume default or custom shortcut bindings");
+        "passive HUD contains no persistent edit instructions");
   inputs.summary.fps.clear();
   inputs.summary.fg.clear();
   frame();

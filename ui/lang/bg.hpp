@@ -2125,6 +2125,7 @@ inline constexpr Translation kBg[] = {
     {"Estimated working resolution: %ux%u", "Очаквана работна резолюция: %ux%u"},
     {"Estimated working resolution", "Очаквана работна резолюция"},
     {"Actual working resolution", "Действителна работна резолюция"},
+    {"Dynamic resolution or a pending size change can make the estimate differ from the completed working size.", "Динамичната резолюция или чакаща промяна на размера може да доведе до разлика между оценката и завършения работен размер."},
     {"Estimate uses the last observed reference. Actual dimensions require a current completed sample.", "Оценката използва последния наблюдаван еталон. Действителните размери изискват текуща завършена проба."},
     {"Working resolution history", "История на работната резолюция"},
     {"On", "Вкл."},
