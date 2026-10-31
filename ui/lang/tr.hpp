@@ -12,6 +12,15 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kTr[] = {
+    {"Advanced groups on this page or the current Pass. Common settings stay visible.", "Bu sayfadaki veya geçerli geçişteki gelişmiş gruplar. Sık kullanılan ayarlar görünür kalır."},
+    {"Core quality", "Temel görüntü kalitesi"},
+    {"Processing & compatibility", "İşleme ve uyumluluk"},
+    {"Appearance & result", "Görünüm ve sonuç"},
+    {"Model styling", "Model stili"},
+    {"Editing Pass %u", "Geçiş %u düzenleniyor"},
+    {"Base resolution", "Temel çözünürlük"},
+    {"Run settings", "Çalıştırma ayarları"},
+    {"Appearance & inheritance", "Görünüm ve devralma"},
     {"Export profile", "Profili dışa aktar"},
     {"Details", "Ayrıntılar"},
     {"Resolution unavailable", "Çözünürlük kullanılamıyor"},

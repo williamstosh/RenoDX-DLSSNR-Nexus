@@ -213,9 +213,10 @@ inline bool ProcessingChainButton(const ProcessingChainNode& node, ImVec2 size, 
   float y = begin.y + (size.y - node.content_height) * 0.5f;
   ImDrawList* draw = ImGui::GetWindowDrawList();
   draw->PushClipRect(begin, end, true);
+  size_t line_index = 0;
   for (const auto& line : node.lines) {
     draw->AddText(ImVec2(begin.x + (size.x - line.size.x) * 0.5f, y),
-                  ImGui::GetColorU32(ImGuiCol_Text), line.text.c_str());
+                  ToU32(line_index++ == 0 ? CurrentTheme().text_primary : CurrentTheme().text_secondary), line.text.c_str());
     y += line.size.y + ImGui::GetStyle().ItemInnerSpacing.y;
   }
   draw->PopClipRect();
@@ -722,14 +723,22 @@ inline bool RightLink(const char* label, float right) {
 // An always-open section's caption: small text in the primary colour
 // over a hairline, and at the right end a link that resets the section,
 // shown while `modified`.  Returns true on the frame the link was clicked.
-inline bool SectionCaption(const char* caption, const char* reset_label, bool modified) {
+inline bool SectionCaption(const char* caption, const char* reset_label, bool modified, bool prominent = false) {
   StyleScope caption_font;
-  caption_font.FontSize(ModuleFontSize());
+  caption_font.FontSize(prominent ? TitleFontSize() : ModuleFontSize());
   const char* title = Tr(caption);
   reset_label = Tr(reset_label);
   ImGui::Dummy(ImVec2(0.f, tokens::kRowGap * 0.5f));
-  const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
-  const float width = ImGui::GetContentRegionAvail().x;
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  const float padding = (prominent ? BaseFontSize() * 0.3f : 0.f);
+  const float width = ImGui::GetContentRegionAvail().x - padding * 2.f;
+  const float right = at.x + width + padding;
+  if (prominent) {
+    ImGui::GetWindowDrawList()->AddRectFilled(at,
+        ImVec2(right + padding, at.y + ImGui::GetFontSize() + padding * 2.f),
+        ToU32(CurrentTheme().bg_card), tokens::kRadiusSmall);
+    ImGui::SetCursorScreenPos(ImVec2(at.x + padding, at.y + padding));
+  }
   const bool words = !modified || ImGui::CalcTextSize(title).x + ImGui::CalcTextSize(reset_label).x + ImGui::GetFontSize() <= width;
   const char* shown_reset = (words ? reset_label : icons::kUndo);
   const float title_width = width - (modified ? ImGui::CalcTextSize(shown_reset).x + ImGui::GetFontSize() : 0.f);
@@ -747,7 +756,12 @@ inline bool SectionCaption(const char* caption, const char* reset_label, bool mo
       ItemTooltip("%s", reset_label);
     }
   }
-  ImGui::Separator();
+  if (prominent) {
+    ImGui::SetCursorScreenPos(ImVec2(at.x,
+        at.y + ImGui::GetFontSize() + padding * 2.f + ImGui::GetStyle().ItemSpacing.y));
+  } else {
+    ImGui::Separator();
+  }
   return clicked;
 }
 

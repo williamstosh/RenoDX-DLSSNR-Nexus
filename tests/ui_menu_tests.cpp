@@ -94,9 +94,14 @@ inline void ObservedText(const char* fmt, ...) {
 inline void ObservedTextDisabled(const char* fmt, ...) {
   va_list args;
   va_start(args, fmt);
+  va_list copy;
+  va_copy(copy, args);
+  char text[4096];
+  std::vsnprintf(text, sizeof(text), fmt, copy);
+  va_end(copy);
   TextDisabledV(fmt, args);
   va_end(args);
-  rendered_text.push_back({.text = fmt, .rect = ImRect(GetItemRectMin(), GetItemRectMax()), .window = GetCurrentWindow()});
+  rendered_text.push_back({.text = text, .rect = ImRect(GetItemRectMin(), GetItemRectMax()), .window = GetCurrentWindow()});
 }
 inline void ObservedTextWrapped(const char* fmt, ...) {
   va_list args;
@@ -185,7 +190,7 @@ void ImGuiTestEngineHook_ItemAdd(ImGuiContext* context, ImGuiID id, const ImRect
   }
   // BeginCombo does not emit ItemInfo in the pinned ImGui version.
   if (context->CurrentWindow != nullptr && !context->CurrentWindow->IDStack.empty()) {
-    for (const char* label : {"##model", "##theme"}) {
+    for (const char* label : {"##model", "##theme", "##resolution"}) {
       if (id == context->CurrentWindow->GetID(label)) {
         items[id].label = label;
       }
@@ -233,8 +238,10 @@ extern "C" __declspec(dllexport) bool ReShadeGetConfigValue(
   }
   return true;
 }
+unsigned configuration_writes = 0;
 extern "C" __declspec(dllexport) void ReShadeSetConfigValue(
     void*, reshade::api::effect_runtime*, const char* section, const char* key, const char* value) {
+  ++configuration_writes;
   if (!WritePrivateProfileStringA(section, key, value, ".\\ReShade.ini")) {
     std::abort();
   }
@@ -1317,6 +1324,7 @@ int main() {
       });
       return nodes;
     };
+#include "quality_editor_cases.hpp"
     for (unsigned count = 1; count <= 4; ++count) {
       runtime::stack_passes = count;
       frame();
@@ -1338,13 +1346,10 @@ int main() {
     runtime::stack_passes = 4;
     frame();
     frame();
-    const std::string chain_tip = std::string("Pass 4\n") + ui::text::kRequest + ": " + ui::text::kInheritModel
-        + "\n" + ui::text::kInheritModel
+    const std::string chain_tip = std::string("Pass 4\n") + ui::text::kChainNote + "\n" + ui::text::kRequest + ": " + ui::text::kInheritModel
         + "\n" + (runtime::pass_follow[2].load() ? ui::text::kStyleFollows : ui::text::kStyleIndependent)
         + "\n" + (runtime::pass_look_result[2].follow.load() ? ui::text::kResultFollows : ui::text::kResultIndependent)
-        + "\n" + ui::text::kRuntimeUnconfirmed + "\n" + ui::text::kChainMarkTip
-        + "\n" + ui::text::kRequestedStage + ": "
-        + renodx::addons::dlss5::stage_plan::Name(runtime::RequestedStagePlan().requested[3])
+        + "\n" + ui::text::kModelNote + "\n" + ui::text::kChainMarkTip
         + "\n" + ui::text::kEffectiveStage + ": "
         + (runtime::RequestedStagePlan().valid
                ? renodx::addons::dlss5::stage_plan::Name(runtime::RequestedStagePlan().effective[3]) : ui::text::kStageBlocked);

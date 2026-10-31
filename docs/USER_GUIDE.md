@@ -37,7 +37,7 @@
 4. 比较同一场景的静止和移动画面。想改变生成风格，调整**模型风格**；想控制生成后的亮暗、颜色和细节，开启**调整 NR 的外观**。
 5. dev.8 起可将喜欢的配置存入**自定义方案**；开发源码还可按 **F11** 边玩边看 NR GPU 开销。
 
-菜单有**画质、叠层、诊断、高级**四个主标签；**管理方案**从画质页打开独立窗口。各页右上角可展开／收起控件，窄窗口使用 +／− 按钮。一般参数会自动保存；更换模型、层数、位置或尺寸后，等画面稳定再比较。
+菜单有**画质、叠层、诊断、高级**四个主标签；**管理方案**从画质页打开独立窗口。当前未发布的 dev.11 源码中，各页右上角的全部展开／收起仅作用于本页或当前 Pass 的高级分组，常用设置保持可见；窄窗口使用 +／− 按钮。一般参数会自动保存；更换模型、层数、位置或尺寸后，等画面稳定再比较。
 
 <a id="zh-scenarios"></a>
 #### 从你的目标开始
@@ -58,6 +58,8 @@
 
 用 **Neural Rendering／F6** 比较关／开。**Auto** 是默认模型；兼容的 **310.9.16.0** 运行时支持 **A（Legacy）／B（Small FP8）**，可比较两者外观和成本。
 
+当前未发布的 dev.11 源码保留顶部 F6 开关与六个快速方案，画质页分为三个常开区：**核心画质**按模型、强度、工作分辨率／比例与上采样排列，并显示第 1 层当前尺寸证据；**处理与兼容性**包含处理位置（Hook Point），Present 下显示深度／运动与 HUD 选项，低频 HDR 与 FG 选项折叠；**外观与结果**常显模型风格等常用控件，结果的四个高级分组继续按需展开。
+
 位置从 **Upscaled** 开始：它在游戏 DLSS 输出后处理。**Render** 在 DLSS 放大前处理，可比较较小输入的成本；**Present** 处理游戏完成后、ReShade 效果前的画面。Ray Reconstruction 开启时，Render 使用兼容的 Upscaled 路径。Present 默认保留 HUD，仍受影响时可比较 UI 修正或改用 Upscaled。
 
 **风格、局部色调、模型结构、人物／皮肤**决定模型生成的外观；**调整 NR 的外观**塑造它生成的结果，两组控件可配合使用。各项默认值见[参数参考](#zh-parameters)。
@@ -69,7 +71,9 @@
 
 输入 → 第 1 层模型＋结果编辑 → 第 2 层模型＋结果编辑 → … → 输出
 
-点击节点选择要编辑的层。第 1 层与画质页共用设置；第 2–4 层可独立选模型、继承或独立设置外观、继承或独立设置结果。三种选择互不绑定：可以同模型不同外观，也可以不同模型共享结果编辑。增加层数会增加 GPU 工作并叠加颜色和光晕变化，建议从两层开始。
+点击节点选择要编辑的层。第 1 层与画质页共用设置；第 2–4 层的模型可继承主模型，外观和结果则分别独立选择继承第 1 层，均不是继承上一层。工作分辨率可继承基础分辨率；只有 Stage 的“与上一层相同”跟随上一 Pass。可以同模型不同外观，也可以不同模型共享结果编辑。增加层数会增加 GPU 工作并叠加颜色和光晕变化，建议从两层开始。
+
+当前开发源码将叠层页分为**执行链**总览和醒目的**正在编辑 Pass N**，编辑区按**运行设置、外观与继承、结果**分组。节点显示配置阶段、解析模型和工作分辨率比例；各层实际工作尺寸紧邻参数，没有当前有效数据时显示“待确认”。**全部展开／全部收起**作用于本页或当前 Pass 的高级分组，常用设置始终可见；切换 Pass 会保留各层的折叠选择。细节稳定可在结果调整关闭时独立生效，完整规则可悬停**时域稳定**折叠头或展开该组查看。
 
 <a id="zh-two-pass-example"></a>
 ##### 实例：自然底层＋电影感第二层
@@ -501,7 +505,7 @@ Images retain reviewed earlier development interfaces. dev.11 changes the status
 4. Compare the same scene stationary and moving. **Model styling** changes generation; **Adjust NR's look** controls its resulting light, colour and detail.
 5. Since dev.8, save favourite settings to a **custom profile**; development source adds **F11** for watching NR GPU cost while playing.
 
-There are four main tabs: **Quality, Multi-Pass, Diagnostics and Advanced**. **Manage profiles** opens a separate window from Quality. Expand/collapse controls are at the top right, using +/− in narrow windows. Ordinary edits save automatically. Let the picture settle after changing models, pass count, location or size.
+There are four main tabs: **Quality, Multi-Pass, Diagnostics and Advanced**. **Manage profiles** opens a separate window from Quality. In the unreleased dev.11 source, Expand all/Collapse all at the top right affects only advanced groups on the page or current pass; common settings stay visible. Narrow windows use +/− buttons. Ordinary edits save automatically. Let the picture settle after changing models, pass count, location or size.
 
 <a id="en-scenarios"></a>
 #### Start with your goal
@@ -522,6 +526,8 @@ There are four main tabs: **Quality, Multi-Pass, Diagnostics and Advanced**. **M
 
 Compare off/on with **Neural Rendering/F6**. **Auto** is the default model. Compatible runtime **310.9.16.0** supports **A (Legacy)/B (Small FP8)** for comparing appearance and cost.
 
+The unreleased dev.11 source keeps the F6 toggle and six quick profiles at the top, followed by three always-visible sections. **Core quality** orders model, strength, working resolution/scale and upsampling, with current Pass 1 size evidence. **Processing & compatibility** contains the Hook Point, depth/motion and HUD options for Present, and collapsed low-frequency HDR and FG options. **Appearance & result** keeps common model styling controls visible, with the four advanced result groups available to expand as needed.
+
 Start at **Upscaled**, after game DLSS output. **Render** runs before DLSS upscaling to compare smaller inputs; **Present** processes the finished game frame before ReShade effects. With Ray Reconstruction, Render uses the compatible Upscaled route. Present defaults to Keep the HUD; compare UI correction or Upscaled if HUD elements still change.
 
 **Style, Local tone, Model structure and Character/skin** shape generation; **Adjust NR's look** shapes its result. Use both together. See [parameter reference](#en-parameters) for defaults.
@@ -533,7 +539,9 @@ The **1–4** pass count includes Pass 1; each result feeds the next:
 
 Input → Pass 1 model + result edits → Pass 2 model + result edits → … → Output
 
-Click a node to edit it. Pass 1 shares Quality settings. Passes 2–4 independently select a model, inherited/separate look and inherited/separate result edits. Use the same model with different looks, or different models with shared result edits. More passes add GPU work and accumulate colour/halo changes; start with two.
+Click a node to edit it. Pass 1 shares Quality settings. Passes 2–4 can inherit the main model, while look and result settings independently inherit Pass 1, rather than the previous pass. Working resolution can inherit the base resolution; only Stage's **Same as previous** follows the previous pass. Use the same model with different looks, or different models with shared result edits. More passes add GPU work and accumulate colour/halo changes; start with two.
+
+Current development source separates the **Execution chain** overview from a prominent **Editing Pass N** heading, with **Run settings**, **Appearance & inheritance** and result groups. Nodes show the configured stage, resolved model and working-resolution scale. Actual working dimensions appear beside each pass's controls, or show Pending confirmation when current data is unavailable. **Expand all / Collapse all** affects advanced groups on the page or current pass; common settings stay visible, and each pass retains its own disclosure choices. Detail stability can work independently while result adjustment is off. Hover over **Temporal stability**, or expand the group, for the full rules.
 
 <a id="en-two-pass-example"></a>
 ##### Example: Natural base plus Cinematic second pass

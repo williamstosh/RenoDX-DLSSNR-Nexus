@@ -12,6 +12,15 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kTh[] = {
+    {"Advanced groups on this page or the current Pass. Common settings stay visible.", "กลุ่มขั้นสูงในหน้านี้หรือพาสปัจจุบัน การตั้งค่าที่ใช้บ่อยยังคงแสดงอยู่"},
+    {"Core quality", "คุณภาพพื้นฐาน"},
+    {"Processing & compatibility", "การประมวลผลและความเข้ากันได้"},
+    {"Appearance & result", "รูปลักษณ์และผลลัพธ์"},
+    {"Model styling", "สไตล์โมเดล"},
+    {"Editing Pass %u", "กำลังแก้ไขพาส %u"},
+    {"Base resolution", "ความละเอียดพื้นฐาน"},
+    {"Run settings", "การตั้งค่าการทำงาน"},
+    {"Appearance & inheritance", "รูปลักษณ์และการสืบทอด"},
     {"Export profile", "ส่งออกโปรไฟล์"},
     {"Details", "รายละเอียด"},
     {"Resolution unavailable", "ไม่สามารถใช้ความละเอียดได้"},

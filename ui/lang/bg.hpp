@@ -12,6 +12,15 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kBg[] = {
+    {"Advanced groups on this page or the current Pass. Common settings stay visible.", "Разширени групи на тази страница или за текущия проход. Често използваните настройки остават видими."},
+    {"Core quality", "Основно качество"},
+    {"Processing & compatibility", "Обработка и съвместимост"},
+    {"Appearance & result", "Визия и резултат"},
+    {"Model styling", "Стил на модела"},
+    {"Editing Pass %u", "Редактиране на проход %u"},
+    {"Base resolution", "Базова резолюция"},
+    {"Run settings", "Настройки за изпълнение"},
+    {"Appearance & inheritance", "Визия и наследяване"},
     {"Export profile", "Експортиране на профил"},
     {"Details", "Подробности"},
     {"Resolution unavailable", "Разделителната способност не е налична"},

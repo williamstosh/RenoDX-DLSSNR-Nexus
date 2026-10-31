@@ -12,6 +12,15 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kZhHant[] = {
+    {"Advanced groups on this page or the current Pass. Common settings stay visible.", "適用於本頁或目前 Pass 的進階群組。常用設定保持可見。"},
+    {"Core quality", "核心畫質"},
+    {"Processing & compatibility", "處理與相容性"},
+    {"Appearance & result", "外觀與結果"},
+    {"Model styling", "模型風格"},
+    {"Editing Pass %u", "正在編輯 Pass %u"},
+    {"Base resolution", "基礎分辨率"},
+    {"Run settings", "執行設定"},
+    {"Appearance & inheritance", "外觀與繼承"},
     {"Export profile", "匯出方案"},
     {"Details", "詳細資料"},
     {"Resolution unavailable", "解析度無法使用"},

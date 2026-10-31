@@ -12,6 +12,15 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kRu[] = {
+    {"Advanced groups on this page or the current Pass. Common settings stay visible.", "Расширенные группы на этой странице или в текущем проходе. Часто используемые настройки остаются видимыми."},
+    {"Core quality", "Основное качество"},
+    {"Processing & compatibility", "Обработка и совместимость"},
+    {"Appearance & result", "Вид и результат"},
+    {"Model styling", "Стиль модели"},
+    {"Editing Pass %u", "Редактирование прохода %u"},
+    {"Base resolution", "Базовое разрешение"},
+    {"Run settings", "Параметры выполнения"},
+    {"Appearance & inheritance", "Вид и наследование"},
     {"Export profile", "Экспортировать профиль"},
     {"Details", "Подробности"},
     {"Resolution unavailable", "Разрешение недоступно"},

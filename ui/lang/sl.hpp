@@ -12,6 +12,15 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kSl[] = {
+    {"Advanced groups on this page or the current Pass. Common settings stay visible.", "Napredne skupine na tej strani ali v trenutnem prehodu. Pogoste nastavitve ostanejo vidne."},
+    {"Core quality", "Osnovna kakovost"},
+    {"Processing & compatibility", "Obdelava in združljivost"},
+    {"Appearance & result", "Videz in rezultat"},
+    {"Model styling", "Slog modela"},
+    {"Editing Pass %u", "Urejanje prehoda %u"},
+    {"Base resolution", "Osnovna ločljivost"},
+    {"Run settings", "Nastavitve izvajanja"},
+    {"Appearance & inheritance", "Videz in dedovanje"},
     {"Export profile", "Izvozi profil"},
     {"Details", "Podrobnosti"},
     {"Resolution unavailable", "Ločljivost ni na voljo"},

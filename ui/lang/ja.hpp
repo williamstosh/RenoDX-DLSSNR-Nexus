@@ -12,6 +12,15 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kJa[] = {
+    {"Advanced groups on this page or the current Pass. Common settings stay visible.", "このページまたは現在のパスの詳細設定グループが対象です。よく使う設定は表示されたままです。"},
+    {"Core quality", "基本画質"},
+    {"Processing & compatibility", "処理と互換性"},
+    {"Appearance & result", "外観と結果"},
+    {"Model styling", "モデルのスタイル"},
+    {"Editing Pass %u", "パス %u を編集中"},
+    {"Base resolution", "基本解像度"},
+    {"Run settings", "実行設定"},
+    {"Appearance & inheritance", "外観と継承"},
     {"Export profile", "プロファイルをエクスポート"},
     {"Details", "詳細"},
     {"Resolution unavailable", "解像度を取得できません"},

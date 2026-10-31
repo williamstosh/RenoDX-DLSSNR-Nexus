@@ -12,6 +12,15 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kFr[] = {
+    {"Advanced groups on this page or the current Pass. Common settings stay visible.", "Groupes avancés de cette page ou de la passe actuelle. Les réglages courants restent visibles."},
+    {"Core quality", "Qualité de base"},
+    {"Processing & compatibility", "Traitement et compatibilité"},
+    {"Appearance & result", "Apparence et résultat"},
+    {"Model styling", "Style du modèle"},
+    {"Editing Pass %u", "Modification de la passe %u"},
+    {"Base resolution", "Résolution de base"},
+    {"Run settings", "Paramètres d’exécution"},
+    {"Appearance & inheritance", "Apparence et héritage"},
     {"Export profile", "Exporter un profil"},
     {"Details", "Détails"},
     {"Resolution unavailable", "Résolution indisponible"},

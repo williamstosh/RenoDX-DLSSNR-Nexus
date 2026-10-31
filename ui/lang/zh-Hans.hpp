@@ -12,6 +12,15 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kZhHans[] = {
+    {"Advanced groups on this page or the current Pass. Common settings stay visible.", "作用于本页或当前 Pass 的高级分组。常用设置保持可见。"},
+    {"Core quality", "核心画质"},
+    {"Processing & compatibility", "处理与兼容性"},
+    {"Appearance & result", "外观与结果"},
+    {"Model styling", "模型风格"},
+    {"Editing Pass %u", "正在编辑 Pass %u"},
+    {"Base resolution", "基础分辨率"},
+    {"Run settings", "运行设置"},
+    {"Appearance & inheritance", "外观与继承"},
     {"Export profile", "导出方案"},
     {"Details", "详情"},
     {"Resolution unavailable", "分辨率不可用"},

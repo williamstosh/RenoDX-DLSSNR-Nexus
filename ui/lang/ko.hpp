@@ -12,6 +12,15 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kKo[] = {
+    {"Advanced groups on this page or the current Pass. Common settings stay visible.", "이 페이지 또는 현재 패스의 고급 그룹에 적용됩니다. 자주 쓰는 설정은 계속 표시됩니다."},
+    {"Core quality", "기본 화질"},
+    {"Processing & compatibility", "처리 및 호환성"},
+    {"Appearance & result", "외관 및 결과"},
+    {"Model styling", "모델 스타일"},
+    {"Editing Pass %u", "패스 %u 편집 중"},
+    {"Base resolution", "기본 해상도"},
+    {"Run settings", "실행 설정"},
+    {"Appearance & inheritance", "외관 및 상속"},
     {"Export profile", "프로필 내보내기"},
     {"Details", "세부 정보"},
     {"Resolution unavailable", "해상도를 사용할 수 없음"},

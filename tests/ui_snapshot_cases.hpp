@@ -22,6 +22,8 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     float width = 827.f;
     float font = 18.f;
     std::string doc_role;
+    unsigned passes = 2;
+    int selected_pass = 0;
     unsigned monitor_passes = 1;
     float monitor_width = 480.f;
     bool monitor_detailed = false;
@@ -31,6 +33,40 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
   const char* pages[] = {"quality", "multipass", "diagnostics", "advanced"};
   std::vector<Scenario> scenarios;
   if (!docs_only) {
+    for (float width : {450.f, 600.f}) {
+      scenarios.push_back({.id = "r7-quality-" + std::to_string(static_cast<int>(width)) + "-common",
+                           .action = "r7-common", .width = width});
+    }
+    scenarios.push_back({.id = "r7-quality-expanded", .action = "r7-expanded", .language = 1});
+    scenarios.push_back({.id = "r7-quality-collapsed", .action = "r7-collapsed"});
+    for (unsigned count = 1; count <= 4; ++count) {
+      scenarios.push_back({.id = "r7-pass" + std::to_string(count) + (count == 2 ? "-p2" : ""),
+                           .page = 1, .action = "r7-expanded", .passes = count,
+                           .selected_pass = static_cast<int>(count - 1)});
+    }
+    scenarios.push_back({.id = "r7-pass2-p1", .page = 1, .action = "r7-expanded"});
+    scenarios.push_back({.id = "r7-pass2-narrow-p1", .page = 1, .action = "r7-expanded", .width = 450.f});
+    scenarios.push_back({.id = "r7-pass2-narrow-p2", .page = 1, .action = "r7-expanded", .width = 450.f, .selected_pass = 1});
+    scenarios.push_back({.id = "r7-pass4-narrow", .page = 1, .action = "r7-expanded", .width = 450.f,
+                         .passes = 4, .selected_pass = 3});
+    scenarios.push_back({.id = "r7-pass4-collapsed", .page = 1, .action = "r7-collapsed", .width = 600.f,
+                         .passes = 4, .selected_pass = 2});
+    scenarios.push_back({.id = "r7-results-expanded", .page = 1, .action = "r7-results",
+                         .language = 1, .width = 600.f, .selected_pass = 1});
+    if (snapshot_mode == "Full") {
+      unsigned theme_index = 0;
+      for (const auto& theme : ui::kThemes) {
+        scenarios.push_back({.id = std::string("r7-quality-") + theme.slug, .action = "r7-expanded",
+                             .theme = theme.id, .language = (theme_index % 2 == 0 ? 14 : 1), .width = 600.f});
+        scenarios.push_back({.id = std::string("r7-pass-") + theme.slug, .page = 1, .action = "r7-expanded",
+                             .theme = theme.id, .language = (theme_index++ % 2 == 0 ? 1 : 14),
+                             .width = 600.f, .passes = 4, .selected_pass = 3});
+      }
+      scenarios.push_back({.id = "r7-quality-dpi24-en", .action = "r7-expanded",
+                           .language = 1, .width = 450.f, .font = 24.f});
+      scenarios.push_back({.id = "r7-pass-dpi24-long", .page = 1, .action = "r7-results",
+                           .language = 4, .width = 600.f, .font = 24.f, .passes = 3, .selected_pass = 2});
+    }
     for (unsigned count = 1; count <= 4; ++count) {
       for (bool narrow : {false, true}) {
         const std::string id = "r5-monitor-" + std::to_string(count) + (narrow ? "-narrow" : "-wide");
@@ -287,6 +323,19 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
   for (const auto& scenario : scenarios) {
     if (std::find(registry["expected"].begin(), registry["expected"].end(), scenario.id)
         == registry["expected"].end()) continue;
+    const bool round_seven = scenario.action.starts_with("r7-");
+    std::vector<std::pair<const runtime::Setting*, float>> round_seven_restore;
+    if (round_seven) {
+      for (const runtime::SettingGroup group : {runtime::SettingGroup(runtime::kStrengthSettings),
+               runtime::SettingGroup(runtime::kLookSettings), runtime::SettingGroup(runtime::kLookResultSettings),
+               runtime::SettingGroup(runtime::kPassLookResultSettings), runtime::SettingGroup(runtime::kHookPointSettings),
+               runtime::SettingGroup(runtime::kPerformanceSettings), runtime::SettingGroup(runtime::kStackingSettings)}) {
+        for (const auto* setting : group) {
+          round_seven_restore.emplace_back(setting, setting->Get());
+          setting->Store(setting->fallback);
+        }
+      }
+    }
     const auto profile_state_before = profile::state;
     monitor_fixture = nullptr;
     hud_fixture = false;
@@ -347,6 +396,22 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       runtime::pass_preset[pass] = 0;
       runtime::pass_resolution_mode[pass] = 0;
       runtime::pass_resolution_scale[pass] = 1.f;
+    }
+    if (round_seven) {
+      runtime::hook_point = runtime::kHookRender;
+      runtime::preset = 1;
+      runtime::stack_passes = scenario.passes;
+      runtime::ui_selected_pass = scenario.selected_pass;
+      runtime::look_mode = scenario.action != "r7-common";
+      for (unsigned pass = 0; pass < 3; ++pass) {
+        runtime::pass_follow[pass] = true;
+        runtime::pass_look_result[pass].follow = scenario.action != "r7-results";
+        runtime::pass_look_result[pass].mode = true;
+      }
+      if (scenario.action == "r7-results") {
+        runtime::kLookResult[scenario.selected_pass].halo.Store(.7f);
+        runtime::kLookResult[scenario.selected_pass].detail_stability.Store(2.f);
+      }
     }
     if (scenario.action.starts_with("a-")) {
       runtime::d3d12_swapchain_seen = true;
@@ -565,7 +630,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     for (auto& scope : ui::fold_scopes) scope = {};
     settle();
     drain_workers();
-    if (scenario.action != "doc-default" && !synthetic_window) {
+    if (scenario.action != "doc-default" && scenario.action != "r7-common" && !synthetic_window) {
       // The manager inherits the page's fold scope; keep its custom tools folded until explicitly clicked.
       click(find(collapsed ? "collapse_all" : "expand_all"));
     }
@@ -573,6 +638,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     const bool long_page = scenario.action == "expanded" || scenario.action == "collapsed"
         || scenario.action == "pass-independent" || scenario.action == "pass-first" || scenario.action == "doc-default"
         || cross_stage || scenario.action == "gpu-pass-diagnostics" || scenario.action == "gpu-comparison"
+        || round_seven
         || (scenario.action.starts_with("r2-") && scenario.action != "r2-reset-confirm");
     if (scenario.action == "cross-stage-resolution" || same_stage_resolution) {
       check(items.contains(find("##pass_resolution_scale").id), "independent pass resolution slider is drawn");
@@ -612,14 +678,14 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
         // This technical disclosure intentionally does not follow parameter folds.
         if (item.label == "##Recorded working sizes") continue;
         ++fold_count;
-        if (scenario.action != "doc-default") {
+        if (scenario.action != "doc-default" && scenario.action != "r7-common") {
           check(((item.status & ImGuiItemStatusFlags_Opened) != 0) == !collapsed,
                 "snapshot tree/header disagrees with real expand/collapse command");
         }
       }
       const int scope = scenario.page * 8 + (scenario.page == 0 ? static_cast<int>(runtime::hook_point.load())
                                            : scenario.page == 1 ? runtime::ui_selected_pass : 0);
-      if (scenario.action != "doc-default") {
+      if (scenario.action != "doc-default" && scenario.action != "r7-common") {
         check(ui::fold_scopes[scope].target == !collapsed, "snapshot fold scope target mismatch");
       }
       std::printf("snapshot %s height=%.0f fold_nodes=%u\n", scenario.id.c_str(), panel_height, fold_count);
@@ -635,6 +701,32 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       check(scroller, "fixed viewport must expose the production vertical scroller");
     }
     std::string interaction = (scenario.action == "doc-default" ? "production default folds" : "real expand_all/collapse_all button");
+    if (round_seven) {
+      const auto configuration = profile::Snapshot();
+      const auto epoch = runtime::profile_commit_epoch.load();
+      settle();
+      check(profile::Snapshot() == configuration && runtime::profile_commit_epoch.load() == epoch,
+            "r7 production snapshots do not commit configuration while drawing");
+      if (scenario.action == "r7-common") interaction = "production default folds; always-open common quality controls";
+      if (scenario.page == 0) {
+        for (const char* group : {"Core quality", "Processing & compatibility", "Appearance & result"}) {
+          check(std::ranges::any_of(rendered_text, [&](const auto& text) { return text.text == ui::Tr(group); }),
+                "r7 quality keeps all three lightweight groups visible");
+        }
+      } else {
+        unsigned nodes = 0;
+        for (const auto& [id, item] : items) {
+          if (item.label.ends_with("###chain_pass")) ++nodes;
+        }
+        check(nodes == scenario.passes && runtime::ui_selected_pass == scenario.selected_pass,
+              "r7 chain shows the registered count and selected production editor");
+        if (scenario.action == "r7-results") {
+          check(!runtime::pass_look_result[scenario.selected_pass - 1].follow.load()
+                    && find(ui::Tr(ui::text::kResultTemporal)).id != 0,
+                "r7 result snapshot exposes independent result and temporal controls");
+        }
+      }
+    }
     const ui::StatusCard* diagnostic = nullptr;
     const ui::StatusCard card{
         .tone = (scenario.action == "diagnostics-error" ? ui::CardTone::kBad
@@ -1194,7 +1286,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       if (scenario.doc_role == "quality") {
         bool appearance_boundary = false;
         for (const auto& text : rendered_text) {
-          if (text.window == settings && text.text == ui::Tr(ui::text::kLook)) {
+          if (text.window == settings && text.text == ui::Tr("Appearance & result")) {
             regions["doc"][3] = text.rect.Min.y - font_size * 0.25f;
             appearance_boundary = true;
             break;
@@ -1214,7 +1306,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
         }
         bool heading_found = false;
         for (const auto& text : rendered_text) {
-          if (text.window == settings && text.text == ui::Tr(ui::text::kMenuPages[1])) {
+          if (text.window == settings && text.text == ui::Tr("Execution chain")) {
             feature_bounds.Add(ImVec2(text.rect.Min.x, text.rect.Min.y - 4.f));
             heading_found = true;
             break;
@@ -1247,6 +1339,10 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
           {"background_opacity", scenario.monitor_opacity}, {"history_seconds", 30}};
     }
     if (long_page) entry["checks"]["zero_scroll"] = true;
+    if (round_seven) {
+      entry["editor"] = {{"passes", scenario.passes}, {"selected_pass", scenario.selected_pass + 1},
+                           {"configuration_commit", false}, {"production_overlay", true}};
+    }
     if (cross_stage) {
       const auto plan = runtime::RequestedStagePlan();
       entry["plan"] = {{"requested", Json::array()}, {"models", Json::array()},
@@ -1305,6 +1401,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
                 && !runtime::issue_report::worker_active.load(), "report description did not close without a worker");
     }
     if (!ImGui::GetCurrentContext()->OpenPopupStack.empty()) ImGui::ClosePopupToLevel(0, true);
+    for (const auto& [setting, value] : round_seven_restore) setting->Store(value);
   }
   drain_workers();
   clipboard_fixture::Empty();

@@ -12,6 +12,15 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kPtBr[] = {
+    {"Advanced groups on this page or the current Pass. Common settings stay visible.", "Grupos avançados desta página ou do passe atual. As configurações comuns continuam visíveis."},
+    {"Core quality", "Qualidade básica"},
+    {"Processing & compatibility", "Processamento e compatibilidade"},
+    {"Appearance & result", "Aparência e resultado"},
+    {"Model styling", "Estilo do modelo"},
+    {"Editing Pass %u", "Editando passe %u"},
+    {"Base resolution", "Resolução base"},
+    {"Run settings", "Configurações de execução"},
+    {"Appearance & inheritance", "Aparência e herança"},
     {"Export profile", "Exportar perfil"},
     {"Details", "Detalhes"},
     {"Resolution unavailable", "Resolução indisponível"},
