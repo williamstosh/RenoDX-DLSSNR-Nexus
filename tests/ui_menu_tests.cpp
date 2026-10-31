@@ -740,6 +740,42 @@ int main() {
 
     frame();
     frame();
+    if (std::getenv("NR_NEXUS_PROFILE_MENU_COST") != nullptr) {
+      namespace profile = runtime::profile_ui;
+      const auto deadline = GetTickCount64() + 10000;
+      while (profile::Busy()) {
+        profile::Tick();
+        check(GetTickCount64() < deadline, "profile cost fixture initialization timed out");
+        Sleep(1);
+      }
+      const auto measure = [&](const char* label, const auto& action) {
+        for (int warmup = 0; warmup < 8; ++warmup) action();
+        const auto start = std::chrono::steady_clock::now();
+        for (int sample = 0; sample < 120; ++sample) action();
+        std::printf("profile menu CPU %s mean_us=%.3f; synthetic, excludes game/GPU\n", label,
+            std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / 120.0);
+      };
+      runtime::monitor_requested = false;
+      measure("Home_FG_off", [&] { frame(); });
+      runtime::native_fg_declaration = runtime::NativeFgDeclaration::kOn;
+      runtime::native_fg_public_off = false;
+      runtime::native_fg_owns = true;
+      measure("Home_FG_on", [&] { frame(); });
+      measure("six_slot_validation", [&] {
+        for (int index = 0; index < 6; ++index) {
+          std::string error;
+          profile::SlotAvailable(index, &error);
+        }
+      });
+      runtime::monitor_requested = true;
+      runtime::monitor_keep_visible = true;
+      runtime::hud_overlay_open = false;
+      independent_hud_fixture = true;
+      measure("F11_only", [&] { frame(); });
+      std::printf("PASS profile menu CPU investigation; checks=%u\n", checks);
+      ImGui::DestroyContext();
+      return 0;
+    }
     RunMonitorSessionCases(check, [&](const ui::MonitorInputs& inputs) {
       const auto* saved_fixture = monitor_fixture;
       const auto saved_state = synthetic_monitor_state;
@@ -1094,6 +1130,7 @@ int main() {
       frame(); frame();
     }
 #include "profile_ux_cases.hpp"
+#include "profile_menu_cases.hpp"
     const uint32_t old_hook = runtime::hook_point.load();
     const uint32_t old_multiplier = runtime::present_fg_multiplier.load();
     runtime::hook_point = runtime::kHookPresent;
@@ -1674,7 +1711,7 @@ int main() {
       ++themed_captures;
       io.AddMousePosEvent(-100.f, -100.f);
     }
-    check(themed_captures == 80, "four themes must each capture four pages, both widths/fold states, faults, popup and tooltip");
+    check(themed_captures == 140, "seven themes must each capture four pages, both widths/fold states, faults, popup and tooltip");
     std::printf("all-theme capture scenarios=%u; persistence follows retention mode; synthetic fixture, no game/GPU/visual acceptance inferred\n", themed_captures);
     runtime::StoreUiTheme(ui::ThemeId::CYBER_NEON);
     runtime::ui_language_choice = 14;
@@ -2145,7 +2182,7 @@ int main() {
     font_size = 32.f;
     frame(); frame();
     capture("presets-4k-zh");
-    std::printf("preset modal: 4 themes, 15 languages, library/export/preview, narrow/4K captures; synthetic environment\n");
+    std::printf("preset modal: 7 themes, 15 languages, library/export/preview, narrow/4K captures; synthetic environment\n");
     std::printf("assisted input: eight real hidden entry/Apply/Cancel flows; %u localized header layout cases passed\n", assisted_layout_cases);
     std::printf("production menu checks=%u failures=0; category/pass/model/reset/persistence/classic/language/size matrix passed\n", checks);
     std::printf("production menu CPU mean=%.3f ms, frames=%u; includes synthetic test hooks and language changes, excludes GPU rendering\n",

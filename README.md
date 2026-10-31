@@ -14,29 +14,29 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 插件不执行降噪。
 
 **[下载公开版本](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)**：
-最新预发布为 **v0.2.0-dev.8**，正式版为 **v0.1.0**。本仓库当前开发源码为 **0.2.0-dev.11**，尚未公开发布。
+正式版 **v0.2.0** 包含本页介绍的方案、监视器与主题功能；早期预发布 **v0.2.0-dev.8** 仍保留在版本历史中。
 
 | 版本 | 功能范围 |
 | --- | --- |
-| **0.2.0-dev.11 开发源码，未发布** | 新增逐层独立工作分辨率、记住本游戏显示选择的 F11 监视器、统一帧率与逐层 GPU 诊断、手动 GPU A/B 对比，以及自适应布局和统一定位操作。 |
+| **0.2.0 正式版** | 新增逐层独立工作分辨率、记住本游戏显示选择的 F11 监视器、F8 四模式循环、统一帧率与逐层 GPU 诊断、手动 GPU A/B 对比，以及自适应布局和统一定位操作。 |
 | **0.2.0-dev.8 公开预发布** | 已含逐层阶段选择、DX12／DX11 Bridge 的 Render → 游戏 DLSS SR/DLAA → Upscaled 链、方案库与每游戏六槽方案，以及辅助输入。 |
-| **0.1.0 正式版** | 已含最多四层处理、双模型、逐层独立外观／结果编辑及四套主题；不含逐层阶段选择、方案库／六槽和辅助输入，也不含上述 dev.11 新增功能。 |
+| **0.1.0 早期正式版** | 已含最多四层处理、双模型、逐层独立外观／结果编辑及四套主题；不含逐层阶段选择、方案库／六槽和辅助输入，也不含上述 0.2.0 新增功能。 |
 
 ### 核心特色
 
-标注“开发版可用”的功能已在 dev.11 实现，尚未随公开安装包发布；其他功能的版本范围见上表。
+以下功能均包含在 0.2.0 中；特殊组合的兼容性条件见指南。
 
 | 能力 | 玩家用途 |
 | --- | --- |
 | **最多四层顺序链，每层独立模型／外观／结果** | 将前一层的输出交给下一层；分别调整风格、局部色调、结构、角色遮罩与皮肤，再编辑亮度、色彩、细节、光晕和时序稳定。附加层可独立设置，也可继承第 1 层。 |
 | **A/B 双模型** | 在兼容的 310.9.16.0 Runtime 上选择 A（Legacy）或 B（Small FP8），尝试 AA、AB、BA、BB 等不同组合。 |
-| **独立工作分辨率（开发版可用）** | 按层分配 NR 的工作尺寸，在细节与 GPU 开销间取舍，不改变游戏 DLSS SR 的分辨率。支持范围和设置方法见[画质](docs/USER_GUIDE.md#zh-quality)与[叠层指南](docs/USER_GUIDE.md#zh-multipass)。 |
+| **独立工作分辨率** | 按层分配 NR 的工作尺寸，在细节与 GPU 开销间取舍，不改变游戏 DLSS SR 的分辨率。支持范围和设置方法见[画质](docs/USER_GUIDE.md#zh-quality)与[叠层指南](docs/USER_GUIDE.md#zh-multipass)。 |
 | **处理位置与 NR／FG 协同** | 选择 Render、Upscaled 或 Present，将 NR 放在超分前、超分后或最终游戏画面；支持与原生 DLSS FG/MFG 或 XeFG 协同。组合规则见[叠层指南](docs/USER_GUIDE.md#zh-multipass)。 |
 | **每游戏六槽与共享方案库** | 三个官方起点加三个自定义方案，保存不同游戏与场景的偏好；通过可搜索方案库导入、导出和分享。见[方案指南](docs/USER_GUIDE.md#zh-presets)。 |
-| **F11 常驻性能 HUD（开发版可用，尚未打包）** | 精简／详细视图查看 NR 状态、GPU 开销、帧率与 FG 状态，可选 10／30／60 秒趋势。支持背景透明度、九宫格定位及打开 Home 菜单后拖动记忆。 |
-| **逐层 GPU 诊断与 A/B 对比（开发版可用）** | 查看每层模型、工作／输出尺寸及 GPU 耗时，比较调整一层工作尺寸前后的开销，帮助定位昂贵的层。见[诊断指南](docs/USER_GUIDE.md#zh-diagnostics)。 |
+| **F11 常驻性能 HUD** | F11 显示／隐藏监视器，F8 按精简、详细、精简＋趋势、详细＋趋势循环；可选 10／30／60 秒趋势，配置变化前后的曲线分段保留。 |
+| **逐层 GPU 诊断与 A/B 对比** | 查看每层模型、工作／输出尺寸及 GPU 耗时，比较调整一层工作尺寸前后的开销，帮助定位昂贵的层。见[诊断指南](docs/USER_GUIDE.md#zh-diagnostics)。 |
 | **15 种界面语言与辅助输入** | 自动跟随 ReShade 或手动选语言；输入法遇到问题时，使用 Windows 原生 Unicode 编辑窗填写方案名称和反馈文字。 |
-| **四套界面主题** | 在 Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED 中选择喜欢的菜单外观。 |
+| **七套界面主题** | 保留 Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED，并新增 Neon Violet、Tactical Amber、Aurora Glass；Ivory Studio 与 Crimson Noir 仍是设计候选。 |
 
 增加层数会增加 GPU 工作量，建议从单层开始，在同一场景比较画面与开销。
 参数、继承和实际组合示例见[玩家指南](docs/USER_GUIDE.md#zh-start)。
@@ -163,30 +163,29 @@ Build a sequential chain of up to four NR passes, with an independent model, loo
 The add-on performs no denoising.
 
 **[Download a published version](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)**:
-the latest pre-release is **v0.2.0-dev.8**; the stable release is **v0.1.0**.
-The current development source is **0.2.0-dev.11**, which has not been publicly released.
+Stable **v0.2.0** includes the profiles, monitor and themes described here. The earlier **v0.2.0-dev.8** pre-release remains in the version history.
 
 | Version | Available features |
 | --- | --- |
-| **0.2.0-dev.11 development source, unreleased** | Adds independent per-pass working resolution, an F11 monitor that remembers this game's display choice, shared FPS and per-pass GPU diagnostics, manual GPU A/B comparison, adaptive layouts and consistent placement controls. |
+| **0.2.0 stable** | Adds independent per-pass working resolution, an F11 monitor that remembers this game's display choice, F8 four-mode cycling, shared FPS and per-pass GPU diagnostics, manual GPU A/B comparison, adaptive layouts and consistent placement controls. |
 | **0.2.0-dev.8 public pre-release** | Includes per-pass stages, the DX12/DX11 Bridge Render → game DLSS SR/DLAA → Upscaled chain, the profile library and six slots per game, and assisted input. |
-| **0.1.0 stable** | Includes up to four passes, dual models, independent per-pass look/result editing and four themes. Per-pass stages, the profile library/six slots, assisted input and the dev.11 additions above are absent. |
+| **0.1.0 earlier stable** | Includes up to four passes, dual models, independent per-pass look/result editing and four themes. Per-pass stages, the profile library/six slots, assisted input and the 0.2.0 additions above are absent. |
 
 ### What makes Nexus different
 
-Features marked “available in development” are implemented in dev.11 and await a public package. See the version table for other features.
+These features are included in 0.2.0. See the guide for compatibility conditions on specific combinations.
 
 | Feature | What you can use it for |
 | --- | --- |
 | **Up to four sequential passes, each with its own model, look and results** | Feed each layer's output into the next. Adjust style, local tone, structure, character masks and skin, then shape brightness, colour, detail, halos and temporal stability. Additional layers can use independent settings or inherit Pass 1. |
 | **Dual models A/B** | Choose A (Legacy) or B (Small FP8) with the compatible 310.9.16.0 runtime; try combinations such as AA, AB, BA and BB. |
-| **Independent working resolution (available in development)** | Allocate NR working sizes per layer to balance detail and GPU cost, while keeping the game's DLSS SR resolution unchanged. See [Quality](docs/USER_GUIDE.md#en-quality) and [Multi-Pass](docs/USER_GUIDE.md#en-multipass) for supported combinations and controls. |
+| **Independent working resolution** | Allocate NR working sizes per layer to balance detail and GPU cost, while keeping the game's DLSS SR resolution unchanged. See [Quality](docs/USER_GUIDE.md#en-quality) and [Multi-Pass](docs/USER_GUIDE.md#en-multipass) for supported combinations and controls. |
 | **Processing location and NR/FG coordination** | Choose Render, Upscaled or Present to process before upscaling, after upscaling or on the final game image. Coordinate NR with native DLSS FG/MFG or XeFG; see [Multi-Pass](docs/USER_GUIDE.md#en-multipass) for combination rules. |
 | **Six slots per game and a shared profile library** | Start with three official profiles and keep three custom ones for different games and scenes. Search, import, export and share profiles through the library. See [Profiles](docs/USER_GUIDE.md#en-presets). |
-| **F11 persistent performance HUD (development source, not yet packaged)** | Compact/Details views show NR state, GPU cost, FPS and FG status, with optional 10/30/60-second trends. Adjust background opacity, choose a nine-position anchor or open the Home menu to drag it; placement is remembered. |
-| **Per-pass GPU diagnostics and A/B comparison (available in development)** | Inspect each layer's model, working/output dimensions and GPU time. Compare costs before and after changing one layer's working size to identify expensive passes. See [Diagnostics](docs/USER_GUIDE.md#en-diagnostics). |
+| **F11 persistent performance HUD** | F11 toggles the monitor; F8 cycles Compact, Details, Compact + Trends and Details + Trends. Optional 10/30/60-second trends retain visible segments across configuration changes. |
+| **Per-pass GPU diagnostics and A/B comparison** | Inspect each layer's model, working/output dimensions and GPU time. Compare costs before and after changing one layer's working size to identify expensive passes. See [Diagnostics](docs/USER_GUIDE.md#en-diagnostics). |
 | **15 interface languages and assisted input** | Follow ReShade's language automatically or choose one manually. If inline IME input fails, use the native Windows Unicode editor for profile names and feedback text. |
-| **Four interface themes** | Choose Cyber Neon, Nexus Dark, Fluent Light or Midnight OLED for the menu's appearance. |
+| **Seven interface themes** | Choose Cyber Neon, Nexus Dark, Fluent Light, Midnight OLED, Neon Violet, Tactical Amber or Aurora Glass. Ivory Studio and Crimson Noir remain design candidates. |
 
 More passes add GPU work. Start with one pass and compare appearance and cost in the same scene.
 See the [User Guide](docs/USER_GUIDE.md#en-start) for settings, inheritance and practical examples.

@@ -27,6 +27,7 @@ struct MonitorPass {
   std::string execution_proof;
   std::string requested_model;
   std::string created_model_request;
+  std::string model_adjustment_reason;
   std::string actual_model_proof;
   std::string requested_size;
   std::string actual_size;
@@ -60,6 +61,7 @@ struct MonitorInputs {
   const MonitorHistory* history = nullptr;
   std::string gpu_notice;
   std::string hotkey;
+  std::string mode_hotkey;
 };
 
 // Physical screen coordinates with the UI scale used when they were saved.
@@ -94,6 +96,18 @@ struct MonitorState {
   bool auto_fit = false;
   float measured_height = 0.f;
 };
+
+inline unsigned MonitorModeIndex(const MonitorState& state) {
+  return (state.detailed ? 1u : 0u) + (state.trends ? 2u : 0u);
+}
+
+inline void AdvanceMonitorMode(MonitorState* state) {
+  if (state == nullptr) return;
+  const unsigned next = (MonitorModeIndex(*state) + 1u) % 4u;
+  state->detailed = next == 1u || next == 3u;
+  state->trends = next >= 2u;
+  state->fit_content = state->auto_fit;
+}
 
 struct MonitorActions {
   bool open_diagnostics = false;
@@ -151,6 +165,7 @@ inline bool CanConnectMonitorPoints(const MonitorPoint& previous, const MonitorP
   const int64_t max_gap = (metric == MonitorMetric::FPS || metric == MonitorMetric::INTERVAL
       ? 200'000'000LL : 750'000'000LL);
   return previous.valid && current.valid && previous.reference == current.reference
+      && previous.segment == current.segment
       && current.time_ns > previous.time_ns && current.time_ns - previous.time_ns <= max_gap;
 }
 
@@ -229,9 +244,9 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
   const bool view_changed = state->layout_initialized
       && (state->last_detailed != state->detailed || state->last_trends != state->trends);
   const bool context_changed = state->layout_initialized && state->last_interactive != interactive;
-  bool fit_content = state->fit_content || view_changed || context_changed;
-  bool preserve_height = context_changed && !state->auto_fit && !state->fit_content && !view_changed;
-  if (state->fit_content || view_changed) {
+  bool fit_content = state->fit_content || (view_changed && state->auto_fit) || context_changed;
+  bool preserve_height = context_changed && !state->auto_fit && !state->fit_content;
+  if (state->fit_content) {
     state->auto_fit = true;
   }
   if (inline_mode) {
@@ -255,10 +270,6 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
             adjustment_height += 60.f;
           } else if (!pass.stage_reason.empty()) {
             adjustment_height += 22.f;
-          }
-          if (!pass.requested_model.empty() && !pass.created_model_request.empty()
-              && pass.requested_model != pass.created_model_request) {
-            adjustment_height += 44.f;
           }
         }
         const bool side = interactive && (std::max)(right_space, left_space) >= 320.f * ui_scale;
@@ -318,7 +329,9 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
       flags |= ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
     }
     const std::string title = std::string(Tr("Runtime monitor"))
-        + (inputs.hotkey.empty() ? "" : " · " + inputs.hotkey) + "###nr_runtime_monitor";
+        + (inputs.hotkey.empty() ? "" : " · " + inputs.hotkey)
+        + (inputs.mode_hotkey.empty() ? "" : " · " + inputs.mode_hotkey)
+        + "###nr_runtime_monitor";
     visible = ImGui::Begin(title.c_str(),
                            interactive ? &state->open : nullptr, flags);
     // Consume only the request applied by this Begin. Toolbar commands below
@@ -348,9 +361,8 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
         actions.settings_changed |= pin_changed;
         if (tool(state->detailed ? "Compact" : "Details", "###monitor_details", "Detailed monitor")) {
           state->detailed = !state->detailed;
-          fit_content = true;
+          fit_content |= state->auto_fit;
           preserve_height = false;
-          state->auto_fit = true;
           actions.settings_changed = true;
         }
       }
@@ -366,9 +378,8 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
         }
         if (tool("Trends", "###monitor_trends", "Show performance history")) {
           state->trends = !state->trends;
-          fit_content = true;
+          fit_content |= state->auto_fit;
           preserve_height = false;
-          state->auto_fit = true;
           actions.settings_changed = true;
         }
         if (tool("Position", "###monitor_position", "Quick position")) {
@@ -484,10 +495,12 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
           ImGui::TextWrapped("%s  |  %s", pass.requested_model.c_str(), pass.requested_size.c_str());
           ItemTooltip("%s / %s", Tr("Configured model"), Tr("Working ratio"));
         }
-        if (!pass.requested_model.empty() && !pass.created_model_request.empty()
-            && pass.requested_model != pass.created_model_request) {
-          ImGui::TextColored(CurrentTheme().warn, "%s", Tr("Model request adjusted"));
-          field("Created model request", pass.created_model_request);
+        const bool model_adjusted = !pass.requested_model.empty() && !pass.created_model_request.empty()
+            && pass.requested_model != pass.created_model_request;
+        if (model_adjusted) {
+          ImGui::SameLine();
+          ImGui::TextColored(CurrentTheme().warn, "!");
+          ItemTooltip("%s\n%s", Tr("Model request adjusted"), pass.model_adjustment_reason.c_str());
         }
         if (state->detailed) {
           field("Working ratio", pass.requested_size);
@@ -508,6 +521,7 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
                                                ImGuiTreeNodeFlags_NoAutoOpenOnLog)) {
             field("Execution proof", pass.execution_proof);
             field("Created model request", pass.created_model_request);
+            if (model_adjusted) field("Adjustment reason", pass.model_adjustment_reason);
             field("Model evidence", pass.actual_model_proof);
             ImGui::TreePop();
           }
@@ -691,7 +705,7 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
         && ImGui::CollapsingHeader((std::string(Tr("Raw evidence")) + "###monitor_raw_evidence").c_str(),
                                    ImGuiTreeNodeFlags_NoAutoOpenOnLog);
     if (raw_evidence != state->raw_evidence) {
-      fit_content = true;
+      fit_content |= state->auto_fit;
       state->raw_evidence = raw_evidence;
     }
     if (raw_evidence) {
@@ -758,6 +772,13 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
           cell(pass.execution_proof);
         }
         ImGui::EndTable();
+      }
+      for (unsigned i = 0; i < count; ++i) {
+        const auto& pass = inputs.passes[i];
+        if (!pass.model_adjustment_reason.empty()) {
+          ImGui::TextWrapped("%s %u / %s: %s", Tr("Pass"), i + 1, Tr("Adjustment reason"),
+                             pass.model_adjustment_reason.c_str());
+        }
       }
       const char* size_headers[] = {"Pass", "Requested working size", "Observed working size"};
       if (begin_pass_table("dimensions", "Dimensions", size_headers, 3)) {

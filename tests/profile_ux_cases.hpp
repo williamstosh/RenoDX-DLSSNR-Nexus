@@ -51,9 +51,9 @@
       return text.find("Saved settings do not confirm NR execution.") != std::string::npos;
     }), "ordinary Slot tooltip leaves runtime evidence to the status area");
   };
-  profile_hover("NR Lite", "Official template: 1 Render pass, model B, scale 0.67, Default style.");
-  profile_hover("NR Balanced", "Official template: 1 Upscaled pass, model A, scale 0.67, Default style.");
-  profile_hover("NR Max", "Official template: Render B (Cinematic), then Upscaled A (Default); both at scale 0.67.");
+  profile_hover("NR Lite", "Official template: 1 Render pass, model B, scale 0.75, Default style.");
+  profile_hover("NR Balanced", "Official template: 1 Present pass, model B, scale 0.67, Default style.");
+  profile_hover("NR Max", "Official template: Present A at 100% with Cinematic style, then Present B at 100% with Default style; character mask 0.80 / 0.50.");
   const auto before_empty = profile::Snapshot();
   click(custom_button(3));
   capture("ux-create-custom-slot");

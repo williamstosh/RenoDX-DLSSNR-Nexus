@@ -23,9 +23,11 @@
   }
   auto original = full_defaults;
   for (auto& [key, value] : original.settings.items()) value = adapter::ReadSetting(key);
-  Check(adapter::Apply({.scope = presets::Scope::FULL, .settings = {{"NRMonitorKey", 0}}}, true, true, &error),
-        "An unbound monitor shortcut is valid in a full profile.");
+  Check(adapter::Apply({.scope = presets::Scope::FULL,
+                        .settings = {{"NRMonitorKey", 0}, {"NRMonitorModeKey", 0}}}, true, true, &error),
+        "Unbound monitor shortcuts are valid in a full profile.");
   Check(adapter::Capture(presets::Scope::FULL, Json::object()).settings["NRMonitorKey"] == 0
+            && adapter::Capture(presets::Scope::FULL, Json::object()).settings["NRMonitorModeKey"] == 0
             && adapter::Undo(&error), "Full profile capture and undo retain an unbound shortcut.");
   Check(adapter::Apply({.scope = presets::Scope::FULL,
                         .settings = {{"UiHudAnchor", 8}, {"UiHudOffsetX", -12.5f}, {"UiHudOffsetY", -7.25f}}},
@@ -94,7 +96,8 @@
     select(selected);
     profile::reset_notice.clear();
   };
-  const auto verify_reset = [&](int target, const data::State& before, const Json& running) {
+  const auto verify_reset = [&](int target, const data::State& before, const Json& running,
+                                bool restore_official = false, bool clear_custom = false) {
     const auto document = adapter::DefaultsDocument(target);
     const auto current = config_values();
     for (const auto& [key, value] : running.items()) {
@@ -122,11 +125,12 @@
     Check(profile::state.last_applied == profile::Snapshot(), "Saved reset marker matches managed runtime settings.");
     for (int index = 0; index < 6; ++index) {
       auto expected = before;
-      if (target == 3 && index < 3) {
+      if (restore_official && index < 3) {
         expected.slots[index].overrides = Json::object();
         expected.slots[index].snapshot = data::Template(index, profile::defaults_snapshot);
         expected.slots[index].template_version = data::TEMPLATE_VERSION;
       }
+      if (clear_custom && index >= 3) expected.slots[index] = {};
       Check(encoded(profile::state)["slots"][std::string(data::SLOT_IDS[index])]
                 == encoded(expected)["slots"][std::string(data::SLOT_IDS[index])],
             "Page reset preserves all Slots; full reset changes only official template data.");
@@ -197,6 +201,19 @@
   Check(disk().selected.empty(), "Detached manifest is atomically published before Apply.");
   settle();
   verify_reset(3, before_full, running_full);
+
+  // The two optional profile actions are independent and share the same
+  // protected reset transaction. Exercise all four checkbox combinations.
+  for (const bool restore_official : {false, true}) {
+    for (const bool clear_custom : {false, true}) {
+      prepare(0);
+      const auto before = profile::state;
+      const auto running = config_values();
+      profile::RequestReset(3, restore_official, clear_custom);
+      settle();
+      verify_reset(3, before, running, restore_official, clear_custom);
+    }
+  }
   Check(slot_bytes(other_path) == other_bytes && slot_bytes(library_path) == library_bytes,
         "Reset never writes another game or shared preset library.");
 

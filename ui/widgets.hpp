@@ -654,6 +654,10 @@ inline bool Slider(const char* id, float* value, float min, float max,
     // ImGui centres a grab of GrabMinSize on the value: the knob's diameter,
     // so the knob drawn below sits where the mouse drags it.
     hidden.Var(ImGuiStyleVar_GrabMinSize, knob * 2.f);
+    // Fluent Light and Midnight OLED use a useful border on ordinary controls;
+    // the custom rail already supplies the slider's edge, so suppress only the
+    // invisible backing frame around this widget.
+    hidden.Var(ImGuiStyleVar_FrameBorderSize, 0.f);
     if (!was_typing) {
       const ImVec4 clear(0.f, 0.f, 0.f, 0.f);
       hidden.Color(ImGuiCol_FrameBg, clear)

@@ -46,7 +46,7 @@ bool Validate(std::string_view key, const Json& value) {
   if (key == "NRAutoMask" || key == "NRPass2AutoMask" || key == "NRPass2FollowPass1") return value.is_boolean();
   if (key == "NRSkinStructure" || key == "NRPass2Skin") return value.is_number() && value >= -1 && value <= 1;
   if (!value.is_number_integer()) return false;
-  if (key == "NRHookPoint") return value >= 0 && value <= 2;
+  if (key == "NRHookPoint" || key == "NRPresentGuides") return value >= 0 && value <= 2;
   if (key == "NRPasses") return value >= 1 && value <= 4;
   if (key == "NRStyle" || key == "NRPass2Style") return value >= 0 && value <= 2;
   if (key == "NRPass2Stage") return value >= 0 && value <= 3;
@@ -166,7 +166,7 @@ int wmain(int argc, wchar_t** argv) {
     Check(state.slots[4].snapshot == read.slots[4].snapshot, "Rename independent of snapshot and ID");
     Reject(path, read, "Stale revision rejected");
 
-    Json defaults{{"NRHookPoint", 0u}, {"NRPasses", 4u}, {"NRPreset", 0u}, {"NRPass2Preset", 0u},
+    Json defaults{{"NRHookPoint", 0u}, {"NRPresentGuides", 2u}, {"NRPasses", 4u}, {"NRPreset", 0u}, {"NRPass2Preset", 0u},
                         {"NRFollowInputRes", false}, {"NRResolutionScale", 0.5}, {"NRIntensity", 0.9},
                         {"NRStyle", 0u}, {"NRAutoMask", false}, {"NRSkinStructure", 0.f},
                         {"NRPass2Stage", 0u}, {"NRPass2FollowPass1", true}, {"NRPass2Style", 0u},
@@ -193,22 +193,29 @@ int wmain(int argc, wchar_t** argv) {
     const auto lite = profiles::Template(0, defaults);
     const auto balanced = profiles::Template(1, defaults);
     const auto maximum = profiles::Template(2, defaults);
-    Check(lite["NRHookPoint"] == 1 && lite["NRPreset"] == 2 && lite["NRPasses"] == 1 && lite["NRFollowInputRes"] == false, "Lite candidate");
-    Check(balanced["NRHookPoint"] == 0 && balanced["NRPreset"] == 1 && balanced["NRPasses"] == 1 && balanced["NRFollowInputRes"] == false, "Balanced candidate");
-    Check(maximum["NRHookPoint"] == 1 && maximum["NRPreset"] == 2 && maximum["NRPass2Preset"] == 1
+    Check(lite["NRHookPoint"] == 1 && lite["NRPreset"] == 2 && lite["NRPasses"] == 1
+              && lite["NRResolutionScale"] == 0.75f && lite["NRFollowInputRes"] == false, "Lite recipe");
+    Check(balanced["NRHookPoint"] == 2 && balanced["NRPreset"] == 2 && balanced["NRPasses"] == 1
+              && balanced["NRResolutionScale"] == 0.67f && balanced["NRFollowInputRes"] == false, "Balanced recipe");
+    Check(maximum["NRHookPoint"] == 2 && maximum["NRPreset"] == 1 && maximum["NRPass2Preset"] == 2
               && maximum["NRPasses"] == 2 && maximum["NRFollowInputRes"] == false, "Max candidate");
-    Check(maximum["NRStyle"] == 2u && maximum["NRAutoMask"] == true && maximum["NRSkinStructure"] == 0.75f,
-          "Max first pass cinematic auto-mask and skin");
-    Check(maximum["NRPass2Stage"] == 2u && maximum["NRPass2FollowPass1"] == false
-              && maximum["NRPass2Style"] == 0u && maximum["NRPass2AutoMask"] == true && maximum["NRPass2Skin"] == 0.75f,
-          "Max second pass has independent Upscaled default-style auto-mask and skin");
+    Check(maximum["NRResolutionScale"] == 1.f && maximum["NRStyle"] == 2u
+              && maximum["NRAutoMask"] == true && maximum["NRSkinStructure"] == 0.80f,
+          "Max first pass Present cinematic style, auto-mask and skin");
+    Check(maximum["NRPass2Stage"] == 3u && maximum["NRPass2ResolutionMode"] == 2u
+              && maximum["NRPass2ResolutionScale"] == 1.f && maximum["NRPass2Preset"] == 2u
+              && maximum["NRPass2FollowPass1"] == false && maximum["NRPass2Style"] == 0u
+              && maximum["NRPass2AutoMask"] == true && maximum["NRPass2Skin"] == 0.50f,
+          "Max second pass has independent Present model, resolution, mask and skin");
     for (std::size_t index = 0; index < 3; ++index) {
       const auto candidate = profiles::Template(index, defaults);
-      Check(candidate["NRResolutionScale"] == 0.67f && candidate["NRIntensity"] == 0.9, "Only candidate fields override defaults");
+      Check(candidate["NRResolutionScale"] == (index == 0 ? 0.75f : index == 2 ? 1.f : 0.67f)
+                && candidate["NRIntensity"] == 0.9, "Only recipe fields override defaults");
+      Check(candidate["NRPresentGuides"] == 0u, "Official recipes explicitly use optional depth and motion");
       for (unsigned pass = 2; pass <= 4; ++pass) {
         const auto prefix = "NRPass" + std::to_string(pass);
         Check(candidate[prefix + "ResolutionMode"] == (index == 2 && pass == 2 ? 2u : 0u)
-                  && candidate[prefix + "ResolutionScale"] == (index == 2 && pass == 2 ? 0.67f : 1.f),
+                  && candidate[prefix + "ResolutionScale"] == 1.f,
               "Only Max Pass2 overrides inherited resolution; inactive passes retain defaults");
       }
       const auto resolved = profiles::Resolve(index, state.slots[index], defaults, Validate);
@@ -225,15 +232,15 @@ int wmain(int argc, wchar_t** argv) {
     override_slot.overrides.erase("NRIntensity");
     Check(profiles::Resolve(0, override_slot, updated_defaults, Validate)["NRIntensity"] == 0.6, "Missing override inherits new default");
     Check(profiles::Resolve(4, state.slots[4], updated_defaults, Validate) == state.slots[4].snapshot, "Custom snapshot remains independent");
-    Check(profiles::TEMPLATE_VERSION == 2 && profiles::DEVELOPMENT_CANDIDATE, "Independent candidate template version");
+    Check(profiles::TEMPLATE_VERSION == 3 && profiles::DEVELOPMENT_CANDIDATE, "Independent candidate template version");
     auto old_max = state.slots[2];
     old_max.template_version = 1;
     old_max.snapshot = {{"NRHookPoint", 2u}, {"NRPass2Preset", 2u}};
     old_max.overrides = {{"NRPass2Skin", 0.5f}, {"NRResolutionScale", 0.8f}};
     const auto upgraded = profiles::Resolve(2, old_max, defaults, Validate);
-    Check(upgraded["NRHookPoint"] == 1u && upgraded["NRPass2Preset"] == 1u
+    Check(upgraded["NRHookPoint"] == 2u && upgraded["NRStyle"] == 2u && upgraded["NRPass2Preset"] == 2u
               && upgraded["NRPass2Skin"] == 0.5f && upgraded["NRResolutionScale"] == 0.8f
-              && upgraded["NRPass2ResolutionScale"] == 0.67f, "Upgrade combines new template with field-level explicit overrides, not old snapshot");
+              && upgraded["NRPass2ResolutionScale"] == 1.f, "Upgrade combines new template with field-level explicit overrides, not old snapshot");
     auto old_custom = old_max;
     old_custom.snapshot = {{"NRStyle", 1u}, {"NRPass2Style", 2u}, {"NRPasses", 4u}};
     Check(profiles::Resolve(3, old_custom, defaults, Validate) == old_custom.snapshot,

@@ -25,7 +25,22 @@ int main() {
   char footer[256];
   std::snprintf(footer, sizeof(footer), text::kFooter, "v" NR_NEXUS_VERSION, "test-runtime", "test.exe");
   if (std::string_view(footer) != NR_NEXUS_NAME " v" NR_NEXUS_VERSION " | DLSSNR test-runtime | test.exe") return 1;
+  if (!FormatConversions("100% with literal text").empty()
+      || !FormatConversions("100% im Cinematic-Stil").empty()
+      || FormatConversions("Signed: % d; decimal: % .2f") != "% d|% .2f|"
+      || FormatConversions("Estimated working resolution: %ux%u") != "%u|%u|") {
+    return 7;
+  }
   const char* report_strings[] = {
+      "Unbind monitor mode key",
+      "F8 cycles monitor modes by default. Games, Steam or other overlays may use the same key. Change or unbind it if needed; host input is not blocked.",
+      "Restore all official profiles",
+      "Clear all custom profiles",
+      "Restore Lite, Balanced and Max to the latest official recipes and clear their personal changes.",
+      "Delete the saved contents of Custom 1, Custom 2 and Custom 3. The running settings remain valid.",
+      "Both options are off by default. Custom profile contents are deleted only when the second option is selected.",
+      "Cycle runtime monitor mode",
+      "Monitor mode key conflicts with another shortcut. Choose a different key.",
       text::kPassStage, text::kPreviousStage, text::kPassStageTip,
       text::kRequestedStage, text::kEffectiveStage, text::kStageBlocked, text::kStagePlanNote,
       text::kStagesUnavailable,
@@ -44,6 +59,10 @@ int main() {
       text::kStyleFollows, text::kStyleIndependent, text::kResultFollows,
       text::kResultIndependent, text::kRuntimeUnconfirmed,
       "Precision cyan on deep blue.", "Classic teal and charcoal.",
+      "Neon Violet", "Tactical Amber", "Aurora Glass",
+      "Magenta signal lines in a violet night control room.",
+      "Amber instrumentation over a deep field green chassis.",
+      "Cool translucent layers with mint and blue-gray guidance.",
       "Clear blue on bright surfaces.", "Pure black with restrained green.",
       text::kPresentGuideCountersTip,
       text::kPassCountTip,
@@ -293,6 +312,7 @@ int main() {
       "Reset cancelled or failed. Previous profiles restored.",
       "Reset failed: profile storage was not changed.",
       "Reset failed: applied settings did not match the saved reset snapshot.",
+      "Defaults restored.",
       "Defaults restored; custom profiles were kept.",
       "Retry profile recovery",
       "Manage profiles",
@@ -420,6 +440,10 @@ int main() {
       "Requested stage differs from effective stage.",
       "Configured model",
       "Model request adjusted",
+      "Adjustment reason",
+      "Automatic model selection.",
+      "Runtime compatibility fallback.",
+      "Legacy model request mapping.",
       "Working ratio",
       "Pass evidence",
       "Raw evidence",
@@ -434,9 +458,9 @@ int main() {
       "On",
       "Off",
       "Unknown",
-      "Official template: 1 Render pass, model B, scale 0.67, Default style.",
-      "Official template: 1 Upscaled pass, model A, scale 0.67, Default style.",
-      "Official template: Render B (Cinematic), then Upscaled A (Default); both at scale 0.67.",
+      "Official template: 1 Render pass, model B, scale 0.75, Default style.",
+      "Official template: 1 Present pass, model B, scale 0.67, Default style.",
+      "Official template: Present A at 100% with Cinematic style, then Present B at 100% with Default style; character mask 0.80 / 0.50.",
       "Configured working ratio and current completed working dimensions when available.",
   };
   const char* monitor_v2_strings[] = {
@@ -444,7 +468,7 @@ int main() {
       "Interface & notifications",
       "Game fixes & compatibility",
       "Development & maintenance",
-      "Screen notifications",
+      "On-screen notifications",
       "Custom position: your saved notification placement is unchanged. Choose a grid position to adjust offsets.",
       "Reset notification position",
       "Preview notification position",

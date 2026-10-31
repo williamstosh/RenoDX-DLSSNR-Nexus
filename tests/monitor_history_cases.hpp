@@ -47,8 +47,12 @@ void RunMonitorHistoryCases(const Check& check) {
   check(series.count == ui::MonitorSeries::CAPACITY, "rapid valid/gap transitions remain bounded on ring rotation");
   history->Add(ui::MonitorMetric::FPS, 84'000'000'000LL, 120.f);
   const auto generation = history->generation;
+  history->BeginSegment();
+  history->Add(ui::MonitorMetric::GPU, 84'001'000'000LL, 2.f);
+  check(series.count >= 2 && series.At(series.count - 1).segment != series.At(series.count - 2).segment,
+        "configuration boundaries retain old samples while marking a new history segment");
   history->ClearGpu();
-  check(series.count == 0 && history->series[0].count == 1 && history->generation == generation + 1,
+  check(series.count == 0 && history->series[0].count == 1 && history->generation == generation + 2,
         "GPU source changes clear GPU curves while preserving independent UI cadence");
   history->Clear();
   check(history->series[0].count == 0, "configuration/runtime changes clear all history");

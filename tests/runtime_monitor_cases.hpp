@@ -224,6 +224,13 @@ void RunRuntimeMonitorCases(const Check& check) {
   draw();
   check(state.geometry.position.x == moved.x && state.geometry.size.x == resized.x,
         "geometry remains stable on the following frame");
+  for (unsigned mode = 0; mode < 4; ++mode) {
+    ui::AdvanceMonitorMode(&state);
+    draw(); draw();
+    check(!state.auto_fit && state.geometry.position.x == moved.x && state.geometry.position.y == moved.y
+              && state.geometry.size.x == resized.x && state.geometry.size.y == resized.y,
+          "all four F8 views retain manual position and size after real ImGui layout");
+  }
   state.pin = true;
   draw();
   auto* window = ImGui::FindWindowByName("###nr_runtime_monitor");
@@ -309,4 +316,20 @@ void RunRuntimeMonitorCases(const Check& check) {
   const std::array<std::uint32_t, 4> bindings = {65, 66, 65, 67};
   check(ui::HotkeyConflict(bindings, {true, true, true, true}, 0), "duplicate enabled hotkeys conflict");
   check(!ui::HotkeyConflict(bindings, {true, true, false, true}, 0), "disabled duplicates do not conflict");
+  ui::MonitorState mode{.auto_fit = true};
+  const bool expected_detailed[] = {true, false, true, false};
+  const bool expected_trends[] = {false, true, true, false};
+  for (unsigned index = 0; index < 4; ++index) {
+    ui::AdvanceMonitorMode(&mode);
+    check(mode.detailed == expected_detailed[index] && mode.trends == expected_trends[index]
+              && mode.fit_content && mode.auto_fit,
+          "F8 monitor mode cycle visits compact, detail, trends and detail-trends in order");
+  }
+  check(ui::MonitorModeIndex(mode) == 0, "F8 monitor mode cycle returns to compact without changing F11 state");
+  mode.auto_fit = mode.fit_content = false;
+  const auto manual_geometry = mode.geometry;
+  ui::AdvanceMonitorMode(&mode);
+  check(!mode.auto_fit && !mode.fit_content
+            && mode.geometry.position.x == manual_geometry.position.x && mode.geometry.size.x == manual_geometry.size.x,
+        "F8 preserves manually chosen geometry and sizing mode");
 }

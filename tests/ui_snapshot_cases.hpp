@@ -224,6 +224,23 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
           scenarios.push_back({.id = std::string(theme.slug) + "-" + pages[page], .page = page, .theme = theme.id});
         }
       }
+      // Render all five design directions through the same production fixture.
+      // Three are already public themes; Ivory Studio and Crimson Noir remain
+      // offline candidates until a product review promotes them.
+      for (const auto& theme : ui::kDesignCandidates) {
+        scenarios.push_back({.id = std::string(theme.slug) + "-slot-hover", .action = "slot-hover", .theme = theme.id});
+        for (const char* action : {"restore-all-confirmation", "model-tooltip", "preset-import-scope", "preset-import-scope-confirmed"}) {
+          scenarios.push_back({.id = std::string(theme.slug) + "-" + action,
+                               .page = (std::string_view(action) == "restore-all-confirmation" ? 3 : 0),
+                               .action = action, .theme = theme.id});
+        }
+        for (int page = 0; page < 4; ++page) {
+          scenarios.push_back({.id = std::string(theme.slug) + "-" + pages[page], .page = page, .theme = theme.id});
+        }
+        scenarios.push_back({.id = std::string(theme.slug) + "-monitor", .action = "r5-monitor-long", .theme = theme.id,
+                             .language = 1, .width = 2100.f, .monitor_passes = 3, .monitor_width = 1100.f,
+                             .monitor_detailed = true, .monitor_trends = true});
+      }
       for (int language : {1, 4}) {
         for (int page = 0; page < 4; ++page) {
           scenarios.push_back({.id = std::string(ui::kLanguages[language - 1].code) + "-" + pages[page],

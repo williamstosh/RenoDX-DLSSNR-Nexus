@@ -65,8 +65,10 @@ int main() {
     return ((std::max)(a, b) + 0.05f) / ((std::min)(a, b) + 0.05f);
   };
   const ui::ThemeId expected_ids[] = {ui::ThemeId::CYBER_NEON, ui::ThemeId::NEXUS_DARK,
-                                    ui::ThemeId::FLUENT_LIGHT, ui::ThemeId::MIDNIGHT_OLED};
-  check(ui::kThemes.size() == 4, "four public themes are available");
+                                    ui::ThemeId::FLUENT_LIGHT, ui::ThemeId::MIDNIGHT_OLED,
+                                    ui::ThemeId::NEON_VIOLET, ui::ThemeId::TACTICAL_AMBER,
+                                    ui::ThemeId::AURORA_GLASS};
+  check(ui::kThemes.size() == 7, "seven public themes are available");
   for (size_t index = 0; index < ui::kThemes.size(); ++index) {
     const auto& palette = ui::kThemes[index];
     check(palette.id == expected_ids[index], "theme IDs retain their public order");

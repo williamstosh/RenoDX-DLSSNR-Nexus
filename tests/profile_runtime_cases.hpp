@@ -221,6 +221,14 @@ const auto RunProfileRuntimeCases = [&](const std::filesystem::path& outputdir) 
   settle();
   Check(encoded(profile::state) == empty_state && profile::Snapshot() == initial,
         "Selecting empty custom Slot never clears running settings.");
+  for (const int index : {1, 2}) {
+    Check(profile::ApplySnapshot({{"NRPresentGuides", 2u}}, &error), "Set distinct previous depth and motion preference.");
+    select(index);
+    Check(profile::Snapshot()["NRPresentGuides"] == 0u
+              && runtime::preset_ui::ReadSetting("NRPresentGuides") == 0u,
+          "Present official recipes apply optional guides rather than inheriting the previous setting.");
+  }
+  seed();
 
   for (int index = 0; index < 3; ++index) {
     select(index);

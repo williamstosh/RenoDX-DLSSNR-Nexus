@@ -22,6 +22,7 @@ struct MonitorPoint {
   uint32_t events = 0;
   bool valid = false;
   bool reference = false;
+  uint64_t segment = 0;
 };
 
 // 50 ms buckets retain the extrema of actual events, including short spikes.
@@ -35,14 +36,15 @@ struct MonitorSeries {
 
   const MonitorPoint& At(size_t index) const { return points[(begin + index) % CAPACITY]; }
 
-  void Add(int64_t time_ns, float value, bool valid = true, bool reference = false) {
+  void Add(int64_t time_ns, float value, bool valid = true, bool reference = false,
+           uint64_t segment = 0) {
     if (time_ns <= 0) return;
     valid &= std::isfinite(value) && value >= 0.f;
     if (count != 0) {
       auto& last = points[(begin + count - 1) % CAPACITY];
       if (time_ns < last.time_ns) return;
       if (!valid && !last.valid) return;
-      if (valid && last.valid && last.reference == reference
+      if (valid && last.valid && last.reference == reference && last.segment == segment
           && time_ns / BUCKET_NS == last.time_ns / BUCKET_NS) {
         last.time_ns = time_ns;
         last.value = value;
@@ -59,7 +61,7 @@ struct MonitorSeries {
     points[(begin + count++) % CAPACITY] = {
         .time_ns = time_ns, .value = (valid ? value : 0.f),
         .low = (valid ? value : 0.f), .high = (valid ? value : 0.f),
-        .events = (valid ? 1u : 0u), .valid = valid, .reference = reference};
+        .events = (valid ? 1u : 0u), .valid = valid, .reference = reference, .segment = segment};
     while (count > 1 && time_ns - At(0).time_ns > 60'000'000'000LL) {
       begin = (begin + 1) % CAPACITY;
       --count;
@@ -70,11 +72,18 @@ struct MonitorSeries {
 struct MonitorHistory {
   std::array<MonitorSeries, static_cast<size_t>(MonitorMetric::COUNT)> series{};
   uint64_t generation = 0;
+  uint64_t segment = 0;
 
   void Clear() {
     for (auto& values : series) {
       values.begin = values.count = 0;
     }
+    ++generation;
+    segment = 0;
+  }
+
+  void BeginSegment() {
+    ++segment;
     ++generation;
   }
 
@@ -94,7 +103,7 @@ struct MonitorHistory {
   }
 
   void Add(MonitorMetric metric, int64_t time_ns, float value, bool valid = true, bool reference = false) {
-    series[static_cast<size_t>(metric)].Add(time_ns, value, valid, reference);
+    series[static_cast<size_t>(metric)].Add(time_ns, value, valid, reference, segment);
   }
 };
 

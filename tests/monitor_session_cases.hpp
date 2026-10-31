@@ -99,6 +99,9 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   preserve_atomic(r::custom_cycle_key);
   preserve_atomic(r::official_cycle_enabled);
   preserve_atomic(r::custom_cycle_enabled);
+  preserve_atomic(r::monitor_mode_key);
+  preserve_atomic(r::monitor_mode_cycle_request);
+  preserve_atomic(r::monitor_settings_epoch);
   preserve_atomic(r::hotkey_capture_target);
   preserve_atomic(r::hud_overlay_open);
   preserve_atomic(r::monitor_requested);
@@ -116,6 +119,12 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   preserve_atomic(r::configuration_generation);
   preserve_atomic(r::gpu_timers_enabled);
   preserve_atomic(r::cost_meter_enabled);
+  preserve_atomic(r::preset);
+  preserve_atomic(r::nr_resolution_scale);
+  preserve_atomic(r::hud_enabled);
+  preserve_atomic(r::profile_feedback_until_ns);
+  preserve(r::profile_feedback.message);
+  preserve(r::profile_feedback.operation);
   preserve_atomic(r::nr_cost_gpu_ms);
   preserve_atomic(r::nr_cost_present_ms);
   preserve_atomic(r::nr_cost_frame_ms);
@@ -123,6 +132,7 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   preserve_atomic(r::cmd_hooks_ever_installed);
   preserve_atomic(r::ui_welcomed);
   preserve(r::monitor_key_edge);
+  preserve(r::monitor_mode_key_edge);
   preserve(r::live_effect_runtimes);
   preserve(r::monitor_snapshot);
   preserve(r::monitor_cadence);
@@ -131,7 +141,12 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   preserve(r::ui_monitor_drawn_frame);
   preserve(r::ui_monitor_was_interactive);
   preserve(r::ui_monitor_save_batches);
+  preserve(r::ui_runtime_monitor_state);
+  preserve(r::ui_monitor_geometry_dirty);
+  preserve(r::ui_monitor_saved_pin);
   preserve(r::ui_fg_route);
+  for (auto& signature : r::model_adjustment_notice_signatures) preserve_atomic(signature);
+  preserve(r::profile_ui::writable);
   preserve(r::flush_profile_storage);
   preserve(r::card_observation.window);
   preserve(r::card_observation.configuration);
@@ -152,6 +167,10 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   });
   // Home-close must never flush profile storage or touch user profile files.
   r::flush_profile_storage = nullptr;
+  // This case exercises the monitor session in isolation. Profile loading and
+  // first-run/template migration belong to the profile tests and may persist
+  // ProfileGameId while a monitor frame is being rendered.
+  r::profile_ui::writable = false;
   ui::SelectLanguage(0);
   r::ui_welcomed = true;
 
@@ -269,6 +288,62 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
           "closing Home honors keep-visible, cancels monitor rebinding and never flushes profiles");
     check(r::monitor_history_epoch.load() == history_epoch + (keep ? 0u : 1u),
           "Home editing preserves HUD history unless closing the menu actually closes the monitor");
+  }
+  {
+    r::monitor_mode_key = VK_F8;
+    r::monitor_mode_key_edge = {};
+    r::monitor_mode_cycle_request = 0;
+    r::PollMonitorModeKey(false, true, false);
+    r::PollMonitorModeKey(true, true, false);
+    check(r::monitor_mode_cycle_request.exchange(0) == 1, "fresh F8 queues one mode cycle");
+    r::PollMonitorModeKey(true, true, false);
+    check(r::monitor_mode_cycle_request.load() == 0, "held F8 never repeats a mode cycle");
+    r::PollMonitorModeKey(false, true, true);
+    r::PollMonitorModeKey(true, true, true);
+    check(r::monitor_mode_cycle_request.load() == 0, "Home input context transition cannot reuse held F8");
+    r::PollMonitorModeKey(false, true, true);
+    r::PollMonitorModeKey(true, true, true);
+    check(r::monitor_mode_cycle_request.exchange(0) == 1, "fresh F8 in the Home context queues one mode cycle");
+    r::PollMonitorModeKey(false, false, true);
+    r::PollMonitorModeKey(true, true, true);
+    check(r::monitor_mode_cycle_request.load() == 0, "focus or text input exclusion requires release before rearming F8");
+    for (uint32_t binding : {0u, uint32_t{VK_F11}, uint32_t{VK_F6}, uint32_t{VK_HOME}}) {
+      r::monitor_mode_key = binding;
+      r::monitor_mode_key_edge = {};
+      for (int tick = 0; tick < 3; ++tick) {
+        r::PollMonitorModeKey(false, true, false);
+        r::PollMonitorModeKey(true, true, false);
+      }
+      check(r::monitor_mode_cycle_request.load() == 0, "unbound or conflicting F8 action cannot cycle modes");
+    }
+    r::monitor_mode_key = VK_F8;
+    const bool visible = r::monitor_requested.load();
+    for (unsigned mode = 0; mode < 4; ++mode) {
+      const auto before = ui::MonitorModeIndex(r::ui_runtime_monitor_state);
+      r::CycleMonitorMode();
+      check(ui::MonitorModeIndex(r::ui_runtime_monitor_state) == (before + 1u) % 4u
+                && r::monitor_requested.load() == visible, "production mode cycle preserves F11 visibility");
+      bool detailed = !r::ui_runtime_monitor_state.detailed;
+      bool trends = !r::ui_runtime_monitor_state.trends;
+      bool auto_fit = !r::ui_runtime_monitor_state.auto_fit;
+      reshade::get_config_value(nullptr, r::kConfigSection, "UiMonitorDetailed", detailed);
+      reshade::get_config_value(nullptr, r::kConfigSection, "UiMonitorTrends", trends);
+      reshade::get_config_value(nullptr, r::kConfigSection, "UiMonitorAutoFit", auto_fit);
+      check(detailed == r::ui_runtime_monitor_state.detailed && trends == r::ui_runtime_monitor_state.trends
+                && auto_fit == r::ui_runtime_monitor_state.auto_fit, "each F8 mode persists existing detailed, trends and fit preferences");
+    }
+  }
+  // The mode action intentionally persists. Keep this isolated input test
+  // separate from the read-only monitor sampling assertions below.
+  if (read_ini() != original_ini) {
+    WritePrivateProfileStringA(nullptr, nullptr, nullptr, ini_path.string().c_str());
+    if (original_ini) {
+      std::ofstream output(ini_path, std::ios::binary | std::ios::trunc);
+      output << *original_ini;
+    } else {
+      std::filesystem::remove(ini_path);
+    }
+    WritePrivateProfileStringA(nullptr, nullptr, nullptr, ini_path.string().c_str());
   }
 
   // The holder has a bounded escape so a regression to blocking acquisition
@@ -418,6 +493,47 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
             && exact_cost.summary.gpu == "1.2 ms",
         "single-stage monitor cost comes from its current completed group, never retained global cost");
   const auto saved_measured = measured;
+  {
+    const auto requested = r::preset.load();
+    const auto generation = r::configuration_generation.load();
+    const auto dual_models = r::direct_runtime_requirements.dual_models;
+    r::direct_runtime_requirements.dual_models = false;
+    r::preset = 2;
+    measured.passes[0].model = 1;
+    r::monitor_requested = false;
+    for (auto& signature : r::model_adjustment_notice_signatures) signature = 0;
+    r::profile_feedback_until_ns = 0;
+    r::NotifyCompletedModelAdjustments(r::SteadyNowNs());
+    const auto deadline = r::profile_feedback_until_ns.load();
+    check(deadline > r::SteadyNowNs() && deadline <= r::SteadyNowNs() + r::kHudToastNs
+              && r::profile_feedback.message.find(std::string(addon::nr_model::PresetName(2)) + " -> "
+                  + addon::nr_model::PresetName(1)) != std::string::npos,
+          "completed adjustment produces a bounded notification with the monitor hidden");
+    r::NotifyCompletedModelAdjustments(r::SteadyNowNs());
+    r::monitor_snapshot.attempted_ns = 0;
+    check(r::RefreshMonitorSnapshot(true).monitor.passes[0].model_adjustment_reason
+              == "Runtime compatibility fallback.", "full adjustment reason remains in current diagnostic evidence");
+    check(r::profile_feedback_until_ns.load() == deadline, "repeated evidence and monitor views cannot extend or retrigger the notification");
+    ++r::configuration_generation;
+    identity.configuration_generation = r::configuration_generation.load();
+    r::NotifyCompletedModelAdjustments(r::SteadyNowNs());
+    check(r::profile_feedback_until_ns.load() == deadline, "old completed evidence cannot notify for a new configuration");
+    measured.identity = identity;
+    r::profile_feedback_until_ns = 0;
+    r::NotifyCompletedModelAdjustments(r::SteadyNowNs());
+    check(r::profile_feedback_until_ns.load() > 0, "new current configuration evidence can notify again");
+    const bool notices_enabled = r::hud_enabled.load();
+    r::hud_enabled = false;
+    const auto windows = ImGui::GetCurrentContext()->Windows.Size;
+    r::OnHudOverlay(nullptr);
+    check(ImGui::GetCurrentContext()->Windows.Size == windows, "disabled on-screen notifications draw no adjustment window");
+    r::hud_enabled = notices_enabled;
+    r::preset = requested;
+    r::direct_runtime_requirements.dual_models = dual_models;
+    r::configuration_generation = generation;
+    identity.configuration_generation = generation;
+    measured = saved_measured;
+  }
   for (const auto state : {timers::SampleState::PENDING, timers::SampleState::REPLAYED,
                            timers::SampleState::EXPIRED}) {
     measured.state = state;
@@ -570,6 +686,65 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
     timers::monitor_events.enabled = false;
     timers::QueueMonitorSample(raw_render);
     check(timers::monitor_events.published == published, "closed trend recording does no dedicated GPU history work");
+
+    // Exercise configuration boundaries through the production preparation
+    // and completion-event consumers, retaining the original time axis.
+    history.configuration = r::configuration_generation.load();
+    history.epoch = r::monitor_history_epoch.load();
+    history.active = true;
+    timers::monitor_events.enabled = true;
+    for (const auto hook : {r::kHookRender, r::kHookUpscaled, r::kHookPresent, r::kHookRender}) {
+      r::hook_point = hook;
+      r::stack_passes = 1;
+      const auto count = gpu_history.count;
+      const auto segment = history.values.segment;
+      ++r::configuration_generation;
+      identity.configuration_generation = r::configuration_generation.load();
+      r::PrepareMonitorHistory(true);
+      check(gpu_history.count == count && history.values.segment > segment,
+            "Render, Upscaled and Present configuration boundaries retain previous GPU history");
+      r::monitor_snapshot.attempted_ns = 0;
+      check(r::RefreshMonitorSnapshot(true).summary.gpu.empty(), "stage changes cannot use previous current GPU numbers");
+      auto fresh = raw_render;
+      fresh.identity = identity;
+      fresh.measured_ns = fresh.recorded_ns = r::SteadyNowNs();
+      fresh.sequence = ++raw_render.sequence;
+      std::strcpy(fresh.path, hook == r::kHookRender ? "preSR" : hook == r::kHookPresent ? "present" : "upscaled");
+      fresh.identity.stable_epoch = r::comparison_stable_epochs[timers::StageIndex(fresh.path)];
+      timers::QueueMonitorSample(fresh);
+      r::monitor_snapshot.attempted_ns = 0;
+      r::RefreshMonitorSnapshot(true);
+      check(gpu_history.count > count && gpu_history.At(gpu_history.count - 1).valid
+                && gpu_history.At(gpu_history.count - 1).segment == history.values.segment,
+            "fresh stage completion starts a separate valid segment on the same time axis");
+    }
+    for (int change = 0; change < 5; ++change) {
+      const auto count = gpu_history.count;
+      const auto segment = history.values.segment;
+      if (change < 2) r::stack_passes = change == 0 ? 2 : 1;
+      else if (change < 4) r::preset = change == 2 ? 1 : 2;
+      else r::nr_resolution_scale = .67f;
+      ++r::configuration_generation;
+      identity.configuration_generation = r::configuration_generation.load();
+      r::PrepareMonitorHistory(true);
+      check(gpu_history.count == count && history.values.segment > segment,
+            "pass count, model and scale changes retain history with a new configuration segment");
+    }
+    const auto retained = gpu_history.count;
+    r::ToggleMonitor();
+    r::ToggleMonitor();
+    auto segment = history.values.segment;
+    r::PrepareMonitorHistory(true);
+    check(gpu_history.count == retained && history.values.segment > segment, "F11 reopen retains history and begins a new segment");
+    r::PrepareMonitorHistory(false);
+    segment = history.values.segment;
+    r::PrepareMonitorHistory(true);
+    check(gpu_history.count == retained && history.values.segment > segment, "trend pause and resume retain history without joining the gap");
+    const auto session = history.session;
+    history.session = session + 1;
+    r::monitor_snapshot.attempted_ns = 0;
+    r::RefreshMonitorSnapshot(true);
+    check(valid_points() == 0 && history.session == timers::device_session, "device-session mismatch safely resets incompatible GPU history");
     history.active = false;
   }
   render = {};

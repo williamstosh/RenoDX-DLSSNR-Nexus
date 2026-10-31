@@ -10,13 +10,13 @@
 
 | 使用的版本 | 可用范围 |
 | --- | --- |
-| **0.1.0 正式版** | 最多四层 NR、逐层独立模型／外观／结果编辑、NR 与 FG 协同、诊断、15 种语言和四套主题。 |
+| **0.1.0 早期正式版** | 最多四层 NR、逐层独立模型／外观／结果编辑、NR 与 FG 协同、诊断、15 种语言和四套主题。 |
 | **0.2.0-dev.8 已发布预发布版** | 增加逐层处理阶段、六个快速方案、方案库及辅助输入。 |
-| **0.2.0-dev.11 当前开发源码，尚未公开发布** | 增加逐层独立工作分辨率、F11 运行监视器、逐层 GPU 诊断与手动 GPU A/B 对比，以及新的菜单操作和布局。 |
+| **0.2.0 正式版** | 增加逐层独立工作分辨率、F11 运行监视器、逐层 GPU 诊断与手动 GPU A/B 对比，以及新的菜单操作和布局。 |
 
-本文用 **开发版可用** 标记 dev.11 新增内容；**实验性**表示有特殊条件的试用路径，**暂不支持**表示不可用组合。其余已支持功能按上表区分版本。下载见 [Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)。
+本指南对应 **0.2.0**。**实验性**表示有特殊条件的试用路径，**暂不支持**表示不可用组合。旧版功能范围见上表。下载见 [Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)。
 
-配图沿用已审核的早前开发界面。dev.11 的状态栏、分辨率区及方案入口已有调整，以文字步骤为准；图中状态和数字是界面示例。
+配图沿用已审核的早前开发界面。0.2.0 的状态栏、分辨率区及方案入口已有调整，以文字步骤为准；图中状态和数字是界面示例。
 
 <a id="zh-contents"></a>
 ### 目录
@@ -35,9 +35,9 @@
 2. 初次手动配置用 **1 层、Auto 模型、Upscaled（超分后）**，先保留外观和高级兼容性默认值。Render／Upscaled 需要游戏开启兼容的 DLSS SR 或 DLAA。
 3. 回到正常游玩画面，查看顶部状态；若提示等待、缺少运行时或资源，点击状态进入**诊断**，按提示处理。
 4. 比较同一场景的静止和移动画面。想改变生成风格，调整**模型风格**；想控制生成后的亮暗、颜色和细节，开启**调整 NR 的外观**。
-5. dev.8 起可将喜欢的配置存入**自定义方案**；开发源码还可按 **F11** 边玩边看 NR GPU 开销。
+5. 将喜欢的配置存入**自定义方案**；按 **F11** 边玩边看 NR GPU 开销。
 
-菜单有**画质、叠层、诊断、高级**四个主标签；**管理方案**从画质页打开独立窗口。当前未发布的 dev.11 源码中，各页右上角的全部展开／收起仅作用于本页或当前 Pass 的高级分组，常用设置保持可见；窄窗口使用 +／− 按钮。一般参数会自动保存；更换模型、层数、位置或尺寸后，等画面稳定再比较。
+菜单有**画质、叠层、诊断、高级**四个主标签；**管理方案**从画质页打开独立窗口。各页右上角的全部展开／收起仅作用于本页或当前 Pass 的高级分组，常用设置保持可见；窄窗口使用 +／− 按钮。一般参数会自动保存；更换模型、层数、位置或尺寸后，等画面稳定再比较。
 
 <a id="zh-scenarios"></a>
 #### 从你的目标开始
@@ -45,7 +45,7 @@
 | 想做什么 | 从哪里开始 |
 | --- | --- |
 | 混搭两种独立外观 | 按[两层实例](#zh-two-pass-example)分别设置模型、外观和结果。 |
-| 降低 NR 开销 | 先减少层数，再比较[工作分辨率](#zh-resolution)；开发源码可用 [GPU A/B](#zh-gpu-ab)。 |
+| 降低 NR 开销 | 先减少层数，再比较[工作分辨率](#zh-resolution)；使用 [GPU A/B](#zh-gpu-ab)。 |
 | 保留并切换喜欢的设置 | 创建[自定义方案](#zh-presets)，需要分享时导出文件或复制分享文本。 |
 | 配合帧生成使用 | 保留游戏原有 FG 设置，在[诊断](#zh-diagnostics)看 NR 路径和 FG 状态。 |
 | 画面过暗、过艳或有光晕 | 调[结果编辑](#zh-results)的压暗、颜色、限制或光晕抑制。 |
@@ -58,7 +58,7 @@
 
 用 **Neural Rendering／F6** 比较关／开。**Auto** 是默认模型；兼容的 **310.9.16.0** 运行时支持 **A（Legacy）／B（Small FP8）**，可比较两者外观和成本。
 
-当前未发布的 dev.11 源码保留顶部 F6 开关与六个快速方案，画质页分为三个常开区：**核心画质**按模型、强度、工作分辨率／比例与上采样排列，并显示第 1 层当前尺寸证据；**处理与兼容性**包含处理位置（Hook Point），Present 下显示深度／运动与 HUD 选项，低频 HDR 与 FG 选项折叠；**外观与结果**常显模型风格等常用控件，结果的四个高级分组继续按需展开。
+0.2.0 保留顶部 F6 开关与六个快速方案，画质页分为三个常开区：**核心画质**按模型、强度、工作分辨率／比例与上采样排列，并显示第 1 层当前尺寸证据；**处理与兼容性**包含处理位置（Hook Point），Present 下显示深度／运动与 HUD 选项，低频 HDR 与 FG 选项折叠；**外观与结果**常显模型风格等常用控件，结果的四个高级分组继续按需展开。
 
 位置从 **Upscaled** 开始：它在游戏 DLSS 输出后处理。**Render** 在 DLSS 放大前处理，可比较较小输入的成本；**Present** 处理游戏完成后、ReShade 效果前的画面。Ray Reconstruction 开启时，Render 使用兼容的 Upscaled 路径。Present 默认保留 HUD，仍受影响时可比较 UI 修正或改用 Upscaled。
 
@@ -73,7 +73,7 @@
 
 点击节点选择要编辑的层。第 1 层与画质页共用设置；第 2–4 层的模型可继承主模型，外观和结果则分别独立选择继承第 1 层，均不是继承上一层。工作分辨率可继承基础分辨率；只有 Stage 的“与上一层相同”跟随上一 Pass。可以同模型不同外观，也可以不同模型共享结果编辑。增加层数会增加 GPU 工作并叠加颜色和光晕变化，建议从两层开始。
 
-当前开发源码将叠层页分为**执行链**总览和醒目的**正在编辑 Pass N**，编辑区按**运行设置、外观与继承、结果**分组。节点显示配置阶段、解析模型和工作分辨率比例；各层实际工作尺寸紧邻参数，没有当前有效数据时显示“待确认”。**全部展开／全部收起**作用于本页或当前 Pass 的高级分组，常用设置始终可见；切换 Pass 会保留各层的折叠选择。细节稳定可在结果调整关闭时独立生效，完整规则可悬停**时域稳定**折叠头或展开该组查看。
+叠层页分为**执行链**总览和醒目的**正在编辑 Pass N**，编辑区按**运行设置、外观与继承、结果**分组。节点显示配置阶段、解析模型和工作分辨率比例；各层实际工作尺寸紧邻参数，没有当前有效数据时显示“待确认”。**全部展开／全部收起**作用于本页或当前 Pass 的高级分组，常用设置始终可见；切换 Pass 会保留各层的折叠选择。细节稳定可在结果调整关闭时独立生效，完整规则可悬停**时域稳定**折叠头或展开该组查看。
 
 <a id="zh-two-pass-example"></a>
 ##### 实例：自然底层＋电影感第二层
@@ -91,10 +91,10 @@ A/B 示例需要 310.9.16.0，其他兼容运行时也可使用同模型两层�
 
 dev.8 起，第 2–4 层可选**与上一层相同／Render／Upscaled／Present**。支持的 DX11／DX12 链可用：**Render A → 游戏 DLSS SR → Upscaled B**。
 
-阶段按 Render → Upscaled → Present 顺序排列。开发版需要连带调整后续层时先显示整链预览，可确认或取消。可用组合见[兼容性表](#zh-paths)。
+阶段按 Render → Upscaled → Present 顺序排列。需要连带调整后续层时先显示整链预览，可确认或取消。可用组合见[兼容性表](#zh-paths)。
 
 <a id="zh-resolution"></a>
-##### 独立工作分辨率（开发版可用）
+##### 独立工作分辨率
 
 用较小尺寸运行某一层，再重建到输出尺寸，可在细节与成本间取舍，游戏 DLSS 分辨率保持不变。
 
@@ -110,7 +110,7 @@ DX11／DX12 支持跨 Render／Upscaled 阶段独立尺寸，以及同一 Render
 <a id="zh-presets"></a>
 #### 方案管理：保存、切换与分享
 
-dev.8 起提供每游戏六个 **Profile／Slot（快速方案／槽位）**及共享**方案库**，dev.11 更新操作界面。槽位用于随手切换，方案库用于保存更多文件、备份和分享。
+dev.8 起提供每游戏六个 **Profile／Slot（快速方案／槽位）**及共享**方案库**，0.2.0 更新操作界面。槽位用于随手切换，方案库用于保存更多文件、备份和分享。
 
 | 想做什么 | 操作 |
 | --- | --- |
@@ -122,7 +122,7 @@ dev.8 起提供每游戏六个 **Profile／Slot（快速方案／槽位）**及�
 | 撤销 | 使用可用的“撤销方案操作”；导入还有独立的“撤销上次导入”。 |
 | 管理更多文件 | 点“管理方案”，搜索并选中文件，再查看、重命名、复制或删除。 |
 
-官方起点为**轻量：Render、B、1 层；均衡：Upscaled、A、1 层；极致：Render B → Upscaled A、2 层**，工作比例均为 **67%**。名称便于选择，可继续调整。兼容的新建空配置可自动采用均衡，已有设置保留。
+官方起点为**轻量：Render、B、1 层、75%；均衡：Present、B、1 层、67%；极致：Present A → Present B、2 层，均为 100%**。极致第 1 层使用**电影感**、第 2 层使用默认风格；两层分别启用角色遮罩，角色／皮肤为 **0.80／0.50**。名称便于选择，可继续调整；兼容的新建空配置可自动采用均衡，已有设置保留。
 
 **保存／导出：** 在方案库点“保存方案”，输入名称；默认范围“画质＋叠层”。点“保存方案到方案库”写入本地，或“复制分享文本”。另存时展开“导出文件”，选路径后再点“导出方案文件”；覆盖须确认。槽位直接导出使用其已保存内容，包括官方槽的个人修改。
 
@@ -141,12 +141,14 @@ dev.8 起提供每游戏六个 **Profile／Slot（快速方案／槽位）**及�
 
 诊断集中显示 NR 状态、原因、工作尺寸、GPU 开销和反馈入口。先解决状态问题，再比较性能；需要细节时展开**详细诊断**。
 
-##### F11 常驻性能 HUD（开发版可用，尚未打包）
+##### F11 常驻性能 HUD
 
 - **F11** 显示／隐藏，在**高级 → 快捷键与截图**可改绑定，监视器标题显示实际按键。首次默认隐藏；之后按本游戏记住最近的显示选择，下次启动自动恢复。关闭主菜单后是否常驻由**高级 → 运行时监视器**控制。
+- **F8** 默认循环精简、详细、精简＋趋势、详细＋趋势四种模式；可改绑或取消。F8 与宿主快捷键冲突时会提示，不会屏蔽游戏或 Steam 输入。
 - 游戏中不接收鼠标或键盘输入；按 **Home** 打开 ReShade 主菜单后可拖动、缩放、锁定位置与尺寸。拖动后记忆自定义位置。
 - **精简／详细（Compact／Details）**显示 NR 状态、GPU 开销、帧率和 FG 状态；详细视图增加逐层开销与异常。切换视图或趋势时自动适应一次，手动缩放后保留尺寸偏好；也可主动点击**适应内容**。逐层链显示渲染、超分后、呈现等位置、模型配置和实际尺寸。两种视图均可选开**趋势（Trends）**，查看最近 **10／30／60 秒**，并选择帧率、帧间隔（ms）、NR GPU 或各 Pass GPU 曲线。
 - 顶部、监视器和帧率曲线使用同一采样口径，优先读取当前运行时的 **Present 回调节奏**，无有效数据时回退到 **ImGui 更新节奏**并标明来源；切换来源时重新开始相应曲线。该帧率不是 FG 后最终输出帧率。GPU 曲线使用已完成的原始计时样本，以 **50 ms** 分桶并保留峰值，缺测时留空。
+- 切换介入点、Pass 数量、模型或工作比例时，趋势会记录新的配置代次并保留前一段有效历史；无效区间显示为空缺，不把旧 GPU 样本当作当前配置。
 - **高级 → 运行时监视器**可设置 **0–100% 背景不透明度，默认 80%**；仅背景变淡，文字和曲线保持清晰。监视器内的**位置**菜单与高级页共用九宫格、自定义、适应内容和重置操作；高级页还可用水平／垂直偏移微调（UI 像素）。拖动会切回自定义位置。
 
 跨阶段的 NR GPU 仅在所有阶段组都有近期有效样本，且配置、设备、来源、显示条件与队列一致时显示 **~ 参考合计**。每个阶段组的总耗时只计一次，包含组内共用开销；它是近期成本参考，并非同一帧的端到端延迟。条件不足时查看独立 Pass 数据；缺测与未运行分别显示。
@@ -154,7 +156,7 @@ dev.8 起提供每游戏六个 **Profile／Slot（快速方案／槽位）**及�
 F6 立即提示开关操作，随后状态更新为正在检查、正常运行、已提交至 FG 或具体原因。等待／暂无时让游戏正常运行片刻，持续存在再查看原因。FG 倍率未知时，分别看 FG 活动和 NR 路径。
 
 <a id="zh-gpu-ab"></a>
-##### GPU A/B：比较一层分辨率的成本（开发版可用）
+##### GPU A/B：比较一层分辨率的成本
 
 1. 固定场景、视角、模型、层数、FG 与游戏设置，等画面稳定。
 2. 在诊断的**手动 GPU 对比**区点**采集基线**，等待完成。
@@ -175,13 +177,13 @@ F6 立即提示开关操作，随后状态更新为正在检查、正常运行�
 <a id="zh-advanced"></a>
 #### 高级页：界面、按键与截图
 
-在这里选 **15 种语言**、**Cyber Neon／Nexus Dark／Fluent Light／Midnight OLED** 四套主题，修改按键和截图设置。主题只影响插件界面。
+在这里选 **15 种语言**和七套主题：**Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED、Neon Violet、Tactical Amber、Aurora Glass**，修改按键和截图设置。主题只影响插件界面；Ivory Studio 与 Crimson Noir 仍保留为设计候选。
 
 设置分为**快捷键与截图、运行时监视器、界面与通知、游戏修正与兼容性、开发与维护**。常驻显示与监视器定位在运行时监视器中；提示定位与预览在界面与通知中。
 
-![四套主题](images/ui/themes-zh.webp)
+![主题示意](images/ui/themes-zh.webp)
 
-*四种明暗与配色可选。*
+*配图展示基础主题示意；当前可用主题以界面中的主题选择器为准。*
 
 默认 **F5** 截取 NR 关／开对比，通常存入 ReShade 基础目录 **DLSS5 Screenshots**。跨阶段链暂不支持同帧最终画面对比，使用 F6 比较或模型缓冲捕获。完整选项见[截图参考](#zh-capture)。
 
@@ -297,7 +299,7 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 | 第 2–4 层控件 | 默认 | 继承内容 |
 | --- | --- | --- |
 | 阶段（dev.8 起） | **与上一层相同** | 上一层请求的阶段；与模型、外观和结果独立。 |
-| 工作分辨率（开发版可用） | **继承基础分辨率**；独立比例 **100%** | 继承基础值（非上一层）／Follow input／固定比例；固定比例 **33–100%**，不受 Stage、模型、外观或结果继承控制。 |
+| 工作分辨率 | **继承基础分辨率**；独立比例 **100%** | 继承基础值（非上一层）／Follow input／固定比例；固定比例 **33–100%**，不受 Stage、模型、外观或结果继承控制。 |
 | NR 模型：继承主模型／A／B | **继承主模型** | 主模型选择，包括自动解析与回退；与另外两种继承独立。 |
 | 继承第 1 层外观（Same as pass 1） | **开** | 仅模型风格参数：风格、局部色调、模型结构、人物／皮肤、人物遮罩、UI 修正。不继承模型选择、模型强度、HDR 传递、Color 或结果。独立皮肤仍是全链设置。 |
 | 继承第 1 层结果设置 | **开** | 结果开关、强度、基础／限制／细节／光晕、稳定设置与细节稳定。关闭后可编辑本层结果；上采样仍全链共用。 |
@@ -309,12 +311,12 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 | 设置 | 默认／选项 | 作用范围 |
 | --- | --- | --- |
 | 界面主题 | 全新安装 **Cyber Neon**；另有 Nexus Dark／Fluent Light／Midnight OLED | 只改变 NR Nexus 界面颜色，按游戏保存，不改变游戏调色或 NR 画质。已有配置缺少主题项时保留 Nexus Dark。 |
-| 恢复默认主题 | Cyber Neon | 仅恢复主题；当前开发源码的高级页恢复与全量恢复也将主题恢复为 Cyber Neon，画质／叠层页恢复不改主题。 |
+| 恢复默认主题 | Cyber Neon | 仅恢复主题；高级页恢复与全量恢复也将主题恢复为 Cyber Neon，画质／叠层页恢复不改主题。 |
 | 语言 | **Auto** 或 15 种语言 | 英、德、法、西、意、葡萄牙语（巴西）、俄、保加利亚、斯洛文尼亚、土耳其、泰、日、韩、简中、繁中。Auto 跟随 ReShade 的语言，后者未手动选择时跟随 Windows；未匹配的语言回退英文。选择名称保留英文便于找回。ReShade 为自身语言加载字体；插件检测到缺字会保持英文并在 `ReShade.log` 警告，需同时在 ReShade 选择对应语言，并检查自定义字体覆盖。 |
 | 通知 | **开** | 控制游戏内启用／失败／健康提示；关闭仍可看覆盖层状态和诊断。 |
-| 屏幕提示位置 | 九宫格、水平／垂直偏移、预览与重置 | 在**界面与通知**中调整。旧配置的百分比自定义位置原样保留；选择九宫格后使用像素偏移。 |
+| 屏幕通知位置 | 九宫格、水平／垂直偏移、预览与重置 | 在**界面与通知**中调整。旧配置的百分比自定义位置原样保留；选择九宫格后使用像素偏移。 |
 | 开发者视图 | **关**，默认现代视图 | 切换经典平铺布局，含英文技术／原始控件，共用同一配置，同一按钮可返回。 |
-| 恢复全部默认 | 确认恢复／取消 | 当前开发源码恢复本游戏受管理的 NR、兼容性、快捷键、界面及诊断设置；主题恢复 Cyber Neon。保留项见恢复默认章节。 |
+| 恢复全部默认 | 确认恢复／取消 | 恢复本游戏受管理的 NR、兼容性、快捷键、界面及诊断设置；弹窗可选恢复全部官方方案或清空全部自定义方案，两个选项默认关闭。 |
 | 版本与关于 | 只读 | 显示插件版本、已加载 NR 运行时版本、游戏可执行文件名；插件与运行时版本独立。 |
 
 <a id="zh-capture"></a>
@@ -332,7 +334,7 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 | JPEG 体积上限 | **10 MB**，**0–50 MB** | 仅 JPEG 输出显示；0 不限，过大时检查导出状态。 |
 | 立即截图 | 操作与状态 | 与快捷键同一请求，等待完成状态。 |
 
-开发版另有 **F11** 监视器键。F9／F10 独立且默认关闭。游戏、ReShade 和其他插件的重键需自行调整。
+另有 **F11** 监视器显示／隐藏键和 **F8** 模式循环键。F9／F10 独立且默认关闭。游戏、ReShade、Steam 和其他插件的重键需自行调整。
 
 最终呈现捕获同一帧 Present NR 前后画面，不含 ReShade 效果／覆盖层，之后恢复处理位置；**跨阶段链暂不支持**。模型缓冲是最后求值层在结果编辑、游戏色调映射和 UI 前的输入／输出，适合排查模型；动态效果还需实际移动视角比较。
 
@@ -361,7 +363,7 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 
 先保存喜欢的方案，需要时导出备份。只想重调一页用该页**恢复默认**；全面重来用**高级 → 恢复全部默认**并确认。
 
-开发版画质页恢复基础 NR／第 1 层设置；叠层页恢复层数与第 2–4 层；高级页恢复兼容、按键与界面。页面恢复解除当前槽关联，保留六槽；全部恢复还会清除本游戏三个官方槽的个人修改，保留自定义槽、独立库和其他游戏，主题回 Cyber Neon。保留的支持例外见[高级说明](#zh-reset-details)。
+画质页恢复基础 NR／第 1 层设置；叠层页恢复层数与第 2–4 层；高级页恢复兼容、按键与界面。恢复操作解除当前槽关联。确认弹窗中的“恢复全部官方方案”和“清空全部自定义方案”每次默认均不勾选；只有勾选后才分别恢复三套最新版官方配方或删除三个自定义槽的保存内容。全部恢复将主题改回 Cyber Neon，保留独立库和其他游戏。保留的支持例外见[高级说明](#zh-reset-details)。
 
 “重置 NR Feature”重建运行状态；“恢复默认”重置保存设置；“恢复官方默认”只恢复所选官方方案。
 
@@ -376,8 +378,8 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 | 组合 | 当前范围 |
 | --- | --- |
 | DX11／DX12 Render → Upscaled | dev.8 支持逐层模型／外观／结果，可与原生 DLSS FG／XeFG 并用；需兼容 DLSS SR／DLAA，跨阶段交接有额外同步成本。 |
-| 独立尺寸 | dev.11 支持跨 Render／Upscaled，以及同一 Render 或 Upscaled 的两层；同阶段三层以上实际尺寸一致。 |
-| 普通 Present 两层不同尺寸 | dev.11 需确认 FG 关闭，排除 Pre-FG、混合 Present 和未知／开启的 FG；DX11 增加同步成本。 |
+| 独立尺寸 | 0.2.0 支持跨 Render／Upscaled，以及同一 Render 或 Upscaled 的两层；同阶段三层以上实际尺寸一致。 |
+| 普通 Present 两层不同尺寸 | 0.2.0 需确认 FG 关闭，排除 Pre-FG、混合 Present 和未知／开启的 FG；DX11 增加同步成本。 |
 | 原生 Pre-FG 两层不同尺寸 | **暂不支持**，使用同尺寸或已支持的 Render／Upscaled 链。 |
 | Upscaled → Present | **实验性**，默认关闭，仅受限 DX12 两层且 FG 关闭；常规使用优先上方组合。 |
 | Upscaled → Pre-FG、Render → Present、三阶段链 | **暂不支持**，DX11 跨 Present 混合链也不支持。 |
@@ -387,7 +389,7 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 <a id="zh-native-prefg-resolution"></a>
 原生 Pre-FG 两层不同尺寸的研发实验当前不可用于玩家配置，保留默认关闭；它与已支持的 Render → Upscaled 配合 FG 是不同组合。
 
-双模型、两层不同尺寸和混合阶段已有定向 GPU／自动化覆盖，巫师3 DX12 HDR 的 Render → Upscaled 有短时 A/B 组合实测。dev.11 新布局／监视器已做离屏界面检查，真实游戏输入、长期稳定性和画质需按游戏确认。
+双模型、两层不同尺寸和混合阶段已有定向 GPU／自动化覆盖，巫师3 DX12 HDR 的 Render → Upscaled 有短时 A/B 组合实测。0.2.0 新布局／监视器已做离屏界面检查，真实游戏输入、长期稳定性和画质需按游戏确认。
 
 #### Present 深度、运动与 FG
 
@@ -410,7 +412,7 @@ GPU A/B 每组收集 16 有效样本，开始／重建后 1 秒稳定期、10 �
 #### 方案文件与文字输入
 
 - 共享库默认 `%LOCALAPPDATA%\NR Nexus\Presets\`；槽位按游戏存于 `%LOCALAPPDATA%\NR Nexus\Profiles\<32hex-id>\slots.json`。备份／迁移前正常退出。
-- **画质**含基础模型、外观、结果、第 1 层位置／尺寸及上采样；**画质＋叠层**加启用层；**完整备份**含停用层与允许的兼容／通用字段。跨游戏优先分享画质范围；完整备份需检查兼容值，启动期 Hook 策略改后需重启。
+- **画质**含基础模型、外观、结果、第 1 层位置／尺寸及上采样；**画质＋叠层**加启用层；**完整备份**含停用层与允许的兼容／通用字段。Slot 管理范围还包括深度与运动（`NRPresentGuides`）：它是官方 recipe 的明确字段，恢复官方方案时设为 Optional；旧 Custom 快照缺少该字段时保留当前值。跨游戏优先分享画质范围；完整备份需检查兼容值，启动期 Hook 策略改后需重启。
 - 只导出允许设置及元数据，不含日志、截图、存档、报告上传设置或其他 Add-on 配置。文件在本机验证和应用；用普通本地目录，网络路径、重解析点和硬链接会被拒绝。
 - 清空槽位保留当前运行配置和库文件；删除库文件须确认。损坏、只读或未来格式数据受保护，先备份并解决提示问题。
 - 名称／作者／来源游戏各限 128 UTF-8 字节，描述 2048 字节，中文较早到上限。辅助输入点“应用”返回表单再保存；单行窗 Enter 不应用，Esc 优先取消输入法组合。
@@ -478,13 +480,13 @@ Start with one pass, add passes when useful, edit each result independently and 
 
 | Version | Available features |
 | --- | --- |
-| **0.1.0 stable** | Up to four NR passes, independent per-pass models/looks/result edits, NR with FG, diagnostics, 15 languages and four themes. |
+| **0.1.0 earlier stable** | Up to four NR passes, independent per-pass models/looks/result edits, NR with FG, diagnostics, 15 languages and four themes. |
 | **0.2.0-dev.8 published pre-release** | Adds per-pass stages, six quick profiles, the profile library and assisted input. |
-| **0.2.0-dev.11 current development source, not yet publicly released** | Adds independent per-pass working resolution, the F11 monitor, per-pass GPU diagnostics, manual GPU A/B and updated menu controls/layout. |
+| **0.2.0 stable** | Adds independent per-pass working resolution, the F11 monitor, F8 mode cycling, per-pass GPU diagnostics, manual GPU A/B and updated menu controls/layout. |
 
-**Available in development** marks dev.11 additions; **Experimental** marks trial paths with special conditions; **Not supported yet** marks unavailable combinations. Other supported features follow the table above. Download from [Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases).
+This guide covers **0.2.0**. **Experimental** marks trial paths with special conditions; **Not supported yet** marks unavailable combinations. See the table above for older versions. Download from [Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases).
 
-Images retain reviewed earlier development interfaces. dev.11 changes the status bar, resolution area and profile entry points; follow the written steps. States and numbers shown are interface examples.
+Images retain reviewed earlier development interfaces. 0.2.0 changes the status bar, resolution area and profile entry points; follow the written steps. States and numbers shown are interface examples.
 
 <a id="contents"></a>
 ### Contents
@@ -503,9 +505,9 @@ Images retain reviewed earlier development interfaces. dev.11 changes the status
 2. For a first manual setup, use **one pass, Auto and Upscaled**, keeping look and advanced compatibility defaults. Render/Upscaled require compatible game DLSS SR or DLAA.
 3. Return to gameplay and read the top status. If waiting, runtime or resource issues appear, click through to **Diagnostics** and follow the reason.
 4. Compare the same scene stationary and moving. **Model styling** changes generation; **Adjust NR's look** controls its resulting light, colour and detail.
-5. Since dev.8, save favourite settings to a **custom profile**; development source adds **F11** for watching NR GPU cost while playing.
+5. Save favourite settings to a **custom profile**; use **F11** for watching NR GPU cost while playing.
 
-There are four main tabs: **Quality, Multi-Pass, Diagnostics and Advanced**. **Manage profiles** opens a separate window from Quality. In the unreleased dev.11 source, Expand all/Collapse all at the top right affects only advanced groups on the page or current pass; common settings stay visible. Narrow windows use +/− buttons. Ordinary edits save automatically. Let the picture settle after changing models, pass count, location or size.
+There are four main tabs: **Quality, Multi-Pass, Diagnostics and Advanced**. **Manage profiles** opens a separate window from Quality. Expand all/Collapse all at the top right affects only advanced groups on the page or current pass; common settings stay visible. Narrow windows use +/− buttons. Ordinary edits save automatically. Let the picture settle after changing models, pass count, location or size.
 
 <a id="en-scenarios"></a>
 #### Start with your goal
@@ -513,7 +515,7 @@ There are four main tabs: **Quality, Multi-Pass, Diagnostics and Advanced**. **M
 | Goal | Where to start |
 | --- | --- |
 | Combine independent looks | Follow the [two-pass example](#en-two-pass-example) for models, looks and results. |
-| Reduce NR cost | Reduce passes, then compare [working resolution](#en-resolution); development source offers [GPU A/B](#en-gpu-ab). |
+| Reduce NR cost | Reduce passes, then compare [working resolution](#en-resolution); use [GPU A/B](#en-gpu-ab). |
 | Keep and switch favourites | Create a [custom profile](#en-presets), then export files or copy share text. |
 | Use frame generation | Keep game FG settings; read NR route and FG activity in [Diagnostics](#en-diagnostics). |
 | Fix darkening, colour or halos | Tune Darken, Colour, limits or halo suppression in [result edits](#en-results). |
@@ -526,7 +528,7 @@ There are four main tabs: **Quality, Multi-Pass, Diagnostics and Advanced**. **M
 
 Compare off/on with **Neural Rendering/F6**. **Auto** is the default model. Compatible runtime **310.9.16.0** supports **A (Legacy)/B (Small FP8)** for comparing appearance and cost.
 
-The unreleased dev.11 source keeps the F6 toggle and six quick profiles at the top, followed by three always-visible sections. **Core quality** orders model, strength, working resolution/scale and upsampling, with current Pass 1 size evidence. **Processing & compatibility** contains the Hook Point, depth/motion and HUD options for Present, and collapsed low-frequency HDR and FG options. **Appearance & result** keeps common model styling controls visible, with the four advanced result groups available to expand as needed.
+Version 0.2.0 keeps the F6 toggle and six quick profiles at the top, followed by three always-visible sections. **Core quality** orders model, strength, working resolution/scale and upsampling, with current Pass 1 size evidence. **Processing & compatibility** contains the Hook Point, depth/motion and HUD options for Present, and collapsed low-frequency HDR and FG options. **Appearance & result** keeps common model styling controls visible, with the four advanced result groups available to expand as needed.
 
 Start at **Upscaled**, after game DLSS output. **Render** runs before DLSS upscaling to compare smaller inputs; **Present** processes the finished game frame before ReShade effects. With Ray Reconstruction, Render uses the compatible Upscaled route. Present defaults to Keep the HUD; compare UI correction or Upscaled if HUD elements still change.
 
@@ -541,7 +543,7 @@ Input → Pass 1 model + result edits → Pass 2 model + result edits → … �
 
 Click a node to edit it. Pass 1 shares Quality settings. Passes 2–4 can inherit the main model, while look and result settings independently inherit Pass 1, rather than the previous pass. Working resolution can inherit the base resolution; only Stage's **Same as previous** follows the previous pass. Use the same model with different looks, or different models with shared result edits. More passes add GPU work and accumulate colour/halo changes; start with two.
 
-Current development source separates the **Execution chain** overview from a prominent **Editing Pass N** heading, with **Run settings**, **Appearance & inheritance** and result groups. Nodes show the configured stage, resolved model and working-resolution scale. Actual working dimensions appear beside each pass's controls, or show Pending confirmation when current data is unavailable. **Expand all / Collapse all** affects advanced groups on the page or current pass; common settings stay visible, and each pass retains its own disclosure choices. Detail stability can work independently while result adjustment is off. Hover over **Temporal stability**, or expand the group, for the full rules.
+The Multi-Pass page separates the **Execution chain** overview from a prominent **Editing Pass N** heading, with **Run settings**, **Appearance & inheritance** and result groups. Nodes show the configured stage, resolved model and working-resolution scale. Actual working dimensions appear beside each pass's controls, or show Pending confirmation when current data is unavailable. **Expand all / Collapse all** affects advanced groups on the page or current pass; common settings stay visible, and each pass retains its own disclosure choices. Detail stability can work independently while result adjustment is off. Hover over **Temporal stability**, or expand the group, for the full rules.
 
 <a id="en-two-pass-example"></a>
 ##### Example: Natural base plus Cinematic second pass
@@ -562,7 +564,7 @@ Since dev.8, Passes 2–4 offer **Same as previous/Render/Upscaled/Present**. Su
 Stages follow Render → Upscaled → Present. Development source previews related later-pass changes for confirmation or cancellation. See [compatible combinations](#en-paths).
 
 <a id="en-resolution"></a>
-##### Independent working resolution (available in development)
+##### Independent working resolution
 
 Run a pass at a smaller size and reconstruct to output to trade detail against cost, keeping game DLSS resolution unchanged.
 
@@ -578,7 +580,7 @@ DX11/DX12 support separate sizes across Render/Upscaled and two different-sized 
 <a id="en-presets"></a>
 #### Profiles: save, switch and share
 
-Since dev.8, six per-game **Profile Slots** and a shared **profile library** are available; dev.11 updates their controls. Slots provide quick switching; the library holds more files, backups and shared setups.
+Since dev.8, six per-game **Profile Slots** and a shared **profile library** are available; 0.2.0 updates their controls. Slots provide quick switching; the library holds more files, backups and shared setups.
 
 | Goal | Action |
 | --- | --- |
@@ -590,7 +592,7 @@ Since dev.8, six per-game **Profile Slots** and a shared **profile library** are
 | Undo | Use the offered Undo profile operation; imports have separate Undo last import. |
 | Manage more files | Open Manage profiles, search/select a file, then view, rename, copy or delete. |
 
-Official starting points are **Lite: Render, B, one pass; Balanced: Upscaled, A, one pass; Max: Render B → Upscaled A, two passes**, all **67%**. Tune them further to taste. Compatible new empty configurations can start with Balanced automatically; existing settings are retained.
+Official starting points are **Lite: Render, B, one pass at 75%; Balanced: Present, B, one pass at 67%; Max: Present A → Present B, two passes at 100%**. Max uses **Cinematic** style on Pass 1 and the default style on Pass 2, with character masking enabled on both passes and skin values **0.80 / 0.50**. Tune them further to taste. Compatible new empty configurations can start with Balanced automatically; existing settings are retained.
 
 **Save/export:** Select Save profile and enter a name; the default scope is Quality + Multi-Pass. Save profile to library writes locally; Copy share text copies it. For another file, expand Export file, choose a path and select Export profile file. Replacement requires confirmation. Direct Slot export uses its saved content, including official-Slot personal changes.
 
@@ -609,11 +611,12 @@ For garbled Chinese, use the **keyboard button** by the field title or right-cli
 
 Read NR status, reasons, dimensions, GPU cost and reporting here. Address status issues first, then compare performance; expand **Detailed diagnostics** for more.
 
-##### F11 persistent performance HUD (development source, not yet packaged)
+##### F11 persistent performance HUD
 
-- **F11** toggles it; rebind under **Advanced → Hotkeys & screenshots**. The monitor title shows the actual binding. It starts hidden on first use, then remembers this game's last display choice for the next launch. **Advanced → Runtime monitor** controls whether it stays visible after closing the menu.
+- **F11** toggles it; rebind under **Advanced → Hotkeys & screenshots**. **F8** cycles Compact, Details, Compact + Trends and Details + Trends; it can also be rebound or unbound. Conflicts are reported without suppressing game or Steam input.
 - It accepts no gameplay mouse/keyboard input. Press **Home** to open ReShade, then move, resize or lock position/size. Dragging saves a custom position.
 - **Compact/Details** show NR state, GPU cost, FPS and FG status; Details adds pass costs and issues. Changing the view or trends fits content once. Manual resizing retains your size preference; **Fit to content** recalculates it on demand. The pass chain shows stage, configured model and actual size. Either view can show optional **Trends** for the last **10/30/60 seconds**; select FPS, frame interval (ms), NR GPU or individual pass GPU curves.
+- Changing hook point, pass count, model or working ratio starts a new trend segment while retaining earlier valid history. Gaps remain empty and old GPU samples are never presented as current for the new configuration.
 - The top summary, monitor and FPS curve share one measurement source: the current runtime's **Present callback cadence**, with a labelled **ImGui update cadence** fallback when valid Present data is unavailable. Source changes restart the corresponding curves. This is not final frame-generated output FPS. GPU curves use raw completed timing samples, grouped into **50 ms** buckets that preserve peaks and leave missing data empty.
 - Under **Advanced → Runtime monitor**, set **background opacity from 0–100%, default 80%**. Only backgrounds fade; text and graphs stay clear. The monitor's **Position** menu shares nine anchors, custom placement, Fit to content and reset with Advanced; Advanced also offers horizontal/vertical offsets in UI pixels. Dragging switches back to a custom position.
 
@@ -622,7 +625,7 @@ Across stages, NR GPU shows an **~ reference sum** only when every stage group h
 F6 confirms the switch immediately; status then updates to checking, running, submitted to FG or a specific reason. Let gameplay run briefly for waiting/no-data states, then inspect the reason if persistent. With an unknown FG multiplier, read FG activity and NR route separately.
 
 <a id="en-gpu-ab"></a>
-##### GPU A/B: compare one pass's resolution cost (available in development)
+##### GPU A/B: compare one pass's resolution cost
 
 1. Keep scene, camera, models, passes, FG and game settings constant; let the picture settle.
 2. Select **Capture baseline** in Diagnostics' **Manual GPU comparison** section and wait.
@@ -643,13 +646,13 @@ Local saving, uploading to displayed temporary hosts, including public summary/l
 <a id="en-advanced"></a>
 #### Advanced: interface, keys and capture
 
-Choose **15 languages**, **Cyber Neon/Nexus Dark/Fluent Light/Midnight OLED** themes, keys and capture settings here. Themes affect the add-on interface only.
+Choose **15 languages** and seven themes—**Cyber Neon, Nexus Dark, Fluent Light, Midnight OLED, Neon Violet, Tactical Amber and Aurora Glass**—as well as keys and capture settings here. Themes affect the add-on interface only; Ivory Studio and Crimson Noir remain design candidates.
 
 Settings are grouped into **Hotkeys & screenshots, Runtime monitor, Interface & notifications, Game fixes & compatibility, and Development & maintenance**. Monitor visibility and placement are under Runtime monitor; notification placement and preview are under Interface & notifications.
 
-![Four themes](images/ui/themes.webp)
+![Theme examples](images/ui/themes.webp)
 
-*Choose different brightness and colours.*
+*The image shows the base theme examples; use the in-app theme selector for the current theme list.*
 
 **F5** captures NR off/on, normally under **DLSS5 Screenshots** in ReShade's base directory. Mixed-stage chains do not yet support same-frame final-image comparisons; use F6 or model buffers. See [capture reference](#en-capture).
 
@@ -765,7 +768,7 @@ Turning result edits off keeps values; **Detail stability and shared upsampling 
 | Passes 2–4 control | Default | What is inherited |
 | --- | --- | --- |
 | Stage (since dev.8) | **Same as previous** | The preceding pass's requested stage; independent of model, styling and results. |
-| Working resolution (available in development) | **Inherit base resolution**; local scale **100%** | Base values (not the preceding pass) / Follow input / fixed scale **33–100%**. Independent of Stage, model, styling and result inheritance. |
+| Working resolution | **Inherit base resolution**; local scale **100%** | Base values (not the preceding pass) / Follow input / fixed scale **33–100%**. Independent of Stage, model, styling and result inheritance. |
 | NR model: Inherit Main Model / A / B | **Inherit Main Model** | The main model selection, including Auto resolution and fallback. Independent of the other inheritance switches. |
 | Same as pass 1 | **On** | Model steering only: Style, Local tone, Model structure, Character / skin, Character mask, UI correction. It does not inherit model choice, model strength, HDR transfer, Color or result settings. Independent skin remains a chain-wide setting. |
 | Inherit Pass 1 result settings | **On** | Result enable, strength, all shaping/limit/detail/halo settings, Stabilize settings and Detail stability. Turn off to edit this pass's own result controls. Shared upsampling remains shared. |
@@ -777,12 +780,12 @@ Passes 2–4 retain model strength (1, 0–2), HDR transfer (1, 0–1) and Color
 | Setting | Default / options | Scope |
 | --- | --- | --- |
 | Interface theme | Fresh installation: **Cyber Neon**; Nexus Dark / Fluent Light / Midnight OLED also available | Changes NR Nexus interface colours only, saved for this game. Does not grade the game image or change NR quality. Existing configurations without a theme retain Nexus Dark. |
-| Restore default theme | Cyber Neon | Restores only the theme. In current development source, Advanced and full resets also restore Cyber Neon; Quality and Multi-Pass page resets keep the theme. |
+| Restore default theme | Cyber Neon | Restores only the theme. Advanced and full resets also restore Cyber Neon; Quality and Multi-Pass page resets keep the theme. |
 | Language | **Auto**, or one of 15 languages | English, German, French, Spanish, Italian, Portuguese (Brazil), Russian, Bulgarian, Slovenian, Turkish, Thai, Japanese, Korean, Chinese (Simplified), Chinese (Traditional). Auto follows ReShade's language, which follows Windows unless selected there; an unmatched language falls back to English. Choices remain readable in English. ReShade loads fonts for its own language; if the add-on detects missing glyphs, it stays in English and warns in `ReShade.log`. Select the corresponding language in ReShade too, and check any custom font override. |
 | Notifications | **On** | Controls gameplay activation/failure/health notices. Turning it off retains the overlay status and Diagnostics. |
-| Screen notification position | Nine anchors, horizontal/vertical offsets, preview and reset | Adjust under **Interface & notifications**. Existing percentage-based custom placement is preserved; choosing an anchor enables pixel offsets. |
+| On-screen notification position | Nine anchors, horizontal/vertical offsets, preview and reset | Adjust under **Interface & notifications**. Existing percentage-based custom placement is preserved; choosing an anchor enables pixel offsets. |
 | Developer view | **Off** (modern view) | Switches to the classic flat layout, with technical/raw English controls. Same underlying settings. Use the same button to return. |
-| Restore all defaults | Confirm restore / Cancel | Current development source restores this game's managed NR, compatibility, hotkey, interface and diagnostic settings, including the Cyber Neon theme. See the reset section for retained data. |
+| Restore all defaults | Confirm restore / Cancel | Restores this game's managed NR, compatibility, hotkey, interface and diagnostic settings. The confirmation dialog can also restore all official profiles or clear all custom profiles; both options start off. |
 | Version & about | Readout | Shows the add-on version, loaded NR runtime version and game executable name. Runtime and add-on versions are independent. |
 
 <a id="en-capture"></a>
@@ -800,7 +803,7 @@ Passes 2–4 retain model strength (1, 0–2), HDR transfer (1, 0–1) and Color
 | JPEG size limit | **10 MB**, **0–50 MB** | Only shown for JPEG output. Zero disables the limit; check export status for oversized images. |
 | Take a screenshot now | Action + status | Same capture request as the screenshot key; wait for completion/status. |
 
-Development source adds **F11** for the monitor. F9/F10 are independent and off by default. Resolve conflicts with games, ReShade and other add-ons.
+Development source adds **F11** for monitor visibility and **F8** for mode cycling. F9/F10 are independent and off by default. Resolve conflicts with games, ReShade, Steam and other add-ons.
 
 Final presentation captures the same frame before/after Present NR without ReShade effects/overlay, then restores location; **mixed-stage chains do not yet support it**. Model buffers show the last evaluated pass before result edits, game tone mapping and UI, useful for model inspection. Compare motion by moving in gameplay.
 
@@ -829,7 +832,7 @@ Final presentation captures the same frame before/after Present NR without ReSha
 
 Save favourites and export a backup if needed. Use a page's **Restore defaults** to retune it, or confirm **Advanced → Restore all defaults** for a fresh start.
 
-In development source, Quality restores base NR/Pass 1, Multi-Pass restores count/Passes 2–4 and Advanced restores compatibility, keys and interface. Page resets detach the current Slot and retain all six. Full reset also clears this game's official-Slot personal changes, keeping custom Slots, library files and other games, and restores Cyber Neon. See [retained support exceptions](#en-reset-details).
+Quality restores base NR/Pass 1, Multi-Pass restores count/Passes 2–4 and Advanced restores compatibility, keys and interface. Resets detach the current Slot. “Restore all official profiles” and “Clear all custom profiles” start unchecked each time: select them to restore the three latest official recipes or delete the saved contents of all three custom slots. Full reset restores Cyber Neon while preserving library files and other games. See [retained support exceptions](#en-reset-details).
 
 Reset NR feature rebuilds runtime state; Restore defaults resets saved settings; Restore official defaults affects the selected official profile.
 
@@ -844,8 +847,8 @@ Use this for specific issues. Record old values and compare one change at a time
 | Combination | Current scope |
 | --- | --- |
 | DX11/DX12 Render → Upscaled | dev.8 supports per-pass model/look/results with native DLSS FG/XeFG; requires compatible DLSS SR/DLAA. Stage hand-offs add synchronisation cost. |
-| Independent sizes | dev.11 supports across Render/Upscaled and two passes within Render or Upscaled; three or more in one stage need equal actual sizes. |
-| Ordinary Present different-sized pair | dev.11 requires confirmed FG off; excludes Pre-FG, mixed Present and unknown/enabled FG. DX11 adds synchronisation cost. |
+| Independent sizes | 0.2.0 supports across Render/Upscaled and two passes within Render or Upscaled; three or more in one stage need equal actual sizes. |
+| Ordinary Present different-sized pair | 0.2.0 requires confirmed FG off; excludes Pre-FG, mixed Present and unknown/enabled FG. DX11 adds synchronisation cost. |
 | Native Pre-FG different-sized pair | **Not supported yet.** Use equal sizes or supported Render/Upscaled chains. |
 | Upscaled → Present | **Experimental**, off by default, limited DX12 pair with FG off; prefer supported combinations for normal use. |
 | Upscaled → Pre-FG, Render → Present, three-stage chain | **Not supported yet.** DX11 mixed Present chains are unavailable too. |
@@ -855,7 +858,7 @@ Use this for specific issues. Record old values and compare one change at a time
 <a id="en-native-prefg-resolution"></a>
 The native Pre-FG different-size research experiment is currently unavailable for player setups; keep it off. This is separate from supported Render → Upscaled with FG.
 
-Dual models, different-sized pairs and mixed stages have targeted GPU/automated coverage; Witcher 3 DX12 HDR has short Render → Upscaled A/B-combination gameplay checks. dev.11 layout/monitor have offscreen interface checks; game input, long-term stability and quality need checking per game.
+Dual models, different-sized pairs and mixed stages have targeted GPU/automated coverage; Witcher 3 DX12 HDR has short Render → Upscaled A/B-combination gameplay checks. 0.2.0 layout/monitor have offscreen interface checks; game input, long-term stability and quality need checking per game.
 
 #### Present depth, motion and FG
 
@@ -878,7 +881,7 @@ Use the **measured GPU A/B comparison** above to compare configuration cost. The
 #### Profile files and text input
 
 - Shared library: `%LOCALAPPDATA%\NR Nexus\Presets\`; per-game Slots: `%LOCALAPPDATA%\NR Nexus\Profiles\<32hex-id>\slots.json`. Exit normally before backup/migration.
-- **Quality** includes base model/look/results, Pass 1 location/size and upsampling. **Quality + Multi-Pass** adds enabled passes. **Full backup** adds disabled passes and allowed compatibility/general fields. Prefer Quality for cross-game sharing; review full-backup compatibility and restart for startup hook changes.
+- **Quality** includes base model/look/results, Pass 1 location/size and upsampling. **Quality + Multi-Pass** adds enabled passes. **Full backup** adds disabled passes and allowed compatibility/general fields. Slot management also includes depth and motion (`NRPresentGuides`): it is an explicit official recipe field restored as Optional; older custom snapshots that lack it keep the current value. Prefer Quality for cross-game sharing; review full-backup compatibility and restart for startup hook changes.
 - Only allowed settings/metadata are exported, excluding logs, screenshots, saves, report-upload settings and other add-ons. Files are validated/applied locally. Use ordinary local directories; network paths, reparse points and hard links are rejected.
 - Clearing Slots keeps running settings and library files; library deletion requires confirmation. Damaged, read-only or future-format data is protected; back up and resolve reported issues.
 - Name/author/source game each allow 128 UTF-8 bytes; description 2048. Chinese reaches limits sooner. Apply assisted text back to the form, then save; Enter in single-line editors does not apply, Esc first cancels composition.

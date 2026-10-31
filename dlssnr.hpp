@@ -2017,6 +2017,7 @@ inline std::array<ui::ProfileKeyEdge, 2> profile_key_edges;
 // Shared by the gameplay and ReShade input readers.
 inline std::atomic_bool hud_overlay_open{false};
 inline std::atomic_uint32_t monitor_hotkey{VK_F11};
+inline std::atomic_uint32_t monitor_mode_key{VK_F8};
 inline std::atomic_uint32_t host_overlay_hotkey{VK_HOME};
 inline std::atomic_bool monitor_requested{false};
 inline std::atomic_bool monitor_visible_preference{false};
@@ -2030,16 +2031,28 @@ inline std::atomic_bool monitor_keep_visible{true};
 inline std::atomic_uint64_t monitor_observation_epoch{0};
 inline std::atomic_uint64_t monitor_history_epoch{0};
 inline std::atomic_uint64_t monitor_settings_epoch{0};
+inline std::atomic_uint32_t monitor_mode_cycle_request{0};
 inline std::atomic<reshade::api::effect_runtime*> monitor_runtime{nullptr};
 inline std::mutex monitor_key_mutex;
 inline ui::ProfileKeyEdge monitor_key_edge;
+inline ui::ProfileKeyEdge monitor_mode_key_edge;
 inline void DrawIndependentMonitor(reshade::api::effect_runtime* runtime, bool menu = false);
 inline ui::StatusCard MonitorDisplayCard();
 
 inline bool MonitorKeyConflict(uint32_t key) {
+  if (key == 0) return false;
   return key == host_overlay_hotkey.load() || key == VK_HOME
       || key == toggle_hotkey.load() || key == screenshot_hotkey.load()
-      || key == official_cycle_key.load() || key == custom_cycle_key.load();
+      || key == official_cycle_key.load() || key == custom_cycle_key.load()
+      || key == monitor_mode_key.load();
+}
+
+inline bool MonitorModeKeyConflict(uint32_t key) {
+  if (key == 0) return false;
+  return key == host_overlay_hotkey.load() || key == VK_HOME
+      || key == toggle_hotkey.load() || key == screenshot_hotkey.load()
+      || key == official_cycle_key.load() || key == custom_cycle_key.load()
+      || key == monitor_hotkey.load();
 }
 
 inline void ToggleMonitor() {
@@ -2066,10 +2079,26 @@ inline void PollMonitorKey(bool down, bool permitted, bool overlay_input) {
   }
 }
 
+inline void PollMonitorModeKey(bool down, bool permitted, bool overlay_input) {
+  std::scoped_lock lock(monitor_key_mutex);
+  const auto binding = monitor_mode_key.load();
+  if (binding == 0 || !permitted || MonitorModeKeyConflict(binding)) {
+    monitor_mode_key_edge.Poll(binding, true, down, false, overlay_input);
+    monitor_mode_key_edge.awaiting_context_release = true;
+    return;
+  }
+  if (monitor_mode_key_edge.Poll(binding, true, down, true, overlay_input)) {
+    uint32_t empty = 0;
+    monitor_mode_cycle_request.compare_exchange_strong(empty, 1u);
+  }
+}
+
+inline void CycleMonitorMode();
+
 inline bool ProfileKeyConflict(std::size_t action) {
-  return ui::HotkeyConflict<5>({toggle_hotkey.load(), screenshot_hotkey.load(),
-      official_cycle_key.load(), custom_cycle_key.load(), monitor_hotkey.load()},
-      {true, true, official_cycle_enabled.load(), custom_cycle_enabled.load(), true}, action);
+  return ui::HotkeyConflict<6>({toggle_hotkey.load(), screenshot_hotkey.load(),
+      official_cycle_key.load(), custom_cycle_key.load(), monitor_hotkey.load(), monitor_mode_key.load()},
+      {true, true, official_cycle_enabled.load(), custom_cycle_enabled.load(), true, true}, action);
 }
 
 inline void PollProfileKeys(bool official_down, bool custom_down, bool permitted) {
@@ -18313,10 +18342,42 @@ struct ProfileFeedback {
 inline ProfileFeedback profile_feedback;
 inline std::atomic_int64_t profile_feedback_until_ns{0};
 inline constexpr int64_t kHudToastNs = 2'000'000'000LL;
+inline std::array<std::atomic_uint64_t, kMaxNrPasses> model_adjustment_notice_signatures{};
 
 inline void NotifyNrOperation(bool on) {
   std::unique_lock lock(profile_feedback.mutex);
   profile_feedback.operation = (on ? "NR enabled" : "NR disabled");
+  profile_feedback_until_ns.store(SteadyNowNs() + kHudToastNs, std::memory_order_release);
+}
+
+inline const char* ModelRequestAdjustmentReason(uint32_t requested, uint32_t created) {
+  if (requested == created) return "";
+  if (requested == 0) return "Automatic model selection.";
+  if (requested == 2 && created == 1 && !direct_runtime_requirements.dual_models) {
+    return "Runtime compatibility fallback.";
+  }
+  if (requested == 3 && created == 1 && direct_runtime_requirements.dual_models) {
+    return "Legacy model request mapping.";
+  }
+  return "Pending confirmation";
+}
+
+inline void NotifyModelRequestAdjustment(std::string_view requested, std::string_view created,
+                                         uint32_t pass) {
+  if (requested.empty() || created.empty() || requested == created) return;
+  uint64_t signature = 1469598103934665603ULL;
+  const auto mix = [&](uint64_t value) { signature = (signature ^ value) * 1099511628211ULL; };
+  mix(configuration_generation.load(std::memory_order_relaxed));
+  mix(pass);
+  for (const auto byte : requested) mix(static_cast<unsigned char>(byte));
+  mix(0xffu);
+  for (const auto byte : created) mix(static_cast<unsigned char>(byte));
+  if (pass >= model_adjustment_notice_signatures.size()
+      || model_adjustment_notice_signatures[pass].exchange(signature) == signature) return;
+  std::unique_lock lock(profile_feedback.mutex);
+  profile_feedback.operation = nullptr;
+  profile_feedback.message = std::string(ui::Tr("Model request adjusted")) + ": "
+      + std::string(requested) + " -> " + std::string(created);
   profile_feedback_until_ns.store(SteadyNowNs() + kHudToastNs, std::memory_order_release);
 }
 
@@ -18355,6 +18416,8 @@ inline void PollHotkeys() {
   const bool focused = foreground_process == GetCurrentProcessId();
   if (!hud_overlay_open.load(std::memory_order_relaxed)) {
     PollMonitorKey((GetAsyncKeyState(static_cast<int>(monitor_hotkey.load())) & 0x8000) != 0,
+        focused && hotkey_capture_target.load() == 0, false);
+    PollMonitorModeKey((GetAsyncKeyState(static_cast<int>(monitor_mode_key.load())) & 0x8000) != 0,
         focused && hotkey_capture_target.load() == 0, false);
     PollProfileKeys((GetAsyncKeyState(static_cast<int>(official_cycle_key.load())) & 0x8000) != 0,
         (GetAsyncKeyState(static_cast<int>(custom_cycle_key.load())) & 0x8000) != 0,
@@ -18439,6 +18502,9 @@ inline void OnOverlayHotkeys(reshade::api::effect_runtime* runtime) {
   if (hud_overlay_open.load()) {
     if (monitor_runtime.load() == nullptr || monitor_runtime.load() == runtime) {
       PollMonitorKey(runtime->is_key_down(monitor_hotkey.load()),
+          foreground_process == GetCurrentProcessId() && !ImGui::IsAnyItemActive()
+          && !ImGui::GetIO().WantTextInput && hotkey_capture_target.load() == 0, true);
+      PollMonitorModeKey(runtime->is_key_down(monitor_mode_key.load()),
           foreground_process == GetCurrentProcessId() && !ImGui::IsAnyItemActive()
           && !ImGui::GetIO().WantTextInput && hotkey_capture_target.load() == 0, true);
     }
@@ -21899,6 +21965,7 @@ inline constexpr Setting kSetCustomCycleKey{"NRCustomCycleKey", &custom_cycle_ke
 inline constexpr Setting kSetOfficialCycleEnabled{"NROfficialCycleEnabled", &official_cycle_enabled, false, SettingEffect::kNone};
 inline constexpr Setting kSetCustomCycleEnabled{"NRCustomCycleEnabled", &custom_cycle_enabled, false, SettingEffect::kNone};
 inline constexpr Setting kSetMonitorKey{"NRMonitorKey", &monitor_hotkey, VK_F11, SettingEffect::kNone};
+inline constexpr Setting kSetMonitorModeKey{"NRMonitorModeKey", &monitor_mode_key, VK_F8, SettingEffect::kNone};
 inline constexpr Setting kSetMonitorKeepVisible{"UiMonitorKeepVisible", &monitor_keep_visible, true, SettingEffect::kNone};
 inline constexpr Setting kSetScreenshotSource{
     "NRScreenshotSource", &screenshot::source_mode, 0u, SettingEffect::kNone};
@@ -22285,7 +22352,7 @@ inline constexpr const Setting* kStackingSettings[] = {
     &kSetPassAutoMask[2], &kSetPassUiCorrection[0], &kSetPassUiCorrection[1],
     &kSetPassUiCorrection[2]};
 inline constexpr const Setting* kHotkeySettings[] = {
-    &kSetMonitorKey,
+    &kSetMonitorKey, &kSetMonitorModeKey,
     &kSetOfficialCycleKey, &kSetCustomCycleKey, &kSetOfficialCycleEnabled, &kSetCustomCycleEnabled,
     &kSetToggleKey,        &kSetScreenshotKey,         &kSetScreenshotSource,
     &kSetScreenshotFormat, &kSetScreenshotLayout,      &kSetScreenshotJpegQuality,
@@ -24672,6 +24739,14 @@ inline void DrawSectionDiagnosticsRaw() {
           ImGui::TextWrapped("  Pass %u / %s: %ux%u -> %ux%u / request %s",
                       pass.id + 1, name, pass.width, pass.height, pass.output_width, pass.output_height,
                       nr_model::PresetName(pass.model));
+          if (pass.id < kMaxNrPasses && CurrentGpuSample(timing, SteadyNowNs())) {
+            const auto requested = (pass.id == 0 || pass_preset[pass.id - 1].load() == 0
+                ? preset.load() : pass_preset[pass.id - 1].load());
+            if (requested != pass.model) {
+              ImGui::TextWrapped("    %s: %s -> %s; %s", ui::Tr("Adjustment reason"), nr_model::PresetName(requested),
+                                 nr_model::PresetName(pass.model), ui::Tr(ModelRequestAdjustmentReason(requested, pass.model)));
+            }
+          }
           ImGui::TextWrapped("    GPU ms: NGX %.3f | Encode %.3f | Resolve %.3f | span %.3f",
                       pass.eval_us / 1000.f, pass.encode_us / 1000.f, pass.resolve_us / 1000.f,
                       pass.total_us / 1000.f);
@@ -24734,7 +24809,8 @@ inline void DrawSectionHotkeys(const ui::PanelText& text) {
       ui::ItemTooltip("%s", ui::Tr(ui::text::kRebindTip));
       // A reset never binds one key to both actions.
       if (!capturing && setting.Modified() && other.Get() != setting.fallback
-          && (target != 5 || !MonitorKeyConflict(static_cast<uint32_t>(setting.fallback)))
+          && (target != 5 ? (target != 6 || !MonitorModeKeyConflict(static_cast<uint32_t>(setting.fallback)))
+                          : !MonitorKeyConflict(static_cast<uint32_t>(setting.fallback)))
           && ui::ResetButton(
               setting.key, VirtualKeyName(static_cast<uint32_t>(setting.fallback)).c_str())) {
         setting.Commit(setting.fallback);
@@ -24763,8 +24839,23 @@ inline void DrawSectionHotkeys(const ui::PanelText& text) {
                 "Recommended F10: cycle saved, available custom slots. Empty slots are skipped.");
   hotkey_button("Cycle custom profiles", kSetCustomCycleKey, kSetOfficialCycleKey, 4);
   hotkey_button("Show / hide runtime monitor", kSetMonitorKey, kSetToggleKey, 5);
+  hotkey_button("Cycle runtime monitor mode", kSetMonitorModeKey, kSetMonitorKey, 6);
+  ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr("Unbind monitor mode key")).x + ImGui::GetStyle().FramePadding.x * 2.f);
+  ImGui::BeginDisabled(monitor_mode_key.load() == 0);
+  if (ui::ActionButton(ui::Tr("Unbind monitor mode key"), "unbind_monitor_mode")) {
+    kSetMonitorModeKey.Commit(0.f);
+    hotkey_capture_target = 0;
+    std::scoped_lock key_lock(monitor_key_mutex);
+    monitor_mode_key_edge = {};
+    monitor_mode_cycle_request = 0;
+  }
+  ImGui::EndDisabled();
+  ui::ItemTooltip("%s", ui::Tr("F8 cycles monitor modes by default. Games, Steam or other overlays may use the same key. Change or unbind it if needed; host input is not blocked."));
   if (MonitorKeyConflict(monitor_hotkey.load())) {
     ImGui::TextWrapped("%s", ui::Tr("Monitor key conflicts with another shortcut. Choose a different key."));
+  }
+  if (MonitorModeKeyConflict(monitor_mode_key.load())) {
+    ImGui::TextWrapped("%s", ui::Tr("Monitor mode key conflicts with another shortcut. Choose a different key."));
   }
   if (ProfileKeyConflict(2) || ProfileKeyConflict(3)) {
     ImGui::TextWrapped("%s", ui::Tr("Duplicate add-on key: profile cycling is disabled until rebound."));
@@ -24780,7 +24871,7 @@ inline void DrawSectionHotkeys(const ui::PanelText& text) {
         if (!ImGui::IsKeyPressed(key, false)) continue;
         const uint32_t vk = VkFromImGuiKey(key);
         if (vk == 0) continue;
-        const uint32_t bindings[] = {toggle_hotkey.load(), screenshot_hotkey.load(), official_cycle_key.load(), custom_cycle_key.load(), monitor_hotkey.load()};
+        const uint32_t bindings[] = {toggle_hotkey.load(), screenshot_hotkey.load(), official_cycle_key.load(), custom_cycle_key.load(), monitor_hotkey.load(), monitor_mode_key.load()};
         bool conflict = vk == host_overlay_hotkey.load() || vk == VK_HOME;
         for (uint32_t i = 0; i < std::size(bindings); ++i) {
           conflict |= i + 1 != capture_target && bindings[i] == vk;
@@ -24801,13 +24892,19 @@ inline void DrawSectionHotkeys(const ui::PanelText& text) {
           monitor_key_edge = {};
           monitor_key_edge.Poll(vk, true, true, false, true);
           monitor_key_edge.awaiting_context_release = true;
+        } else if (capture_target == 6) {
+          kSetMonitorModeKey.Commit(static_cast<float>(vk));
+          std::scoped_lock key_lock(monitor_key_mutex);
+          monitor_mode_key_edge = {};
+          monitor_mode_key_edge.Poll(vk, true, true, false, true);
+          monitor_mode_key_edge.awaiting_context_release = true;
         } else {
           (capture_target == 3 ? kSetOfficialCycleKey : kSetCustomCycleKey).Commit(static_cast<float>(vk));
           std::unique_lock key_lock(profile_keys_mutex);
           profile_key_edges[capture_target - 3] = {.held = true, .binding = vk,
               .enabled = (capture_target == 3 ? official_cycle_enabled.load() : custom_cycle_enabled.load())};
         }
-        const char* config_keys[] = {"NRToggleKey", "NRScreenshotKey", "NROfficialCycleKey", "NRCustomCycleKey", "NRMonitorKey"};
+        const char* config_keys[] = {"NRToggleKey", "NRScreenshotKey", "NROfficialCycleKey", "NRCustomCycleKey", "NRMonitorKey", "NRMonitorModeKey"};
         reshade::set_config_value(
             nullptr, kConfigSection,
             config_keys[capture_target - 1], vk);
@@ -24902,7 +24999,7 @@ inline void DrawSectionTheme() {
       const float width = ImGui::GetContentRegionAvail().x;
       const float padding = ImGui::GetStyle().FramePadding.x;
       const float swatch = ImGui::GetFontSize() * 0.65f;
-      const std::string label = ui::Ellipsize(palette.name, (std::max)(1.f, width - padding * 2.f - swatch * 4.f))
+      const std::string label = ui::Ellipsize(ui::Tr(palette.name), (std::max)(1.f, width - padding * 2.f - swatch * 4.f))
                                 + "\n" + ui::Ellipsize(ui::Tr(palette.description), (std::max)(1.f, width - padding * 2.f))
                                 + "###theme";
       {
@@ -24924,7 +25021,7 @@ inline void DrawSectionTheme() {
         ImGui::GetWindowDrawList()->AddRectFilled(at, ImVec2(at.x + swatch, at.y + swatch), ui::ToU32(colors[i]), 2.f);
         ImGui::GetWindowDrawList()->AddRect(at, ImVec2(at.x + swatch, at.y + swatch), ui::ToU32(ui::CurrentTheme().node_border), 2.f);
       }
-      ui::ItemTooltip("%s\n%s\n%s", palette.name, ui::Tr(palette.description), ui::Tr(ui::text::kThemeTip));
+      ui::ItemTooltip("%s\n%s\n%s", ui::Tr(palette.name), ui::Tr(palette.description), ui::Tr(ui::text::kThemeTip));
       ImGui::PopID();
     }
     ImGui::EndTable();
@@ -24988,7 +25085,7 @@ inline void DrawSectionIssueNotice(const ui::PanelText& text) {
 inline void DrawSectionHudPosition(const ui::PanelText& text) {
   auto position = GetHudPosition();
   ImGui::PushID("notice_position");
-  ui::SubCaption("Screen notifications");
+  ui::SubCaption("On-screen notifications");
   if (text.modern) {
     ui::RowLabel("Quick position");
   }
@@ -25409,6 +25506,16 @@ inline bool ui_monitor_geometry_dirty = false;
 inline bool ui_monitor_saved_pin = false;
 #include "monitor_runtime.hpp"
 
+inline void CycleMonitorMode() {
+  auto& state = ui_runtime_monitor_state;
+  ui::AdvanceMonitorMode(&state);
+  ui_monitor_geometry_dirty = true;
+  monitor_settings_epoch.fetch_add(1);
+  reshade::set_config_value(nullptr, kConfigSection, "UiMonitorDetailed", state.detailed);
+  reshade::set_config_value(nullptr, kConfigSection, "UiMonitorTrends", state.trends);
+  reshade::set_config_value(nullptr, kConfigSection, "UiMonitorAutoFit", state.auto_fit);
+}
+
 // i18n: begin - display strings (tools/i18n/ui_strings.py catalog)
 inline void DrawSectionMonitorSettings() {
   auto& state = ui_runtime_monitor_state;
@@ -25457,6 +25564,7 @@ inline void OnProfilePresent(reshade::api::effect_runtime* runtime) {
     if (!live_effect_runtimes.empty() && runtime != live_effect_runtimes.front()) return;
   }
   SaveMonitorVisibility();
+  if (monitor_mode_cycle_request.exchange(0) != 0) CycleMonitorMode();
   profile_ui::capability_validator = ValidateConfigurationCapability;
   profile_ui::interaction_busy = [] { return preset_ui::manager_geometry.was_open; };
   profile_ui::Initialize();
@@ -25483,6 +25591,14 @@ inline void OnProfilePresent(reshade::api::effect_runtime* runtime) {
     }
   }
   profile_ui::Tick();
+  static thread_local int64_t adjustment_checked_ns = 0;
+  const auto adjustment_now = SteadyNowNs();
+  if (adjustment_now - adjustment_checked_ns >= kMonitorRefreshNs) {
+    adjustment_checked_ns = adjustment_now;
+    // Adjustment events do not depend on the monitor or Home being visible.
+    // Read only completed, current contracts and defer if NR owns the lock.
+    NotifyCompletedModelAdjustments(adjustment_now);
+  }
   if (pending_feedback >= 0 && profile_ui::pending_action == profile_ui::Action::NONE && !profile_ui::Busy()) {
     std::unique_lock feedback_lock(profile_feedback.mutex);
     profile_feedback.operation = nullptr;
@@ -25496,6 +25612,8 @@ inline void OnProfilePresent(reshade::api::effect_runtime* runtime) {
 
 inline int ui_reset_target = -1;
 inline bool ui_reset_open = false;
+inline bool ui_reset_restore_official = false;
+inline bool ui_reset_clear_custom = false;
 
 inline void DrawSectionRestoreDefaults(reshade::api::effect_runtime* runtime,
                                       const ui::PanelText& text) {
@@ -25859,6 +25977,8 @@ inline void DrawPanelBody(reshade::api::effect_runtime* runtime) {
   }
   ImGui::EndDisabled();
   if (ui_reset_open) {
+    ui_reset_restore_official = false;
+    ui_reset_clear_custom = false;
     ImGui::OpenPopup("###nr_reset_confirm");
     ui_reset_open = false;
   }
@@ -25868,7 +25988,7 @@ inline void DrawPanelBody(reshade::api::effect_runtime* runtime) {
       "Restore this game's Quality settings, including shared Pass 1 controls. Independent Pass 2-4 settings and other pages are kept.",
       "Restore pass count and independent Pass 2-4 settings. Shared Pass 1 model, stage, resolution, steering and result settings are kept.",
       "Restore compatibility, HDR/depth/motion, hotkeys, screenshots and interface preferences. Quality, independent passes and diagnostic controls are kept.",
-      "Restore this game's NR settings, compatibility, hotkeys, interface and diagnostics. Clear personal changes in the three official profiles; keep all custom profiles, library files and other games. Attach-time support policies and unknown keys are kept."};
+      "Restore this game's NR settings, compatibility, hotkeys, interface and diagnostics. The profile choices below are optional and apply in the same transaction. Attach-time support policies and unknown keys are kept."};
   const int target = std::clamp(ui_reset_target, 0, 3);
   const auto reset_display = ImGui::GetIO().DisplaySize;
   const float width = (std::max)(1.f, (std::min)(ImGui::GetFontSize() * 34.f, reset_display.x * 0.94f));
@@ -25878,7 +25998,13 @@ inline void DrawPanelBody(reshade::api::effect_runtime* runtime) {
                              ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
     ImGui::PushTextWrapPos(0.f);
     ImGui::TextWrapped("%s", ui::Tr(descriptions[target]));
-    if (target != 3) {
+    ImGui::Separator();
+    ImGui::Checkbox(ui::Tr("Restore all official profiles"), &ui_reset_restore_official);
+    ui::ItemTooltip("%s", ui::Tr("Restore Lite, Balanced and Max to the latest official recipes and clear their personal changes."));
+    ImGui::Checkbox(ui::Tr("Clear all custom profiles"), &ui_reset_clear_custom);
+    ui::ItemTooltip("%s", ui::Tr("Delete the saved contents of Custom 1, Custom 2 and Custom 3. The running settings remain valid."));
+    ImGui::TextWrapped("%s", ui::Tr("Both options are off by default. Custom profile contents are deleted only when the second option is selected."));
+    if (target != 3 && !ui_reset_restore_official && !ui_reset_clear_custom) {
       ImGui::TextWrapped("%s", ui::Tr("All six saved profiles and library files are kept. The current profile association will be detached before resetting."));
     }
     if (ui::ActionButton(ui::Tr("Cancel"), "cancel_page_reset") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
@@ -25888,7 +26014,9 @@ inline void DrawPanelBody(reshade::api::effect_runtime* runtime) {
     ui::SameLineIfFits(ImGui::CalcTextSize(confirm_label).x + ImGui::GetStyle().FramePadding.x * 2.f);
     ImGui::BeginDisabled(!profile_ui::loaded || !profile_ui::writable || profile_ui::Resetting() || profile_ui::reset.recovery_failed);
     if (ui::ActionButton(confirm_label, "confirm_page_reset")) {
-      profile_ui::RequestReset(target);
+      profile_ui::RequestReset(target, ui_reset_restore_official, ui_reset_clear_custom);
+      ui_reset_restore_official = false;
+      ui_reset_clear_custom = false;
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndDisabled();
@@ -26353,11 +26481,16 @@ inline void LoadConfiguration() {
   ui_monitor_saved_pin = ui_runtime_monitor_state.pin;
   ui_monitor_saved_detailed = ui_runtime_monitor_state.detailed;
   uint32_t saved_monitor_key = VK_F11;
+  uint32_t saved_monitor_mode_key = VK_F8;
   bool saved_monitor_keep = true;
   reshade::get_config_value(nullptr, kConfigSection, "NRMonitorKey", saved_monitor_key);
+  reshade::get_config_value(nullptr, kConfigSection, "NRMonitorModeKey", saved_monitor_mode_key);
   reshade::get_config_value(nullptr, kConfigSection, "UiMonitorKeepVisible", saved_monitor_keep);
   monitor_hotkey = (saved_monitor_key == 0 || (saved_monitor_key >= 0x08 && saved_monitor_key <= 0xFE)
       ? saved_monitor_key : 0);
+  monitor_mode_key = (saved_monitor_mode_key == 0
+      || (saved_monitor_mode_key >= 0x08 && saved_monitor_mode_key <= 0xFE)
+      ? saved_monitor_mode_key : VK_F8);
   monitor_keep_visible = saved_monitor_keep;
   if (!monitor_visibility_initialized.exchange(true)) {
     bool saved_visible = false;

@@ -168,7 +168,7 @@ inline bool ValidateValue(const presets::FieldRule& rule, const Json& value) {
     return false;
   }
   const double number = value.get<double>();
-  if (key == "NRMonitorKey" && number != 0.0 && number < 0x08) return false;
+  if ((key == "NRMonitorKey" || key == "NRMonitorModeKey") && number != 0.0 && number < 0x08) return false;
   if (!std::isfinite(number) || number < rule.minimum || number > rule.maximum) {
     return false;
   }

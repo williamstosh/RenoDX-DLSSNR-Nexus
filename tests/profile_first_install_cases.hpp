@@ -10,6 +10,10 @@
   const auto prepare = [&]() {
     seed();
     profile::fresh_storage = true;
+    profile::MigrateOfficialTemplates();
+    Check(!profile::dirty && profile::state.revision == 0
+              && profile::state.slots[1].snapshot.empty() && profile::state.slots[1].overrides.empty(),
+          "Unused official migration leaves clean storage available for first-install Balanced.");
     for (const auto* key : {"ProfileGameId", "ProfileBalancedInitialized"}) {
       Check(WritePrivateProfileStringA(runtime::kConfigSection, key, nullptr, ini_path.c_str()) != FALSE,
             "Clear only synthetic initialization metadata.");

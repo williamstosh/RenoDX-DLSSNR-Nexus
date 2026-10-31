@@ -201,9 +201,9 @@ void RunMonitorHudCases(const Check& check) {
   const auto adjustment = output.find("Stage adjusted");
   check(adjustment != std::string::npos && output.find("Stage adjusted", adjustment + 1) == std::string::npos
             && output.find("RR fallback requires Upscaled") != std::string::npos
-            && output.find("Model request adjusted") != std::string::npos
-            && output.find("CNN") != std::string::npos && output.find("Pending confirmation") != std::string::npos,
-        "only the mismatched pass shows its stage reason, model request and pending execution");
+            && output.find("Model request adjusted") == std::string::npos
+            && output.find("CNN") == std::string::npos && output.find("Pending confirmation") != std::string::npos,
+        "compact monitor keeps model adjustment details out of the persistent rows");
   inputs.passes[0].effective_stage = "Render";
   inputs.passes[0].stage_reason.clear();
   inputs.passes[0].created_model_request = "Transformer";

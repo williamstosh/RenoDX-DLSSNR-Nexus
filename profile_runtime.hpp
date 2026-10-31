@@ -11,7 +11,8 @@ namespace data = profiles;
 inline bool Managed(std::string_view key) {
   const auto* rule = presets::FindRule(key);
   return rule != nullptr && (rule->category == presets::FieldRule::QUALITY
-                             || rule->category == presets::FieldRule::MULTIPASS);
+                             || rule->category == presets::FieldRule::MULTIPASS
+                             || key == "NRPresentGuides");
 }
 
 inline bool Validate(std::string_view key, const Json& value) {
@@ -125,6 +126,8 @@ struct ResetTransaction {
   uint64_t commit_epoch = 0;
   std::string error;
   bool recovery_failed = false;
+  bool restore_official = false;
+  bool clear_custom = false;
 };
 inline ResetTransaction reset;
 
@@ -478,27 +481,40 @@ inline void Observe() {
   Changed();
 }
 
-inline bool ValidateSnapshot(const Json& settings, std::string* error) {
+inline bool ValidateSnapshotFields(const Json& settings, std::string* error) {
   if (!settings.is_object()) {
     *error = "Profile contains unsupported settings. Current settings were kept.";
     return false;
   }
   for (const auto& [key, value] : settings.items()) {
-    if (!Validate(key, value)) {
+    if (!Validate(key, value) || preset_ui::FindSetting(key) == nullptr) {
       *error = "Profile contains unsupported settings. Current settings were kept.";
       return false;
     }
   }
-  const presets::Document document{.metadata = Json::object(), .scope = presets::Scope::FULL, .settings = settings};
-  for (const auto& row : preset_ui::Preview(document, false)) {
-    if (settings.contains(row.key) && std::string_view(row.status) == "Unsupported") {
-      *error = "Profile contains unsupported settings. Current settings were kept.";
-      return false;
-    }
+  return true;
+}
+
+inline bool ValidateSnapshotCapability(const Json& settings, std::string* error) {
+  if (settings.value("NRHookPoint", UINT32_MAX) == kHookPresent
+      && (vulkan_present_seen.load() || (D3D11OnlySession() && !Dx11NativeRoute()) || present_unusable.load())) {
+    *error = "Profile contains unsupported settings. Current settings were kept.";
+    return false;
   }
   if (capability_validator) {
-    auto proposed = Snapshot();
-    proposed.update(settings);
+    // A resolved profile is a complete managed target. Validate it as an
+    // independent candidate so a stale current Stage or pass count cannot
+    // reject a direct atomic switch. Partial callers retain the current
+    // values for the field-level validation API.
+    bool complete = true;
+    for (const auto& rule : presets::FieldRules()) {
+      if (Managed(rule.key) && !settings.contains(rule.key)) {
+        complete = false;
+        break;
+      }
+    }
+    auto proposed = (complete ? settings : Snapshot());
+    if (!complete) proposed.update(settings);
     try {
       if (!capability_validator(proposed, error)) {
         if (error->empty()) {
@@ -514,10 +530,42 @@ inline bool ValidateSnapshot(const Json& settings, std::string* error) {
   return true;
 }
 
+inline bool ValidateSnapshot(const Json& settings, std::string* error) {
+  return ValidateSnapshotFields(settings, error) && ValidateSnapshotCapability(settings, error);
+}
+
+// Official Slots are templates plus field-level personal overrides. When the
+// recipe version advances, refresh only the derived snapshot and provenance;
+// never discard overrides or touch custom snapshots.
+inline void MigrateOfficialTemplates() {
+  if (!loaded) return;
+  bool changed = false;
+  for (std::size_t index = 0; index < 3; ++index) {
+    auto& slot = state.slots[index];
+    if (!slot.populated || slot.template_version >= data::TEMPLATE_VERSION) continue;
+    if (slot.snapshot.empty() && slot.overrides.empty()) {
+      // Unused templates have no saved recipe to migrate. Keep first-use
+      // storage empty so Balanced initialization can own its durable commit.
+      slot.template_version = data::TEMPLATE_VERSION;
+      continue;
+    }
+    try {
+      const auto migrated = data::Resolve(index, slot, defaults_snapshot, Validate);
+      slot.snapshot = migrated;
+      slot.template_version = data::TEMPLATE_VERSION;
+      changed = true;
+    } catch (const std::exception&) {
+      // Keep the old manifest intact when a host cannot resolve the new
+      // template yet. Resolve remains backward-compatible for a later retry.
+    }
+  }
+  if (changed) Changed(true);
+}
+
 inline bool ApplySnapshot(const Json& settings, std::string* error) {
   if (!ValidateSnapshot(settings, error)) return false;
   return preset_ui::Apply(
-      {.metadata = Json::object(), .scope = presets::Scope::FULL, .settings = settings}, false, false, error);
+      {.metadata = Json::object(), .scope = presets::Scope::FULL, .settings = settings}, true, false, error);
 }
 
 inline void ExecuteAction(bool persist = true) {
@@ -688,19 +736,54 @@ inline bool SlotAvailable(int index, std::string* error) {
   if (index < 0 || index >= 6 || !state.slots[index].populated) return false;
   try {
     const auto settings = data::Resolve(index, state.slots[index], defaults_snapshot, Validate);
-    if (capability_validator && !capability_validator(settings, error)) {
-      if (error != nullptr && error->empty()) {
-        *error = "Profile contains unsupported settings. Current settings were kept.";
-      }
-      return false;
-    }
-    return true;
+    return ValidateSnapshot(settings, error);
   } catch (const std::exception& exception) {
     if (error != nullptr) {
       *error = exception.what();
     }
     return false;
   }
+}
+
+struct SlotDisplayCache {
+  data::Slot source;
+  Json defaults = Json::object();
+  Json settings = Json::object();
+  std::string error;
+  bool ready = false;
+  bool valid = false;
+  uint64_t rebuilds = 0;
+};
+inline std::array<SlotDisplayCache, 6> slot_display_cache;
+
+// Cache only the saved payload and its field validation. Environment eligibility
+// is checked on every draw; switching still resolves and validates a fresh target.
+inline bool SlotDisplayAvailable(int index, std::string* error) {
+  if (index < 0 || index >= 6 || !state.slots[index].populated) return false;
+  const auto& slot = state.slots[index];
+  auto& cached = slot_display_cache[index];
+  if (!cached.ready || cached.source.populated != slot.populated
+      || cached.source.template_version != slot.template_version
+      || cached.source.overrides != slot.overrides || cached.source.snapshot != slot.snapshot
+      || cached.defaults != defaults_snapshot) {
+    cached.ready = true;
+    cached.source = slot;
+    cached.defaults = defaults_snapshot;
+    cached.error.clear();
+    ++cached.rebuilds;
+    try {
+      cached.settings = data::Resolve(index, slot, defaults_snapshot, Validate);
+      cached.valid = ValidateSnapshotFields(cached.settings, &cached.error);
+    } catch (const std::exception& exception) {
+      cached.valid = false;
+      cached.error = exception.what();
+    }
+  }
+  if (!cached.valid) {
+    *error = cached.error;
+    return false;
+  }
+  return ValidateSnapshotCapability(cached.settings, error);
 }
 
 // Frame/hotkey entry point. Candidate selection is read-only; Request retains
@@ -728,7 +811,7 @@ inline bool Cycle(bool custom) {
   return false;
 }
 
-inline void RequestReset(int target) {
+inline void RequestReset(int target, bool restore_official = false, bool clear_custom = false) {
   if (first_install.pending) return;
   if (reset.recovery_failed) return;
   if (Resetting() || pending_action != Action::NONE) {
@@ -742,7 +825,8 @@ inline void RequestReset(int target) {
   }
   SettleSlider(true);
   Observe();
-  reset = {.phase = ResetPhase::FLUSH, .target = target};
+  reset = {.phase = ResetPhase::FLUSH, .target = target,
+           .restore_official = restore_official, .clear_custom = clear_custom};
   reset_error.clear();
   reset_notice = "Reset pending: saving previous profile changes.";
   if (dirty || Busy()) {
@@ -767,6 +851,7 @@ inline void RetryResetRecovery() {
 }
 
 inline void Tick() {
+  bool profile_loaded = false;
   {
     std::unique_lock lock(worker.mutex);
     if (worker.ready) {
@@ -784,6 +869,7 @@ inline void Tick() {
         const auto& display_name = state.slots[edit_index].name;
         std::memcpy(rename, display_name.c_str(), display_name.size() + 1);
         loaded = true;
+        profile_loaded = true;
         fresh_storage = worker.fresh;
         observed_snapshot = Snapshot();
         observed_epoch = profile_commit_epoch.load();
@@ -805,6 +891,7 @@ inline void Tick() {
       worker.wake = presets::internal::Handle();
     }
   }
+  if (profile_loaded) MigrateOfficialTemplates();
   if (first_install.pending) {
     if (Busy()) return;
     const auto before = first_install.before;
@@ -901,13 +988,16 @@ inline void Tick() {
             reset.detached.last_applied[key] = value;
           }
         }
-        if (reset.target == 3) {
+        if (reset.restore_official) {
           for (int index = 0; index < 3; ++index) {
             auto& slot = reset.detached.slots[index];
             slot.overrides = Json::object();
             slot.snapshot = data::Template(index, defaults_snapshot);
             slot.template_version = data::TEMPLATE_VERSION;
           }
+        }
+        if (reset.clear_custom) {
+          for (int index = 3; index < 6; ++index) reset.detached.slots[index] = {};
         }
       } catch (const std::exception& exception) {
         reset_notice = "Reset failed.";
@@ -963,7 +1053,7 @@ inline void Tick() {
       } else if (Snapshot() != state.last_applied) {
         reset.error = "Reset failed: applied settings did not match the saved reset snapshot.";
       } else {
-        reset_notice = "Defaults restored; custom profiles were kept.";
+        reset_notice = (reset.clear_custom ? "Defaults restored." : "Defaults restored; custom profiles were kept.");
         finish(false);
         return;
       }
@@ -1182,7 +1272,7 @@ inline std::string SlotLabel(int index, bool compact = false) {
   return name + " (" + ui::Tr(status) + ")";
 }
 
-inline void DrawSlotContext(int index) {
+inline void DrawSlotContext(int index, const std::string& unavailable) {
   const bool right_click = ImGui::IsItemClicked(ImGuiMouseButton_Right);
   if (right_click) {
     const auto menu = (slot_menu_bounds.size.x > 0.f ? slot_menu_bounds.position : ImGui::GetWindowPos());
@@ -1193,14 +1283,13 @@ inline void DrawSlotContext(int index) {
                    .menu_maximum = ImVec2(menu.x + size.x, menu.y + size.y),
                    .valid = true};
   }
-  std::string unavailable;
-  if (loaded && state.slots[index].populated && !SlotAvailable(index, &unavailable)) {
+  if (!unavailable.empty()) {
     ui::ItemTooltip("%s\n%s", ui::Tr("Unavailable in current environment"), unavailable.c_str());
   } else {
     const char* recipes[] = {
-        "Official template: 1 Render pass, model B, scale 0.67, Default style.",
-        "Official template: 1 Upscaled pass, model A, scale 0.67, Default style.",
-        "Official template: Render B (Cinematic), then Upscaled A (Default); both at scale 0.67."};
+      "Official template: 1 Render pass, model B, scale 0.75, Default style.",
+      "Official template: 1 Present pass, model B, scale 0.67, Default style.",
+      "Official template: Present A at 100% with Cinematic style, then Present B at 100% with Default style; character mask 0.80 / 0.50."};
     ui::ItemTooltip("%s\n%s\n%s%s%s%s%s", SlotLabel(index).c_str(),
                   ui::Tr(state.slots[index].populated
                              ? "Left-click to apply; right-click to manage."
@@ -1272,9 +1361,9 @@ inline bool DrawQuick() {
   const char* labels[] = {"NR Lite", "NR Balanced", "NR Max"};
   int selected = -1;
   bool blocked[6]{};
+  std::string unavailable[6];
   for (int i = 0; i < 6; ++i) {
-    std::string reason;
-    blocked[i] = loaded && state.slots[i].populated && !SlotAvailable(i, &reason);
+    blocked[i] = loaded && state.slots[i].populated && !SlotDisplayAvailable(i, &unavailable[i]);
   }
   if (available < font * 18.f) {
     ImGui::SetNextItemWidth(-1.f);
@@ -1288,7 +1377,7 @@ inline bool DrawQuick() {
           selected = i;
         }
         ImGui::EndDisabled();
-        DrawSlotContext(i);
+        DrawSlotContext(i, unavailable[i]);
         ImGui::PopID();
       }
       ImGui::EndCombo();
@@ -1309,7 +1398,7 @@ inline bool DrawQuick() {
       ImGui::EndDisabled();
       // Each official context popup belongs to its stable segment identity.
       ImGui::PushID(labels[i]);
-      DrawSlotContext(i);
+      DrawSlotContext(i, unavailable[i]);
       ImGui::PopID();
     }
     ImGui::PopID();
@@ -1344,7 +1433,7 @@ inline bool DrawQuick() {
             ui::Ellipsize(label.c_str(), ImGui::GetContentRegionAvail().x)
                 .c_str());
         ImGui::EndDisabled();
-        DrawSlotContext(i);
+        DrawSlotContext(i, unavailable[i]);
         ImGui::PopID();
       }
       ImGui::EndCombo();
@@ -1363,7 +1452,7 @@ inline bool DrawQuick() {
         chosen_custom = i;
       }
       ImGui::EndDisabled();
-      DrawSlotContext(i);
+      DrawSlotContext(i, unavailable[i]);
       ImGui::PopID();
     }
   }

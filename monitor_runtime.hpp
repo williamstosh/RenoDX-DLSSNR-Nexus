@@ -34,6 +34,7 @@ struct MonitorHistoryRuntime {
   ui::MonitorHistory values;
   bool active = false;
   bool needs_baseline = true;
+  bool reset_cursor = false;
   uint64_t epoch = UINT64_MAX;
   uint64_t configuration = UINT64_MAX;
   uint64_t session = UINT64_MAX;
@@ -70,8 +71,8 @@ inline void UpdateMonitorCadence(reshade::api::effect_runtime* runtime) {
   const auto epoch = monitor_history_epoch.load();
   auto& cadence = monitor_cadence;
   if (runtime == nullptr || cadence.owner != runtime || cadence.epoch != epoch) {
+    if (runtime == nullptr || cadence.owner != runtime) monitor_history.values.ClearCadence();
     cadence = {.owner = runtime, .epoch = epoch, .first_ns = now};
-    monitor_history.values.ClearCadence();
   }
   if (runtime == nullptr || cadence.frame == ImGui::GetFrameCount()) return;
   cadence.frame = ImGui::GetFrameCount();
@@ -97,7 +98,7 @@ inline void UpdateMonitorCadence(reshade::api::effect_runtime* runtime) {
   const auto& stream = (selected.source == ui::frame_metrics::Source::PRESENT ? cadence.present : cadence.fallback);
   if (changed || record != cadence.recording || stream.published < cadence.consumed
       || stream.published - cadence.consumed > stream.CAPACITY) {
-    monitor_history.values.ClearCadence();
+    if (cadence.recording || record) monitor_history.values.BeginSegment();
     cadence.consumed = stream.published;
   }
   cadence.selected = selected;
@@ -166,6 +167,31 @@ inline void InvalidateMonitorDisplay() {
   cached.valid_until_ns = INT64_MAX;
 }
 
+inline void NotifyCompletedModelAdjustments(int64_t now) {
+  RuntimeTryLock lock(runtime_mutex);
+  if (!lock.owns_lock()) return;
+  const auto plan = RequestedStagePlan();
+  gpu_comparison::Identity current_identity;
+  if (gpu_timers::comparison_settings != nullptr) gpu_timers::comparison_settings(&current_identity);
+  for (size_t stage = 0; plan.valid && stage < stage_telemetry.size(); ++stage) {
+    const gpu_timers::Stats* latest = nullptr;
+    for (const auto* completed : {&gpu_timers::execution_stats[stage], &gpu_timers::stage_stats[stage]}) {
+      if (!CurrentGpuSample(*completed, now, &current_identity)
+          || gpu_timers::StageIndex(completed->path) != stage) continue;
+      if (latest == nullptr || completed->sequence > latest->sequence) latest = completed;
+    }
+    if (latest == nullptr) continue;
+    for (const auto& pass : latest->passes) {
+      if (pass.state != gpu_timers::SampleState::VALID || pass.id >= plan.pass_count
+          || static_cast<size_t>(plan.effective[pass.id]) != stage
+          || pass.width == 0 || pass.height == 0) continue;
+      const uint32_t requested = (pass.id == 0 || pass_preset[pass.id - 1].load() == 0
+          ? preset.load() : pass_preset[pass.id - 1].load());
+      NotifyModelRequestAdjustment(nr_model::PresetName(requested), nr_model::PresetName(pass.model), pass.id);
+    }
+  }
+}
+
 inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
   auto& cached = monitor_snapshot;
   const auto now = SteadyNowNs();
@@ -205,6 +231,10 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
   if (!lock.owns_lock()) {
     ++cached.deferred;
     return cached;
+  }
+  if (monitor_history.reset_cursor) {
+    monitor_history.consumed = gpu_timers::monitor_events.published;
+    monitor_history.reset_cursor = false;
   }
   const auto verdict = ComputeNrVerdict(CollectFunnelInputs());
   const auto inputs = CollectCardInputs(verdict, now);
@@ -249,6 +279,9 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
     auto& history = monitor_history;
     auto& events = gpu_timers::monitor_events;
     if (history.needs_baseline || history.session != gpu_timers::device_session) {
+      if (history.session != UINT64_MAX && history.session != gpu_timers::device_session) {
+        history.values.BeginSegment();
+      }
       history.values.ClearGpu();
       history.latest = {};
       history.contracts = {};
@@ -258,6 +291,7 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
       history.needs_baseline = false;
     }
     if (events.published < history.consumed || events.published - history.consumed > events.CAPACITY) {
+      history.values.BeginSegment();
       history.values.ClearGpu();
       history.latest = {};
       history.contracts = {};
@@ -280,7 +314,7 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
             && a.output_width == b.output_width && a.output_height == b.output_height && a.look_measured == b.look_measured;
       }
       if (current && !same_contract) {
-        history.values.ClearGpu();
+        history.values.BeginSegment();
         history.latest = {};
         history.contracts = {};
         history.summed = {};
@@ -429,6 +463,7 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
           if (sample.id != pass || sample.state != gpu_timers::SampleState::VALID
               || sample.width == 0 || sample.height == 0) continue;
           row.created_model_request = nr_model::PresetName(sample.model);
+          row.model_adjustment_reason = ui::Tr(ModelRequestAdjustmentReason(models[pass], sample.model));
           row.execution_proof = ui::Tr("GPU complete: single submission");
           row.execution_confirmed = true;
           row.actual_size = std::to_string(sample.width) + " x " + std::to_string(sample.height);
@@ -525,6 +560,29 @@ inline void SaveMonitorSettings() {
   ui_monitor_saved_detailed = state.detailed;
 }
 
+inline void PrepareMonitorHistory(bool record_history) {
+  auto& history = monitor_history;
+  const auto history_epoch = monitor_history_epoch.load();
+  const auto configuration = configuration_generation.load();
+  if (history.configuration != UINT64_MAX && (history.configuration != configuration
+      || history.epoch != history_epoch || history.active != record_history)) {
+    history.values.BeginSegment();
+    history.latest = {};
+    history.contracts = {};
+    history.summed = {};
+    // Old GPU samples remain in their segment; queued samples belong to the
+    // previous contract and cannot seed a current number after the switch.
+    history.reset_cursor = true;
+    monitor_snapshot.attempted_ns = 0;
+  }
+  // Visibility, F11 and trend toggles stop sampling but do not erase the
+  // previous time axis. The next valid sample naturally leaves a gap.
+  history.epoch = history_epoch;
+  history.configuration = configuration;
+  history.active = record_history;
+  gpu_timers::monitor_events.enabled = record_history;
+}
+
 inline void DrawIndependentMonitor(reshade::api::effect_runtime* runtime, bool menu) {
   if (shutting_down.load() || !monitor_requested.load()) return;
   const auto* owner = monitor_runtime.load();
@@ -541,29 +599,18 @@ inline void DrawIndependentMonitor(reshade::api::effect_runtime* runtime, bool m
   RefreshUiLanguage();
   ui::SetTheme(ui_theme_choice.load());
   ui_runtime_monitor_state.open = true;
-  auto& history = monitor_history;
   const bool record_history = ui_runtime_monitor_state.trends;
-  const auto history_epoch = monitor_history_epoch.load();
-  const auto configuration = configuration_generation.load();
-  if (history.active != record_history || history.epoch != history_epoch || history.configuration != configuration) {
-    history.values.Clear();
-    history.latest = {};
-    history.contracts = {};
-    history.summed = {};
-    history.needs_baseline = true;
-    history.epoch = history_epoch;
-    history.configuration = configuration;
-    monitor_snapshot.attempted_ns = 0;
-  }
-  history.active = record_history;
-  gpu_timers::monitor_events.enabled = record_history;
+  PrepareMonitorHistory(record_history);
   UpdateMonitorCadence(runtime);
   const auto& snapshot = RefreshMonitorSnapshot(true);
-  monitor_snapshot.monitor.history = (record_history ? &history.values : nullptr);
+  monitor_snapshot.monitor.history = (record_history ? &monitor_history.values : nullptr);
   monitor_snapshot.monitor.now_ns = SteadyNowNs();
   const auto binding = monitor_hotkey.load();
   monitor_snapshot.monitor.hotkey = (binding != 0 && !MonitorKeyConflict(binding)
       ? VirtualKeyName(binding) : "");
+  const auto mode_binding = monitor_mode_key.load();
+  monitor_snapshot.monitor.mode_hotkey = (mode_binding != 0 && !MonitorModeKeyConflict(mode_binding)
+      ? VirtualKeyName(mode_binding) : "");
   const bool interactive = menu || hud_overlay_open.load();
   if (interactive && !ui_monitor_was_interactive) ImGui::SetNextWindowFocus();
   ui_monitor_was_interactive = interactive;
@@ -575,7 +622,7 @@ inline void DrawIndependentMonitor(reshade::api::effect_runtime* runtime, bool m
     monitor_visible_preference = false;
     monitor_visibility_dirty = true;
     gpu_timers::monitor_events.enabled = false;
-    history.active = false;
+    monitor_history.active = false;
     monitor_observation_epoch.fetch_add(1);
     monitor_history_epoch.fetch_add(1);
   }
