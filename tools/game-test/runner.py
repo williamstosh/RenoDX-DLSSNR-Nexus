@@ -16,6 +16,7 @@ from contextlib import contextmanager
 import msvcrt
 from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageStat
 import desktop
+import normal_process
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -35,14 +36,14 @@ def parse_capture_hold_seconds(value):
     try:
         seconds = int(value)
     except (TypeError, ValueError) as error:
-        raise argparse.ArgumentTypeError('must be 0 or an integer from 10 to 120') from error
-    if seconds != 0 and not 10 <= seconds <= 120:
-        raise argparse.ArgumentTypeError('must be 0 or an integer from 10 to 120')
+        raise argparse.ArgumentTypeError('must be 0 or an integer from 10 to 900') from error
+    if seconds != 0 and not 10 <= seconds <= 900:
+        raise argparse.ArgumentTypeError('must be 0 or an integer from 10 to 900')
     return seconds
 
 def validate_capture_hold_scenario(scenario, seconds):
-    if seconds and scenario != 'smoke':
-        raise ValueError('--capture-hold-seconds is only supported for the smoke scenario')
+    if seconds and scenario not in ('smoke', 'menu'):
+        raise ValueError('--capture-hold-seconds is only supported for smoke or menu scenarios')
 
 def _unique_json_object(pairs):
     result = {}
@@ -295,7 +296,16 @@ class Session:
         self.status['safe_exit'] = 'menu_exit_pending_log_and_crash_check'
 
     def menu(self):
-        self.main_menu()
+        if self.cfg.get('manual_ime_session'):
+            # The user handles startup and every UI action in a manual session.
+            # Module/process checks do not require capture or foreground input.
+            self.ui_state = 'manual_menu'
+            self.status['startup'] = 'process_and_dx12_path_confirmed_user_menu_required'
+        else:
+            self.main_menu()
+        if self.cfg.get('capture_hold_seconds', 0):
+            self.check_mod()
+            self.capture_hold()
 
     def check_mod(self):
         paths = desktop.modules(self.window)
@@ -456,6 +466,14 @@ class Session:
                 return
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                if self.cfg.get('manual_ime_session'):
+                    if self.status['capture_hold'] != 'deadline_waiting_for_user':
+                        self.status['capture_hold'] = 'deadline_waiting_for_user'
+                        self.event('manual_ime_deadline', state='protection_held_no_automatic_game_input')
+                        dump(self.out / 'manual-intervention-required.json', dict(
+                            time=stamp(), pid=self.window['pid'], state='finish_editing_then_request_manual_exit'))
+                    time.sleep(1)
+                    continue
                 self.status['capture_hold'] = 'timeout_not_mod_acceptance'
                 self.event('capture_hold_timeout', pid=self.window['pid'], seconds=seconds,
                            result='timeout_not_mod_acceptance')
@@ -549,6 +567,22 @@ class Session:
             return
         if self.exit_requested:
             self.wait_exit()
+            return
+        if self.cfg.get('manual_ime_session'):
+            # Completion is the owner's explicit request to end the session.
+            # The owner closes native/overlay windows and exits from the game
+            # menu; this path sends no keys and never terminates the game.
+            self.exit_requested = self.status.get('capture_hold') == 'completed_by_signal'
+            self.event('manual_exit_wait', requested=self.exit_requested, pid=self.window['pid'])
+            dump(self.out / 'manual-exit-ready.json', dict(
+                time=stamp(), pid=self.window['pid'], requested=self.exit_requested))
+            while desktop.same_process(self.window):
+                time.sleep(.5)
+            if not self.exit_requested:
+                self.status['safe_exit'] = 'manual_exit_without_recorded_request'
+                raise RuntimeError('Manual game exit preceded the completion request')
+            self.event('exit_requested', method='user_game_menu')
+            self.wait_exit(timeout=0)
             return
         if not desktop.same_process(self.window):
             self.status['safe_exit'] = 'unexpected_exit'
@@ -698,6 +732,8 @@ def recover_owned(cfg, out, owned):
         if not desktop.same_process(owned):
             return False
         freeze_logs(cfg, out / 'recovery-logs')
+        if cfg.get('manual_ime_session'):
+            raise RuntimeError('Manual IME session requires user exit; automatic game termination disabled')
         desktop.terminate(owned)
         if desktop.same_process(owned):
             raise RuntimeError('Owned process survived termination')
@@ -724,7 +760,7 @@ def run_attempt(cfg, out):
     source = out / 'source'
     source.mkdir()
     sources = []
-    for name in ('runner.py', 'desktop.py', 'guard.py'):
+    for name in ('runner.py', 'desktop.py', 'guard.py', 'normal_process.py'):
         shutil.copyfile(HERE / name, source / name)
         sources.append(dict(name=name, sha256=sha(source / name)))
     dump(out / 'source-manifest.json', dict(files=sources, target_sha256=sha(out / 'target.json'),
@@ -858,7 +894,7 @@ def run_trials(cfg, out, retries):
         if final['result'] != 'failed':
             return 0
         # Retry diagnosed transient failures only after recovery and file verification complete.
-        if not should_retry(final, cfg['scenario']):
+        if cfg.get('manual_ime_session') or not should_retry(final, cfg['scenario']):
             break
     return 1
 
@@ -892,22 +928,28 @@ def main():
     parser.add_argument('--output-root', type=Path, default=ROOT / 'artifacts/game-tests')
     parser.add_argument('--scenario', default='smoke', choices=['smoke', 'menu', 'calibrate'])
     parser.add_argument('--capture-hold-seconds', type=parse_capture_hold_seconds, default=0)
+    parser.add_argument('--manual-ime-session', action='store_true')
     parser.add_argument('--save')
     parser.add_argument('--preflight', action='store_true')
     parser.add_argument('--addon-absent-control', action='store_true')
     parser.add_argument('--retries', type=int, choices=range(3), default=2)
     parser.add_argument('--worker', type=Path)
     args = parser.parse_args()
+    filesystem_context = normal_process.require_normal_context()
     try:
         validate_capture_hold_scenario(args.scenario, args.capture_hold_seconds)
     except ValueError as error:
         parser.error(str(error))
     if args.worker:
         return worker(args.worker)
+    if args.manual_ime_session and (args.scenario != 'menu' or not args.capture_hold_seconds or args.retries != 0):
+        parser.error('--manual-ime-session requires menu, nonzero capture hold and --retries 0')
     output_root = local_output_root(args.output_root)
     cfg = resolve_target(args.game, args.platform, args.save, args.addon_absent_control, args.target)
     cfg['scenario'] = args.scenario
     cfg['capture_hold_seconds'] = args.capture_hold_seconds
+    cfg['manual_ime_session'] = args.manual_ime_session
+    cfg['filesystem_context'] = filesystem_context
     if process_inventory(cfg['executable']):
         raise RuntimeError('A game session already exists; refusing to adopt or stop it')
     if process_inventory(Path(cfg['executable']).parent / 'crashreporter/CrashReporter.exe'):

@@ -78,8 +78,8 @@ foreach ($taskDocument in $taskDocuments.Keys) {
     $taskDocumentInputs[$taskDocument] = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($taskDocumentPath))
     if ([string]::IsNullOrWhiteSpace($taskDocumentInputs[$taskDocument])) { throw "Empty package input: $taskDocument" }
 }
-$taskImageNames = @('quality', 'multipass', 'results', 'diagnostics', 'advanced', 'themes',
-    'quality-zh', 'multipass-zh', 'results-zh', 'diagnostics-zh', 'advanced-zh', 'themes-zh')
+$taskImageNames = @('quality', 'multipass', 'results', 'diagnostics', 'advanced', 'themes', 'presets',
+    'quality-zh', 'multipass-zh', 'results-zh', 'diagnostics-zh', 'advanced-zh', 'themes-zh', 'presets-zh')
 $taskLocalPaths = [ordered]@{
     'LICENSE' = 'LICENSE'; 'THIRD_PARTY_NOTICES.md' = 'THIRD_PARTY_NOTICES.md'
     'README.md' = 'README.md'; 'docs/USER_GUIDE.md' = 'USER_GUIDE.md'

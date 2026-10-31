@@ -7,6 +7,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <cstring>
@@ -14,6 +15,9 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <map>
+#include <optional>
+#include <set>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
@@ -207,7 +211,16 @@ int main(int argc, char** argv) {
       // Empty add-on settings; other ReShade sections do not make it an old add-on.
     } else {
       addon = current_global + policy_keys;
-      if (test_case == "scope0" || test_case == "select" || test_case == "save-fail-scope"
+      if (test_case == "native-prefg-resolution-config") {
+        addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\n"
+                 "NRExperimentalNativePreFgResolution=1\r\n";
+      } else if (test_case == "presets") {
+        addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\n"
+                 "NeuralUplift=0\r\nNRIntensity=0.75\r\nNRPreset=1\r\nNRPasses=2\r\n"
+                 "NRLookMode=1\r\nNRLookStrength=1.4\r\nNRDetailStability=1\r\n"
+                 "NRPass4LookFollowPass1=0\r\nNRPass4LookMode=1\r\nNRPass4LookStrength=0.42\r\n"
+                 "UnregisteredPersistentKnob=42\r\nEnableHooks=0\r\nDX11Source=auto\r\n";
+      } else if (test_case == "scope0" || test_case == "select" || test_case == "save-fail-scope"
           || test_case == "save-fail-version" || test_case == "reset") {
         addon += "NRPresentRestoreScope=0\r\nNRPresentRestoreScopeConfigVersion=1\r\n";
         if (test_case == "reset") addon += "UnregisteredPersistentKnob=42\r\n";
@@ -234,6 +247,27 @@ int main(int argc, char** argv) {
           addon += "NRPass2LookFollowPass1=0\r\nNRPass2LookMode=1\r\nNRPass2LookStrength=0.4\r\nNRPass2LookHalo=0.8\r\nNRPass2LookStabilize=2\r\nNRPass2LookStabilizeMs=120\r\nNRPass2DetailStability=1\r\nNRPass3LookFollowPass1=0\r\nNRPass3LookMode=0\r\nNRPass3DetailStability=1\r\n";
         } else if (test_case == "pass-result-invalid") {
           addon += "NRPass2LookFollowPass1=0\r\nNRPass2LookMode=1\r\nNRPass2LookStrength=nan\r\nNRPass2LookHalo=99\r\nNRPass2LookDetailRadius=-1\r\nNRPass2LookStabilize=9\r\nNRPass2LookStabilizeMs=9999\r\nNRPass2DetailStability=9\r\n";
+        }
+      } else if (test_case == "capability-ui") {
+        addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\n";
+      } else if (test_case.starts_with("nr-resolution-") || test_case == "profiles") {
+        addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\n"
+                 "NRFollowInputRes=0\r\nNRResolutionScale=0.58\r\n";
+        if (test_case == "nr-resolution-explicit") {
+          addon += "NRPass2ResolutionMode=2\r\nNRPass2ResolutionScale=0.67\r\n"
+                   "NRPass3ResolutionMode=1\r\nNRPass3ResolutionScale=0.5\r\n"
+                   "NRPass4ResolutionMode=0\r\nNRPass4ResolutionScale=0.33\r\n";
+        } else if (test_case == "nr-resolution-invalid") {
+          addon += "NRPass2ResolutionMode=99\r\nNRPass2ResolutionScale=nan\r\n"
+                   "NRPass3ResolutionMode=99\r\nNRPass3ResolutionScale=2\r\n"
+                   "NRPass4ResolutionMode=99\r\nNRPass4ResolutionScale=0.1\r\n";
+        }
+      } else if (test_case.starts_with("nr-stage-")) {
+        addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\nNRHookPoint=1\r\nNRPreset=1\r\nNRPass2Preset=2\r\nNRPass2FollowPass1=1\r\nNRPass2LookFollowPass1=1\r\n";
+        if (test_case == "nr-stage-explicit") {
+          addon += "NRPass2Stage=2\r\nNRPass3Stage=0\r\nNRPass4Stage=3\r\n";
+        } else if (test_case == "nr-stage-invalid") {
+          addon += "NRPass2Stage=99\r\nNRPass3Stage=99\r\nNRPass4Stage=99\r\n";
         }
       } else if (test_case.starts_with("nr-model-")) {
         addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\n";
@@ -266,6 +300,662 @@ int main(int argc, char** argv) {
     if (test_case == "fail-sdr-version") failed_key = "NRPresentSdrRestoreConfigVersion";
     if (test_case == "fail-hdr-version") failed_key = "NRPresentHdrPedestalConfigVersion";
     runtime::LoadConfiguration();
+    if (test_case == "native-prefg-resolution-config") {
+      Check(runtime::experimental_native_prefg_resolution.load(), "explicit INI enables the experimental PreFG pair");
+      Check(Read("NRExperimentalNativePreFgResolution") == "1", "registered experimental key survives configuration load");
+      Check(WritePrivateProfileStringA("RenoDX.DLSS5", "NRExperimentalNativePreFgResolution", "0", ini_path.c_str()),
+            "write explicit prototype Off");
+      runtime::LoadConfiguration();
+      Check(!runtime::experimental_native_prefg_resolution.load(), "explicit Off disables the prototype");
+      runtime::experimental_native_prefg_resolution.store(true);
+      Check(WritePrivateProfileStringA("RenoDX.DLSS5", "NRExperimentalNativePreFgResolution", nullptr, ini_path.c_str()),
+            "remove experimental override");
+      runtime::LoadConfiguration();
+      Check(!runtime::experimental_native_prefg_resolution.load(), "missing key resets to default Off after reload");
+    }
+    if (test_case.starts_with("nr-resolution-")) {
+      const bool explicit_values = test_case == "nr-resolution-explicit";
+      for (uint32_t pass = 1; pass < runtime::kMaxNrPasses; ++pass) {
+        Check(runtime::pass_resolution_mode[pass - 1].load() == (explicit_values ? (pass == 1 ? 2u : pass == 2 ? 1u : 0u) : 0u),
+              "INI resolution mode defaults to inheritance and loads each pass independently");
+        const float expected = (explicit_values ? (pass == 1 ? .67f : pass == 2 ? .5f : .33f)
+                                               : (test_case == "nr-resolution-invalid" && pass == 3 ? .33f : 1.f));
+        Check(std::abs(runtime::pass_resolution_scale[pass - 1].load() - expected) < .0001f,
+              "INI resolution scale is independent, bounded and defaults to one");
+        uint32_t width = 0, height = 0;
+        runtime::ComputeNrWorkingResolution(1920, 1080, 1280, 720, width, height, pass);
+        Check(width == (explicit_values ? (pass == 1 ? 1286u : pass == 2 ? 1280u : 1114u) : 1114u)
+                  && height == (explicit_values ? (pass == 1 ? 724u : pass == 2 ? 720u : 626u) : 626u),
+              "effective settings preserve the original global reference and rounding rules");
+      }
+      Check(!runtime::nr_follow_input_res.load() && std::abs(runtime::nr_resolution_scale.load() - .58f) < .0001f,
+            "pass overrides do not change global resolution");
+      const auto saved_hook = runtime::hook_point.load();
+      runtime::nr_follow_input_res = true;
+      for (const unsigned hook : {1u, 0u, 2u}) {
+        runtime::hook_point = hook;
+        uint32_t width = 0, height = 0;
+        runtime::ComputeNrWorkingResolution(1920, 1080, 1280, 720, width, height);
+        Check(width == 1280 && height == 720, "Follow calculation uses Guide dimensions at every configured stage without reinterpreting Hook storage.");
+        runtime::ComputeNrWorkingResolution(1920, 1080, 0, 0, width, height);
+        Check(width == 1114 && height == 626, "Missing Guide dimensions retain the saved scale fallback instead of inventing a followed size.");
+      }
+      runtime::hook_point = saved_hook;
+      runtime::nr_follow_input_res = false;
+      runtime::nr_resolution_scale = 1.f;
+      runtime::pass_resolution_mode[0] = 2;
+      runtime::pass_resolution_scale[0] = .67f;
+      runtime::pass_resolution_mode[1] = 0;
+      renodx::addons::dlss5::stage_plan::Group group{.stage = renodx::addons::dlss5::stage_plan::Stage::UPSCALED,
+                                                    .begin = 0, .count = 3};
+      uint32_t width = 0, height = 0;
+      Check(!runtime::ComputeNrGroupWorkingResolution(group, 1920, 1080, 1280, 720, &width, &height),
+            "Three-pass shared resources reject incompatible actual sizes without changing other pass settings.");
+      Check(runtime::pass_resolution_mode[0].load() == 2 && runtime::pass_resolution_scale[0].load() == .67f,
+            "Rejecting incompatible dimensions retains the user's independent request.");
+      runtime::pass_resolution_scale[0] = 1.f;
+      Check(runtime::ComputeNrGroupWorkingResolution(group, 1920, 1080, 1280, 720, &width, &height),
+            "Different modes with matching actual pixels do not create a false resolution conflict.");
+      runtime::LoadConfiguration();
+    }
+    if (test_case == "capability-ui") {
+#include "capability_runtime_cases.hpp"
+    }
+    if (test_case == "profiles") {
+#include "profile_runtime_cases.hpp"
+      RunProfileRuntimeCases(base_directory / "profile-runtime-cases");
+    }
+    if (test_case == "presets") {
+#include "profile_runtime_cases.hpp"
+      RunProfileRuntimeCases(base_directory / "profile-runtime-cases");
+      namespace presets = renodx::addons::dlss5::presets;
+      namespace adapter = runtime::preset_ui;
+      namespace ui = renodx::addons::dlss5::ui;
+      namespace model = renodx::addons::dlss5::nr_model;
+      using Json = presets::Json;
+      using Category = presets::FieldRule::Category;
+      // These transaction/codec cases require synthetic API/model evidence;
+      // the profile suite's scoped environment has already been restored.
+      runtime::d3d12_swapchain_seen = true;
+      runtime::direct_runtime_requirements.dual_models = true;
+      runtime::native_fg_declaration = runtime::NativeFgDeclaration::kOff;
+      runtime::native_fg_public_off = true;
+      const auto fixture_root = base_directory;
+      const auto fixture_ini = ini_path;
+      const auto capture = []() { return adapter::Capture(presets::Scope::FULL, {{"name", "Synthetic test"}}); };
+      const auto apply = [](const Json& settings, presets::Scope selected_scope = presets::Scope::FULL,
+                            bool compatibility = true) {
+        std::string error;
+        const bool result = adapter::Apply({.metadata = {{"name", "Synthetic test"}}, .scope = selected_scope,
+                                           .settings = settings}, compatibility, true, &error);
+        if (!result) {
+          std::cerr << "Preset apply: " << error << '\n';
+        }
+        return result;
+      };
+      const auto effect_name = [](runtime::SettingEffect effect) {
+        switch (effect) {
+          case runtime::SettingEffect::kNone: return "none";
+          case runtime::SettingEffect::kHostHistory: return "host-history";
+          case runtime::SettingEffect::kHistory: return "history";
+          case runtime::SettingEffect::kRecreate: return "recreate";
+        }
+        return "unknown";
+      };
+      const auto category_name = [](Category category) {
+        switch (category) {
+          case Category::QUALITY: return "quality";
+          case Category::MULTIPASS: return "multipass";
+          case Category::COMPATIBILITY: return "compatibility";
+          case Category::GENERAL: return "general";
+          case Category::EXCLUDED: return "excluded";
+        }
+        return "unknown";
+      };
+      std::map<std::string, unsigned> rule_counts;
+      for (const auto& rule : presets::FieldRules()) {
+        ++rule_counts[rule.key];
+      }
+      Json inventory = Json::array();
+      for (const auto& rule : presets::FieldRules()) {
+        const std::string key(rule.key);
+        Check(rule_counts[key] == 1, ("Exactly one rule: " + key).c_str());
+        Json fallback = nullptr;
+        const char* type = "nullable";
+        const char* effect = "none";
+        const char* source = "native default/nullable";
+        if (const auto* setting = adapter::FindSetting(key)) {
+          if (setting->b != nullptr) {
+            fallback = setting->fallback != 0.f;
+            type = "boolean";
+          } else if (setting->u != nullptr) {
+            fallback = static_cast<uint32_t>(setting->fallback);
+            type = "integer";
+          } else {
+            fallback = setting->fallback;
+            type = "number";
+          }
+          effect = effect_name(setting->effect);
+          source = "production Setting::fallback/effect (registry or extras)";
+        } else if (key == "UiTheme") {
+          fallback = ui::GetTheme(ui::ThemeId::CYBER_NEON).slug;
+          type = "string";
+        } else if (key == "UiLanguage") {
+          fallback = "auto";
+          type = "string";
+        } else if (key == "UiMode") {
+          fallback = "modern";
+          type = "string";
+        } else if (key == "DedupeMode") {
+          fallback = runtime::defaults::kDedupeMode;
+          type = "integer";
+        } else if (key == "ListStateMode") {
+          fallback = runtime::defaults::kListStateMode;
+          type = "integer";
+        } else if (key == "NRPresentHdrPedestalPolicy") {
+          fallback = static_cast<uint32_t>(renodx::addons::dlss5::present_hdr_pedestal::DEFAULT_POLICY);
+          type = "integer";
+          effect = "host-history";
+        } else if (key == "NRPresentRestoreScope") {
+          fallback = static_cast<uint32_t>(scope::Configuration{}.scope);
+          type = "integer";
+          effect = "host-history";
+        } else if (key == "EnableHooks") {
+          type = "nullable integer";
+          effect = "restart";
+        } else if (key == "DX11Source" || key == "ForeignNr") {
+          type = "nullable string";
+          effect = "restart";
+        }
+        if (!fallback.is_null()) {
+          Check(adapter::ValidateValue(rule, fallback), ("Production default fits rule: " + key).c_str());
+        }
+        const Json current = adapter::ReadSetting(key);
+        if (rule.category != Category::EXCLUDED && !current.is_null()) {
+          Check(adapter::ValidateValue(rule, current), ("Loaded value fits rule: " + key).c_str());
+        }
+        inventory.push_back({{"key", key}, {"type", type}, {"default", fallback}, {"default_source", source},
+                             {"range", {{"minimum", (std::isfinite(rule.minimum) ? Json(rule.minimum) : Json(nullptr))},
+                                        {"maximum", (std::isfinite(rule.maximum) ? Json(rule.maximum) : Json(nullptr))}}},
+                             {"category", category_name(rule.category)}, {"pass", rule.pass}, {"effect", effect},
+                             {"environment", (rule.category == Category::COMPATIBILITY ? "game/device/runtime; explicit opt-in"
+                                               : (rule.category == Category::EXCLUDED ? "session/private/schema; excluded"
+                                                                                     : "game INI; portable preset data"))}});
+      }
+      for (const auto& section : runtime::kSettingSections) {
+        for (const auto* setting : section) {
+          Check(rule_counts[setting->key] == 1, (std::string("Registry coverage: ") + setting->key).c_str());
+        }
+      }
+      for (const auto& setting : adapter::kExtraSettings) {
+        Check(rule_counts[setting.key] == 1, (std::string("Extra setting coverage: ") + setting.key).c_str());
+      }
+      {
+        std::ofstream report("preset-field-inventory.json", std::ios::binary);
+        report << Json{{"source", "production FieldRules + Setting registry/extras"}, {"fields", inventory}}.dump(2) << '\n';
+        Check(static_cast<bool>(report), "Write full private field inventory.");
+      }
+      for (const auto selected_scope : {presets::Scope::QUALITY, presets::Scope::QUALITY_MULTIPASS, presets::Scope::FULL}) {
+        const auto document = adapter::Capture(selected_scope, {{"name", "Scope test"}});
+        for (const auto& rule : presets::FieldRules()) {
+          const bool expected = rule.category != Category::EXCLUDED
+                                && (selected_scope == presets::Scope::FULL || rule.category == Category::QUALITY
+                                    || (selected_scope == presets::Scope::QUALITY_MULTIPASS && rule.category == Category::MULTIPASS
+                                        && (rule.pass == 0 || rule.pass <= runtime::stack_passes.load())))
+                                && (std::string_view(rule.key) != "NRPresentRestoreScope" || !Configuration().inherited)
+                                && !adapter::ReadSetting(rule.key).is_null();
+          Check(document.settings.contains(rule.key) == expected, (std::string("Scope capture: ") + rule.key).c_str());
+        }
+      }
+      const auto stage_original = capture();
+      const Json invalid_stages{{"NRPasses", 4u}, {"NRPass2Stage", 2u}, {"NRPass3Stage", 0u}, {"NRPass4Stage", 3u}};
+      const auto invalid_stage_bytes = Bytes();
+      std::string invalid_stage_error;
+      Check(!adapter::Apply({.scope = presets::Scope::QUALITY_MULTIPASS, .settings = invalid_stages},
+                            false, false, &invalid_stage_error)
+                && !invalid_stage_error.empty() && Bytes() == invalid_stage_bytes
+                && capture().settings == stage_original.settings,
+            "Unproven four-pass mixed Present request is rejected without changing saved configuration.");
+      const Json stage_settings{{"NRPasses", 4u}, {"NRPass2Stage", 2u}, {"NRPass3Stage", 0u}, {"NRPass4Stage", 2u}};
+      const presets::Document stage_request{.scope = presets::Scope::QUALITY_MULTIPASS, .settings = stage_settings};
+      const auto stage_rows = adapter::Preview(stage_request, false);
+      for (const auto& [key, value] : stage_settings.items()) {
+        Check(std::any_of(stage_rows.begin(), stage_rows.end(), [&](const auto& row) {
+          return row.key == key && row.after == value
+              && (std::string_view(row.status) == "Will change" || std::string_view(row.status) == "Unchanged");
+        }), ("Stage appears in multipass difference preview: " + key).c_str());
+      }
+      Check(apply(stage_settings, presets::Scope::QUALITY_MULTIPASS, false), "Apply independent stage settings.");
+      const auto stage_captured = capture();
+      presets::Document stage_roundtrip;
+      Check(presets::Parse(presets::Serialize(stage_captured), &stage_roundtrip)
+                && stage_roundtrip.settings == stage_captured.settings, "Stages survive preset export/import.");
+      runtime::LoadConfiguration();
+      for (const auto& [key, value] : stage_settings.items()) {
+        Check(adapter::ReadSetting(key) == value, ("Stage survives configuration reload: " + key).c_str());
+      }
+      for (const char* key : {"NRPreset", "NRPass2Preset", "NRPass2FollowPass1", "NRPass2LookFollowPass1"}) {
+        Check(adapter::ReadSetting(key) == stage_original.settings[key], "Stage edits preserve model/Look/result inheritance.");
+      }
+      Check(apply({{"NRIntensity", 0.875f}}), "Apply old partial preset without stage fields.");
+      for (const auto& [key, value] : stage_settings.items()) {
+        Check(adapter::ReadSetting(key) == value, "Absent preset stage fields preserve local choices.");
+      }
+      std::string stage_error;
+      Check(adapter::Undo(&stage_error), "Undo partial preset without changing stages.");
+      Check(adapter::Apply(stage_original, true, true, &stage_error), "Restore original configuration before stage undo.");
+      Check(apply(stage_settings, presets::Scope::QUALITY_MULTIPASS, false) && adapter::Undo(&stage_error)
+                && capture().settings == stage_original.settings, "Stage batch undo restores exact original snapshot.");
+      const auto quality_original = capture();
+      const Json quality_baseline{{"NRHookPoint", 0u}, {"NRFollowInputRes", true},
+                                  {"NRResolutionScale", 1.f}, {"NRLookUpsample", 0u}};
+      const Json quality_target{{"NRHookPoint", 2u}, {"NRFollowInputRes", false},
+                                {"NRResolutionScale", 0.5f}, {"NRLookUpsample", 3u}};
+      for (const auto& [key, value] : quality_target.items()) {
+        const auto* rule = presets::FindRule(key);
+        Check(rule != nullptr && rule->category == Category::QUALITY,
+              ("Explicit Quality classification: " + key).c_str());
+      }
+      Check(presets::FindRule("NRStyle")->category == Category::QUALITY, "Style remains Quality.");
+      for (const auto key : {"NRPresentEncoding", "NRCodecMode", "NRPresentHdrPedestalPolicy", "NRDepthMode",
+                             "NRMVecScaleX", "NRMVecScaleY", "NRPresentGuides", "NRPresentFrames",
+                             "NRPresentFgSource", "NRPresentUICorrection", "NROutputRect"}) {
+        Check(presets::FindRule(key)->category == Category::COMPATIBILITY,
+              (std::string("Dedicated compatibility classification remains: ") + key).c_str());
+      }
+      for (const auto selected_scope : {presets::Scope::QUALITY, presets::Scope::QUALITY_MULTIPASS}) {
+        Check(apply(quality_baseline), "Prepare four-field Quality baseline.");
+        const auto before_quality = capture();
+        const auto before_preview = Bytes();
+        const auto before_preview_writes = writes.size();
+        const presets::Document requested{.scope = selected_scope, .settings = quality_target};
+        const auto quality_rows = adapter::Preview(requested, false);
+        for (const auto& [key, value] : quality_target.items()) {
+          Check(std::any_of(quality_rows.begin(), quality_rows.end(), [&](const auto& row) {
+            return row.key == key && row.apply && row.after == value;
+          }), ("Quality preview accepts without compatibility opt-in: " + key).c_str());
+        }
+        Check(Bytes() == before_preview && writes.size() == before_preview_writes,
+              "Four-field preview does not write configuration.");
+        Check(apply(quality_target, selected_scope, false), "Quality batch applies all four fields without compatibility opt-in.");
+        const auto captured_quality = adapter::Capture(selected_scope, {{"name", "Quality fields"}});
+        std::string quality_error;
+        const auto quality_path = fixture_root / "quality-fields.nrnexus.json";
+        presets::Document reloaded_quality;
+        Check(presets::WriteFile(quality_path, captured_quality, true, &quality_error)
+                  && presets::ReadFile(quality_path, &reloaded_quality, &quality_error)
+                  && reloaded_quality.settings == captured_quality.settings,
+              "Quality capture survives production preset file save/reload.");
+        runtime::LoadConfiguration();
+        for (const auto& [key, value] : quality_target.items()) {
+          Check(captured_quality.settings.contains(key) && captured_quality.settings[key] == value
+                    && adapter::ReadSetting(key) == value,
+                ("Quality capture and INI reload preserve field: " + key).c_str());
+        }
+        Check(adapter::Undo(&quality_error), "Undo four-field Quality batch after configuration reload.");
+        for (const auto& [key, value] : quality_baseline.items()) {
+          Check(adapter::ReadSetting(key) == value, ("Quality undo restores field: " + key).c_str());
+        }
+        Check(adapter::Apply(reloaded_quality, false, true, &quality_error), "Apply reloaded Quality preset without compatibility opt-in.");
+        for (const auto& [key, value] : before_quality.settings.items()) {
+          if (const auto* rule = presets::FindRule(key);
+              rule->category == Category::COMPATIBILITY || rule->category == Category::GENERAL) {
+            Check(!captured_quality.settings.contains(key) && adapter::ReadSetting(key) == value,
+                  ("Quality file and apply isolate compatibility/general field: " + key).c_str());
+          }
+        }
+        const auto isolated_before = capture();
+        const auto isolated_writes = writes.size();
+        const Json dedicated{{"NRPresentEncoding", 3u}, {"NRDepthMode", 2u}, {"NRMVecScaleX", -1.f},
+                             {"NRPresentFgSource", 2u}, {"NRPresentUICorrection", false},
+                             {"UiMode", "classic"}, {"NRToggleKey", 0x70u},
+                             {"NRPasses", 4u}, {"NRPass4Preset", 2u}};
+        const presets::Document isolated_request{.scope = presets::Scope::QUALITY, .settings = dedicated};
+        const auto isolated_rows = adapter::Preview(isolated_request, true);
+        for (const auto& [key, value] : dedicated.items()) {
+          Check(std::any_of(isolated_rows.begin(), isolated_rows.end(), [&](const auto& row) {
+            return row.key == key && !row.apply && std::string_view(row.status) == "Skipped (outside scope)";
+          }), ("Quality preview rejects dedicated field even with opt-in: " + key).c_str());
+        }
+        Check(adapter::Apply(isolated_request, true, true, &quality_error)
+                  && capture().settings == isolated_before.settings && writes.size() == isolated_writes,
+              "Quality cannot import dedicated compatibility, UI, keys or multipass fields.");
+
+        // Schema v1 predates the expanded Quality field set; absent keys stay local.
+        Check(apply({{"NRPreset", 3u}, {"NRPasses", 2u}, {"NRPass2Preset", 2u}}), "Prepare legacy model requests.");
+        presets::Document old_v1;
+        Check(presets::Parse(presets::Serialize({.scope = selected_scope,
+                    .settings = {{"NRStyle", 1u}, {"NRPreset", 3u}, {"NRPasses", 2u}, {"NRPass2Preset", 2u}}}), &old_v1),
+              "Read schema v1 Quality preset without the four new fields.");
+        const auto old_v1_rows = adapter::Preview(old_v1, false);
+        for (const auto& [key, value] : quality_target.items()) {
+          Check(!old_v1.settings.contains(key)
+                    && std::any_of(old_v1_rows.begin(), old_v1_rows.end(), [&](const auto& row) {
+                      return row.key == key && !row.apply && row.before == value;
+                    }), ("Missing v1 field previews current value without applying: " + key).c_str());
+        }
+        const auto legacy_writes = writes.size();
+        Check(adapter::Apply(old_v1, false, true, &quality_error), "Apply old v1 with missing Quality fields.");
+        runtime::LoadConfiguration();
+        for (const auto& [key, value] : quality_target.items()) {
+          Check(adapter::ReadSetting(key) == value, ("Missing v1 Quality field stays unchanged: " + key).c_str());
+        }
+        Check(model::ResolvePreset(3, 0, true) == 1 && model::ResolvePreset(3, 2, false) == 1
+                  && adapter::ReadSetting("NRPreset") == 3 && adapter::ReadSetting("NRPass2Preset") == 2
+                  && Read("NRPreset") == "3" && Read("NRPass2Preset") == "2",
+              "Old v1 preserves historical model and unsupported request instead of writing runtime fallback.");
+        Check(std::none_of(writes.begin() + legacy_writes, writes.end(), [&](const auto& event) {
+          return quality_target.contains(event.key) || event.key == "NRPreset" || event.key == "NRPass2Preset";
+        }), "Missing v1 fields and unchanged raw model requests are never rewritten.");
+      }
+      Check(apply(quality_original.settings), "Restore configuration after four-field Quality regression.");
+      const auto saved_passes = runtime::stack_passes.load();
+      Check(apply({{"NRPasses", 1u}}), "Prepare multipass expansion preview.");
+      const auto floating_passes = adapter::Preview({.scope = presets::Scope::QUALITY_MULTIPASS,
+          .settings = {{"NRPasses", 4.0}, {"NRPass4Intensity", 0.93f}}}, true);
+      Check(std::any_of(floating_passes.begin(), floating_passes.end(), [](const auto& row) {
+        return row.key == "NRPass4Intensity" && row.apply;
+      }), "Integral floating pass count uses imported count when previewing active pass fields.");
+      Check(apply({{"NRPasses", saved_passes}}), "Restore original pass count.");
+      Json excluded = Json::object();
+      for (const auto& rule : presets::FieldRules()) {
+        if (rule.category == Category::EXCLUDED) {
+          excluded[rule.key] = "must remain inert";
+        }
+      }
+      const auto excluded_ini = Bytes();
+      const auto excluded_writes = writes.size();
+      const auto excluded_runtime = capture();
+      Check(apply(excluded) && Bytes() == excluded_ini && writes.size() == excluded_writes
+                && capture().settings == excluded_runtime.settings, "Every excluded field is forbidden on import, including full scope.");
+      const auto explicit_scope = Read(SCOPE_KEY);
+      const auto explicit_scope_version = Read(VERSION_KEY);
+      // A missing version keeps a real inherited, writable configuration; a
+      // completely absent pair is initialized by the existing v8 load migration.
+      WritePrivateProfileStringA(runtime::kConfigSection, VERSION_KEY, nullptr, ini_path.c_str());
+      runtime::LoadConfiguration();
+      const auto inherited_ini = Bytes();
+      const auto inherited_writes = writes.size();
+      Check(Configuration().inherited && !capture().settings.contains(SCOPE_KEY), "Full capture omits inherited restore scope.");
+      Check(Bytes() == inherited_ini && writes.size() == inherited_writes, "Inherited scope capture does not stamp explicit keys.");
+      std::string scope_undo_error;
+      const auto inherited_configuration = Configuration();
+      for (const uint32_t explicit_value : {0u, 1u}) {
+        Check(apply({{SCOPE_KEY, explicit_value}}) && !Configuration().inherited,
+              "Explicit scope import replaces inherited state even when its numeric value is unchanged.");
+        if (explicit_value == 0) {
+          const auto undo_failure_ini = Bytes();
+          failed_key = VERSION_KEY;
+          Check(!adapter::Undo(&scope_undo_error), "Scope Undo verifies failed deletion of its version key.");
+          failed_key.clear();
+          Check(Bytes() == undo_failure_ini && !Configuration().inherited
+                    && Configuration().scope == scope::Scope::FINAL_PRESENT_ONLY && !adapter::undo.empty(),
+                "Failed scope Undo restores disk and retains the runtime state and retry snapshot.");
+        }
+        Check(adapter::Undo(&scope_undo_error) && Configuration().inherited && Read(SCOPE_KEY) == explicit_scope
+                  && Read(VERSION_KEY) == "<absent>" && Configuration().source == inherited_configuration.source
+                  && Configuration().reason == inherited_configuration.reason,
+              "Undo restores inherited scope, source and original incomplete key pair.");
+        const auto inherited_decision = scope::Decide(Configuration(), scope::Domain::PRE_FG_HUDLESS);
+        Check(inherited_decision.sdr_policy && !inherited_decision.hdr_policy,
+              "Restored inherited scope retains Pre-FG SDR-only semantics.");
+      }
+      Check(apply({{SCOPE_KEY, 1u}}) && runtime::SavePresentRestoreScope(scope::Scope::FINAL_PRESENT_ONLY),
+            "Manually change scope after an inherited-scope import.");
+      Check(adapter::Undo(&scope_undo_error) && !Configuration().inherited && Read(SCOPE_KEY) == "0" && Read(VERSION_KEY) == "1",
+            "Scope Undo preserves a later explicit manual choice.");
+      WritePrivateProfileStringA(runtime::kConfigSection, SCOPE_KEY, explicit_scope.c_str(), ini_path.c_str());
+      WritePrivateProfileStringA(runtime::kConfigSection, VERSION_KEY, explicit_scope_version.c_str(), ini_path.c_str());
+      runtime::LoadConfiguration();
+      const auto kept = capture();
+      const auto skipped_sdr = adapter::ReadSetting("NRPresentSdrRestorePolicy");
+      const auto skipped_debug = adapter::ReadSetting("NRDebugBypassSdrRestore");
+      const auto unknown_before = Read("UnregisteredPersistentKnob");
+      Check(apply({{"NRIntensity", 0.8}, {"FutureUnknownSetting", 17}, {"NRDebugBypassSdrRestore", false},
+                   {"NRPresentSdrRestorePolicy", 4u}}, presets::Scope::QUALITY), "Apply quality with unknown/excluded/out-of-scope data.");
+      Check(adapter::ReadSetting("NRPresentSdrRestorePolicy") == skipped_sdr
+                && adapter::ReadSetting("NRDebugBypassSdrRestore") == skipped_debug
+                && Read("FutureUnknownSetting") == "<absent>" && Read("UnregisteredPersistentKnob") == unknown_before,
+            "Unknown, excluded and out-of-scope keys never write.");
+      for (const auto& [key, value] : kept.settings.items()) {
+        if (key != "NRIntensity") {
+          Check(adapter::ReadSetting(key) == value, ("Missing key remains unchanged: " + key).c_str());
+        }
+      }
+      auto rows = adapter::Preview({.scope = presets::Scope::FULL, .settings = {{"FutureUnknownSetting", true}}}, false);
+      Check(std::any_of(rows.begin(), rows.end(), [](const auto& row) {
+        return row.key == "FutureUnknownSetting" && !row.apply && std::string_view(row.status) == "Unsupported";
+      }), "Preview explains unsupported setting.");
+      const auto compatibility_before = adapter::ReadSetting("NRPresentWhiteNits");
+      Check(apply({{"NRPresentWhiteNits", 321.f}}, presets::Scope::FULL, false)
+                && adapter::ReadSetting("NRPresentWhiteNits") == compatibility_before, "Compatibility requires opt-in.");
+      const auto saved = capture();
+      const auto defaults_generation = runtime::configuration_generation.load();
+      const auto defaults_epoch = runtime::history_reset_epoch.load();
+      const auto defaults_bytes = Bytes();
+      const auto defaults_writes = writes.size();
+      const auto exported = capture();
+      Check(exported.settings == saved.settings, "Export reads the actual current user snapshot.");
+      Check(defaults_generation == runtime::configuration_generation.load() && defaults_epoch == runtime::history_reset_epoch.load()
+                && defaults_bytes == Bytes() && defaults_writes == writes.size(), "Snapshot export has no write/recreate/history side effects.");
+      std::string error;
+      for (const uint32_t main_model : {1u, 2u}) {
+        for (const uint32_t pass_model : {1u, 2u}) {
+          for (uint32_t passes = 1; passes <= 4; ++passes) {
+            Check(apply({{"NRPreset", main_model}, {"NRPasses", passes}, {"NRLookMode", true}, {"NRLookStrength", 1.25f},
+                         {"NRDetailStability", 1u}, {"NRPass2Preset", pass_model}, {"NRPass3Preset", pass_model},
+                         {"NRPass4Preset", pass_model}, {"NRPass2FollowPass1", true},
+                         {"NRPass2LookFollowPass1", true}, {"NRPass3LookFollowPass1", true}, {"NRPass4LookFollowPass1", true}}),
+                  "A/A A/B B/A B/B batch applies for passes 1-4.");
+            const auto document = adapter::Capture(presets::Scope::QUALITY_MULTIPASS, {});
+            const auto result = runtime::LookSettingsSnapshots(false);
+            for (uint32_t pass = 1; pass < 4; ++pass) {
+              const std::string prefix = "NRPass" + std::to_string(pass + 1);
+              Check(document.settings.contains(prefix + "Preset") == (pass < passes), "Multipass captures only active passes.");
+              Check(model::ResolvePreset(runtime::preset.load(), runtime::pass_preset[pass - 1].load(), true) == pass_model,
+                    "Appearance inheritance leaves explicit model selection intact.");
+              Check(result[pass].strength == result[0].strength && result[pass].strength == 1.25f,
+                    "Result inheritance resolves the main snapshot.");
+            }
+          }
+        }
+      }
+      for (unsigned pass = 2; pass <= 4; ++pass) {
+        const auto prefix = "NRPass" + std::to_string(pass);
+        const float custom = 0.1f * pass;
+        Check(apply({{prefix + "LookFollowPass1", false}, {prefix + "LookMode", true},
+                     {prefix + "LookStrength", custom}, {prefix + "DetailStability", 1u}}), "Apply independent pass result.");
+        Check(runtime::LookSettingsSnapshots(false)[pass - 1].strength == custom, "Custom pass result resolves independently.");
+        Check(apply({{prefix + "LookFollowPass1", true}})
+                  && runtime::LookSettingsSnapshots(false)[pass - 1].strength == 1.25f
+                  && adapter::ReadSetting(prefix + "LookStrength") == custom, "Result inheritance retains saved custom value.");
+      }
+      Check(apply({{"NRPasses", 1u}, {"NRPass4LookFollowPass1", false}, {"NRPass4LookStrength", 0.42f}}), "Prepare inactive custom pass 4.");
+      const auto full = capture();
+      Check(full.settings["NRPass4LookStrength"] == 0.42f && full.settings["NRPass4LookFollowPass1"] == false,
+            "Full export retains inactive pass 4 customization.");
+      presets::Document decoded;
+      Check(presets::Parse(presets::Serialize(full), &decoded) && decoded.settings == full.settings, "Full preset codec round trip.");
+      Check(apply({{"NRPreset", 3u}, {"NRPass2Preset", 2u}}), "Apply raw legacy model 3 and unsupported B.");
+      const auto legacy = capture();
+      Check(presets::Parse(presets::Serialize(legacy), &decoded) && decoded.settings["NRPreset"] == 3
+                && decoded.settings["NRPass2Preset"] == 2, "Legacy 3 and B round-trip without runtime fallback rewriting.");
+      Check(model::ResolvePreset(3, 0, true) == 1 && model::ResolvePreset(1, 2, false) == 1
+                && Read("NRPreset") == "3" && Read("NRPass2Preset") == "2", "Unsupported runtime fallback preserves original disk choices.");
+      auto generation = runtime::configuration_generation.load();
+      auto history = runtime::history_reset_epoch.load();
+      Check(apply({{"NRPreset", 1u}, {"NRPasses", 3u}, {"NRPass2Preset", 1u}, {"NRStyle", 1u}, {"NRIntensity", 0.9f}}),
+            "Batch combines multiple recreate and history effects.");
+      Check(runtime::configuration_generation.load() == generation + 1 && runtime::history_reset_epoch.load() == history + 1,
+            "One batch increments recreate generation and merged history reset exactly once.");
+      generation = runtime::configuration_generation.load();
+      history = runtime::history_reset_epoch.load();
+      Check(apply({{"NRIntensity", 0.7f}, {"NRStyle", 2u}, {"NRLocalTone", 0.8f}}), "History-only batch applies.");
+      Check(runtime::configuration_generation.load() == generation && runtime::history_reset_epoch.load() == history + 1,
+            "History-only changes merge without recreating features.");
+      history = runtime::history_reset_epoch.load();
+      Check(apply({{"UiTheme", ui::GetTheme(ui::ThemeId::FLUENT_LIGHT).slug}, {"UiMode", "classic"}, {"UiLanguage", "auto"}}),
+            "Ordinary settings apply.");
+      Check(runtime::configuration_generation.load() == generation && runtime::history_reset_epoch.load() == history,
+            "Ordinary settings cause zero recreate/history requests.");
+      const auto invalid_before = Bytes();
+      const auto invalid_writes = writes.size();
+      Check(!adapter::Apply({.scope = presets::Scope::FULL, .settings = {{"NRIntensity", 99}, {"NRPreset", 2u}}},
+                            true, true, &error), "Invalid batch is rejected as a whole.");
+      adapter::rows = adapter::Preview({.scope = presets::Scope::FULL, .settings = {{"NRIntensity", 0.2f}}}, true);
+      adapter::have_preview = true;
+      adapter::have_preview = false;
+      adapter::rows.clear();
+      Check(Bytes() == invalid_before && writes.size() == invalid_writes
+                && runtime::configuration_generation.load() == generation, "Invalid batch and cancelled preview do not write or recreate.");
+      const auto rollback_runtime = capture();
+      const auto rollback_ini = Bytes();
+      generation = runtime::configuration_generation.load();
+      history = runtime::history_reset_epoch.load();
+      failed_key = "NRIntensity";
+      Check(!adapter::Apply({.scope = presets::Scope::FULL, .settings = {{"NRIntensity", 0.25f}, {"NRPreset", 2u}}},
+                            true, true, &error), "Injected ReShade write failure rejects batch.");
+      Check(WasWritten("NRIntensity") && error.find("restored") != std::string::npos, "Failure injection reached writer and verified rollback.");
+      failed_key.clear();
+      Check(Bytes() == rollback_ini && capture().settings == rollback_runtime.settings
+                && runtime::configuration_generation.load() == generation && runtime::history_reset_epoch.load() == history,
+            "Failed write restores disk and leaves runtime/effects unpublished.");
+      for (const auto version_key : {"ConfigVersion", "NRPresentSdrRestoreConfigVersion",
+                                     "NRPresentHdrPedestalConfigVersion", "NRPresentRestoreScopeConfigVersion"}) {
+        const auto restore_bytes = Bytes();
+        WritePrivateProfileStringA(runtime::kConfigSection, version_key, "99", ini_path.c_str());
+        runtime::LoadConfiguration();
+        const auto read_only_ini = Bytes();
+        const auto read_only_runtime = capture();
+        const auto read_only_writes = writes.size();
+        Json settings{{"NRIntensity", 0.3f}};
+        if (std::string_view(version_key) == "NRPresentSdrRestoreConfigVersion") {
+          settings["NRPresentSdrRestorePolicy"] = (adapter::ReadSetting("NRPresentSdrRestorePolicy") == 0 ? 1u : 0u);
+        }
+        if (std::string_view(version_key) == "NRPresentHdrPedestalConfigVersion") {
+          settings["NRPresentHdrPedestalPolicy"] = (adapter::ReadSetting("NRPresentHdrPedestalPolicy") == 0 ? 1u : 0u);
+        }
+        if (std::string_view(version_key) == "NRPresentRestoreScopeConfigVersion") {
+          settings["NRPresentRestoreScope"] = (adapter::ReadSetting("NRPresentRestoreScope") == 0 ? 1u : 0u);
+        }
+        Check(!adapter::Apply({.scope = presets::Scope::FULL, .settings = settings}, true, true, &error),
+              "Future global/SDR/HDR/scope schema prevents affected batch.");
+        Check(Bytes() == read_only_ini && writes.size() == read_only_writes && capture().settings == read_only_runtime.settings,
+              "Future schemas remain read-only on disk and in memory.");
+        {
+          std::ofstream restore(ini_path, std::ios::binary | std::ios::trunc);
+          restore << restore_bytes;
+        }
+        runtime::LoadConfiguration();
+      }
+      Check(apply({{"NRIntensity", 0.6f}, {"NRStyle", 0u}}), "Prepare undo baseline.");
+      Check(apply({{"NRIntensity", 1.1f}, {"NRStyle", 1u}}), "Remember imported changes for Undo.");
+      runtime::kSetIntensity.Commit(0.95f);
+      Check(adapter::Undo(&error), "Undo applies through production batch writer.");
+      Check(runtime::intensity.load() == 0.95f && runtime::style.load() == 0u,
+            "Undo restores import but preserves later manual edits.");
+      std::map<std::string, std::optional<std::string>> startup_backup;
+      for (const auto key : {"EnableHooks", "DX11Source", "ForeignNr"}) {
+        startup_backup[key] = runtime::ReadPresentRestoreRaw(key);
+        WritePrivateProfileStringA(runtime::kConfigSection, key, nullptr, ini_path.c_str());
+      }
+      runtime::LoadConfiguration();
+      generation = runtime::configuration_generation.load();
+      history = runtime::history_reset_epoch.load();
+      const auto hooks_before = runtime::hooks_enabled.load();
+      const auto streamline_before = runtime::streamline_hooks_enabled.load();
+      const auto source_before = runtime::dx11_source.load();
+      const auto foreign_before = runtime::foreign_nr_yield.load();
+      const auto absent_capture = capture();
+      Check(!absent_capture.settings.contains("EnableHooks") && !absent_capture.settings.contains("DX11Source")
+                && !absent_capture.settings.contains("ForeignNr"), "Missing startup keys stay nullable in full capture.");
+      Check(apply({{"EnableHooks", 0u}, {"DX11Source", "foreign"}, {"ForeignNr", "observe"}}),
+            "Startup values import into a game without explicit keys.");
+      Check(Read("EnableHooks") == "0" && Read("DX11Source") == "foreign" && Read("ForeignNr") == "observe",
+            "Startup import persists explicit choices.");
+      Check(runtime::hooks_enabled.load() == hooks_before && runtime::streamline_hooks_enabled.load() == streamline_before
+                && runtime::dx11_source.load() == source_before && runtime::foreign_nr_yield.load() == foreign_before
+                && runtime::configuration_generation.load() == generation && runtime::history_reset_epoch.load() == history,
+            "Startup choices require restart and do not pretend to hot-switch runtime hooks/policy.");
+      Check(adapter::Undo(&error) && Read("EnableHooks") == "<absent>" && Read("DX11Source") == "<absent>"
+                && Read("ForeignNr") == "<absent>", "Undo restores missing startup keys without stamping auto/default.");
+      runtime::LoadConfiguration();
+      Check(!capture().settings.contains("EnableHooks") && !capture().settings.contains("DX11Source")
+                && !capture().settings.contains("ForeignNr"), "Startup key absence survives reload and capture.");
+      for (const auto& [key, value] : startup_backup) {
+        WritePrivateProfileStringA(runtime::kConfigSection, key.c_str(), (value ? value->c_str() : nullptr), ini_path.c_str());
+      }
+      runtime::LoadConfiguration();
+      const auto persisted = capture();
+      const auto saved_local_size = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
+      std::wstring saved_local(saved_local_size, L'\0');
+      if (saved_local_size != 0) {
+        const auto saved_length = GetEnvironmentVariableW(L"LOCALAPPDATA", saved_local.data(), saved_local_size);
+        saved_local.resize(saved_length);
+      }
+      runtime::LoadConfiguration();
+      Check(capture().settings == persisted.settings, "Imported and manually edited values survive reload.");
+      const auto game_one_bytes = Bytes();
+      const auto local = fixture_root / "local-appdata";
+      Check(SetEnvironmentVariableW(L"LOCALAPPDATA", local.c_str()) != 0, "Controlled shared preset environment.");
+      std::filesystem::path library_one;
+      Check(presets::LibraryPath(&library_one, &error), "Resolve game one shared library.");
+      Check(presets::WriteFile(library_one / L"shared.nrnexus.json", persisted, false, &error), "Save shared preset from game one.");
+      base_directory = fixture_root / "game-two";
+      std::filesystem::create_directory(base_directory);
+      ini_path = (base_directory / "ReShade.ini").string();
+      {
+        std::ofstream fixture(ini_path, std::ios::binary);
+        fixture << "[GENERAL]\r\nPresetPath=game-two.ini\r\n[OTHER.ADDON]\r\nPersistent=29\r\n"
+                   "[RenoDX.DLSS5]\r\n" << current_global << policy_keys
+                << "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\nNRIntensity=0.1\r\n";
+      }
+      runtime::LoadConfiguration();
+      std::filesystem::path library_two;
+      Check(presets::LibraryPath(&library_two, &error) && library_two == library_one, "Separate game INIs share one preset library.");
+      Check(presets::ReadFile(library_two / L"shared.nrnexus.json", &decoded, &error)
+                && adapter::Apply(decoded, true, true, &error), "Game two reads and applies game one's preset.");
+      Check(runtime::intensity.load() == 0.95f && Read("NRIntensity") != "0.1", "Game two writes only its selected INI.");
+      const auto game_two_bytes = Bytes();
+      Check(game_two_bytes.find("Persistent=29") != std::string::npos && game_two_bytes.find("PresetPath=game-two.ini") != std::string::npos,
+            "Game two unrelated sections remain intact.");
+      base_directory = fixture_root;
+      ini_path = fixture_ini;
+      Check(Bytes() == game_one_bytes, "Game two import never writes game one's INI.");
+      runtime::LoadConfiguration();
+      Check(capture().settings == persisted.settings && Read("UnregisteredPersistentKnob") == "42",
+            "Game one reload preserves its own values and unrelated add-on keys.");
+      Check(Bytes().find("Persistent=17") != std::string::npos && Bytes().find("PresetPath=other.ini") != std::string::npos,
+            "Game one other sections remain intact.");
+      Check(non_global_calls == 0, "All preset writes use global ReShade boundary for the current game.");
+      SetEnvironmentVariableW(L"LOCALAPPDATA", (saved_local_size == 0 ? nullptr : saved_local.c_str()));
+      std::ofstream receipt("presets.write-events.tsv");
+      for (const auto& event : writes) {
+        receipt << event.key << '\t' << event.value << '\t' << event.stored << '\n';
+      }
+      std::cout << "case=presets reads=" << reads << " writes=" << writes.size() << '\n'
+                << checks << " checks, " << failures << " failures\n";
+      return (failures == 0 ? 0 : 1);
+    }
+    if (test_case.starts_with("nr-stage-")) {
+      const bool explicit_stage = test_case == "nr-stage-explicit";
+      Check(runtime::pass_stage[0] == (explicit_stage ? 2u : 0u)
+                && runtime::pass_stage[1] == 0u && runtime::pass_stage[2] == (explicit_stage ? 3u : 0u),
+            "Missing and invalid stages inherit; explicit stages load unchanged.");
+      Check(runtime::hook_point == runtime::kHookRender && runtime::preset == 1
+                && runtime::pass_preset[0] == 2 && runtime::pass_follow[0] && runtime::pass_look_result[0].follow,
+            "Stage load preserves hook/model/Look/result choices.");
+      for (uint32_t pass = 0; pass < 3; ++pass) {
+        const auto generation = runtime::configuration_generation.load();
+        const auto setting = runtime::kSetPassStage[pass];
+        setting.Commit(1.f);
+        Check(runtime::configuration_generation.load() == generation + 1, "Stage commit requests feature recreation.");
+        Check(Read(setting.key) == "1", "Stage commit persists raw selection.");
+        setting.Commit(0.f);
+        Check(Read(setting.key) == "0", "Stage reset persists inheritance.");
+      }
+      runtime::PersistConfig();
+    }
     if (test_case.starts_with("nr-model-")) {
       namespace model = renodx::addons::dlss5::nr_model;
       Check(model::SupportsSmallModel(310, 9, 16, 0), "identified 310.9.16 supports B");
@@ -418,12 +1108,7 @@ int main(int argc, char** argv) {
         runtime::LoadConfiguration();
         Check(runtime::LookSettingsSnapshots(false)[1].strength == 0.4f,
               "independent result values survive a configuration reload");
-        runtime::SetDefaultsView(true);
-        Check(runtime::pass_look_result[0].follow.load(), "Built-in effect temporarily restores inherited results");
-        runtime::SetDefaultsView(false);
-        Check(!runtime::pass_look_result[0].follow.load() && runtime::LookSettingsSnapshots(false)[1].strength == 0.4f,
-              "Mine restores independent result values and inheritance");
-        runtime::ResetSettings({runtime::kPassLookResultSettings});
+          runtime::ResetSettings({runtime::kPassLookResultSettings});
         Check(runtime::pass_look_result[0].follow.load() && runtime::pass_look_result[0].strength.load() == 1.f,
               "result reset restores inheritance and stored defaults");
       } else {
@@ -495,11 +1180,29 @@ int main(int argc, char** argv) {
                 && runtime::debug_bypass_sdr_restore.load() && runtime::debug_bypass_hdr_pedestal.load(),
             "reset starts from explicit diagnostic choices");
       Check(runtime::features.empty(), "reset host has no GPU features to release");
-      const auto generation = runtime::configuration_generation.load();
+      namespace profile = runtime::profile_ui;
+      namespace data = renodx::addons::dlss5::profiles;
+      profile::loaded = profile::writable = true;
+      profile::dirty = profile::save_failed = false;
+      profile::active = -1;
+      profile::game_id = std::string(32, 'a');
+      profile::storage_path = base_directory / "reset-profiles" / "slots.json";
+      std::filesystem::create_directories(profile::storage_path.parent_path());
+      profile::state = data::EmptyState(std::string(64, 'a'));
+      profile::defaults_snapshot = profile::Snapshot(true);
+      profile::observed_snapshot = profile::Snapshot();
+      profile::observed_epoch = runtime::profile_commit_epoch.load();
+      profile::observed_reload_epoch = runtime::profile_reload_epoch.load();
       writes.clear();
-      runtime::ResetToDefaults(nullptr);
-      Check(runtime::configuration_generation.load() == generation + 1,
-            "real ResetToDefaults executed real RecreateFeatures");
+      profile::Initialize();
+      profile::RequestReset(3);
+      const auto deadline = GetTickCount64() + 10000;
+      while (profile::Resetting() || profile::Busy()) {
+        profile::Tick();
+        if (GetTickCount64() > deadline) throw std::runtime_error("Reset did not settle.");
+        Sleep(1);
+      }
+      Check(!profile::save_failed && profile::active == -1, "asynchronous reset completes with detached profiles");
       CheckPair("1");
       Check(!Configuration().inherited && Configuration().scope == scope::Scope::FINAL_PRESENT_AND_PRE_FG,
             "reset publishes explicit scope1");
@@ -507,12 +1210,14 @@ int main(int argc, char** argv) {
             "reset persists SDR Off and HDR Off");
       Check(Read("NRDebugBypassSdrRestore") == "0" && Read("NRDebugBypassHdrPedestal") == "0",
             "reset persists false restore bypass flags");
-      Check(Read("ConfigVersion") == "8" && WasWritten("ConfigVersion"), "reset persists schema8");
+      Check(Read("ConfigVersion") == "8", "reset preserves the current schema8 stamp");
       for (const auto& event : writes) {
         if (event.key == "ConfigVersion") Check(event.pair_present_at_global, "reset verifies restore defaults before stamp");
       }
       Check(Read("UnregisteredPersistentKnob") == "42", "reset preserves unregistered key");
-    } else if (test_case.starts_with("nr-model-") || test_case.starts_with("pass-result-")) {
+    } else if (test_case.starts_with("nr-model-") || test_case.starts_with("nr-stage-") || test_case.starts_with("pass-result-")
+               || test_case.starts_with("nr-resolution-") || test_case == "profiles" || test_case == "capability-ui"
+               || test_case == "native-prefg-resolution-config") {
       CheckPair("1");
       Check(!Configuration().inherited && Configuration().scope == scope::Scope::FINAL_PRESENT_AND_PRE_FG,
             "model selection leaves explicit restore scope unchanged");

@@ -30,7 +30,7 @@
 //      games get, reading the game's NGX block through bridge::ParameterView,
 //      which answers the resource keys with the D3D12 twins;
 //   5. the queue signals the return fence; the D3D11 context waits on it on
-//      the GPU (no CPU wait anywhere) and copies the twin back over the
+//      the GPU and copies the twin back over the
 //      game's Output.
 //
 // Before upscaling (NRPreUpscale=1) the same handshake runs BEFORE real():
@@ -39,6 +39,9 @@
 // copying NR's result back into that twin, and after the GPU wait the game's
 // Color key points at the twin for the duration of real() only
 // (bridge::ScopedD3D11Redirect).  The game's DLSS then upscales NR's image.
+// A mixed Render/Upscaled chain uses both transactions and proves each
+// delivery with `done` before exposing the twin. Its bounded CPU event wait
+// prevents a watchdog rescue from feeding unfinished data into native SR.
 //
 // Both modes copy.  Redirecting the game's Output to a twin instead (probe
 // X3, "direct mode") would save one copy each way, and is not built: on an
@@ -182,6 +185,7 @@ struct Bridge {
   ID3D11Fence* fence_out11 = nullptr;
   ID3D11ComputeShader* depth_cs = nullptr;
   ID3D11ComputeShader* motion_cs = nullptr;
+  HANDLE completion_event = nullptr;
   HANDLE watchdog = nullptr;
 };
 inline Bridge bridge;
@@ -226,9 +230,29 @@ inline std::atomic_uint64_t bridge_waits{0};
 inline std::atomic_uint64_t bridge_submits{0};
 inline std::atomic_uint64_t bridge_waits11{0};
 inline std::atomic_uint64_t bridge_skew{0};
+// Mixed-stage delivery requires real completion; a watchdog rescue of `out`
+// alone must never expose an unfinished Color to the game's SR.
+inline uint64_t bridge_completion_waits = 0;
+inline uint64_t bridge_completion_wait_ns = 0;
+inline uint64_t bridge_completion_failures = 0;
+// Cumulative CPU API spans, not GPU copy durations. runtime_mutex guards
+// these alongside completion waits; telemetry deltas separate submission
+// overhead from time blocked on the already-flushed GPU dependency chain.
+struct BridgeCpuTiming {
+  uint64_t samples = 0;
+  uint64_t input_ns = 0;
+  uint64_t submit_ns = 0;
+  uint64_t completion_ns = 0;
+  uint64_t return_ns = 0;
+};
+inline std::array<BridgeCpuTiming, 2> bridge_cpu_timing;
+// A mixed transaction that withheld the D3D11 return Wait must finish before
+// any later input copy can overwrite its twins, even after a mode switch.
+inline uint64_t bridge_pending_delivery_value = 0;
 
-// One set of twins per source DLSS feature, rebuilt when the game's surfaces
-// change shape.  runtime_mutex guards the map and the retired list.
+// Two independently resident sets per source DLSS feature (Upscaled, Render),
+// rebuilt only when that stage's surfaces change shape. runtime_mutex guards
+// the map, completion counters and retired list.
 struct BridgeSurfaceSet {
   D3D11_TEXTURE2D_DESC descs[bridge::kResourceKeyCount] = {};
   bool has_exposure = false;
@@ -274,7 +298,7 @@ struct BridgeSurfaceSet {
   uint64_t bytes = 0;
   uint64_t last_value = 0;
 };
-inline std::unordered_map<const NVSDK_NGX_Handle*, BridgeSurfaceSet> bridge_sets;
+inline std::unordered_map<const NVSDK_NGX_Handle*, std::array<BridgeSurfaceSet, 2>> bridge_sets;
 
 struct BridgeRetired {
   std::vector<ID3D12Resource*> resources;
@@ -401,7 +425,7 @@ inline void RetireBridgeSet(BridgeSurfaceSet&& set) {
 inline void RetireBridgeSetLocked(const NVSDK_NGX_Handle* handle) {
   const auto found = bridge_sets.find(handle);
   if (found == bridge_sets.end()) return;
-  RetireBridgeSet(std::move(found->second));
+  for (auto& set : found->second) RetireBridgeSet(std::move(set));
   bridge_sets.erase(found);
 }
 
@@ -552,14 +576,15 @@ inline BridgeSurfaceSet* EnsureBridgeSet(const NVSDK_NGX_Handle* handle,
   }
   const bool has_exposure = textures[key(ResourceKey::kExposureTexture)] != nullptr;
   uint32_t attempts = 0;
-  if (const auto found = bridge_sets.find(handle); found != bridge_sets.end()) {
-    const BridgeSurfaceSet& set = found->second;
+  auto& resident = bridge_sets[handle][pre ? 1 : 0];
+  if (resident.descs[key(ResourceKey::kColor)].Width != 0) {
+    const BridgeSurfaceSet& set = resident;
     bool same = set.has_exposure == has_exposure && set.pre == pre;
     for (size_t i = 0; same && i < bridge::kResourceKeyCount; ++i) {
       if (i == key(ResourceKey::kExposureTexture) && !has_exposure) continue;
       same = SameSurface(set.descs[i], descs[i]);
     }
-    if (same && set.usable) return &found->second;
+    if (same && set.usable) return &resident;
     if (same && (set.retry_present == 0 || present_generation < set.retry_present)) {
       *refusal = set.retry_present == 0 ? NrDeclineReason::kBridgeFormat
                                         : NrDeclineReason::kBridgeDown;
@@ -570,9 +595,9 @@ inline BridgeSurfaceSet* EnsureBridgeSet(const NVSDK_NGX_Handle* handle,
     // A retired twin's address can be reused by the next one; the workset
     // keyed by it (the surface NR runs on) must go with it, or the new twin
     // inherits scratch dimensioned for the old shape.
-    RetireWorkset(WorksetKey{handle, set.pre ? set.color12 : set.output12});
-    RetireBridgeSet(std::move(found->second));
-    bridge_sets.erase(found);
+    RetireWorkset(WorksetKey{handle, set.pre ? set.color12 : set.output12, set.pre});
+    RetireBridgeSet(std::move(resident));
+    resident = {};
   }
 
   BridgeSurfaceSet set;
@@ -829,7 +854,7 @@ inline BridgeSurfaceSet* EnsureBridgeSet(const NVSDK_NGX_Handle* handle,
       Log(reshade::log::level::warning,
           shape + "; this shape declines as bridge_format until it changes");
     }
-    bridge_sets.emplace(handle, refused);
+    resident = refused;
     return nullptr;
   }
   for (ID3D12Resource* shared :
@@ -855,7 +880,8 @@ inline BridgeSurfaceSet* EnsureBridgeSet(const NVSDK_NGX_Handle* handle,
           + (attempts != 0 ? ", after " + std::to_string(attempts)
                                  + " failed allocation attempt(s)"
                            : ""));
-  return &bridge_sets.emplace(handle, set).first->second;
+  resident = set;
+  return &resident;
 }
 
 // ---------------------------------------------------------------------------
@@ -921,9 +947,9 @@ inline DWORD WINAPI BridgeWatchdogMain(void* raw) {
     if (now_ns - timed_since_ns <= kBridgeWatchdogNs) continue;
     // Releases every D3D11 wait up to `submitted`.  The D3D12 work itself is
     // left to finish, or the device to be removed - `done` tells which.
-    params->out->Signal(submitted);
     bridge_tripped.store(true, std::memory_order_release);
-    bridge_timeouts.fetch_add(1, std::memory_order_relaxed);
+    bridge_timeouts.fetch_add(1, std::memory_order_release);
+    params->out->Signal(submitted);
     // trip_ns[trips % kBridgeMaxTimeouts] is now the oldest of the last
     // kBridgeMaxTimeouts trips.
     trip_ns[trips++ % kBridgeMaxTimeouts] = now_ns;
@@ -1003,6 +1029,10 @@ class BridgeDeviceLock {
 // ReShade proxy goes last, flagged, so its destroy_device is not taken for
 // a D3D12 game's.
 inline void ReleaseBridgeObjects() {
+  if (bridge.completion_event != nullptr) {
+    CloseHandle(bridge.completion_event);
+    bridge.completion_event = nullptr;
+  }
   for (BridgeSlot& slot : bridge.ring) {
     ReleaseCom(slot.list);
     ReleaseCom(slot.allocator);
@@ -1146,6 +1176,11 @@ inline NrDeclineReason EnsureBridgeUp(ID3D11DeviceContext* context) {
     if (FAILED(hr = bridge.device12->CreateFence(
                    0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&bridge.fence_done12)))) {
       return "CreateFence";
+    }
+    bridge.completion_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (bridge.completion_event == nullptr) {
+      hr = HRESULT_FROM_WIN32(GetLastError());
+      return "CreateEventW (bridge completion)";
     }
     auto* params = new (std::nothrow) BridgeWatchdogParams{
         bridge.fence_in12, bridge.fence_done12, bridge.fence_out12, nullptr};
@@ -1296,8 +1331,11 @@ inline void ReleaseBridge() {
   const BridgeDeviceLock device_lock;
   {
     RuntimeLock lock(runtime_mutex);
-    for (auto& [_, set] : bridge_sets) RetireBridgeSet(std::move(set));
+    for (auto& [handle, sets] : bridge_sets) {
+      for (auto& set : sets) RetireBridgeSet(std::move(set));
+    }
     bridge_sets.clear();
+    bridge_pending_delivery_value = 0;
     // DrainBridgeQueue proved completion of every submission (Shutdown
     // releases nothing when it did not).
     DrainBridgeRetired(UINT64_MAX);
@@ -1348,14 +1386,25 @@ inline bool RunBridge(ID3D11DeviceContext* context,
                       bridge::ScopedD3D11Redirect* redirect,
                       const PresentTarget* present = nullptr) {
   using bridge::ResourceKey;
+  stage_plan::Plan plan;
+  {
+    RuntimeLock lock(runtime_mutex);
+    plan = EvaluationStagePlan(handle);
+  }
+  if (!StagePlanAdmitted(plan)) return false;
   const bool pre = redirect != nullptr;
   bool named = false;
   bool delivered = false;
+  bool completed = false;
+  bool touched = false;
+  bool issued = false;
+  bool independent_present_pair = false;
   const auto name = [&named](NrDeclineReason reason) {
     CountNrDecline(reason);
     named = true;
   };
-  const auto decline = [&named](NrDeclineReason reason, const char* why) {
+  const auto decline = [&named, &plan](NrDeclineReason reason, const char* why) {
+    if (plan.mixed) mixed_stage_terminal.decline = reason;
     DeclineBridgedEvaluate(reason, why);
     named = true;
   };
@@ -1456,6 +1505,10 @@ inline bool RunBridge(ID3D11DeviceContext* context,
                     " the bridge serves the first one");
       return;
     }
+    independent_present_pair = present != nullptr && present->d3d11_bridge && !pre
+        && !plan.mixed && plan.pass_count == 2 && plan.At(stage_plan::Stage::PRESENT).count == 2
+        && textures[at(ResourceKey::kColor)] == output && PresentResolutionPairAllowed(*present);
+    const bool strict_delivery = plan.mixed || independent_present_pair;
     const uint64_t done = bridge.fence_done12->GetCompletedValue();
     if (done == UINT64_MAX
         || bridge_device_removed.load(std::memory_order_acquire)) {
@@ -1486,6 +1539,12 @@ inline bool RunBridge(ID3D11DeviceContext* context,
       }
       bridge_tripped.store(false, std::memory_order_release);
     }
+    if (done < bridge_pending_delivery_value) {
+      decline(NrDeclineReason::kBridgeTimeout,
+              "the previous mixed-stage delivery is still on the GPU; its twins cannot be reused");
+      return;
+    }
+    bridge_pending_delivery_value = 0;
     DrainBridgeRetired(done);
     const uint64_t value =
         bridge_submitted_value.load(std::memory_order_relaxed) + 1;
@@ -1516,13 +1575,35 @@ inline bool RunBridge(ID3D11DeviceContext* context,
       return;
     }
     submission::OnCommandListReset(slot.list);
-    bool touched = false;
+    // Discard recording proofs and tracked scratch before releasing the
+    // device/runtime locks. A teardown can destroy the list after that point.
+    struct RecordingScope {
+      ID3D12GraphicsCommandList* list;
+      WorksetKey key;
+      const bool* touched;
+      const bool* issued;
+      bool strict_delivery;
+      ~RecordingScope() {
+        if (!strict_delivery || !*touched || *issued) return;
+        submission::OnCommandListReset(list);
+        RetireWorkset(key);
+        if (auto state = features.find(key.handle); state != features.end()) {
+          FeatureState* session = (key.pre_sr && state->second.render_session
+              ? state->second.render_session.get() : &state->second);
+          ReleaseAllNrSlots(*session, true);
+        }
+      }
+    };
     // Before upscaling: the pipeline left NR's result in the game's Color
     // (only on a true return; a decline leaves the game's image alone).
     bool swapped = false;
     // The twin NR runs on, and the state the pipeline reads it in: NR writes
     // the Output twin after upscaling and reads the Color twin before it.
     ID3D12Resource* const nr_twin = pre ? set->color12 : set->output12;
+    const RecordingScope recording_scope{
+        .list = slot.list,
+        .key = {handle, (independent_present_pair ? present->workset_key : nr_twin), pre},
+        .touched = &touched, .issued = &issued, .strict_delivery = strict_delivery};
     const D3D12_RESOURCE_STATES nr_twin_state =
         pre ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
             : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -1552,6 +1633,8 @@ inline bool RunBridge(ID3D11DeviceContext* context,
       if (pre) {
         PreSrSwap swap;
         swapped = ProcessInlinePreSR(slot.list, handle, &view, swap, &touched);
+        completed = evaluate_chain.render_complete;
+        if (plan.mixed && !completed) swapped = false;
         if (swapped) {
           // NR's result into the Color twin, which the game's DLSS reads.
           Transition(slot.list, set->color12, nr_twin_state,
@@ -1569,8 +1652,10 @@ inline bool RunBridge(ID3D11DeviceContext* context,
         // does, not in PRESENT.
         PresentTarget at_present = present != nullptr ? *present : PresentTarget{};
         at_present.output_state = nr_twin_state;
-        ProcessInline(slot.list, handle, &view, &touched,
-                      present != nullptr ? &at_present : nullptr);
+        at_present.d3d11_bridge = true;
+        at_present.independent_resolution_pair = independent_present_pair;
+        completed = ProcessInline(slot.list, handle, &view, &touched,
+                                  present != nullptr ? &at_present : nullptr);
       }
       RecordInjectionCpu(started_ns);
       Transition(slot.list, nr_twin, nr_twin_state, D3D12_RESOURCE_STATE_COMMON);
@@ -1590,10 +1675,17 @@ inline bool RunBridge(ID3D11DeviceContext* context,
     if (!touched) return;
     if (!closed) {
       bridge_skew.fetch_add(1, std::memory_order_relaxed);
+      if (plan.mixed) decline(NrDeclineReason::kBridgeDown, "the bridge command list could not be closed");
       return;
     }
 
     ID3D11DeviceContext4* const ctx = bridge.context11;
+    auto& cpu = bridge_cpu_timing[pre ? 1 : 0];
+    const bool measure_cpu = telemetry_seconds.load(std::memory_order_relaxed) != 0;
+    int64_t cpu_start = (measure_cpu ? SteadyNowNs() : 0);
+    if (measure_cpu) {
+      ++cpu.samples;
+    }
     ctx->CopySubresourceRegion(set->motion_convert ? set->motion_stage : set->motion11, 0, 0, 0, 0,
                                textures[at(ResourceKey::kMotionVectors)], 0, nullptr);
     if (set->exposure11 != nullptr) {
@@ -1645,14 +1737,20 @@ inline bool RunBridge(ID3D11DeviceContext* context,
     } else {
       ctx->CopySubresourceRegion(set->output11, 0, 0, 0, 0, output, 0, nullptr);
     }
+    if (measure_cpu) {
+      cpu.input_ns += SteadyNowNs() - cpu_start;
+      cpu_start = SteadyNowNs();
+    }
     if (FAILED(ctx->Signal(bridge.fence_in11, value))) {
       bridge_skew.fetch_add(1, std::memory_order_relaxed);
+      if (plan.mixed) decline(NrDeclineReason::kBridgeDown, "the D3D11 input fence signal failed");
       return;
     }
     bridge_signals.fetch_add(1, std::memory_order_relaxed);
     ctx->Flush();
     // The value is consumed from here: whatever happens, the return fence
     // must reach it, or the next D3D11 wait never returns.
+    const uint32_t timeouts_before = bridge_timeouts.load(std::memory_order_acquire);
     bool submitted = SUCCEEDED(bridge.queue->Wait(bridge.fence_in12, value));
     if (submitted && value == TestBridgeStallValue()) {
       Log(reshade::log::level::warning,
@@ -1665,6 +1763,7 @@ inline bool RunBridge(ID3D11DeviceContext* context,
       bridge_waits.fetch_add(1, std::memory_order_relaxed);
       ID3D12CommandList* const lists[] = {slot.list};
       bridge.queue->ExecuteCommandLists(1, lists);
+      issued = true;
       bridge_submits.fetch_add(1, std::memory_order_relaxed);
       submitted = SUCCEEDED(bridge.queue->Signal(bridge.fence_out12, value))
                   && SUCCEEDED(bridge.queue->Signal(bridge.fence_done12, value));
@@ -1672,6 +1771,10 @@ inline bool RunBridge(ID3D11DeviceContext* context,
     slot.value = value;
     set->last_value = value;
     bridge_submitted_value.store(value, std::memory_order_release);
+    if (strict_delivery) bridge_pending_delivery_value = value;
+    if (measure_cpu) {
+      cpu.submit_ns += SteadyNowNs() - cpu_start;
+    }
     if (!submitted) {
       bridge.fence_out12->Signal(value);
       // ExecuteCommandLists may already have issued the work before a queue
@@ -1679,10 +1782,55 @@ inline bool RunBridge(ID3D11DeviceContext* context,
       // here lets retirement free surfaces that the failed submission reaches.
       bridge_skew.fetch_add(1, std::memory_order_relaxed);
       MarkBridgeLost("a Direct3D 12 queue operation failed");
+      if (plan.mixed) decline(NrDeclineReason::kBridgeLost, "the D3D12 stage submission failed");
       return;
+    }
+    if (strict_delivery) {
+      // `out` is also a watchdog escape hatch. Only the private GPU-only
+      // done fence proves the texture can be consumed. Inputs were flushed
+      // before this wait, so completion needs no further D3D11 submission.
+      const int64_t wait_start = SteadyNowNs();
+      ++bridge_completion_waits;
+      ResetEvent(bridge.completion_event);
+      const HRESULT event_result = bridge.fence_done12->SetEventOnCompletion(value, bridge.completion_event);
+      const DWORD wait_result = (SUCCEEDED(event_result)
+          ? WaitForSingleObject(bridge.completion_event, 1000) : WAIT_FAILED);
+      const int64_t waited_ns = SteadyNowNs() - wait_start;
+      bridge_completion_wait_ns += waited_ns;
+      if (measure_cpu) {
+        cpu.completion_ns += waited_ns;
+      }
+      const uint64_t completed_value = bridge.fence_done12->GetCompletedValue();
+      if (completed_value == UINT64_MAX) {
+        ++bridge_completion_failures;
+        MarkBridgeLost("the private device was removed during stage delivery");
+        decline(NrDeclineReason::kBridgeLost, "device removed before stage delivery");
+        return;
+      }
+      if (completed_value < value || wait_result != WAIT_OBJECT_0
+          || bridge_timeouts.load(std::memory_order_acquire) != timeouts_before) {
+        ++bridge_completion_failures;
+        decline(SUCCEEDED(event_result) && wait_result != WAIT_FAILED
+                    ? NrDeclineReason::kBridgeTimeout : NrDeclineReason::kBridgeDown,
+                "the stage has no timely GPU completion proof; no result was handed to D3D11");
+        return;
+      }
+      bridge_pending_delivery_value = 0;
+      if (!completed) return;
+      if (evaluate_chain.configuration_generation != configuration_generation.load()) {
+        CountNrDecline(NrDeclineReason::kStagePredecessorIncomplete);
+        return;
+      }
+      // Options callbacks can revoke public FG Off during the completion
+      // wait. The finished private image must not acquire a new output route.
+      if (independent_present_pair && !PresentResolutionPairAllowed(*present)) return;
+    }
+    if (measure_cpu) {
+      cpu_start = SteadyNowNs();
     }
     if (FAILED(ctx->Wait(bridge.fence_out11, value))) {
       bridge_skew.fetch_add(1, std::memory_order_relaxed);
+      if (plan.mixed) decline(NrDeclineReason::kBridgeDown, "the D3D11 return fence wait failed");
       return;
     }
     bridge_waits11.fetch_add(1, std::memory_order_relaxed);
@@ -1694,10 +1842,45 @@ inline bool RunBridge(ID3D11DeviceContext* context,
       // The wait above orders the game's DLSS read of the twin after NR's
       // write; the game's own Color is never written.
       redirect->Point(parameters, NVSDK_NGX_Parameter_Color, set->color11);
-      delivered = true;
+      delivered = bridge::GetD3D11Resource(parameters, NVSDK_NGX_Parameter_Color) == set->color11;
+      if (!delivered) decline(NrDeclineReason::kBridgeDown, "the game's Color binding rejected the bridge twin");
+    }
+    if (measure_cpu) {
+      cpu.return_ns += SteadyNowNs() - cpu_start;
     }
   });
+  if (independent_present_pair && !delivered) {
+    const BridgeDeviceLock device_lock(context);
+    RuntimeLock lock(runtime_mutex);
+    if (auto state = features.find(handle); state != features.end()) {
+      for (auto& slot : state->second.slots) {
+        slot.pending_reset = true;
+        slot.pending_reset_reasons |= kResetRecovery;
+        slot.look_history.valid = false;
+      }
+    }
+  }
   if (!named) CountNrDecline(NrDeclineReason::kBridgeDown);
+  if (plan.mixed) {
+    // Zero-strength Render is a valid no-op. Any recorded stage instead
+    // requires successful submission and handoff, including partial chains.
+    const bool valid_delivery = completed && (!touched || delivered);
+    if (pre) evaluate_chain.render_complete = valid_delivery;
+    if (!valid_delivery) {
+      const BridgeDeviceLock device_lock(context);
+      RuntimeLock lock(runtime_mutex);
+      mixed_stage_terminal.injected = false;
+      if (auto state = features.find(handle); state != features.end()) {
+        for (auto* session : {&state->second, state->second.render_session.get()}) {
+          if (session == nullptr) continue;
+          for (auto& slot : session->slots) {
+            slot.pending_reset = true;
+            slot.look_history.valid = false;
+          }
+        }
+      }
+    }
+  }
   return delivered;
 }
 
@@ -1734,6 +1917,7 @@ inline NVSDK_NGX_Result Ngx11Evaluate(int slot, const char* entry,
     return real();
   };
   const EvaluateChainScope chain_scope;
+  const SourceStageScope source_scope(handle, true);
   const screenshot::EvaluationScope capture_scope;
   // Counted in `seen` from here until this evaluate names its terminal.
   const EvaluateInFlightScope in_flight(true);
@@ -1748,7 +1932,13 @@ inline NVSDK_NGX_Result Ngx11Evaluate(int slot, const char* entry,
   // frame to run: an NR-off D3D11 session maps nothing (row 23; the
   // e2e11_native control asserts it).  Outside the runtime lock, as the
   // prime requires.
-  if (nr_before_upscale.load() && enabled.load() && !NrYieldsToForeign()
+  stage_plan::Plan plan;
+  {
+    RuntimeLock lock(runtime_mutex);
+    plan = EvaluationStagePlan(handle);
+  }
+  if (plan.valid && plan.At(stage_plan::Stage::RENDER).count != 0
+      && enabled.load() && !NrYieldsToForeign()
       && handle != nullptr && parameters != nullptr) {
     // Before upscaling: the bridge names this evaluate's terminal, and the
     // game's evaluate reads NR's result through the redirected Color key
@@ -1757,7 +1947,29 @@ inline NVSDK_NGX_Result Ngx11Evaluate(int slot, const char* entry,
     PrimeNgxLoaderSymbols(nullptr);  // D3D11 route: no D3D12 device to derive identity from
     bridge::ScopedD3D11Redirect redirect;
     RunBridge(context, handle, parameters, &redirect);
-    return call_real();
+    const NVSDK_NGX_Result result = call_real();
+    redirect.Restore();
+    if (!plan.mixed) return result;
+    if (NVSDK_NGX_FAILED(result) || !evaluate_chain.render_complete
+        || evaluate_chain.configuration_generation != configuration_generation.load()) {
+      RuntimeLock lock(runtime_mutex);
+      mixed_stage_terminal.injected = false;
+      CountNrDecline(NVSDK_NGX_FAILED(result) ? NrDeclineReason::kGameEvaluateFailed
+                                            : NrDeclineReason::kStagePredecessorIncomplete);
+      if (auto state = features.find(handle); state != features.end()) {
+        for (auto* session : {&state->second, state->second.render_session.get()}) {
+          if (session == nullptr) continue;
+          for (auto& slot : session->slots) {
+            slot.pending_reset = true;
+            slot.look_history.valid = false;
+          }
+        }
+      }
+      return result;
+    }
+    PrimeNgxLoaderSymbols(nullptr);
+    RunBridge(context, handle, parameters, nullptr);
+    return result;
   }
   const NVSDK_NGX_Result result = call_real();
   if (NVSDK_NGX_FAILED(result)) {
@@ -1777,6 +1989,7 @@ inline NVSDK_NGX_Result Ngx11Evaluate(int slot, const char* entry,
     CountNrDecline(NrDeclineReason::kForeignNr);
     return result;
   }
+  if (!StagePlanAdmitted(plan)) return result;
   // The Present hook point: this evaluate lends NR its guides and NR runs at
   // the present (present_path.hpp).  When the present path cannot serve
   // (starved presents, an unusable swapchain) the bridge below runs the
@@ -2056,7 +2269,13 @@ inline std::string BridgeTelemetry() {
     release += ngx11_entry_release[s].load(std::memory_order_relaxed);
   }
   uint64_t bytes = 0;
-  for (const auto& [_, set] : bridge_sets) bytes += set.bytes;
+  size_t live_sets = 0;
+  for (const auto& [handle, sets] : bridge_sets) {
+    for (const auto& set : sets) {
+      bytes += set.bytes;
+      if (set.descs[0].Width != 0) ++live_sets;
+    }
+  }
   size_t retired = 0;
   for (const BridgeRetired& entry : bridge_retired) retired += entry.resources.size();
   const auto declines = [](NrDeclineReason reason) {
@@ -2079,7 +2298,19 @@ inline std::string BridgeTelemetry() {
       << " state=" << BridgeStateName(bridge_state.load(std::memory_order_relaxed))
       << " busy=" << declines(NrDeclineReason::kBridgeBusy)
       << " sets=" << bridge_sets_built
+      << " completion_waits=" << bridge_completion_waits
+      << " completion_wait_ms=" << bridge_completion_wait_ns / 1'000'000.0
+      << " completion_failures=" << bridge_completion_failures
       << " shared_mib=" << ((bytes + (1u << 20) - 1) >> 20) << " mode=copy]"
-      << " surfaces[live=" << bridge_sets.size() << " retired=" << retired << "]";
+      << " surfaces[live=" << live_sets << " retired=" << retired << "]";
+  for (size_t stage = 0; stage < bridge_cpu_timing.size(); ++stage) {
+    const auto& cpu = bridge_cpu_timing[stage];
+    if (cpu.samples == 0) continue;
+    out << " bridge_cpu[" << (stage == 0 ? "Upscaled" : "Render")
+        << " samples=" << cpu.samples << " input_ms=" << cpu.input_ns / 1'000'000.0
+        << " submit_ms=" << cpu.submit_ns / 1'000'000.0
+        << " completion_ms=" << cpu.completion_ns / 1'000'000.0
+        << " return_ms=" << cpu.return_ns / 1'000'000.0 << ']';
+  }
   return out.str();
 }

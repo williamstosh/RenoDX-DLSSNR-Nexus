@@ -67,7 +67,12 @@ inline constexpr float kTooltipEm = 35.f;
 
 }  // namespace tokens
 
-enum class ThemeId : std::uint8_t { CYBER_NEON, NEXUS_DARK, FLUENT_LIGHT, MIDNIGHT_OLED };
+enum class ThemeId : std::uint8_t {
+  CYBER_NEON, NEXUS_DARK, FLUENT_LIGHT, MIDNIGHT_OLED,
+  NEON_VIOLET, TACTICAL_AMBER, AURORA_GLASS,
+  CANDIDATE_NEON_VIOLET, CANDIDATE_TACTICAL_AMBER, CANDIDATE_IVORY_STUDIO,
+  CANDIDATE_CRIMSON_NOIR, CANDIDATE_AURORA_GLASS,
+};
 
 struct ThemeTokens {
   ThemeId id;
@@ -81,11 +86,14 @@ struct ThemeTokens {
   ImVec4 node_selected, node_border, connector, slider_knob, switch_knob, slider_rail;
   ImVec4 text_selection;
   float control_border_size = 0.f;
+  float control_rounding = tokens::kRadiusControl;
+  float card_rounding = tokens::kRadiusCard;
+  float row_gap = tokens::kRowGap;
 };
 
 // Immutable palettes, shared geometry. Theme changes select a table entry;
 // widgets never rebuild a palette or branch on a theme's identity.
-inline constexpr std::array<ThemeTokens, 4> kThemes = {{
+inline constexpr std::array<ThemeTokens, 7> kThemes = {{
     {.id = ThemeId::CYBER_NEON, .slug = "cyber_neon", .name = "Cyber Neon",
      .description = "Precision cyan on deep blue.",
      .bg_window = tokens::Hex(0x080F1C), .bg_card = tokens::Hex(0x121D30),
@@ -140,11 +148,115 @@ inline constexpr std::array<ThemeTokens, 4> kThemes = {{
      .connector = tokens::Hex(0xA3A3A3), .slider_knob = tokens::Hex(0xF5F5F5),
      .switch_knob = tokens::Hex(0x050505), .slider_rail = tokens::Hex(0x626262), .text_selection = tokens::Hex(0x365414),
      .control_border_size = 1.f},
+    {.id = ThemeId::NEON_VIOLET, .slug = "neon_violet", .name = "Neon Violet",
+     .description = "Magenta signal lines in a violet night control room.",
+     .bg_window = tokens::Hex(0x120D20), .bg_card = tokens::Hex(0x21142F),
+     .bg_control = tokens::Hex(0x2B1A3E), .bg_control_hover = tokens::Hex(0x3A2352),
+     .bg_control_active = tokens::Hex(0x4A2A66), .stroke = tokens::Hex(0x4C3761),
+     .text_primary = tokens::Hex(0xF4EAFB), .text_secondary = tokens::Hex(0xB9A4C7),
+     .good = tokens::Hex(0x67D6B0), .warn = tokens::Hex(0xFFC66D),
+     .bad = tokens::Hex(0xFF8C9C), .idle = tokens::Hex(0x9C87AE),
+     .accent = tokens::Hex(0xF05AC8), .accent_hover = tokens::Hex(0xFF76D7),
+     .accent_active = tokens::Hex(0xC542A2), .on_accent = tokens::Hex(0x08020B),
+     .node_selected = tokens::Hex(0x3A1D4C), .node_border = tokens::Hex(0x7D5C96),
+     .connector = tokens::Hex(0xA88FC0), .slider_knob = tokens::Hex(0xF4EAFB),
+     .switch_knob = tokens::Hex(0x1A0D20), .slider_rail = tokens::Hex(0x66477C),
+     .text_selection = tokens::Hex(0x5B2E68), .control_rounding = 8.f, .card_rounding = 12.f},
+    {.id = ThemeId::TACTICAL_AMBER, .slug = "tactical_amber", .name = "Tactical Amber",
+     .description = "Amber instrumentation over a deep field green chassis.",
+     .bg_window = tokens::Hex(0x171A16), .bg_card = tokens::Hex(0x242923),
+     .bg_control = tokens::Hex(0x2D332B), .bg_control_hover = tokens::Hex(0x394338),
+     .bg_control_active = tokens::Hex(0x465242), .stroke = tokens::Hex(0x56614F),
+     .text_primary = tokens::Hex(0xF2F0E8), .text_secondary = tokens::Hex(0xB9C0AA),
+     .good = tokens::Hex(0xA4C77A), .warn = tokens::Hex(0xF2AF4A),
+     .bad = tokens::Hex(0xF07A69), .idle = tokens::Hex(0x8E9A84),
+     .accent = tokens::Hex(0xF2AF4A), .accent_hover = tokens::Hex(0xFFC568),
+     .accent_active = tokens::Hex(0xC7892D), .on_accent = tokens::Hex(0x24190A),
+     .node_selected = tokens::Hex(0x403A22), .node_border = tokens::Hex(0x718064),
+     .connector = tokens::Hex(0xAAB59B), .slider_knob = tokens::Hex(0xFFF4D6),
+     .switch_knob = tokens::Hex(0x1B1F18), .slider_rail = tokens::Hex(0x68745D),
+     .text_selection = tokens::Hex(0x625125), .control_rounding = 3.f, .card_rounding = 7.f,
+     .row_gap = 7.f},
+    {.id = ThemeId::AURORA_GLASS, .slug = "aurora_glass", .name = "Aurora Glass",
+     .description = "Cool translucent layers with mint and blue-gray guidance.",
+     .bg_window = tokens::Hex(0x0B1B20, 0.96f), .bg_card = tokens::Hex(0x10262B, 0.96f),
+     .bg_control = tokens::Hex(0x18353A, 0.96f), .bg_control_hover = tokens::Hex(0x21474A, 0.98f),
+     .bg_control_active = tokens::Hex(0x2B5A5A, 0.98f), .stroke = tokens::Hex(0x4D7377),
+     .text_primary = tokens::Hex(0xE2F6F1), .text_secondary = tokens::Hex(0xA3C5C7),
+     .good = tokens::Hex(0x79E0BF), .warn = tokens::Hex(0xF0C36A),
+     .bad = tokens::Hex(0xF28A91), .idle = tokens::Hex(0x89AEB4),
+     .accent = tokens::Hex(0x62D9C4), .accent_hover = tokens::Hex(0x8BE9D8),
+     .accent_active = tokens::Hex(0x3BB39F), .on_accent = tokens::Hex(0x08201E),
+     .node_selected = tokens::Hex(0x174B4B), .node_border = tokens::Hex(0x719BA0),
+     .connector = tokens::Hex(0x9FC7CA), .slider_knob = tokens::Hex(0xE2F6F1),
+     .switch_knob = tokens::Hex(0x08201E), .slider_rail = tokens::Hex(0x4D7C80),
+     .text_selection = tokens::Hex(0x1E6C67), .control_rounding = 10.f, .card_rounding = 14.f,
+     .row_gap = 8.f},
+}};
+
+// Five design directions are rendered by the offline snapshot matrix. Ivory
+// Studio and Crimson Noir remain candidates until a product review promotes
+// them to the public selector; they share the same widget implementation.
+inline constexpr std::array<ThemeTokens, 5> kDesignCandidates = {{
+    {.id = ThemeId::CANDIDATE_NEON_VIOLET, .slug = "candidate_neon_violet", .name = "Neon Violet",
+     .description = "Candidate palette: magenta signal lines in a violet night control room.",
+     .bg_window = tokens::Hex(0x120D20), .bg_card = tokens::Hex(0x21142F), .bg_control = tokens::Hex(0x2B1A3E),
+     .bg_control_hover = tokens::Hex(0x3A2352), .bg_control_active = tokens::Hex(0x4A2A66), .stroke = tokens::Hex(0x4C3761),
+     .text_primary = tokens::Hex(0xF4EAFB), .text_secondary = tokens::Hex(0xB9A4C7), .good = tokens::Hex(0x67D6B0),
+     .warn = tokens::Hex(0xFFC66D), .bad = tokens::Hex(0xFF8C9C), .idle = tokens::Hex(0x9C87AE),
+     .accent = tokens::Hex(0xF05AC8), .accent_hover = tokens::Hex(0xFF76D7), .accent_active = tokens::Hex(0xC542A2),
+     .on_accent = tokens::Hex(0x08020B), .node_selected = tokens::Hex(0x3A1D4C), .node_border = tokens::Hex(0x7D5C96),
+     .connector = tokens::Hex(0xA88FC0), .slider_knob = tokens::Hex(0xF4EAFB), .switch_knob = tokens::Hex(0x1A0D20),
+     .slider_rail = tokens::Hex(0x66477C), .text_selection = tokens::Hex(0x5B2E68), .control_rounding = 8.f, .card_rounding = 12.f},
+    {.id = ThemeId::CANDIDATE_TACTICAL_AMBER, .slug = "candidate_tactical_amber", .name = "Tactical Amber",
+     .description = "Candidate palette: amber instrumentation over a deep field green chassis.",
+     .bg_window = tokens::Hex(0x171A16), .bg_card = tokens::Hex(0x242923), .bg_control = tokens::Hex(0x2D332B),
+     .bg_control_hover = tokens::Hex(0x394338), .bg_control_active = tokens::Hex(0x465242), .stroke = tokens::Hex(0x56614F),
+     .text_primary = tokens::Hex(0xF2F0E8), .text_secondary = tokens::Hex(0xB9C0AA), .good = tokens::Hex(0xA4C77A),
+     .warn = tokens::Hex(0xF2AF4A), .bad = tokens::Hex(0xF07A69), .idle = tokens::Hex(0x8E9A84),
+     .accent = tokens::Hex(0xF2AF4A), .accent_hover = tokens::Hex(0xFFC568), .accent_active = tokens::Hex(0xC7892D),
+     .on_accent = tokens::Hex(0x24190A), .node_selected = tokens::Hex(0x403A22), .node_border = tokens::Hex(0x718064),
+     .connector = tokens::Hex(0xAAB59B), .slider_knob = tokens::Hex(0xFFF4D6), .switch_knob = tokens::Hex(0x1B1F18),
+     .slider_rail = tokens::Hex(0x68745D), .text_selection = tokens::Hex(0x625125), .control_rounding = 3.f, .card_rounding = 7.f, .row_gap = 7.f},
+    {.id = ThemeId::CANDIDATE_IVORY_STUDIO, .slug = "candidate_ivory_studio", .name = "Ivory Studio",
+     .description = "Candidate palette: warm paper, clay controls and a calm studio rhythm.",
+     .bg_window = tokens::Hex(0xE9E3D7), .bg_card = tokens::Hex(0xF7F3EA), .bg_control = tokens::Hex(0xE5DDD0),
+     .bg_control_hover = tokens::Hex(0xDCD0C0), .bg_control_active = tokens::Hex(0xD1C1AE), .stroke = tokens::Hex(0xA79D90),
+     .text_primary = tokens::Hex(0x2C2A27), .text_secondary = tokens::Hex(0x625C55), .good = tokens::Hex(0x4E743A),
+     .warn = tokens::Hex(0x965B2C), .bad = tokens::Hex(0xA63A3A), .idle = tokens::Hex(0x777067),
+     .accent = tokens::Hex(0xB56B42), .accent_hover = tokens::Hex(0xC67C50), .accent_active = tokens::Hex(0x965132),
+     .on_accent = tokens::Hex(0xFFF9F0), .node_selected = tokens::Hex(0xF0E1D2), .node_border = tokens::Hex(0x9A8B7C),
+     .connector = tokens::Hex(0x786F65), .slider_knob = tokens::Hex(0xFFF9F0), .switch_knob = tokens::Hex(0x3A3029),
+     .slider_rail = tokens::Hex(0xA9907E), .text_selection = tokens::Hex(0xE0B79E), .control_rounding = 5.f, .card_rounding = 10.f, .row_gap = 8.f},
+    {.id = ThemeId::CANDIDATE_CRIMSON_NOIR, .slug = "candidate_crimson_noir", .name = "Crimson Noir",
+     .description = "Candidate palette: black, crimson and milk-white signal hierarchy.",
+     .bg_window = tokens::Hex(0x120D10), .bg_card = tokens::Hex(0x1A1115), .bg_control = tokens::Hex(0x2A1A20),
+     .bg_control_hover = tokens::Hex(0x3A2029), .bg_control_active = tokens::Hex(0x4A2732), .stroke = tokens::Hex(0x70424F),
+     .text_primary = tokens::Hex(0xFFF3F0), .text_secondary = tokens::Hex(0xC9AEB0), .good = tokens::Hex(0xA8D08D),
+     .warn = tokens::Hex(0xF4C36E), .bad = tokens::Hex(0xF06470), .idle = tokens::Hex(0x9B7C84),
+     .accent = tokens::Hex(0xE74D56), .accent_hover = tokens::Hex(0xF36B73), .accent_active = tokens::Hex(0xB93643),
+     .on_accent = tokens::Hex(0x24090E), .node_selected = tokens::Hex(0x4A1C26), .node_border = tokens::Hex(0x905361),
+     .connector = tokens::Hex(0xC18E95), .slider_knob = tokens::Hex(0xFFF3F0), .switch_knob = tokens::Hex(0x24090E),
+     .slider_rail = tokens::Hex(0x713B48), .text_selection = tokens::Hex(0x702631), .control_rounding = 2.f, .card_rounding = 6.f, .row_gap = 7.f},
+    {.id = ThemeId::CANDIDATE_AURORA_GLASS, .slug = "candidate_aurora_glass", .name = "Aurora Glass",
+     .description = "Candidate palette: cool translucent layers with mint guidance.",
+     .bg_window = tokens::Hex(0x0B1B20, 0.96f), .bg_card = tokens::Hex(0x10262B, 0.96f), .bg_control = tokens::Hex(0x18353A, 0.96f),
+     .bg_control_hover = tokens::Hex(0x21474A, 0.98f), .bg_control_active = tokens::Hex(0x2B5A5A, 0.98f), .stroke = tokens::Hex(0x4D7377),
+     .text_primary = tokens::Hex(0xE2F6F1), .text_secondary = tokens::Hex(0xA3C5C7), .good = tokens::Hex(0x79E0BF),
+     .warn = tokens::Hex(0xF0C36A), .bad = tokens::Hex(0xF28A91), .idle = tokens::Hex(0x89AEB4), .accent = tokens::Hex(0x62D9C4),
+     .accent_hover = tokens::Hex(0x8BE9D8), .accent_active = tokens::Hex(0x3BB39F), .on_accent = tokens::Hex(0x08201E),
+     .node_selected = tokens::Hex(0x174B4B), .node_border = tokens::Hex(0x719BA0), .connector = tokens::Hex(0x9FC7CA),
+     .slider_knob = tokens::Hex(0xE2F6F1), .switch_knob = tokens::Hex(0x08201E), .slider_rail = tokens::Hex(0x4D7C80),
+     .text_selection = tokens::Hex(0x1E6C67), .control_rounding = 10.f, .card_rounding = 14.f, .row_gap = 8.f},
 }};
 
 inline const ThemeTokens& GetTheme(ThemeId id) {
   const auto index = static_cast<std::size_t>(id);
-  return kThemes[index < kThemes.size() ? index : 0];
+  if (index < kThemes.size()) return kThemes[index];
+  for (const auto& candidate : kDesignCandidates) {
+    if (candidate.id == id) return candidate;
+  }
+  return kThemes[0];
 }
 static const ThemeTokens* current_theme = &kThemes[0];
 inline const ThemeTokens& CurrentTheme() { return *current_theme; }
@@ -182,6 +294,7 @@ inline float BaseFontSize() {
   return base > 0.f ? base : 13.f;
 }
 inline float TitleFontSize() { return BaseFontSize() * (15.f / 13.f); }
+inline float ModuleFontSize() { return BaseFontSize() * (14.f / 13.f); }
 inline float BodyFontSize() { return BaseFontSize(); }
 inline float SmallFontSize() { return BaseFontSize() * (12.f / 13.f); }
 
@@ -281,12 +394,12 @@ inline void PushPanelTheme(StyleScope& scope) {
       .Color(ImGuiCol_PlotHistogram, CurrentTheme().accent)
       .Color(ImGuiCol_PlotHistogramHovered, CurrentTheme().accent_hover)
       .Var(ImGuiStyleVar_DisabledAlpha, 0.65f)
-      .Var(ImGuiStyleVar_FrameRounding, kRadiusControl)
+      .Var(ImGuiStyleVar_FrameRounding, CurrentTheme().control_rounding)
       .Var(ImGuiStyleVar_FrameBorderSize, CurrentTheme().control_border_size)
       .Var(ImGuiStyleVar_GrabRounding, kRadiusSmall)
-      .Var(ImGuiStyleVar_ChildRounding, kRadiusCard)
-      .Var(ImGuiStyleVar_PopupRounding, kRadiusControl)
-      .Var(ImGuiStyleVar_ItemSpacing, ImVec2(kRowGap, kRowGap))
+      .Var(ImGuiStyleVar_ChildRounding, CurrentTheme().card_rounding)
+      .Var(ImGuiStyleVar_PopupRounding, CurrentTheme().control_rounding)
+      .Var(ImGuiStyleVar_ItemSpacing, ImVec2(CurrentTheme().row_gap, CurrentTheme().row_gap))
       .Var(ImGuiStyleVar_FramePadding, ImVec2(8.f, 4.f));
 }
 

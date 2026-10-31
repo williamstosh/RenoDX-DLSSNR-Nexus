@@ -106,11 +106,20 @@ inline std::string FormatConversions(std::string_view text) {
       ++i;
       continue;
     }
+    if (i > 0 && text[i - 1] >= '0' && text[i - 1] <= '9'
+        && i + 1 < text.size() && text[i + 1] == ' ') {
+      continue;
+    }
     const std::size_t start = i++;
     while (i < text.size()
            && std::string_view("-+ #0123456789.*hljztL").find(text[i])
                   != std::string_view::npos) {
       ++i;
+    }
+    if (i >= text.size() || std::string_view("diouxXfFeEgGaAcspn").find(text[i])
+                                == std::string_view::npos) {
+      --i;
+      continue;
     }
     out.append(text.substr(start, i + 1 - start));
     out += '|';

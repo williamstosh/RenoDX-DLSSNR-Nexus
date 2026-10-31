@@ -1,4 +1,5 @@
 param(
+    [string[]]$Case = @(),
     [string]$SourceRoot = (Split-Path $PSScriptRoot -Parent),
     [string]$HostRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) '.local/renodx'),
     [string]$ShaderIncludeDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) 'build/dlss5.include'),
@@ -47,6 +48,14 @@ try {
     $libraries = $buildInputs.Libraries
     $inputs = @($testSource, $PSCommandPath, $projectPath,
         (Join-Path $addonDirectory 'dlssnr.hpp'),
+        (Join-Path $addonDirectory 'capability.hpp'),
+        (Join-Path $addonDirectory 'stage_plan.hpp'),
+        (Join-Path $addonDirectory 'gpu_timers.hpp'),
+        (Join-Path $addonDirectory 'gpu_comparison_ui.hpp'),
+        (Join-Path $PSScriptRoot 'capability_runtime_cases.hpp'),
+        (Join-Path $PSScriptRoot 'stage_edit_runtime_cases.hpp'),
+        (Join-Path $PSScriptRoot 'stage_gpu_runtime_cases.hpp'),
+        (Join-Path $addonDirectory 'stage_edit.hpp'),
         (Join-Path $addonDirectory 'present_path.hpp'),
         (Join-Path $addonDirectory 'present_hdr_pedestal_policy.hpp'),
         (Join-Path $addonDirectory 'diagnostic_policy.hpp'),
@@ -55,6 +64,15 @@ try {
         (Join-Path $addonDirectory 'screenshot.hpp'),
         (Join-Path $addonDirectory 'd3d11_bridge.hpp'),
         (Join-Path $addonDirectory 'codec_gain.hpp'),
+        (Join-Path $addonDirectory 'preset_store.hpp'),
+        (Join-Path $addonDirectory 'preset_fields.hpp'),
+        (Join-Path $addonDirectory 'preset_runtime.hpp'),
+        (Join-Path $addonDirectory 'profile_runtime.hpp'),
+        (Join-Path $addonDirectory 'profile_store.hpp'),
+        (Join-Path $addonDirectory 'profile_templates.hpp'),
+        (Join-Path $PSScriptRoot 'profile_runtime_cases.hpp'),
+        (Join-Path $PSScriptRoot 'profile_first_install_cases.hpp'),
+        (Join-Path $PSScriptRoot 'profile_reset_cases.hpp'),
         (Join-Path $ShaderIncludeDirectory 'embed/shaders.h'))
     $hashes = @{}
     foreach ($inputPath in $inputs) {
@@ -96,6 +114,7 @@ try {
         "/DCONFIG_TEST_SCOPE_SAVE=$ScopeSaveFunction") +
         @($includes | ForEach-Object { "/I$_" }) +
         @('/c', $testSource, "/Fo$objectPath", '/sourceDependencies', $dependencyLog)
+    Register-TestCompilerOutput -Directory $OutputDirectory -ObjectPath $objectPath -ExecutablePath $executable
     & cl.exe @compileArguments *> $compileLog
     $compileExitCode = $LASTEXITCODE
     Add-RunLine "compile_exit_code=$compileExitCode"
@@ -126,7 +145,15 @@ try {
         'fail-sdr', 'fail-hdr', 'fail-bypass', 'fail-sdr-version', 'fail-hdr-version',
         'pre8-malformed-sdr-version', 'pre8-future-sdr-version', 'pre8-fail-sdr-bypass', 'v8-legacy-key', 'reset',
         'nr-model-default', 'nr-model-explicit', 'nr-model-invalid', 'nr-model-legacy',
-        'pass-result-default', 'pass-result-custom', 'pass-result-invalid')
+        'nr-stage-default', 'nr-stage-explicit', 'nr-stage-invalid',
+        'pass-result-default', 'pass-result-custom', 'pass-result-invalid', 'presets',
+        'nr-resolution-default', 'nr-resolution-explicit', 'nr-resolution-invalid', 'native-prefg-resolution-config', 'profiles', 'capability-ui')
+    if ($Case.Count) {
+        foreach ($requested in $Case) {
+            if ($requested -notin $cases) { throw "Unknown configuration case: $requested" }
+        }
+        $cases = $Case
+    }
     $totalChecks = 0
     $totalFailures = 0
     $failedCases = @()
@@ -168,6 +195,17 @@ try {
             throw "PENDING: input changed during runtime checks: $inputPath; results invalidated."
         }
     }
+    if ($cases -contains 'presets' -and $failedCases -notcontains 'presets') {
+        $inventoryPath = Join-Path $outputDirectory 'presets/preset-field-inventory.json'
+        $inventory = Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json
+        if (-not $inventory.fields.Count) { throw 'Preset field inventory is empty.' }
+        foreach ($field in $inventory.fields) {
+            foreach ($name in @('key', 'type', 'default', 'range', 'category', 'pass', 'effect', 'environment')) {
+                if ($field.PSObject.Properties.Name -notcontains $name) { throw "Missing inventory field: $name" }
+            }
+        }
+        Add-RunLine "preset_field_inventory=$inventoryPath fields=$($inventory.fields.Count)"
+    }
     Add-RunLine "check_summary=$totalChecks checks, $totalFailures failures"
     if ($failedCases.Count -gt 0 -or $totalFailures -gt 0) {
         throw "Actual configuration checks failed: $($failedCases -join ', '); $totalFailures assertion failures."
@@ -183,3 +221,4 @@ try {
     Add-RunLine "error=$($_.Exception.Message)"
     throw
 }
+Complete-TestOutput $OutputDirectory -Outcome Passed

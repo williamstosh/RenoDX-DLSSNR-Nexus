@@ -38,10 +38,12 @@
 
 #include <d3d12.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "../../utils/directx.hpp"
@@ -59,6 +61,8 @@ struct GenerationSubmission {
   bool pending = true;
   FenceRef fence;
   uint64_t value = 0;
+  uint64_t list_identity = 0;
+  uint64_t recording_generation = 0;
 };
 
 // One recording generation of one command list.
@@ -338,6 +342,8 @@ inline void CompleteSubmission(
       submission.pending = false;
       submission.fence = FenceRef(fence);
       submission.value = value;
+      submission.list_identity = reservation.list;
+      submission.recording_generation = reservation.generation;
       break;
     }
   }
@@ -416,6 +422,27 @@ inline bool ResourceReleasable(const void* resource) {
   if (resource == nullptr) return true;
   std::lock_guard<std::mutex> lock(tracker_mutex);
   return live_uses.find(resource) == live_uses.end();
+}
+
+// Identifies one recording, rather than a list that can be Reset/replayed.
+// The B1 source and its final copy must be recorded in this exact order on
+// the same recording; equal queue fence values alone cannot prove that.
+inline std::pair<uint64_t, uint64_t> RecordingIdentity(ID3D12CommandList* list) {
+  const auto identity = ListIdentity(list, true);
+  std::lock_guard lock(tracker_mutex);
+  auto& state = tracked_lists[identity];
+  return {identity, state.current};
+}
+
+inline bool OnlyRecordingUses(const void* use, std::pair<uint64_t, uint64_t> recording) {
+  std::lock_guard lock(tracker_mutex);
+  for (const auto& [identity, state] : tracked_lists) {
+    for (const auto& [generation, data] : state.generations) {
+      if ((identity != recording.first || generation != recording.second)
+          && std::ranges::find(data.uses, use) != data.uses.end()) return false;
+    }
+  }
+  return true;
 }
 
 // What a whole-session release (Shutdown) may assume about the recordings

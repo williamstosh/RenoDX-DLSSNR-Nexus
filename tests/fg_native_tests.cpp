@@ -2,8 +2,10 @@
 #include <windows.h>
 #include <d3d12sdklayers.h>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <limits>
+#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <dlssnr.hpp>
@@ -35,6 +37,8 @@ std::vector<const NVSDK_NGX_Handle*> model_evaluated_handles;
 std::vector<const NVSDK_NGX_Handle*> model_released_handles;
 uint32_t fail_call = 0;
 uint32_t next_handle = 0;
+ID3D12QueryHeap* model_execution_query = nullptr;
+ID3D12Resource* model_execution_readback = nullptr;
 std::map<const NVSDK_NGX_Handle*, uint32_t> model_create_flags;
 std::function<void()> model_ui_observer;
 constexpr auto NATIVE_INPUT_STATE = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
@@ -134,6 +138,13 @@ NVSDK_NGX_Result NVSDK_CONV EvaluateModel(ID3D12GraphicsCommandList* list, const
   list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
   native::Transition(list, output, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   model_gpu->uploads.push_back(upload);
+  if (model_execution_query != nullptr) {
+    // This lives inside the GPU stand-in body, so replay is observable even
+    // when no new NGX call or application-frame counter is recorded.
+    list->EndQuery(model_execution_query, D3D12_QUERY_TYPE_TIMESTAMP, 0);
+    list->ResolveQueryData(model_execution_query, D3D12_QUERY_TYPE_TIMESTAMP, 0, 1,
+                           model_execution_readback, 0);
+  }
   return NVSDK_NGX_Result_Success;
 }
 }  // namespace
@@ -672,7 +683,186 @@ int RunNativeRequiredMenuTest() {
   }
 }
 
+#include "stage_execution_cases.hpp"
+#include "same_stage_resolution_cases.hpp"
+#include "present_stage_resolution_cases.hpp"
+#include "native_prefg_resolution_cases.hpp"
+#include "feature_switch_cases.hpp"
+#include "present_chain_cases.hpp"
+#include "gpu_comparison_cases.hpp"
+#include "gpu_timer_cases.hpp"
+
 int main(int argc, char** argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--gpu-pass-diagnostics") == 0) return gpu_timer_cases::Run();
+  if (argc == 2 && std::strcmp(argv[1], "--native-frame-identity") == 0) {
+    try {
+      reshade::internal::get_reshade_module_handle(GetModuleHandleW(nullptr));
+      native::experimental_native_prefg_resolution.store(true);
+      const auto* handle = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xF001});
+      native::created_feature_ids[handle] = NVSDK_NGX_Feature_FrameGeneration;
+      renodx::addons::dlss5::bridge::OwnedParameters parameters;
+      for (uint32_t sample = 0; sample < 4; ++sample) {
+        if (sample != 0) std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+        parameters.Reset();
+        if (sample == 1) parameters.Set(NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID, 42ull);
+        if (sample == 2) parameters.Set(NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID, reinterpret_cast<void*>(uintptr_t{1}));
+        const auto before = captured_logs.size();
+        bool replaced = true;
+        Check(native::RunNativePreFg(nullptr, &parameters, handle, &replaced) == nullptr && !replaced,
+            "CPU identity observation never records an FG input");
+        Check(captured_logs.size() == before + 1, "changed bounded identity observation logged");
+        const auto& line = captured_logs.back().second;
+        if (sample == 0) {
+          Check(line.find("frame_id_class=unreadable_absence_or_type_unproven") != std::string::npos,
+              "getter failure is not asserted to be a definitely absent key");
+        } else if (sample == 1) {
+          Check(line.find("frame_id_class=uint64_readable_semantics_unverified") != std::string::npos
+              && line.find("ull=[result=0x1 value=42]") != std::string::npos,
+              "a readable integer is not automatically a valid real-frame identity");
+        } else if (sample == 2) {
+          Check(line.find("frame_id_class=alternate_getter_readable_semantics_unverified") != std::string::npos
+              && line.find("voidp=[result=0x1 nonnull=1]") != std::string::npos,
+              "alternate readable types never replace the documented uint64 contract");
+        } else {
+          Check(line.find("identity_probe=") == std::string::npos, "typed probe budget stops after three observations");
+        }
+      }
+      native::experimental_native_prefg_resolution.store(false);
+      const auto before = captured_logs.size();
+      bool replaced = true;
+      native::RunNativePreFg(nullptr, &parameters, handle, &replaced);
+      Check(!replaced && captured_logs.size() == before, "disabled identity diagnostic is inert");
+      std::cout << "PASS native-frame-identity CPU only; no GPU, model, hook installation or frame identity invented\n";
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << error.what() << '\n';
+      return 1;
+    }
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--native-prefg-resolution") == 0) return native_prefg_resolution_cases::Run(false);
+  if (argc == 2 && std::strcmp(argv[1], "--native-prefg-resolution-hardware") == 0) return native_prefg_resolution_cases::Run(true);
+  if (argc == 2 && std::strcmp(argv[1], "--present-stage-resolution") == 0) return present_stage_resolution_cases::Run(false);
+  if (argc == 2 && std::strcmp(argv[1], "--present-stage-resolution-hardware") == 0) return present_stage_resolution_cases::Run(true);
+  if (argc == 2 && std::strcmp(argv[1], "--render-stage-resolution") == 0) return same_stage_resolution_cases::Run(false, false, true);
+  if (argc == 2 && std::strcmp(argv[1], "--render-stage-resolution-hardware") == 0) return same_stage_resolution_cases::Run(true, false, true);
+  if (argc == 2 && std::strcmp(argv[1], "--same-stage-model-pair") == 0) return same_stage_resolution_cases::Run(true, true);
+  if (argc == 2 && std::strcmp(argv[1], "--same-stage-mixed-pair") == 0) return stage_execution_cases::Run(false, true, true);
+  if (argc == 2 && std::strcmp(argv[1], "--same-stage-resolution") == 0) return same_stage_resolution_cases::Run(false);
+  if (argc == 2 && std::strcmp(argv[1], "--same-stage-resolution-hardware") == 0) return same_stage_resolution_cases::Run(true);
+  if (argc == 2 && std::strcmp(argv[1], "--source-lifecycle") == 0) return feature_switch_cases::RunLifecycleBoundaries();
+  if (argc == 2 && std::strcmp(argv[1], "--feature-switch") == 0) return feature_switch_cases::Run(false);
+  if (argc == 2 && std::strcmp(argv[1], "--feature-switch-hardware") == 0) return feature_switch_cases::Run(true);
+  if (argc == 2 && std::strcmp(argv[1], "--present-chain") == 0) return present_chain_cases::Run(false);
+  if (argc == 2 && std::strcmp(argv[1], "--present-chain-hardware") == 0) return present_chain_cases::Run(true);
+  if (argc == 2 && std::strcmp(argv[1], "--present-chain-scrgb") == 0) return present_chain_cases::Run(false, DXGI_FORMAT_R16G16B16A16_FLOAT);
+  if (argc == 2 && std::strcmp(argv[1], "--present-chain-hdr10") == 0) return present_chain_cases::Run(false, DXGI_FORMAT_R10G10B10A2_UNORM);
+  if (argc == 2 && std::strcmp(argv[1], "--f5-mixed") == 0) {
+    try {
+      namespace addon = renodx::addons::dlss5;
+      namespace shot = addon::screenshot;
+      using addon::stage_plan::Reason;
+      using addon::stage_plan::Stage;
+      native::enabled.store(true);
+      shot::source_mode.store(1);
+      native::hook_point.store(native::kHookRender);
+      native::stack_passes.store(2);
+      native::pass_stage[0].store(2);
+      const auto* handle = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{1});
+      for (const bool dx11 : {false, true}) {
+        native::d3d11_present_seen.store(dx11);
+        native::d3d12_present_seen.store(!dx11);
+        native::dx11_route.store(native::kDx11RouteNative);
+        Check(shot::RequestCapture(), "arm mixed final request before source Evaluate");
+        const auto requested = native::RequestedStagePlan(false);
+        Check(requested.valid && requested.mixed && requested.reason == Reason::NONE,
+              "F5 does not masquerade as FG ownership in the pure planner");
+        Check(shot::WantsFinalPresent(), "pure planning leaves the capture request untouched");
+        {
+          const addon::EvaluateChainScope chain;
+          const auto plan = native::EvaluationStagePlan(handle);
+          Check(plan.valid && plan.At(Stage::RENDER).count == 1 && plan.At(Stage::UPSCALED).count == 1,
+                "rejecting F5 preserves both mixed execution groups");
+          Check(!shot::IsArmed() && !shot::HasPending(), "mixed request fails before any capture allocation");
+          Check(std::strcmp(shot::internal::finished.outcome, "unsupported_present") == 0,
+                "mixed capture has an explicit failure outcome");
+          Check(native::PreSrTakes(handle) && !native::PresentTakesEvaluate(),
+                "mixed source retains Render and Upscaled routing after capture rejection");
+          addon::evaluate_chain.render_attempted = true;
+          addon::evaluate_chain.render_complete = true;
+          const auto generation = addon::evaluate_chain.configuration_generation;
+          Check(shot::RequestCapture(), "arm request while real SR is in progress");
+          const auto resumed = native::EvaluationStagePlan(handle);
+          Check(!shot::IsArmed() && resumed.valid && resumed.requested == plan.requested
+                    && resumed.effective == plan.effective && resumed.group_count == plan.group_count
+                    && addon::evaluate_chain.render_complete && addon::evaluate_chain.render_attempted
+                    && addon::evaluate_chain.configuration_generation == generation,
+                "cached plan rejects an SR-time request without losing predecessor completion");
+          Check(!native::PresentTakesEvaluate(), "SR-time request cannot redirect Upscaled to Present");
+        }
+        Check(shot::RequestCapture(), "arm mixed request without another Evaluate");
+        native::RunPresentPath(nullptr, nullptr);
+        Check(!shot::IsArmed() && !shot::HasPending()
+                  && std::strcmp(shot::internal::finished.outcome, "unsupported_present") == 0,
+              "Present rejects mixed capture before queue or swapchain admission");
+        const auto logs = captured_logs.size();
+        native::RunPresentPath(nullptr, nullptr);
+        native::EvaluationStagePlan(handle);
+        Check(captured_logs.size() == logs, "rejected request does not log again on later frames");
+        native::auto_fg_fallback_active.store(true);
+        Check(!native::RequestedStagePlan(false).valid
+                  && native::RequestedStagePlan(false).reason == Reason::FG_OWNS_INPUT,
+              "real automatic FG ownership still rejects mixed chains");
+        native::auto_fg_fallback_active.store(false);
+        addon::fg::xefg::internal::requested.store(+[]() noexcept { return true; });
+        addon::fg::xefg::internal::owns_stream.store(true);
+        Check(native::RequestedStagePlan(false).reason == Reason::FG_OWNS_INPUT,
+              "XeFG stream ownership still rejects mixed chains");
+        Check(shot::RequestCapture(), "arm capture while XeFG owns input");
+        native::EvaluationStagePlan(handle);
+        Check(!shot::IsArmed() && addon::fg::xefg::OwnsStream(),
+              "capture rejection cannot release the XeFG owner");
+        addon::fg::xefg::internal::owns_stream.store(false);
+        addon::fg::xefg::internal::requested.store(nullptr);
+      }
+      for (const uint32_t hook : {native::kHookRender, native::kHookUpscaled, native::kHookPresent}) {
+        native::hook_point.store(hook);
+        native::pass_stage[0].store(0);
+        Check(shot::RequestCapture(), "arm legacy single-stage capture");
+        Check(native::EvaluationStagePlan(handle).valid && shot::WantsFinalPresent(),
+              "single-stage Final Present capture stays armed");
+        native::RunPresentPath(nullptr, nullptr);
+        Check(shot::WantsFinalPresent() && native::PresentTakesEvaluate(),
+              "single-stage capture retains temporary Present routing");
+        shot::Disarm();
+      }
+      native::hook_point.store(native::kHookRender);
+      native::pass_stage[0].store(2);
+      shot::source_mode.store(2);
+      Check(shot::RequestCapture(), "arm mixed evaluated-buffer diagnostic");
+      Check(native::EvaluationStagePlan(handle).valid && shot::WantsEvaluatedBuffer(),
+            "mixed model-buffer diagnostic stays armed");
+      native::RunPresentPath(nullptr, nullptr);
+      Check(shot::WantsEvaluatedBuffer(), "Present leaves evaluated-buffer diagnostic untouched");
+      shot::Disarm();
+      native::telemetry_seconds.store(1);
+      native::EmitTelemetry(1);
+      native::telemetry_pacing.Add(0.1);
+      native::telemetry_pacing.Add(0.6);
+      native::telemetry_pacing.Add(0.6);
+      native::EmitTelemetry(1'000'000'001, true);
+      Check(native::last_telemetry_line.find(" p50=0.75 p99=0.75 max=0.60 p95=0.75] nr[") != std::string::npos
+                && native::last_telemetry_line.find("] frame_hist[bin_ms=0.25 bins=0:1,2:2] stage_plan[") != std::string::npos,
+            "telemetry appends P95 and sparse bins while preserving existing field order");
+      std::cout << "PASS F5 mixed request policy: DX11/DX12, cached SR return, no Evaluate, single-stage and model diagnostic; no GPU execution\n";
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << "FAIL F5 mixed request policy: " << error.what() << '\n';
+      return 1;
+    }
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--stage-chain") == 0) return stage_execution_cases::Run();
+  if (argc == 2 && std::strcmp(argv[1], "--stage-resolution") == 0) return stage_execution_cases::Run(true);
+  if (argc == 2 && std::strcmp(argv[1], "--stage-resolution-hardware") == 0) return stage_execution_cases::Run(true, true);
   if (argc == 2 && std::strcmp(argv[1], "--native-required-menu") == 0) return RunNativeRequiredMenuTest();
   if (argc == 2 && std::strcmp(argv[1], "--native-owner-idle") == 0) return RunNativeOwnerIdleTest();
   if (argc == 2 && std::strcmp(argv[1], "--native-options-resume") == 0) return RunNativeOptionsResumeTest();
@@ -681,6 +871,7 @@ int main(int argc, char** argv) {
   if (argc == 2 && std::strcmp(argv[1], "--present-guide-models") == 0) return RunPresentGuideModelsTest();
   if (argc == 2 && std::strcmp(argv[1], "--native-present-decision") == 0) return RunNativePresentDecisionTest();
   const bool trace_metadata_only = argc == 2 && std::strcmp(argv[1], "--trace-metadata") == 0;
+  const bool hardware = argc == 2 && std::strcmp(argv[1], "--native-full-hardware") == 0;
   try {
     {
       const uint8_t bgra[] = {17, 32, 255, 128};
@@ -739,7 +930,7 @@ int main(int argc, char** argv) {
     const bool debug_available = SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)));
     if (debug_available) debug->EnableDebugLayer();
     std::cout << "D3D12 debug layer: " << (debug_available ? "enabled" : "unavailable") << '\n';
-    Gpu gpu;
+    Gpu gpu(hardware);
     model_gpu = &gpu;
     ComPtr<ID3D12InfoQueue> info;
     if (debug_available) Check(SUCCEEDED(gpu.device.As(&info)), "debug info queue");
@@ -1185,7 +1376,16 @@ int main(int argc, char** argv) {
           "concurrent Home read during model recording must keep the proven service active");
     Check(verdict_lines() == normal_lines, "normal PREPARED/SUBMITTED cycles do not emit change lines");
     {
-      const auto legacy_gaps = native::present_gaps.exchange(6864);
+      funnel_accounting_tests::Restore restore;
+      restore.Atomic(&native::present_gaps);
+      restore.Atomic(&native::native_fg_owns);
+      restore.Value(&native::card_observation.window);
+      restore.Value(&native::card_observation.configuration);
+      restore.Value(&native::card_observation.declines);
+      restore.Value(&native::card_observation.declines_sampled_ns);
+      restore.Value(&native::card_observation.last_decline_ns);
+      restore.Value(&native::card_observation.last_decline);
+      native::present_gaps.store(6864);
       const auto observed = native::CollectFunnelInputs();
       const auto inputs = native::CollectCardInputs(
           renodx::addons::dlss5::ComputeNrVerdict(observed), native::SteadyNowNs());
@@ -1195,12 +1395,19 @@ int main(int argc, char** argv) {
                 && observed.injected == 1,
             "native card needs cumulative proven frame submissions, not the current 0/1 handoff");
       native::native_fg_owns.store(false);
-      Check(native::CollectCardInputs(
-                renodx::addons::dlss5::ComputeNrVerdict(native::CollectFunnelInputs()), native::SteadyNowNs())
-                .present_gaps == 6864,
-            "ordinary final-Present gap evidence must remain visible on its own route");
+      const auto ordinary_verdict = renodx::addons::dlss5::ComputeNrVerdict(native::CollectFunnelInputs());
+      const auto observation_ns = native::SteadyNowNs();
+      const auto baseline = native::CollectCardInputs(ordinary_verdict, observation_ns);
+      Check(baseline.recent.has_value() && baseline.present_gaps == 0,
+            "ordinary final-Present starts a recent baseline instead of reviving historical gaps");
+      native::present_gaps.fetch_add(3);
+      Check(native::CollectCardInputs(ordinary_verdict, observation_ns + 100'000'000LL).present_gaps == 3,
+            "new ordinary final-Present gap evidence remains visible on its own route");
+      Check(native::CollectCardInputs(ordinary_verdict,
+                observation_ns + renodx::addons::dlss5::ui::RecentHealthWindow::kWindowNs + 200'000'000LL)
+                .present_gaps == 0 && native::present_gaps.load() == 6867,
+            "expired gaps leave the current card without deleting historical diagnostics");
       native::native_fg_owns.store(true);
-      native::present_gaps.store(legacy_gaps);
     }
     // Drive the production card/HUD tick through a healthy cycle and a real
     // failure. A neutral recording must neither re-arm nor lose recovery.
@@ -1215,8 +1422,8 @@ int main(int argc, char** argv) {
                 && native::CollectCardInputs(recording_verdict, hud_now).fg_continuing_submission,
             "initial toast regression has a current-stream submission proof");
       native::MaybeEmitStatusCard(recording_verdict, hud_now);
-      Check(native::hud_toast_until_ns.load() == hud_now + native::kHudToastNs,
-            "first proven native service toasts even when the UI samples the next recording");
+      Check(native::hud_toast_until_ns.load() == 0,
+            "ordinary first proven service updates status without an automatic success Toast");
       native::RestoreNativePreFg(gpu.list.Get(), &parameters, original, true);
       submit_native();
       native::hud_toast_until_ns.store(0);
@@ -1224,7 +1431,7 @@ int main(int argc, char** argv) {
     auto hud_verdict = native::MaybeEmitNrVerdict();
     native::MaybeEmitStatusCard(hud_verdict, hud_now);
     const auto first_toast = native::hud_toast_until_ns.load();
-    Check(first_toast == hud_now + native::kHudToastNs, "first real engagement toasts once");
+    Check(first_toast == 0, "ordinary first engagement remains Toast-silent");
     Check(native::RunNativePreFg(gpu.list.Get(), &parameters) == hudless.Get(), "HUD pending recording");
     hud_verdict = native::MaybeEmitNrVerdict();
     native::MaybeEmitStatusCard(hud_verdict, ++hud_now);
@@ -1276,8 +1483,8 @@ int main(int argc, char** argv) {
       Check(native::RunNativePreFg(gpu.list.Get(), &parameters) == hudless.Get(),
             "NR re-enable toast samples the following native recording");
       native::MaybeEmitStatusCard(native::MaybeEmitNrVerdict(), ++hud_now);
-      Check(native::hud_toast_until_ns.load() == hud_now + native::kHudToastNs,
-            "NR re-enable toasts from fresh submission proof during the following recording");
+      Check(native::hud_toast_until_ns.load() == 0,
+            "re-enabled service updates status silently after the separate operation feedback");
       native::RestoreNativePreFg(gpu.list.Get(), &parameters, original, true);
       submit_native();
       hud_verdict = native::MaybeEmitNrVerdict();
@@ -1480,6 +1687,23 @@ int main(int argc, char** argv) {
       std::array<ComPtr<ID3D12GraphicsCommandList>, 8> lists;
       std::array<ComPtr<ID3D12CommandAllocator>, 8> allocators;
       std::array<native::fg_service::Slot*, 8> retained_slots{};
+      ComPtr<ID3D12QueryHeap> execution_query;
+      const D3D12_QUERY_HEAP_DESC query_desc{.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP, .Count = 1};
+      Check(SUCCEEDED(gpu.device->CreateQueryHeap(&query_desc, IID_PPV_ARGS(&execution_query))),
+            "native replay execution query");
+      auto execution_readback = gpu.Buffer(sizeof(uint64_t), D3D12_HEAP_TYPE_READBACK);
+      const auto execution_stamp = [&] {
+        uint64_t* mapped = nullptr;
+        Check(SUCCEEDED(execution_readback->Map(0, nullptr, reinterpret_cast<void**>(&mapped))),
+              "native replay execution readback");
+        const auto stamp = *mapped;
+        execution_readback->Unmap(0, nullptr);
+        return stamp;
+      };
+      uint64_t first_execution = 0;
+      unsigned long long previous_frame_id = 0;
+      parameters.Get(NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID, &previous_frame_id);
+      constexpr unsigned long long kFirstReplayFrameId = 0xB200;
       const auto submitted_before = native::native_fg_submitted_frames.load();
       parameters.Set(NVSDK_NGX_DLSSG_Parameter_MultiFrameIndex, 1u);
       const auto execute_retained = [&] {
@@ -1508,10 +1732,18 @@ int main(int argc, char** argv) {
           submission::PruneCompletedGenerations();
           gpu.list = lists[index];
           gpu.allocator = allocators[index];
+          const auto frame_id = kFirstReplayFrameId + round * lists.size() + index;
+          parameters.Set(NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID,
+                         static_cast<unsigned long long>(frame_id));
           const auto before = model_calls;
+          model_execution_query = (round == 0 && index == 0 ? execution_query.Get() : nullptr);
+          model_execution_readback = execution_readback.Get();
           Check(native::RunNativePreFg(gpu.list.Get(), &parameters) == hudless.Get()
                     && model_calls == before + 1 && stream.cached->color_inputs_prepared,
                 "every buffered host frame must run NR even beyond three replayable lists");
+          Check(stream.source_frame_id == frame_id, "buffered recording binds its nonzero FG frame identity");
+          model_execution_query = nullptr;
+          model_execution_readback = nullptr;
           if (round == 0) retained_slots[index] = stream.cached;
           auto* cached_ui = native::PreFgResource(&parameters, NVSDK_NGX_DLSSG_Parameter_UI);
           native::RestoreNativePreFg(gpu.list.Get(), &parameters, hudless.Get(), true);
@@ -1524,6 +1756,9 @@ int main(int argc, char** argv) {
           parameters.Set(NVSDK_NGX_DLSSG_Parameter_MultiFrameIndex, 1u);
           Check(SUCCEEDED(gpu.list->Close()), "buffered host recording close");
           execute_retained();
+          if (round == 0 && index == 0) {
+            first_execution = execution_stamp();
+          }
           Check(!submission::ResourceReleasable(stream.cached->color[0])
                     && !submission::ResourceReleasable(stream.cached->coupled_ui)
                     && !submission::ResourceReleasable(stream.cached->coupled_hudless)
@@ -1537,9 +1772,33 @@ int main(int argc, char** argv) {
         }
         if (round == 0) {
           gpu.list = lists[0];
+          const auto calls_before_replay = model_calls;
+          const auto recording_before_replay = submission::RecordingIdentity(gpu.list.Get());
           execute_retained();
+          const auto replay_execution = execution_stamp();
+          Check(first_execution != 0 && replay_execution > first_execution,
+                "replay executes the GPU model stand-in body again after fence completion");
+          Check(model_calls == calls_before_replay
+                    && submission::RecordingIdentity(gpu.list.Get()) == recording_before_replay,
+                "GPU replay needs neither a second model API call nor a new recording generation");
+          std::vector<std::pair<renodx::addons::dlss5::FenceRef, uint64_t>> replay_submissions;
+          Check(submission::UseSubmissionTokens(retained_slots[0]->color[0], &replay_submissions)
+                    == submission::UseSubmission::kTokens && replay_submissions.size() == 2,
+                "native replay retains two actual submission receipts for one recording");
+          for (const auto& [fence, value] : replay_submissions) {
+            const auto completed = fence->GetCompletedValue();
+            Check(completed != UINT64_MAX && completed >= value,
+                  "each replay submission has real GPU completion proof");
+          }
+          Check(!submission::ResourceReleasable(retained_slots[0]->color[0]),
+                "completed replay submissions still retain the open recording resources");
           Check(native::native_fg_submitted_frames.load() == submitted_before + lists.size(),
                 "replaying an older host list cannot count a new application NR frame");
+          std::cout << "PASS B2 contract counterexample: model_gpu_timestamp=" << first_execution
+                    << " replay_gpu_timestamp=" << replay_execution
+                    << " recorded_fg_frame_id=" << kFirstReplayFrameId
+                    << " api_call_delta=0 frame_counter_delta=0 same_recording=1 completed_submissions=2;"
+                       " GPU execution is not deduplicated\n";
         }
       }
       Check(std::size(stream.slots) == lists.size(), "native slots stop growing when the host rotates its lists");
@@ -1554,6 +1813,7 @@ int main(int argc, char** argv) {
       gpu.list = saved_list;
       gpu.allocator = saved_allocator;
       gpu.Submit();
+      parameters.Set(NVSDK_NGX_DLSSG_Parameter_BackbufferFrameID, previous_frame_id);
       parameters.Set(NVSDK_NGX_DLSSG_Parameter_UI, static_cast<void*>(nullptr));
       Check(pixels(explicit_ui.Get(), NATIVE_INPUT_STATE) == std::vector<uint8_t>(256, 255),
             "buffered host composition never overwrites the original explicit UI pixels");
@@ -3301,13 +3561,21 @@ int RunPresentGuideModelsTest() {
     target.workset_key = reinterpret_cast<const ID3D12Resource*>(&owner);
     target.output_state = NATIVE_INPUT_STATE;
     target.domain = renodx::addons::dlss5::present_restore_scope::Domain::FINAL_PRESENT;
-    const auto record = [&](bool neutral, int reset) {
+    const auto record = [&](bool neutral, int reset, const NVSDK_NGX_Handle* source = nullptr) {
       const size_t index = (neutral ? 1 : 0);
+      if (source != nullptr) {
+        native::EvaluationStagePlan(source);
+      }
+      const auto source_plan_sequence = native::last_source_plan.sequence;
       native::FillPresentBlock(&owner, color.Get(), guides[index * 2].Get(), guides[index * 2 + 1].Get(),
-          contracts[index], 8, 8, 1.f, reset, neutral);
+          contracts[index], 8, 8, 1.f, reset, neutral, source);
+      target.diagnostic_source_generation = (source != nullptr ? contracts[index].source_generation : 0);
+      target.diagnostic_source_feature = (source != nullptr ? contracts[index].source_feature : NVSDK_NGX_Feature_Reserved_Unknown);
       native::NrRecording recording;
       Check(native::ProcessInline(gpu.list.Get(), owner.Handle(neutral), &owner.parameters,
                 nullptr, &target, &recording), "Present models actual ProcessInline records");
+      Check(native::last_source_plan.sequence == source_plan_sequence,
+            "Present synthetic target cannot overwrite the last source plan observation");
       return recording;
     };
     const auto expect_pixels = [&](uint8_t alpha) {
@@ -3363,6 +3631,48 @@ int RunPresentGuideModelsTest() {
     for (const auto* handle : handles) {
       Check(native::owner_resident_nr_handles.contains(handle), "real FG owner retains both Final Present models");
     }
+    for (const uint64_t source_generation : {101ull, 102ull, 103ull}) {
+      contracts[0].source_generation = source_generation;
+      const auto* source = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xF101});
+      // A skipped Present may build its block without evaluating the model.
+      // Repeating that source must retain the reset until the next model run.
+      const auto& observed = native::stage_telemetry[static_cast<size_t>(renodx::addons::dlss5::stage_plan::Stage::PRESENT)];
+      const auto actual_before_request = observed.last_evaluate.sequence;
+      const auto reset_accepted_before = observed.reset_accepted;
+      native::FillPresentBlock(&owner, color.Get(), guides[0].Get(), guides[1].Get(),
+          contracts[0], 8, 8, 1.f, 0, false, source);
+      const auto request = observed.last_reset_request;
+      Check(request.sequence > actual_before_request && request.source_generation == source_generation
+                && (request.reasons & native::kResetSourceChange) != 0
+                && observed.last_evaluate.sequence == actual_before_request && observed.reset_accepted == reset_accepted_before,
+            "Present SourceChange request precedes actual NR observation and acceptance");
+      native::FillPresentBlock(&owner, color.Get(), guides[0].Get(), guides[1].Get(),
+          contracts[0], 8, 8, 1.f, 0, false, source);
+      Check(native::features.at(owner.Handle()).slots[0].pending_reset,
+            "skipped Present keeps the new source's reset pending");
+      Check(observed.last_reset_request.sequence == request.sequence && observed.last_evaluate.sequence == actual_before_request,
+            "repeated skipped source preserves the request and does not invent an actual evaluation");
+      const auto switched_source = record(false, 0, source);
+      Check(switched_source.output_ready && model_resets.back() == 1,
+            "same-size real guide source changes reset the shared Present model History");
+      Check(observed.last_evaluate.sequence > request.sequence && observed.last_evaluate.source_generation == source_generation
+                && observed.last_evaluate.source_feature == contracts[0].source_feature && observed.last_evaluate.pass == 0
+                && observed.last_evaluate.planned == renodx::addons::dlss5::stage_plan::Stage::PRESENT
+                && observed.last_evaluate.reset_sent && (observed.last_evaluate.reset_reasons & native::kResetSourceChange) != 0
+                && NVSDK_NGX_SUCCEED(observed.last_evaluate.result) && observed.reset_accepted == reset_accepted_before + 1,
+            "accepted Present Reset carries the captured source and SourceChange reason");
+      submit();
+      Check(record(false, 0, source).output_ready && model_resets.back() == 0,
+            "unchanged real guide source keeps continuous Present History");
+      Check(!observed.last_evaluate.reset_sent && observed.last_evaluate.reset_reasons == 0
+                && observed.reset_accepted == reset_accepted_before + 1, "steady Present evaluation does not accept another Reset");
+      submit();
+    }
+    const auto* other_source = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xF102});
+    contracts[0].source_generation = 0;
+    Check(record(false, 0, other_source).output_ready && model_resets.back() == 1,
+          "different real handles reset shared Present History even without a create generation");
+    submit();
     for (uint32_t round = 0; round < 6; ++round) {
       native::ResetPresentStreamHistory(&owner);
       for (bool neutral : {true, false}) {

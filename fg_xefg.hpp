@@ -885,6 +885,11 @@ inline void Configure(Service service, PrepareCapture capture, Retire retire, bo
   internal::requested.store(requested, std::memory_order_release);
 }
 
+// Public SDK enable state, independent of whether NR requested ownership.
+inline bool Enabled() noexcept {
+  return internal::owns_stream.load(std::memory_order_acquire);
+}
+
 inline bool OwnsStream() noexcept {
   return internal::Requested() && (internal::proxy_depth != 0 || internal::owns_stream.load(std::memory_order_acquire));
 }

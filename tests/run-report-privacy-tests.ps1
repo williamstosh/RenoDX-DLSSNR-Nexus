@@ -13,6 +13,7 @@ $exe = Join-Path $OutputDirectory 'report_privacy_tests.exe'
 $arguments = @('/nologo', '/std:c++20', '/EHsc', '/W4', '/O2', '/MT', '/utf-8',
     '/DNOMINMAX', '/DWIN32_LEAN_AND_MEAN', "/I$HostRoot/external/json/include",
     (Join-Path $PSScriptRoot 'report_privacy_tests.cpp'), "/Fo$OutputDirectory/report_privacy_tests.obj", "/Fe$exe")
+Register-TestCompilerOutput -Directory $OutputDirectory -ObjectPath (Join-Path $OutputDirectory 'report_privacy_tests.obj') -ExecutablePath $exe
 & cl.exe @arguments *> (Join-Path $OutputDirectory 'compile.log')
 if ($LASTEXITCODE -ne 0) { throw "Privacy test build failed; see $OutputDirectory/compile.log" }
 $data = New-Item -ItemType Directory -Path (Join-Path $OutputDirectory 'data')
@@ -31,3 +32,4 @@ try {
     }
 } finally { $archive.Dispose() }
 Write-Host "ZIP independently read; outputs: $OutputDirectory"
+Complete-TestOutput $OutputDirectory -Outcome Passed

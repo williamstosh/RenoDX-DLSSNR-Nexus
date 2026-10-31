@@ -25,15 +25,43 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
+
+#include "declines.hpp"
+#include "stage_plan.hpp"
 
 namespace renodx::addons::dlss5 {
 
 inline constexpr uint32_t kDedupePerPresent = 0;
 inline constexpr uint32_t kDedupePerEvaluate = 1;
 
-struct EvaluateChain {
+struct PassResolutionSettings {
+  bool follow_input = false;
+  float scale = 1.f;
+  uint32_t commit_source = 0;
+  uint64_t commit_epoch = 0;
+};
+
+struct StageSourceState {
   static constexpr uint32_t kMaxOutputs = 8;
+  const void* plan_handle = nullptr;
+  stage_plan::Plan plan;
+  uint64_t configuration_generation = 0;
+  std::array<PassResolutionSettings, stage_plan::kMaxPasses> resolutions{};
+  bool resolutions_frozen = false;
+  bool render_attempted = false;
+  bool render_complete = false;
+  bool present_predecessor_attempted = false;
+  uint32_t game_wrappers = 0;
+  // Mirrors share marks only within one real source call. Streamline may
+  // enclose several calls that legitimately reuse the same output resource.
+  uint32_t output_count = 0;
+  const void* outputs[kMaxOutputs] = {};
+  uint32_t output_stages[kMaxOutputs] = {};
+};
+
+struct EvaluateChain : StageSourceState {
   uint32_t depth = 0;
   // A hooked NGX evaluate inside this chain got past the structural gates
   // (a DLSS block with guides and usable geometry): the NGX path owns the
@@ -46,31 +74,86 @@ struct EvaluateChain {
   // block.  v8.5.0-rc1 Resonance: prefg_fallbacks equal to mirror (807/807).
   // Not a depth test: Streamline's evaluate hook encloses its NGX evaluates.
   bool prefg_ran = false;
-  uint32_t output_count = 0;
-  const void* outputs[kMaxOutputs] = {};
 
-  bool Injected(const void* output) const noexcept {
+  bool Injected(const void* output, uint32_t stage = 0) const noexcept {
     for (uint32_t i = 0; i < output_count; ++i) {
-      if (outputs[i] == output) return true;
+      if (outputs[i] == output && output_stages[i] == stage) return true;
     }
     return false;
   }
   // Past the capacity the mark is dropped: the enclosing hook then injects
   // again rather than silently skipping a pass it cannot prove ran.
-  void MarkInjected(const void* output) noexcept {
-    if (depth == 0 || Injected(output) || output_count == kMaxOutputs) return;
+  void MarkInjected(const void* output, uint32_t stage = 0) noexcept {
+    if (depth == 0 || Injected(output, stage) || output_count == kMaxOutputs) return;
+    output_stages[output_count] = stage;
     outputs[output_count++] = output;
   }
 };
 
 inline thread_local EvaluateChain evaluate_chain;
 
+inline void FinishMixedStageTerminal(uint32_t game_wrappers) {
+  if (!mixed_stage_terminal.active) return;
+  const auto terminal = mixed_stage_terminal;
+  mixed_stage_terminal = {};
+  if (game_wrappers > 1) {
+    nr_decline_counts[static_cast<size_t>(NrDeclineReason::kNestedMirror)].fetch_add(
+        game_wrappers - 1, std::memory_order_relaxed);
+  }
+  if (terminal.injected && terminal.decline != NrDeclineReason::kGameEvaluateFailed) {
+    mixed_stage_source_successes.fetch_add(1, std::memory_order_relaxed);
+  } else if (terminal.decline != NrDeclineReason::kCount) {
+    CountNrDecline(terminal.decline);
+  }
+}
+
+struct StageSourceBinding {
+  const void* handle = nullptr;
+  bool active = false;
+};
+inline thread_local StageSourceBinding stage_source_binding;
+
+// Streamline may enclose several distinct SR calls. Only nested wrappers of
+// the same source share a plan/terminal; another source gets its own state.
+struct SourceStageScope {
+  StageSourceState previous_state;
+  MixedStageTerminal previous_terminal;
+  StageSourceBinding previous_binding;
+  bool owner = false;
+
+  SourceStageScope(const void* handle, bool counted) noexcept {
+    if (!counted) return;
+    if (stage_source_binding.active && stage_source_binding.handle == handle) {
+      ++evaluate_chain.game_wrappers;
+      return;
+    }
+    owner = true;
+    previous_state = static_cast<const StageSourceState&>(evaluate_chain);
+    previous_terminal = mixed_stage_terminal;
+    previous_binding = stage_source_binding;
+    static_cast<StageSourceState&>(evaluate_chain) = {.game_wrappers = 1};
+    mixed_stage_terminal = {};
+    stage_source_binding = {.handle = handle, .active = true};
+  }
+  ~SourceStageScope() noexcept {
+    if (!owner) return;
+    FinishMixedStageTerminal(evaluate_chain.game_wrappers);
+    static_cast<StageSourceState&>(evaluate_chain) = previous_state;
+    mixed_stage_terminal = previous_terminal;
+    stage_source_binding = previous_binding;
+  }
+  SourceStageScope(const SourceStageScope&) = delete;
+  SourceStageScope& operator=(const SourceStageScope&) = delete;
+};
+
 // Opened by every evaluate hook around its real call AND its own injection.
 // The chain's marks live exactly as long as the outermost hook.
 struct EvaluateChainScope {
   EvaluateChainScope() noexcept { ++evaluate_chain.depth; }
   ~EvaluateChainScope() noexcept {
-    if (--evaluate_chain.depth == 0) evaluate_chain = EvaluateChain{};
+    if (--evaluate_chain.depth != 0) return;
+    FinishMixedStageTerminal(evaluate_chain.game_wrappers);
+    evaluate_chain = EvaluateChain{};
   }
   EvaluateChainScope(const EvaluateChainScope&) = delete;
   EvaluateChainScope& operator=(const EvaluateChainScope&) = delete;

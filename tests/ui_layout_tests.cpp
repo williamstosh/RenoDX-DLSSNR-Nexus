@@ -15,6 +15,14 @@
 
 #include "ui/fg_route.hpp"
 #include "ui/widgets.hpp"
+#include "ui/runtime_monitor.hpp"
+#include "chain_ux_cases.hpp"
+#include "recent_health_cases.hpp"
+#include "runtime_monitor_cases.hpp"
+#include "monitor_history_cases.hpp"
+#include "monitor_hud_cases.hpp"
+#include "notice_position_cases.hpp"
+#include "frame_metrics_cases.hpp"
 
 namespace ui = renodx::addons::dlss5::ui;
 
@@ -41,6 +49,10 @@ int main() {
     }
   };
 
+  RunChainUxCases(check);
+  RunRecentHealthCases(check);
+  RunNoticePositionCases(check);
+
   const auto luminance = [](const ImVec4& color) {
     const auto linear = [](float value) {
       return (value <= 0.04045f ? value / 12.92f : std::pow((value + 0.055f) / 1.055f, 2.4f));
@@ -53,8 +65,10 @@ int main() {
     return ((std::max)(a, b) + 0.05f) / ((std::min)(a, b) + 0.05f);
   };
   const ui::ThemeId expected_ids[] = {ui::ThemeId::CYBER_NEON, ui::ThemeId::NEXUS_DARK,
-                                    ui::ThemeId::FLUENT_LIGHT, ui::ThemeId::MIDNIGHT_OLED};
-  check(ui::kThemes.size() == 4, "four public themes are available");
+                                    ui::ThemeId::FLUENT_LIGHT, ui::ThemeId::MIDNIGHT_OLED,
+                                    ui::ThemeId::NEON_VIOLET, ui::ThemeId::TACTICAL_AMBER,
+                                    ui::ThemeId::AURORA_GLASS};
+  check(ui::kThemes.size() == 7, "seven public themes are available");
   for (size_t index = 0; index < ui::kThemes.size(); ++index) {
     const auto& palette = ui::kThemes[index];
     check(palette.id == expected_ids[index], "theme IDs retain their public order");
@@ -239,6 +253,60 @@ int main() {
     observation.Update(input, ++ns);
     check(observation.route == ui::FgRoute::kUnknown, "disabled NR clears the route");
   }
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  for (const auto& palette : ui::kThemes) {
+    ui::SetTheme(palette.id);
+    for (bool selected : {false, true}) {
+      for (int state = 0; state < 6; ++state) {
+        // Rest, hover, held mouse, released mouse, keyboard focus, disabled.
+        io.AddMouseButtonEvent(0, false);
+        io.AddMousePosEvent(-100.f, -100.f);
+        for (int tick = 0; tick < 4; ++tick) {
+          ImGui::NewFrame();
+          ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
+          ImGui::SetNextWindowSize(ImVec2(500.f, 250.f));
+          ImGui::Begin("slot colors", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
+          {
+            ui::StyleScope theme;
+            ui::PushPanelTheme(theme);
+            if (state == 4) ImGui::SetKeyboardFocusHere();
+            ImGui::BeginDisabled(state == 5);
+            auto* draw = ImGui::GetWindowDrawList();
+            const int first_vertex = draw->VtxBuffer.Size;
+            ui::ProfileSlotButton("##slot", "Slot", ImVec2(180.f, 0.f), selected);
+            const auto center = ImVec2((ImGui::GetItemRectMin().x + ImGui::GetItemRectMax().x) * 0.5f,
+                                        (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f);
+            const bool hovered = ImGui::IsItemHovered();
+            const bool held = ImGui::IsItemActive() && hovered;
+            const ImU32 text = ImGui::GetColorU32(selected ? palette.on_accent : palette.text_primary);
+            const ImVec4 background = (selected ? (held ? palette.accent_active : hovered ? palette.accent_hover : palette.accent)
+                                                : (held ? palette.bg_control_active : hovered ? palette.bg_control_hover : palette.bg_control));
+            bool has_text = false, has_background = false;
+            for (int vertex = first_vertex; vertex < draw->VtxBuffer.Size; ++vertex) {
+              has_text |= draw->VtxBuffer[vertex].col == text;
+              has_background |= draw->VtxBuffer[vertex].col == ImGui::GetColorU32(background);
+            }
+            if (tick == 3) {
+              check(has_text && has_background, "slot mesh uses matching foreground/background in every theme and interaction state");
+              check(ImGui::GetStyle().Colors[ImGuiCol_Text].x == palette.text_primary.x,
+                    "selected slot restores text before tooltip and context popup");
+              if (state == 1 || state == 2 || state == 3) check(hovered, "slot hover test reaches the real button");
+              if (state == 2) check(held, "slot active test holds the real button");
+              if (state == 4) check(ImGui::IsItemFocused(), "slot accepts keyboard focus");
+            }
+            ImGui::EndDisabled();
+            if (state == 1 || state == 2 || state == 3) io.AddMousePosEvent(center.x, center.y);
+            if (state == 2 && tick == 1) io.AddMouseButtonEvent(0, true);
+          }
+          ImGui::End();
+          ImGui::Render();
+          check(ui::style_depth == 0, "slot interaction restores all theme scopes");
+        }
+      }
+    }
+  }
+  io.AddMouseButtonEvent(0, false);
+  io.AddMousePosEvent(-100.f, -100.f);
   const auto frame = [&](const ui::StatusCard& card, float panel_width, float font,
                          unsigned warnings, bool summary, bool popup) {
     ImGui::GetStyle().FontSizeBase = font;
@@ -303,6 +371,38 @@ int main() {
                         .frame_ms = 16.7f,
                         .frame_gen_multiplier = 4,
                         .present_gaps = 999999};
+  {
+    ui::SelectLanguage(0);
+    ImGui::GetStyle().FontSizeBase = 13.f;
+    ui::StatusCard off = idle;
+    off.id = ui::CardId::kOffByUser;
+    off.body = "Turned off in settings or by the toggle hotkey.";
+    // Retained session evidence must not appear as current Off activity.
+    off.fg_submitted_frames = 12345;
+    off.nr_gpu_ms = 3.f;
+    off.nr_present_ms = 3.f;
+    off.frame_ms = 16.7f;
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
+    ImGui::SetNextWindowSize(ImVec2(450.f, 1300.f));
+    ImGui::Begin("off summary regression", nullptr, ImGuiWindowFlags_NoSavedSettings);
+    ImGui::LogToBuffer();
+    ui::DrawStatusSummary(off, 0);
+    const std::string output = ImGui::GetCurrentContext()->LogBuffer.c_str();
+    ImGui::LogFinish();
+    const size_t title = output.find(ui::Tr("NR disabled"));
+    check(title != std::string::npos && output.find(ui::Tr("NR disabled"), title + 1) == std::string::npos,
+          "Off summary displays its title exactly once");
+    check(output.find(off.body) == std::string::npos,
+          "Off reason stays in the heading tooltip instead of repeated visible rows");
+    check(output.find("12345") == std::string::npos && output.find("3.0") == std::string::npos,
+          "Off summary does not present retained NR submissions or GPU measurements as execution");
+    char action[160];
+    std::snprintf(action, sizeof(action), ui::Tr(ui::text::kStatusDetails), 0u);
+    check(output.find(ui::Tr("Monitor")) != std::string::npos, "Off summary preserves its compact monitor action");
+    ImGui::End();
+    ImGui::Render();
+  }
   // Preserve a measured baseline: the full detail card is still auto-sized.
   float old_idle = 0.f, old_active = 0.f;
   for (int tick = 0; tick < 4; ++tick) {
@@ -324,7 +424,11 @@ int main() {
         for (ui::CardTone tone : {ui::CardTone::kGood, ui::CardTone::kWarn, ui::CardTone::kBad, ui::CardTone::kIdle}) {
           auto card = active;
           card.tone = tone;
-          check(std::abs(frame(card, size.x, size.y, 4, true, false) - anchor) <= 0.01f,
+          const float measured_y = frame(card, size.x, size.y, 4, true, false);
+          if (failures < 2 && std::abs(measured_y - anchor) > 0.01f) {
+            std::printf("summary mismatch language=%d width=%.0f font=%.0f idle=%.0f active=%.0f\n", language, size.x, size.y, anchor, measured_y);
+          }
+          check(std::abs(measured_y - anchor) <= 0.01f,
                 "all-theme summary geometry remains stable");
         }
       }
@@ -355,6 +459,11 @@ int main() {
       }
     }
   }
+  RunRuntimeMonitorCases(check);
+  RunMonitorHistoryCases(check);
+  RunFrameMetricsCases(check);
+  RunNoticePositionCases(check);
+  RunMonitorHudCases(check);
   std::printf("summary scenarios=%u languages=%d max_delta_y=%.3f px checks=%u failures=%u\n",
               scenarios, ui::kLanguageCount, max_delta, checks, failures);
   ImGui::DestroyContext();

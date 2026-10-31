@@ -19,16 +19,51 @@ if (-not (Test-Path -LiteralPath $NotesPath -PathType Leaf)) {
 $notesText = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $NotesPath).Path).Replace("`r`n", "`n").Trim()
 $notesTitle = [regex]::Match($notesText, '\A# (NR Nexus ' + [regex]::Escape($Tag) + '(?: — .+)?)\n')
 if (-not $notesTitle.Success) { throw "Release notes title must start with '# NR Nexus $Tag'." }
-if ($notesText -match '(?im)\b(TODO|TBD|PLACEHOLDER)\b' -or $notesText -match '(?m)^## (Source|References)\s*$') {
-    throw 'Release notes contain placeholders or reserved generated Source/References sections.'
+if ($notesText -match '(?im)\b(TODO|TBD|PLACEHOLDER)\b|待补充|待填写|占位符') {
+    throw 'Release notes contain placeholders.'
 }
-foreach ($notesHeading in @('Highlights', 'Validation', 'Known Limitations', 'Installation')) {
-    $notesSection = [regex]::Matches($notesText, '(?ms)^## ' + [regex]::Escape($notesHeading) + '\n(.*?)(?=^## |\z)')
-    if ($notesSection.Count -ne 1) { throw "Release notes require exactly one $notesHeading section." }
-    # Link lists alone do not describe a feature, fix, verification result or limit.
-    $notesContent = [regex]::Replace($notesSection[0].Groups[1].Value, '\[[^\]]*\]\([^)]*\)|https?://\S+|<!--.*?-->', '', 'Singleline')
-    if ([regex]::Replace($notesContent, '[^\p{L}]', '').Length -lt 20) {
-        throw "Release notes $notesHeading needs substantive reviewed text, not only links or headings."
+# Comments and code examples cannot supply document structure or reviewed prose.
+$notesReviewed = [regex]::Replace($notesText, '(?s)<!--.*?-->', '')
+$notesReviewed = [regex]::Replace($notesReviewed, '(?ms)^\s*(`{3,}|~{3,})[^\n]*\n.*?^\s*\1\s*$', '')
+if ($notesReviewed -match '(?im)^\s*#{1,6}\s+(?:Source|源码|References|PR 与 Commit 记录|(?:Full )?Changelog|更新日志)(?:\s|/|$)' -or
+    $notesReviewed -match '(?im)^\s*Source:\s|\b(?:Full )?Changelog\b') {
+    throw 'Release notes contain reserved generated Source/References/Changelog content.'
+}
+$notesNavigation = '[简体中文](#简体中文) · [English](#english)'
+if (($notesReviewed.Substring($notesTitle.Length).TrimStart() -split "`n", 2)[0] -cne $notesNavigation -or
+    [regex]::Matches($notesReviewed, [regex]::Escape($notesNavigation)).Count -ne 1) {
+    throw "Release notes require top navigation: $notesNavigation"
+}
+$notesLanguages = [regex]::Matches($notesReviewed, '(?m)^## ([^\n]+)$')
+if ($notesLanguages.Count -ne 2 -or $notesLanguages[0].Groups[1].Value -cne '简体中文' -or
+    $notesLanguages[1].Groups[1].Value -cne 'English') {
+    throw 'Release notes require exactly one 简体中文 block followed by exactly one English block.'
+}
+$notesRequired = @(@('版本亮点', '验证情况', '已知限制', '安装说明'), @('Highlights', 'Validation', 'Known Limitations', 'Installation'))
+for ($notesLanguageIndex = 0; $notesLanguageIndex -lt 2; $notesLanguageIndex++) {
+    $notesStart = $notesLanguages[$notesLanguageIndex].Index + $notesLanguages[$notesLanguageIndex].Length
+    $notesEnd = if ($notesLanguageIndex -eq 0) { $notesLanguages[1].Index } else { $notesReviewed.Length }
+    $notesBlock = $notesReviewed.Substring($notesStart, $notesEnd - $notesStart)
+    $notesSections = [regex]::Matches($notesBlock, '(?ms)^### ([^\n]+)(?:\n|\z)(.*?)(?=^### |\z)')
+    foreach ($notesHeading in $notesRequired[$notesLanguageIndex]) {
+        if (@($notesSections | Where-Object { $_.Groups[1].Value -ceq $notesHeading }).Count -ne 1) {
+            throw "Release notes require exactly one $notesHeading section."
+        }
+    }
+    $notesSeenHeadings = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($notesSection in $notesSections) {
+        $notesHeading = $notesSection.Groups[1].Value
+        if (-not $notesSeenHeadings.Add($notesHeading)) { throw "Duplicate release notes section: $notesHeading" }
+        if ($notesHeading -cin $notesRequired[1 - $notesLanguageIndex]) {
+            throw "Unexpected release notes section in language block: $notesHeading"
+        }
+        # Count only prose, excluding headings, reference definitions and links (including labels).
+        $notesContent = [regex]::Replace($notesSection.Groups[2].Value, '(?m)^\s*#{1,6}\s+.*$|^\s*\[[^\]]+\]:.*$', '')
+        $notesContent = [regex]::Replace($notesContent, '!?\[[^\]]*\](?:\([^)]*\)|\[[^\]]*\])?|https?://\S+', '')
+        $notesMinimumLetters = if ($notesLanguageIndex -eq 0) { 4 } else { 20 }
+        if ([regex]::Replace($notesContent, '[^\p{L}]', '').Length -lt $notesMinimumLetters) {
+            throw "Release notes $notesHeading needs substantive reviewed text, not only links or headings."
+        }
     }
 }
 $notesPrevious = [regex]::Matches($notesText, '(?m)^<!-- Previous: (none|v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?) -->$')
@@ -61,14 +96,19 @@ foreach ($notesLine in $notesLog) {
     }
 }
 $notesBody = [regex]::Replace($notesText.Substring($notesTitle.Length), '(?m)^<!-- Previous: .*? -->\n?', '').Trim()
-$notesBody += "`n`n## Source`n`nTag: [$Tag](https://github.com/$Repository/tree/$Tag)`n`nSource: https://github.com/$Repository/commit/$notesSource"
+# Release pages omit automatic heading IDs. GitHub prefixes explicit names with user-content-.
+$notesAnchor = 'nr-nexus-' + $Tag
+$notesBody = $notesBody.Replace($notesNavigation, "[简体中文](#user-content-$notesAnchor-zh) · [English](#user-content-$notesAnchor-en)")
+$notesBody = $notesBody.Replace('## 简体中文', "<a name=`"$notesAnchor-zh`"></a>`n`n## 简体中文")
+$notesBody = $notesBody.Replace('## English', "<a name=`"$notesAnchor-en`"></a>`n`n## English")
+$notesBody += "`n`n## Source / 源码`n`nTag: [$Tag](https://github.com/$Repository/tree/$Tag)`n`nSource: https://github.com/$Repository/commit/$notesSource"
 if ($notesPreviousTag -ne 'none') {
     $notesBody += "`n`n[Full Changelog](https://github.com/$Repository/compare/$notesPreviousTag...$Tag)"
 } else {
     $notesBody += "`n`n[Full Changelog](https://github.com/$Repository/commits/$Tag)"
 }
 if ($notesPulls.Count -or $notesCommits.Count) {
-    $notesBody += "`n`n## References"
+    $notesBody += "`n`n## References / PR 与 Commit 记录"
     if ($notesPulls.Count) {
         $notesLinks = @($notesPulls | Sort-Object { [int]$_ } | ForEach-Object { "[#$_](https://github.com/$Repository/pull/$_)" })
         $notesBody += "`n`nPull requests: " + ($notesLinks -join ', ')

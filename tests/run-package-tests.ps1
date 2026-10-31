@@ -40,12 +40,16 @@ function Read-ZipText([string]$Name) {
 
 function Assert-DocumentLinks([string]$Name, [string]$Text, [hashtable]$Documents, [string[]]$Paths, [bool]$Source = $false) {
     $chineseStart = $Text.IndexOf('## 简体中文', [StringComparison]::Ordinal)
-    Assert-Test ($chineseStart -ge 0) "Chinese section missing in $Name"
+    $englishStart = $Text.IndexOf('## English', [StringComparison]::Ordinal)
+    Assert-Test ([regex]::Matches($Text, '(?m)^## 简体中文\r?$').Count -eq 1 -and
+        [regex]::Matches($Text, '(?m)^## English\r?$').Count -eq 1 -and
+        $chineseStart -lt $englishStart) "Expected one Chinese section followed by one English section in $Name"
+    Assert-Test ($Text.Substring(0, $chineseStart).Contains('[简体中文](#简体中文) · [English](#english)')) "Language navigation missing in $Name"
     $englishImages = @()
     $chineseImages = @()
     foreach ($image in [regex]::Matches($Text, '!\[[^\]]*\]\(([^\s)]+)\)')) {
         $file = [IO.Path]::GetFileName($image.Groups[1].Value)
-        $chinese = $image.Index -gt $chineseStart
+        $chinese = $image.Index -gt $chineseStart -and $image.Index -lt $englishStart
         Assert-Test (($file -cmatch '-zh\.webp$') -eq $chinese) "Image language mismatch in ${Name}: $file"
         if ($chinese) { $chineseImages += $file -creplace '-zh\.webp$', '.webp' }
         else { $englishImages += $file }
@@ -100,8 +104,8 @@ try {
         'licenses/ReShade/LICENSE.md', 'licenses/DearImGui/LICENSE.txt', 'licenses/nlohmann-json/LICENSE.MIT',
         'licenses/nlohmann-json/NOTICE.txt', 'licenses/Streamline/license.txt', 'licenses/Streamline/NOTICE.txt',
         'licenses/NVIDIA-DLSS/LICENSE.txt')
-    $taskImageNames = @('quality', 'multipass', 'results', 'diagnostics', 'advanced', 'themes',
-        'quality-zh', 'multipass-zh', 'results-zh', 'diagnostics-zh', 'advanced-zh', 'themes-zh')
+    $taskImageNames = @('quality', 'multipass', 'results', 'diagnostics', 'advanced', 'themes', 'presets',
+        'quality-zh', 'multipass-zh', 'results-zh', 'diagnostics-zh', 'advanced-zh', 'themes-zh', 'presets-zh')
     $taskExpected += @($taskImageNames | ForEach-Object { "images/ui/$_.webp" })
     Assert-Test ($taskNames.Count -eq $taskExpected.Count -and
         -not (Compare-Object $taskExpected $taskNames -CaseSensitive)) 'Complete ZIP whitelist mismatch.'
@@ -134,6 +138,14 @@ try {
         finally { $taskStream.Dispose(); $taskMemory.Dispose() }
         Assert-Test ([Convert]::ToBase64String($taskImageBytes) -ceq [Convert]::ToBase64String(
             [IO.File]::ReadAllBytes((Join-Path $taskRoot "docs/images/ui/$taskImage.webp")))) "Image source mismatch: $taskImage"
+    }
+    foreach ($taskDocument in @('README.md', 'USER_GUIDE.md')) {
+        $taskPackedText = Read-ZipText $taskDocument
+        foreach ($taskImageLink in [regex]::Matches($taskPackedText, '!\[[^\]]*\]\(([^)]+)\)')) {
+            $taskTarget = $taskImageLink.Groups[1].Value
+            if ($taskTarget -match '^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|//)' -or $taskTarget.StartsWith('#')) { continue }
+            Assert-Test ($taskNames -contains $taskTarget) "Document image is not packaged: $taskTarget"
+        }
     }
     $taskSourceDocuments = @{}
     $taskPackedDocuments = @{}
@@ -259,4 +271,5 @@ try {
     Assert-Test (-not (Test-Path -LiteralPath $taskNegative.OutputDirectory)) 'Missing/empty guide left package output.'
 } finally { $taskPackage = $taskOriginalPackage }
 
+Complete-TestOutput $taskOutput
 [pscustomobject]@{ TestsPassed = $taskPassed; ArchivePath = $taskResult.ArchivePath; OutputDirectory = $taskOutput }

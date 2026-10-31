@@ -16,12 +16,6 @@ $OutputDirectory = Initialize-TestOutput $OutputDirectory
 
 $ErrorActionPreference = 'Stop'
 $renodx = $HostRoot
-$OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
-if ((Test-Path -LiteralPath $OutputDirectory) -and
-    (Get-ChildItem -LiteralPath $OutputDirectory -Force | Select-Object -First 1)) {
-    throw "Refusing nonempty output directory: $OutputDirectory"
-}
-New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 Write-Host "Lifecycle artifacts: $OutputDirectory"
 $inputs = @('fg_lifecycle_sdk.cpp', 'fg_lifecycle_fixture.cpp', 'fg_lifecycle_tests.cpp', 'run-fg-lifecycle-tests.ps1') |
     ForEach-Object { Join-Path $PSScriptRoot $_ }
@@ -50,6 +44,7 @@ try {
             "/Fe$($target.binary)", '/sourceDependencies', ($target.source + '.dependencies.json'),
             '/link', '/INCREMENTAL:NO', '/OPT:NOICF') + $libraries
         $arguments | ConvertTo-Json | Set-Content -LiteralPath ($target.source + '.arguments.json') -Encoding utf8
+        Register-TestCompilerOutput -Directory $OutputDirectory -ObjectPath (Join-Path $OutputDirectory ($target.source + '.obj')) -ExecutablePath (Join-Path $OutputDirectory $target.binary)
         & cl.exe @arguments *> ($target.source + '.compile.log')
         if ($LASTEXITCODE -ne 0) {
             Get-Content -LiteralPath ($target.source + '.compile.log') -Tail 50
@@ -93,3 +88,4 @@ try {
 } finally {
     Pop-Location
 }
+Complete-TestOutput $OutputDirectory -Outcome Passed

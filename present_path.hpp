@@ -400,6 +400,7 @@ inline std::atomic<const char*> present_white_logged{nullptr};
 inline std::atomic<float> present_white_logged_nits{0.f};
 
 struct PresentGuideSet {
+  bool mixed_predecessor = false;
   ID3D12Resource* motion = nullptr;
   ID3D12Resource* depth = nullptr;
   const void* device_identity = nullptr;
@@ -442,6 +443,7 @@ struct PresentSlot {
 // lists are made on the face NR's runtime was initialized on).
 struct PresentRing {
   ID3D12Device* device = nullptr;
+  ID3D12CommandQueue* queue = nullptr;
   ID3D12Fence* fence = nullptr;
   uint64_t submitted = 0;
   PresentSlot slots[kPresentRing];
@@ -452,6 +454,38 @@ struct PresentRing {
 // Streamline path keys its synthetic streams the same way; never
 // dereferenced).
 struct PresentStream {
+  // Identity-only target inventory. Do not retain DXGI buffers across resize.
+  std::vector<const void*> mixed_buffers;
+  const void* mixed_queue = nullptr;
+  ID3D12CommandQueue* mixed_submission_queue = nullptr;  // compared only
+  const void* mixed_source = nullptr;
+  const void* mixed_output = nullptr;
+  std::shared_ptr<ID3D12Resource> mixed_source_resource;
+  std::pair<uint64_t, uint64_t> mixed_recording;
+  const void* mixed_copy_target = nullptr;
+  const void* mixed_copy_marker = nullptr;
+  FenceRef mixed_copy_fence;
+  uint64_t mixed_copy_value = 0;
+  bool mixed_copy_ambiguous = false;
+  const void* mixed_write_marker = nullptr;
+  FenceRef mixed_write_fence;
+  uint64_t mixed_write_value = 0;
+  std::pair<uint64_t, uint64_t> mixed_write_recording;
+  bool mixed_write_ambiguous = false;
+  bool mixed_write_foreign = false;
+  uint32_t mixed_width = 0;
+  uint32_t mixed_height = 0;
+  DXGI_FORMAT mixed_format = DXGI_FORMAT_UNKNOWN;
+  const void* mixed_device = nullptr;
+  const void* mixed_consumed_source = nullptr;
+  uint64_t mixed_consumed_generation = 0;
+  uint64_t mixed_source_generation = 0;
+  uint64_t mixed_configuration = 0;
+  uint64_t mixed_history_epoch = 0;
+  uint64_t mixed_capture = 0;
+  uint64_t mixed_source_tick = 0;
+  uint32_t mixed_sources = 0;
+  stage_plan::Plan mixed_plan;
   uint8_t handle_key = 0;
   uint8_t neutral_handle_key = 0;
   const NVSDK_NGX_Handle* Handle(bool neutral_model = false) const {
@@ -464,6 +498,8 @@ struct PresentStream {
   ID3D11Texture2D* neutral_depth11 = nullptr;
   uint64_t consumed_serial = 0;
   bool real_guides = false;
+  const NVSDK_NGX_Handle* history_guide_source = nullptr;  // compared only
+  uint64_t history_guide_generation = 0;
   ::renodx::dlss5::PresentCadence fg_cadence;
   const void* device_identity = nullptr;
   // The device behind a Streamline proxy that ReShade took for the native
@@ -526,6 +562,15 @@ inline bool present_fallback_episode = false;
 inline bool present_inline_fallback_pending = false;
 inline uint32_t present_logged_lines = 0;
 
+// runtime_mutex; one bounded handoff per target, never a frame scheduler.
+inline const char* mixed_present_status = "disabled";
+inline uint64_t mixed_present_submitted = 0;
+inline uint64_t mixed_present_rejected = 0;
+inline uint64_t mixed_present_copy_serial = 0;
+inline uint64_t mixed_present_write_serial = 0;
+inline FenceRef mixed_present_last_fence;
+inline uint64_t mixed_present_last_value = 0;
+
 inline void LogPresent(reshade::log::level level, const std::string& message) {
   if (present_logged_lines >= kPresentLogCap) return;
   ++present_logged_lines;
@@ -581,6 +626,7 @@ inline bool ReleasePresentRing() {
     ReleaseCom(slot.allocator);
   }
   ReleaseCom(present_ring.fence);
+  ReleaseCom(present_ring.queue);
   ReleaseCom(present_ring.device);
   present_ring = {};
   // The fence the sets' read values name is gone with it.
@@ -635,12 +681,13 @@ inline bool EnsurePresentRing(ID3D12Device* face) {
 
 // The stream's history restarts: its guides changed source (captured <->
 // neutral), so the model's previous frame is not the one they describe.
-inline void ResetPresentStreamHistory(PresentStream* stream) {
+inline void ResetPresentStreamHistory(PresentStream* stream, uint32_t reason = kResetRecovery) {
   present_history_resets.fetch_add(1, std::memory_order_relaxed);
   for (const bool neutral : {false, true}) {
     if (const auto feature = features.find(stream->Handle(neutral)); feature != features.end()) {
       for (NrFeatureSlot& slot : feature->second.slots) {
         slot.pending_reset = true;
+        slot.pending_reset_reasons |= reason;
       }
     }
   }
@@ -682,6 +729,8 @@ inline void RetirePresentStream(const void* swapchain) {
 // A fresh session's routing state (ReleasePresentPath, RetireIdlePresentPath).
 // Caller holds runtime_mutex.
 inline void ResetPresentPathState() {
+  mixed_present_last_fence = {};
+  mixed_present_last_value = 0;
   present_unusable.store(false, std::memory_order_relaxed);
   present_fallback_episode = false;
   present_inline_fallback_pending = false;
@@ -851,6 +900,9 @@ inline bool CompletePresentContract(const NVSDK_NGX_Handle* handle,
                                     FeatureState* contract) {
   if (const auto known = features.find(handle); known != features.end()) {
     const FeatureState& feature = known->second;
+    contract->source_generation = feature.source_generation;
+    const auto source = created_feature_ids.find(handle);
+    contract->source_feature = (source != created_feature_ids.end() ? source->second : NVSDK_NGX_Feature_Reserved_Unknown);
     if (contract->input_width == 0) {
       contract->input_width = feature.create_input_width != 0
           ? feature.create_input_width : feature.input_width;
@@ -922,6 +974,7 @@ inline void StampPresentCapture(PresentGuideSet* set, const FeatureState& contra
                                 uint32_t output_width, uint32_t output_height,
                                 bool d3d11) {
   set->serial = ++present_capture_serial;
+  set->mixed_predecessor = false;
   set->captured_at = present_generation;
   set->captured_ns = SteadyNowNs();
   set->contract = contract;
@@ -965,9 +1018,47 @@ inline void PreservePresentCaptureProof(
     native_fg_result.store(submitted ? fg::Result::SUBMITTED : fg::Result::FAILED, std::memory_order_release);
     if (submitted) CountNativeFgSubmission(native_fg_recording_serial.load(std::memory_order_acquire));
   }
-  if (submissions.empty()) return;
+  if (submissions.empty()) {
+    for (const auto& set : present_guide_sets) {
+      if (!set.mixed_predecessor || set.marker != marker) continue;
+      if (auto source = features.find(set.source_handle); source != features.end()) {
+        source->second.mixed_recording_discarded = true;
+      }
+    }
+    return;
+  }
+  for (auto& [_, stream] : present_streams) {
+    if (stream.mixed_write_marker == marker) {
+      for (const auto& proof : submissions) {
+        if (proof.pending || proof.fence.empty()) continue;
+        if (stream.mixed_write_fence.empty()) stream.mixed_write_fence = proof.fence;
+        if (stream.mixed_write_fence.fence != proof.fence.fence) stream.mixed_write_foreign = true;
+        const std::pair recording{proof.list_identity, proof.recording_generation};
+        if (proof.value > stream.mixed_write_value) {
+          stream.mixed_write_value = proof.value;
+          stream.mixed_write_recording = recording;
+          stream.mixed_write_ambiguous = false;
+        } else if (proof.value == stream.mixed_write_value && stream.mixed_write_recording != recording) {
+          stream.mixed_write_ambiguous = true;
+        }
+      }
+    }
+    if (stream.mixed_copy_marker != marker) continue;
+    if (submissions.size() != 1) stream.mixed_copy_ambiguous = true;
+    for (const auto& proof : submissions) {
+      if (proof.pending || proof.fence.empty()) {
+        stream.mixed_copy_ambiguous = true;
+        continue;
+      }
+      if (stream.mixed_copy_fence.empty()) stream.mixed_copy_fence = proof.fence;
+      if (stream.mixed_copy_fence.fence != proof.fence.fence) stream.mixed_copy_ambiguous = true;
+      else stream.mixed_copy_value = std::max(stream.mixed_copy_value, proof.value);
+    }
+  }
   for (PresentGuideSet& set : present_guide_sets) {
-    if (set.serial == 0 || set.marker != marker || set.comparison_request == 0) continue;
+    if (set.serial == 0 || set.marker != marker
+        || (set.comparison_request == 0 && !set.mixed_predecessor)) continue;
+    if (set.mixed_predecessor && submissions.size() != 1) set.completed_multiple_queues = true;
     for (const submission::GenerationSubmission& proof : submissions) {
       if (set.completed_fence.empty()) set.completed_fence = proof.fence;
       if (set.completed_fence.fence != proof.fence.fence) {
@@ -985,7 +1076,7 @@ inline void CapturePresentGuides(
     const NVSDK_NGX_Handle* handle,
     const NVSDK_NGX_Parameter* parameters,
     D3D12_RESOURCE_STATES motion_state,
-    D3D12_RESOURCE_STATES depth_state) {
+    D3D12_RESOURCE_STATES depth_state, bool mixed_predecessor) {
   ID3D12Resource* const output = GetD3D12Resource(parameters, NVSDK_NGX_Parameter_Output);
   // One capture per evaluate chain, admitted like an after-path pass: a real
   // NGX entry owns the stream, so the same slEvaluateFeature's Streamline
@@ -995,14 +1086,14 @@ inline void CapturePresentGuides(
   // lacks" warning), and every nested chain captured twice per frame, which
   // halved the frame generation cadence.  The evaluate's terminal is counted
   // here, so the mirror is not also counted as lending its guides.
-  if (output != nullptr) {
+  if (output != nullptr && !mixed_predecessor) {
     if (!AdmitOutputPass(output, handle)) return;
     RecordOutputPass(output, handle);
   }
-  CountNrDecline(NrDeclineReason::kPresentHook);
+  if (!mixed_predecessor) CountNrDecline(NrDeclineReason::kPresentHook);
   if (diagnostics::GuideMode(debug_guide_mode.load(std::memory_order_relaxed),
                             present_guides.load(std::memory_order_relaxed)) == kPresentGuidesNever
-      && !screenshot::WantsFinalPresent()) return;
+      && !screenshot::WantsFinalPresent() && !mixed_predecessor) return;
   ID3D12Resource* const motion =
       GetD3D12Resource(parameters, NVSDK_NGX_Parameter_MotionVectors);
   ID3D12Resource* const depth = GetD3D12Resource(parameters, NVSDK_NGX_Parameter_Depth);
@@ -1102,6 +1193,7 @@ inline void CapturePresentGuides(
   }
   StampPresentCapture(target, contract, static_cast<uint32_t>(output_desc.Width),
                       output_desc.Height, false);
+  target->mixed_predecessor = mixed_predecessor;
   target->marker = reinterpret_cast<const void*>(
       0xFFFF'0000'0000'0000ull | target->serial);
   submission::TrackUse(command_list, target->motion);
@@ -1282,7 +1374,18 @@ inline float QueryPresentSdrWhite(reshade::api::swapchain* swapchain) {
 inline bridge::OwnedParameters& FillPresentBlock(
     PresentStream* stream, void* frame, void* motion, void* depth,
     const FeatureState& contract, uint32_t width, uint32_t height,
-    float motion_share, int reset, bool neutral_model = false) {
+    float motion_share, int reset, bool neutral_model = false,
+    const NVSDK_NGX_Handle* guide_source = nullptr) {
+  const uint64_t source_generation = (guide_source != nullptr ? contract.source_generation : 0);
+  if (stream->history_guide_source != guide_source
+      || stream->history_guide_generation != source_generation) {
+    // Present shares a model across captures. Equal dimensions and flags do
+    // not make two source features (or a recreated handle) share History.
+    stream->history_guide_source = guide_source;
+    stream->history_guide_generation = source_generation;
+    ResetPresentStreamHistory(stream, kResetSourceChange);
+    ObserveLocalHistoryReset(stage_plan::Stage::PRESENT, source_generation, kResetSourceChange);
+  }
   bridge::OwnedParameters& block = stream->parameters;
   block.Reset();
   block.Set(NVSDK_NGX_Parameter_Color, frame);
@@ -2557,9 +2660,499 @@ inline bool YieldPresentToNativeFg() {
   return true;
 }
 
+// The ordinary route and B1 share the same private Present recording and ring.
+// Caller owns the NGX turn and runtime_mutex. A null API queue is used by the
+// native GPU fixture, which has no earlier ReShade add-on work to flush.
+inline bool SubmitPresentGroup(ID3D12CommandQueue* native_queue,
+    reshade::api::command_queue* queue, PresentSlot* slot, PresentStream& stream,
+    bridge::OwnedParameters& block, PresentGuideSet* guides, PresentTarget& target,
+    bool neutral_model, const std::vector<std::pair<FenceRef, uint64_t>>& waits) {
+  if (present_ring.queue != native_queue) {
+    if (!PresentRingComplete()) return false;
+    native_queue->AddRef();
+    ReleaseCom(present_ring.queue);
+    present_ring.queue = native_queue;
+  }
+  auto* motion = GetD3D12Resource(&block, NVSDK_NGX_Parameter_MotionVectors);
+  auto* depth = GetD3D12Resource(&block, NVSDK_NGX_Parameter_Depth);
+  const bool mixed = target.stage_execution_plan != nullptr;
+  target.independent_resolution_pair = target.independent_resolution_pair
+      && stream.fg_multiplier == 1 && present_fg_multiplier.load(std::memory_order_relaxed) == 1
+      && !present_prefg_active.load(std::memory_order_relaxed)
+      && !present_prefg_upscaled_active.load(std::memory_order_relaxed);
+  const bool independent_pair = PresentResolutionPairAllowed(target);
+  const auto* const handle = stream.Handle(neutral_model);
+  bool submitted = false;
+  NrRecording recording;
+  const auto cancel = [&](int*) {
+    if ((!mixed && !independent_pair) || submitted) return;
+    // CPU-side NGX/state ledgers may have advanced even if Close failed.
+    // Discard the recording and retire its private state before another try.
+    submission::OnCommandListReset(slot->list);
+    if (auto feature = features.find(handle); feature != features.end()) {
+      ReleaseAllNrSlots(feature->second, true);
+    }
+    RetireWorkset({handle, reinterpret_cast<const ID3D12Resource*>(&stream)});
+    ResetPresentStreamHistory(&stream);
+  };
+  int cancellation_key = 0;
+  const std::unique_ptr<int, decltype(cancel)> cancellation(&cancellation_key, cancel);
+  if (FAILED(slot->allocator->Reset())
+      || FAILED(slot->list->Reset(slot->allocator, nullptr))) {
+    CountNrDecline(NrDeclineReason::kPresentBusy);
+    LogPresent(reshade::log::level::error, "a present command list could not be reset");
+    return false;
+  }
+  submission::OnCommandListReset(slot->list);
+  // Our own list has no host state for the restore-target gate to wait on.
+  gate_ever_opened.store(true, std::memory_order_relaxed);
+  bool touched = false;
+  {
+    const EvaluateChainScope chain_scope;
+    const int64_t started_ns = SteadyNowNs();
+    const auto previous_capture_serial = screenshot::PendingModelCaptureSerial(slot->list);
+    // From here ProcessInline names the terminal.
+    ProcessInline(slot->list, handle, &block, &touched, &target,
+        mixed ? &recording : nullptr);
+    const auto capture_serial = screenshot::PendingModelCaptureSerial(slot->list);
+    if (capture_serial != 0 && capture_serial != previous_capture_serial) {
+      const auto capture_guide = [&](const char* name, ID3D12Resource* resource) {
+        const auto desc = resource->GetDesc();
+        if (!screenshot::PrepareDiagnosticPlane(present_ring.device, name, resource,
+                static_cast<uint32_t>(desc.Width), desc.Height, std::nullopt, true, capture_serial)) return;
+        Transition(slot->list, resource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                   D3D12_RESOURCE_STATE_COPY_SOURCE, 0u);
+        screenshot::RecordDiagnosticPlaneCopy(slot->list, name, resource, capture_serial);
+        Transition(slot->list, resource, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, 0u);
+      };
+      capture_guide("guide_depth", depth);
+      capture_guide("guide_motion", motion);
+      std::scoped_lock capture_lock(screenshot::internal::state_mutex);
+      if (screenshot::internal::pending && screenshot::internal::pending->serial == capture_serial) {
+        screenshot::internal::pending->meta += "guide_source=final_capture\nguide_real="
+            + std::to_string(guides != nullptr) + "\nguide_serial=" + std::to_string(target.guide_serial) + "\n";
+      }
+    }
+    RecordInjectionCpu(started_ns);
+  }
+  submission::TrackUse(slot->list, motion);
+  submission::TrackUse(slot->list, depth);
+  const bool closed = SUCCEEDED(slot->list->Close());
+  if (!touched) return false;
+  if (!closed) {
+    LogPresent(reshade::log::level::error,
+               "a present command list could not be closed; this frame keeps"
+               " the game's image");
+    return false;
+  }
+  // After the capture's copies: only this queue's own tokens are left here,
+  // the others were proven complete above.
+  for (const auto& [fence, value] : waits) {
+    native_queue->Wait(fence.fence, value);
+    present_guide_waits.fetch_add(1, std::memory_order_relaxed);
+  }
+  // Add-on work recorded earlier through ReShade's immediate list keeps its
+  // place ahead of NR.
+  if (queue != nullptr) queue->flush_immediate_command_list();
+  ID3D12CommandList* list = slot->list;
+  renodx::utils::directx::NativeFromReShadeProxy(&list);
+  native_queue->ExecuteCommandLists(1, &list);
+  submitted = true;
+  slot->value = ++present_ring.submitted;
+  const bool signaled = SUCCEEDED(native_queue->Signal(present_ring.fence, slot->value));
+  if (mixed) {
+    mixed_present_last_fence = FenceRef(present_ring.fence);
+    mixed_present_last_value = slot->value;
+  }
+  ++stream.nr_presents;
+  if (guides != nullptr) {
+    guides->read_value = slot->value;
+    stream.consumed_serial = guides->serial;
+    present_guides_real.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    present_guides_neutral.fetch_add(1, std::memory_order_relaxed);
+  }
+  if (independent_pair && !signaled) {
+    // Guide read occupancy must be published even when Signal fails: the
+    // list is already on the GPU. Keep its ring value/resources until a
+    // later same-queue signal proves completion; never discard it here.
+    ResetPresentStreamHistory(&stream, kResetRecovery);
+    CountNrDecline(NrDeclineReason::kPresentBusy);
+    return false;
+  }
+  if (mixed) {
+    if (!recording.group_complete || !recording.output_ready || !signaled) {
+      ResetPresentStreamHistory(&stream);
+      mixed_present_status = !signaled ? "present_signal_failed" : "present_warming_or_failed";
+      return false;
+    }
+    ++mixed_present_submitted;
+    mixed_present_status = "tail_submitted_gpu_completion_pending";
+  }
+  return true;
+}
+
+// The observer is declared here because the native copy detours must be
+// installed before the first candidate SR output is handed back to the game.
+inline void ObserveMixedPresentCopy(ID3D12GraphicsCommandList* list,
+    ID3D12Resource* source, ID3D12Resource* destination, bool full = true);
+using MixedCopyResourceFn = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, ID3D12Resource*, ID3D12Resource*);
+using MixedCopyRegionFn = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, const D3D12_TEXTURE_COPY_LOCATION*,
+    UINT, UINT, UINT, const D3D12_TEXTURE_COPY_LOCATION*, const D3D12_BOX*);
+inline MixedCopyResourceFn real_mixed_copy_resource = nullptr;
+inline MixedCopyRegionFn real_mixed_copy_region = nullptr;
+inline std::shared_mutex mixed_copy_hook_mutex;
+inline bool mixed_copy_hooks_installed = false;
+
+inline void STDMETHODCALLTYPE HookedMixedCopyResource(ID3D12GraphicsCommandList* list,
+    ID3D12Resource* destination, ID3D12Resource* source) {
+  real_mixed_copy_resource(list, destination, source);
+  GuardHook([&] { ObserveMixedPresentCopy(list, source, destination); });
+}
+inline void STDMETHODCALLTYPE HookedMixedCopyRegion(ID3D12GraphicsCommandList* list,
+    const D3D12_TEXTURE_COPY_LOCATION* destination, UINT x, UINT y, UINT z,
+    const D3D12_TEXTURE_COPY_LOCATION* source, const D3D12_BOX* box) {
+  real_mixed_copy_region(list, destination, x, y, z, source, box);
+  if (source == nullptr || destination == nullptr) return;
+  const bool full = x == 0 && y == 0 && z == 0 && box == nullptr
+      && source->Type == D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX && source->SubresourceIndex == 0
+      && destination->Type == D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX && destination->SubresourceIndex == 0;
+  GuardHook([&] { ObserveMixedPresentCopy(list, source->pResource, destination->pResource, full); });
+}
+inline bool InstallMixedPresentCopyHooks(ID3D12GraphicsCommandList* list) {
+  std::lock_guard lock(mixed_copy_hook_mutex);
+  if (mixed_copy_hooks_installed) return true;
+  renodx::utils::directx::NativeFromReShadeProxy(&list);
+  auto** table = *reinterpret_cast<void***>(list);
+  real_mixed_copy_resource = reinterpret_cast<MixedCopyResourceFn>(table[kCmdSlotCopyResource]);
+  real_mixed_copy_region = reinterpret_cast<MixedCopyRegionFn>(table[kCmdSlotCopyTextureRegion]);
+  std::lock_guard transaction(renodx::utils::vtable::TransactionMutex());
+  if (!renodx::utils::vtable::BeginTransaction()) return false;
+  DetourUpdateThread(GetCurrentThread());
+  if (DetourAttach(reinterpret_cast<PVOID*>(&real_mixed_copy_resource), HookedMixedCopyResource) != NO_ERROR
+      || DetourAttach(reinterpret_cast<PVOID*>(&real_mixed_copy_region), HookedMixedCopyRegion) != NO_ERROR) {
+    DetourTransactionAbort();
+    return false;
+  }
+  mixed_copy_hooks_installed = DetourTransactionCommit() == NO_ERROR;
+  return mixed_copy_hooks_installed;
+}
+inline void UnhookMixedPresentCopyHooks() {
+  std::lock_guard lock(mixed_copy_hook_mutex);
+  if (!mixed_copy_hooks_installed) return;
+  std::lock_guard transaction(renodx::utils::vtable::TransactionMutex());
+  if (!renodx::utils::vtable::BeginTransaction()) return;
+  DetourUpdateThread(GetCurrentThread());
+  if (DetourDetach(reinterpret_cast<PVOID*>(&real_mixed_copy_resource), HookedMixedCopyResource) != NO_ERROR
+      || DetourDetach(reinterpret_cast<PVOID*>(&real_mixed_copy_region), HookedMixedCopyRegion) != NO_ERROR) {
+    DetourTransactionAbort();
+    return;
+  }
+  if (DetourTransactionCommit() == NO_ERROR) mixed_copy_hooks_installed = false;
+}
+
+// Retain only the latest completed copy submission and reject any other
+// live/replayable writer. CPU copy-observation order is not GPU submit order.
+inline bool MixedCopyOrdered(const PresentStream& stream,
+    const std::vector<std::pair<FenceRef, uint64_t>>& copies) {
+  if (copies.size() != 1 || stream.mixed_write_marker == nullptr || stream.mixed_write_foreign
+      || !submission::OnlyRecordingUses(stream.mixed_write_marker, stream.mixed_recording)) return false;
+  const auto& [fence, value] = copies.front();
+  if (!stream.mixed_write_fence.empty()) {
+    if (stream.mixed_write_fence.fence != fence.fence || stream.mixed_write_value > value) return false;
+    if (stream.mixed_write_value == value
+        && (stream.mixed_write_ambiguous || stream.mixed_write_recording != stream.mixed_recording)) return false;
+  }
+  std::vector<std::pair<FenceRef, uint64_t>> writes;
+  if (submission::UseSubmissionTokens(stream.mixed_write_marker, &writes) == submission::UseSubmission::kUnsubmitted) return false;
+  for (const auto& [written_fence, written_value] : writes) {
+    if (written_fence.fence != fence.fence || written_value > value) return false;
+  }
+  return !writes.empty() || stream.mixed_write_value != 0;
+}
+
+inline void InvalidateMixedSource(const NVSDK_NGX_Handle* handle, FeatureState* source) {
+  ReleaseAllNrSlots(*source, true);
+  ReleaseCom(source->norm.commit);
+  source->norm = {};
+  RetireWorkset({handle, source->last_workset_key});
+  source->mixed_recording_discarded = false;
+}
+
+inline bool ProcessMixedPresentPredecessor(ID3D12GraphicsCommandList* list,
+    const NVSDK_NGX_Handle* handle, const NVSDK_NGX_Parameter* parameters, bool* touched) {
+  const auto plan = EvaluationStagePlan(handle);
+  if (!plan.mixed || plan.At(stage_plan::Stage::PRESENT).count == 0) return false;
+  if (evaluate_chain.present_predecessor_attempted) {
+    CountNrDecline(NrDeclineReason::kNestedMirror);
+    return true;
+  }
+  evaluate_chain.present_predecessor_attempted = true;
+  mixed_present_status = "source_target_unproven";
+  const auto decline = [&] {
+    CountNrDecline(NrDeclineReason::kStagePredecessorIncomplete);
+    return true;
+  };
+  auto* output = GetD3D12Resource(parameters, NVSDK_NGX_Parameter_Output);
+  if (!plan.valid || output == nullptr || list->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT) return decline();
+  const void* identity = renodx::utils::directx::NativeIdentity(output);
+  const auto desc = output->GetDesc();
+  ID3D12Device* device = nullptr;
+  if (FAILED(output->GetDevice(IID_PPV_ARGS(&device)))) return decline();
+  const void* device_identity = renodx::utils::directx::NativeIdentity(device);
+  device->Release();
+  PresentStream* target = nullptr;
+  const void* target_key = nullptr;
+  for (auto& [key, stream] : present_streams) {
+    const bool alias = std::ranges::find(stream.mixed_buffers, identity) != stream.mixed_buffers.end();
+    if (!alias && (stream.mixed_device != device_identity || stream.mixed_width != desc.Width
+        || stream.mixed_height != desc.Height || stream.mixed_format != desc.Format)) continue;
+    if (target != nullptr) return decline();
+    target = &stream;
+    target_key = key;
+  }
+  if (target == nullptr) return decline();
+  // present_generation is a conservative lifecycle window, not an SDK frame ID.
+  // Historical association admits A only for the immediately following
+  // source window, after a real same-queue copy submission. The retained
+  // non-DXGI source reference prevents a recycled address inheriting it.
+  bool learned = false;
+  if (target->mixed_source_tick + 1 == present_generation && target->mixed_source_resource.get() == output
+      && target->mixed_copy_marker != nullptr && !target->mixed_copy_ambiguous) {
+    std::vector<std::pair<FenceRef, uint64_t>> copies;
+    const auto proof = submission::UseSubmissionTokens(target->mixed_copy_marker, &copies);
+    if (!target->mixed_copy_fence.empty()) copies.emplace_back(target->mixed_copy_fence, target->mixed_copy_value);
+    const ID3D12Fence* own = nullptr;
+    {
+      std::shared_lock map(queue_completion_mutex);
+      if (const auto found = queue_completions.find(target->mixed_submission_queue); found != queue_completions.end()) {
+        own = found->second.fence;
+      }
+    }
+    learned = proof != submission::UseSubmission::kUnsubmitted && own != nullptr && MixedCopyOrdered(*target, copies);
+    for (const auto& [fence, value] : copies) learned &= fence.fence == own && value != 0 && fence->GetCompletedValue() != UINT64_MAX;
+  }
+  if (target->mixed_source_tick != present_generation) {
+    target->mixed_source_tick = present_generation;
+    target->mixed_sources = 0;
+  }
+  ++target->mixed_sources;
+  target->mixed_capture = 0;
+  target->mixed_copy_marker = nullptr;
+  target->mixed_copy_target = nullptr;
+  target->mixed_copy_fence = {};
+  target->mixed_copy_value = 0;
+  target->mixed_copy_ambiguous = false;
+  const auto source = features.find(handle);
+  const auto created = created_feature_ids.find(handle);
+  if (source == features.end() || created == created_feature_ids.end()
+      || created->second != kFeatureDlss || source->second.source_generation == 0) return decline();
+  if (source->second.mixed_recording_discarded) InvalidateMixedSource(handle, &source->second);
+  const auto& contract = source->second;
+  learned &= target->mixed_source == handle && target->mixed_source_generation == contract.source_generation;
+  const auto current = DeriveFeatureState(parameters);
+  if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.DepthOrArraySize != 1
+      || desc.SampleDesc.Count != 1 || desc.MipLevels != 1
+      || (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0
+      || contract.output_x != 0 || contract.output_y != 0 || current.output_x != 0 || current.output_y != 0
+      || (contract.declared_output_width != 0 && contract.declared_output_width != desc.Width)
+      || (contract.declared_output_height != 0 && contract.declared_output_height != desc.Height)
+      || (current.declared_output_width != 0 && current.declared_output_width != desc.Width)
+      || (current.declared_output_height != 0 && current.declared_output_height != desc.Height)) {
+    mixed_present_status = "source_full_surface_required";
+    return decline();
+  }
+  target->mixed_source = handle;
+  target->mixed_output = identity;
+  target->mixed_source_generation = contract.source_generation;
+  target->mixed_configuration = configuration_generation.load();
+  target->mixed_plan = plan;
+  if (!InstallMixedPresentCopyHooks(list)) {
+    mixed_present_status = "copy_observation_unavailable";
+    CountNrDecline(NrDeclineReason::kStagePredecessorIncomplete);
+    return true;
+  }
+  const bool alias = std::ranges::find(target->mixed_buffers, identity) != target->mixed_buffers.end();
+  if (!alias) {
+    output->AddRef();
+    target->mixed_source_resource = {output, [](ID3D12Resource* resource) { resource->Release(); }};
+  }
+  target->mixed_recording = submission::RecordingIdentity(list);
+  if (!alias && !learned) {
+    for (auto& slot : source->second.slots) slot.pending_reset = true;
+    mixed_present_status = "awaiting_observed_full_copy";
+    CountNrDecline(NrDeclineReason::kStagePredecessorIncomplete);
+    return true;
+  }
+  NrRecording recording;
+  ProcessInline(list, handle, parameters, touched, nullptr, &recording);
+  const auto refreshed = present_streams.find(target_key);
+  if (refreshed == present_streams.end()) return true;
+  target = &refreshed->second;
+  if (!recording.output_ready || !recording.group_complete || !recording.model_recorded) {
+    mixed_present_status = "predecessor_warming_or_failed";
+    return true;
+  }
+  // Capture after A on its actual list. This marker proves submission of A
+  // and its guides together; it does not claim the GPU has finished them.
+  const auto before = present_capture_serial;
+  CapturePresentGuides(list, handle, parameters, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+      D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, true);
+  if (present_capture_serial != before) target->mixed_capture = present_capture_serial;
+  target->mixed_history_epoch = history_reset_epoch.load();
+  mixed_present_status = target->mixed_capture != 0 ? "predecessor_recorded_not_submission_proof" : "guides_unavailable";
+  return true;
+}
+
+// Both copy events pass through unchanged. Only full, same-format copies
+// from the observed SR output establish this limited image association.
+inline void ObserveMixedPresentCopy(ID3D12GraphicsCommandList* list,
+    ID3D12Resource* source, ID3D12Resource* destination, bool full) {
+  if (!experimental_present_chain.load() || shutting_down.load() || SuppressCommandStateObservation() || list == nullptr
+      || source == nullptr || destination == nullptr) return;
+  RuntimeLock lock(runtime_mutex);
+  const void* input = renodx::utils::directx::NativeIdentity(source);
+  const void* output = renodx::utils::directx::NativeIdentity(destination);
+  for (auto& [_, stream] : present_streams) {
+    if (std::ranges::find(stream.mixed_buffers, output) == stream.mixed_buffers.end()) continue;
+    if (stream.mixed_write_marker != nullptr) submission::TrackUse(list, stream.mixed_write_marker);
+    stream.mixed_copy_target = nullptr;
+    stream.mixed_copy_marker = nullptr;
+    stream.mixed_copy_fence = {};
+    stream.mixed_copy_value = 0;
+    stream.mixed_copy_ambiguous = true;
+    const auto from = source->GetDesc();
+    const auto to = destination->GetDesc();
+    if (!full || from.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || from.MipLevels != 1
+        || from.DepthOrArraySize != 1 || from.SampleDesc.Count != 1
+        || from.Width != to.Width || from.Height != to.Height || from.Format != to.Format) continue;
+    if (stream.mixed_source_tick != present_generation || stream.mixed_sources != 1
+        || stream.mixed_output != input || stream.mixed_configuration != configuration_generation.load()
+        || stream.mixed_recording != submission::RecordingIdentity(list)) continue;
+    stream.mixed_copy_ambiguous = false;
+    stream.mixed_copy_target = output;
+    stream.mixed_copy_marker = reinterpret_cast<const void*>(0xFFFE'0000'0000'0000ull | ++mixed_present_copy_serial);
+    stream.mixed_copy_fence = {};
+    stream.mixed_copy_value = 0;
+    submission::TrackUse(list, stream.mixed_copy_marker);
+  }
+}
+
+// One target and one exact source recording. No old-guide or neutral-guide
+// fallback, cross-queue wait, or retry of the predecessor is allowed here.
+inline bool RunMixedPresent(ID3D12CommandQueue* queue, reshade::api::command_queue* api_queue,
+    PresentStream& stream, ID3D12Resource* back, PresentTarget target) {
+  const uint64_t serial = std::exchange(stream.mixed_capture, 0);
+  const uint32_t sources = std::exchange(stream.mixed_sources, 0);
+  const auto reject = [&](const char* reason) {
+    mixed_present_status = reason;
+    ++mixed_present_rejected;
+    ++stage_telemetry[static_cast<size_t>(stage_plan::Stage::PRESENT)].skipped;
+    ResetPresentStreamHistory(&stream);
+    CountNrDecline(NrDeclineReason::kStagePredecessorIncomplete);
+    return false;
+  };
+  const auto plan = RequestedStagePlan();
+  if (!plan.valid || !plan.mixed || plan.At(stage_plan::Stage::PRESENT).count != 1
+      || fg::xefg::Enabled() || fg::xefg::OwnsStream() || auto_fg_fallback_active.load() || native_fg_owns.load()
+      || mixed_present_fg_seen.load() || native_fg_declaration.load() == NativeFgDeclaration::kOn
+      || present_fg_multiplier.load() > 1) return reject("route_or_fg_unavailable");
+  if (serial == 0 || sources != 1 || stream.mixed_source_tick + 1 != present_generation) {
+    return reject("source_sequence_or_view_unproven");
+  }
+  if (stream.mixed_configuration != configuration_generation.load()
+      || stream.mixed_history_epoch != history_reset_epoch.load()
+      || stream.mixed_plan.requested != plan.requested || stream.mixed_plan.pass_count != plan.pass_count) {
+    return reject("configuration_changed");
+  }
+  const auto* handle = static_cast<const NVSDK_NGX_Handle*>(stream.mixed_source);
+  const auto source = features.find(handle);
+  if (source == features.end() || source->second.source_feature != kFeatureDlss
+      || source->second.source_generation != stream.mixed_source_generation) return reject("source_feature_changed");
+  if (queue == nullptr || back == nullptr || queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT
+      || stream.mixed_queue != renodx::utils::directx::NativeIdentity(queue)
+      || (stream.mixed_output != renodx::utils::directx::NativeIdentity(back)
+          && stream.mixed_copy_target != renodx::utils::directx::NativeIdentity(back))) return reject("present_target_changed");
+  PresentGuideSet* guides = nullptr;
+  for (auto& set : present_guide_sets) {
+    if (set.serial == serial && set.mixed_predecessor && set.source_handle == handle) guides = &set;
+  }
+  if (guides == nullptr || guides->motion == nullptr || guides->depth == nullptr
+      || guides->captured_at != stream.mixed_source_tick || guides->completed_multiple_queues) {
+    return reject("guide_contract_or_sequence_changed");
+  }
+  FenceRef own_fence;
+  {
+    std::shared_lock lock(queue_completion_mutex);
+    if (const auto found = queue_completions.find(queue); found != queue_completions.end()) {
+      own_fence = FenceRef(found->second.fence);
+    }
+  }
+  std::vector<std::pair<FenceRef, uint64_t>> tokens;
+  const auto proof = submission::UseSubmissionTokens(guides->marker, &tokens);
+  if (proof == submission::UseSubmission::kUnsubmitted || own_fence.empty()) return reject("source_not_submitted");
+  if (!guides->completed_fence.empty()) tokens.emplace_back(guides->completed_fence, guides->completed_value);
+  if (tokens.empty()) {
+    // A Reset can discard the recording after NGX advanced its CPU ledger.
+    // No submission receipt means its old GPU state cannot be reused.
+    InvalidateMixedSource(handle, &source->second);
+    return reject("no_actual_submission_receipt");
+  }
+  if (tokens.size() > 1) return reject("source_recording_replayed");
+  if (stream.mixed_output != renodx::utils::directx::NativeIdentity(back)) {
+    std::vector<std::pair<FenceRef, uint64_t>> copies;
+    if (stream.mixed_copy_marker == nullptr || stream.mixed_copy_ambiguous
+        || submission::UseSubmissionTokens(stream.mixed_copy_marker, &copies) == submission::UseSubmission::kUnsubmitted) {
+      return reject("copy_not_submitted");
+    }
+    if (!stream.mixed_copy_fence.empty()) copies.emplace_back(stream.mixed_copy_fence, stream.mixed_copy_value);
+    if (copies.empty()) return reject("no_copy_submission_receipt");
+    if (!MixedCopyOrdered(stream, copies)) return reject("competing_copy_recording_or_order_unproven");
+    tokens.insert(tokens.end(), copies.begin(), copies.end());
+  }
+  for (const auto& [fence, value] : tokens) {
+    if (fence.fence != own_fence.fence || value == 0) return reject("cross_queue_or_unknown_producer");
+    if (fence->GetCompletedValue() == UINT64_MAX) return reject("device_removed");
+  }
+  if (present_ring.device == nullptr || present_ring.fence == nullptr) return reject("present_ring_unavailable");
+  auto* slot = &present_ring.slots[(present_ring.submitted + 1) % kPresentRing];
+  const auto done = present_ring.fence->GetCompletedValue();
+  if (done == UINT64_MAX || done < slot->value) return reject("present_ring_busy_or_removed");
+  if (stream.mixed_consumed_source != handle || stream.mixed_consumed_generation != stream.mixed_source_generation) {
+    ResetPresentStreamHistory(&stream, kResetSourceChange);
+    ObserveLocalHistoryReset(stage_plan::Stage::PRESENT, stream.mixed_source_generation, kResetSourceChange);
+    stream.mixed_consumed_source = handle;
+    stream.mixed_consumed_generation = stream.mixed_source_generation;
+  }
+  const auto desc = back->GetDesc();
+  auto& block = FillPresentBlock(&stream, back, guides->motion, guides->depth, guides->contract,
+      static_cast<uint32_t>(desc.Width), desc.Height, 1.f, guides->contract.frame_reset);
+  target.stage_execution_plan = &stream.mixed_plan;
+  target.workset_key = reinterpret_cast<const ID3D12Resource*>(&stream);
+  target.guide_serial = serial;
+  target.diagnostic_source_generation = guides->contract.source_generation;
+  target.diagnostic_source_feature = guides->contract.source_feature;
+  target.guide_mode = kPresentGuidesRequired;
+  target.pass_transfer_strength[0] = target.pass_transfer_strength[1];
+  target.pass_color_strength[0] = target.pass_color_strength[1];
+  // Every source Signal has already been enqueued on this very queue.
+  // Normal queue order establishes the dependency; no additional Wait.
+  mixed_present_status = "tail_not_submitted";
+  return SubmitPresentGroup(queue, api_queue, slot, stream, block, guides, target, false, {});
+}
+
 inline void RunPresentPath(
     reshade::api::command_queue* queue, reshade::api::swapchain* swapchain,
     bool auto_fallback = false, bool deferred = false) {
+  // An armed request can reach Present without another source Evaluate.
+  if (screenshot::WantsFinalPresent()) {
+    RejectMixedFinalPresent(RequestedStagePlan());
+  }
+  const bool mixed = experimental_present_chain.load() && hook_point.load() == kHookUpscaled
+      && stack_passes.load() == 2 && pass_stage[0].load() == 3
+      && swapchain != nullptr && swapchain->get_device() != nullptr
+      && swapchain->get_device()->get_api() == reshade::api::device_api::d3d12;
   // Resolve unsupported requests before the route's early return: Vulkan
   // and the D3D11 foreign/off routes never satisfy PresentHookServes().
   // A helper's small control-window swapchain is not its evaluated game
@@ -2606,7 +3199,46 @@ inline void RunPresentPath(
     }
   }
   if (fg::xefg::OwnsStream()) return;
-  if (!PresentHookServes(false) && !auto_fallback) {
+  if (mixed && queue != nullptr && swapchain != nullptr && swapchain->get_device() != nullptr
+      && swapchain->get_device()->get_api() == reshade::api::device_api::d3d12) {
+    RuntimeLock lock(runtime_mutex);
+    auto& stream = present_streams[swapchain];
+    std::vector<const void*> buffers;
+    const uint32_t count = swapchain->get_back_buffer_count();
+    if (count <= 16) {
+      for (uint32_t index = 0; index < count; ++index) {
+        auto* resource = reinterpret_cast<IUnknown*>(swapchain->get_back_buffer(index).handle);
+        if (resource != nullptr) buffers.push_back(renodx::utils::directx::NativeIdentity(resource));
+      }
+    }
+    auto* native_queue = reinterpret_cast<ID3D12CommandQueue*>(queue->get_native());
+    const void* identity = renodx::utils::directx::NativeIdentity(native_queue);
+    if (stream.mixed_buffers != buffers || stream.mixed_queue != identity) {
+      stream.mixed_capture = 0;
+      stream.mixed_sources = 0;
+      stream.mixed_buffers = std::move(buffers);
+      stream.mixed_queue = identity;
+      renodx::utils::directx::NativeFromReShadeProxy(&native_queue);
+      stream.mixed_submission_queue = native_queue;
+      stream.mixed_source_resource.reset();
+      stream.mixed_write_marker = reinterpret_cast<const void*>(0xFFFD'0000'0000'0000ull | ++mixed_present_write_serial);
+      stream.mixed_write_fence = {};
+      stream.mixed_write_value = 0;
+      stream.mixed_write_recording = {};
+      stream.mixed_write_ambiguous = false;
+      stream.mixed_write_foreign = false;
+    }
+    if (count != 0 && count <= 16) {
+      auto* resource = reinterpret_cast<ID3D12Resource*>(swapchain->get_back_buffer(0).handle);
+      const auto desc = resource->GetDesc();
+      stream.mixed_width = static_cast<uint32_t>(desc.Width);
+      stream.mixed_height = desc.Height;
+      stream.mixed_format = desc.Format;
+      stream.mixed_device = renodx::utils::directx::NativeIdentity(
+          reinterpret_cast<IUnknown*>(swapchain->get_device()->get_native()));
+    }
+  }
+  if (!PresentHookServes(false) && !auto_fallback && !mixed) {
     PublishPresentRestoreOwner(present_prefg_upscaled_active.load(std::memory_order_relaxed)
             ? present_restore_scope::Domain::UPSCALED_FALLBACK : present_restore_scope::Domain::OTHER,
         present_restore_scope::Reason::INACTIVE_DOMAIN, true, 0, 0, "present_hook_not_serving");
@@ -2972,6 +3604,18 @@ inline void RunPresentPath(
   if (!d3d11) {
     stream.prefg_target = target;
     stream.prefg_target_valid = true;
+  }
+  if (mixed) {
+    if (!d3d11 && ngx_turn->owns()) {
+      auto* native_queue = reinterpret_cast<ID3D12CommandQueue*>(queue->get_native());
+      renodx::utils::directx::NativeFromReShadeProxy(&native_queue);
+      RunMixedPresent(native_queue, queue, stream, back, target);
+    } else {
+      stream.mixed_capture = 0;
+      ResetPresentStreamHistory(&stream);
+      mixed_present_status = "present_turn_or_api_unavailable";
+    }
+    return;
   }
   bool native_passthrough = false;
   if (!d3d11 && fg::native_options::ObservesPresentDecisions()) {
@@ -3379,7 +4023,7 @@ inline void RunPresentPath(
   }
   if ((guides != nullptr) != stream.real_guides) {
     stream.real_guides = guides != nullptr;
-    ResetPresentStreamHistory(&stream);
+    ResetPresentStreamHistory(&stream, kResetSourceChange);
   }
 
   ID3D12Resource* const motion = guides != nullptr ? guides->motion : stream.neutral_motion;
@@ -3412,14 +4056,23 @@ inline void RunPresentPath(
       &stream, d3d11 ? static_cast<void*>(back11) : back,
       d3d11 ? static_cast<void*>(motion11) : motion,
       d3d11 ? static_cast<void*>(depth11) : depth, contract, back_width, back_height,
-      motion_share, new_frame ? contract.frame_reset : 0, neutral_model);
+      motion_share, new_frame ? contract.frame_reset : 0, neutral_model,
+      guides != nullptr ? guides->source_handle : nullptr);
   target.workset_key = reinterpret_cast<const ID3D12Resource*>(&stream);
   target.guide_serial = (guides != nullptr ? guides->serial : 0u);
+  target.diagnostic_source_generation = (guides != nullptr ? guides->contract.source_generation : 0);
+  target.diagnostic_source_feature = (guides != nullptr ? guides->contract.source_feature : NVSDK_NGX_Feature_Reserved_Unknown);
 
   // The serial turn was acquired before runtime_mutex, and is held through
   // recording and submission. A GPU slot wait releases both locks so the
   // game's NGX calls remain able to make progress.
 
+  target.independent_resolution_pair = !native_passthrough && !auto_fallback
+      && hook_point.load(std::memory_order_relaxed) == kHookPresent && stream.fg_multiplier == 1
+      && present_fg_multiplier.load(std::memory_order_relaxed) == 1
+      && !present_prefg_active.load(std::memory_order_relaxed)
+      && !present_prefg_upscaled_active.load(std::memory_order_relaxed)
+      && stack_passes.load(std::memory_order_relaxed) == 2;
   if (d3d11) {
     // The bridge's own run path, with this block for the game's: it takes
     // runtime_mutex itself and may bring the bridge up (DLLs, the Detours
@@ -3449,77 +4102,8 @@ inline void RunPresentPath(
     return;
   }
 
-  if (FAILED(slot->allocator->Reset())
-      || FAILED(slot->list->Reset(slot->allocator, nullptr))) {
-    CountNrDecline(NrDeclineReason::kPresentBusy);
-    LogPresent(reshade::log::level::error, "a present command list could not be reset");
-    return;
-  }
-  submission::OnCommandListReset(slot->list);
-  // Our own list has no host state for the restore-target gate to wait on.
-  gate_ever_opened.store(true, std::memory_order_relaxed);
-  bool touched = false;
-  {
-    const EvaluateChainScope chain_scope;
-    const int64_t started_ns = SteadyNowNs();
-    const auto previous_capture_serial = screenshot::PendingModelCaptureSerial(slot->list);
-    // From here ProcessInline names the terminal.
-    ProcessInline(slot->list, stream.Handle(neutral_model), &block, &touched, &target);
-    const auto capture_serial = screenshot::PendingModelCaptureSerial(slot->list);
-    if (capture_serial != 0 && capture_serial != previous_capture_serial) {
-      const auto capture_guide = [&](const char* name, ID3D12Resource* resource) {
-        const auto desc = resource->GetDesc();
-        if (!screenshot::PrepareDiagnosticPlane(present_ring.device, name, resource,
-                static_cast<uint32_t>(desc.Width), desc.Height, std::nullopt, true, capture_serial)) return;
-        Transition(slot->list, resource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                   D3D12_RESOURCE_STATE_COPY_SOURCE, 0u);
-        screenshot::RecordDiagnosticPlaneCopy(slot->list, name, resource, capture_serial);
-        Transition(slot->list, resource, D3D12_RESOURCE_STATE_COPY_SOURCE,
-                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, 0u);
-      };
-      capture_guide("guide_depth", depth);
-      capture_guide("guide_motion", motion);
-      std::scoped_lock capture_lock(screenshot::internal::state_mutex);
-      if (screenshot::internal::pending && screenshot::internal::pending->serial == capture_serial) {
-        screenshot::internal::pending->meta += "guide_source=final_capture\nguide_real="
-            + std::to_string(guides != nullptr) + "\nguide_serial=" + std::to_string(target.guide_serial) + "\n";
-      }
-    }
-    RecordInjectionCpu(started_ns);
-  }
-  submission::TrackUse(slot->list, motion);
-  submission::TrackUse(slot->list, depth);
-  const bool closed = SUCCEEDED(slot->list->Close());
-  if (!touched) return;
-  if (!closed) {
-    LogPresent(reshade::log::level::error,
-               "a present command list could not be closed; this frame keeps"
-               " the game's image");
-    return;
-  }
-  // After the capture's copies: only this queue's own tokens are left here,
-  // the others were proven complete above.
-  for (const auto& [fence, value] : waits) {
-    native_queue->Wait(fence.fence, value);
-    present_guide_waits.fetch_add(1, std::memory_order_relaxed);
-  }
-  // Add-on work recorded earlier through ReShade's immediate list keeps its
-  // place ahead of NR.
-  queue->flush_immediate_command_list();
-  ID3D12CommandList* list = slot->list;
-  renodx::utils::directx::NativeFromReShadeProxy(&list);
-  native_queue->ExecuteCommandLists(1, &list);
-  slot->value = ++present_ring.submitted;
-  native_queue->Signal(present_ring.fence, slot->value);
-  gap.ran = true;
-  ++stream.nr_presents;
-  if (guides != nullptr) {
-    guides->read_value = slot->value;
-    stream.consumed_serial = guides->serial;
-    present_guides_real.fetch_add(1, std::memory_order_relaxed);
-  } else {
-    present_guides_neutral.fetch_add(1, std::memory_order_relaxed);
-  }
+  gap.ran = SubmitPresentGroup(native_queue, queue, slot, stream, block,
+      guides, target, neutral_model, waits);
 }
 
 #include "fg_native.hpp"

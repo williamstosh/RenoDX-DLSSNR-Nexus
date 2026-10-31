@@ -1773,6 +1773,11 @@ inline void SampleScale(reshade::api::command_list* cmd, reshade::api::device* a
 inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
                                  const NVSDK_NGX_Handle* handle,
                                  const NVSDK_NGX_Parameter* parameters) {
+  for (uint32_t pass = 1; pass < std::clamp(stack_passes.load(), 1u, kMaxNrPasses); ++pass) {
+    if (pass_resolution_mode[pass - 1].load() != 0) {
+      return NrDeclineReason::kStageResolutionBackend;
+    }
+  }
   using namespace reshade::api;
   command_list* cmd = nullptr;
   {
@@ -3075,6 +3080,15 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluate(
         " hook point (vk[present_fallback=] counts these evaluates)");
   }
   GuardHook([&] {
+    auto plan = RequestedStagePlan();
+    if (plan.mixed || !plan.valid) {
+      plan.valid = false;
+      if (plan.mixed) {
+        plan.reason = stage_plan::Reason::UNSUPPORTED_BACKEND;
+      }
+      StagePlanAdmitted(plan);
+      return;
+    }
     const NrDeclineReason decline = ProcessNr(command_buffer, handle, parameters);
     if (decline != NrDeclineReason::kCount) CountNrDecline(decline);
   });

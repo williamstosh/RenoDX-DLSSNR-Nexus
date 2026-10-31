@@ -28,8 +28,10 @@
 #pragma once
 
 #include "fg_route.hpp"
+#include "recent_health.hpp"
 
 #include <cstddef>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -212,6 +214,8 @@ struct CardInputs {
   // Recording the next frame immediately after a proven submission keeps
   // the service active; a completed but unsubmitted recording does not.
   bool fg_continuing_submission = false;
+  // Absent only for legacy consumers that supply their own verdict snapshot.
+  std::optional<RecentHealth> recent;
 };
 
 inline constexpr std::size_t kMaxFixSteps = 3;
@@ -547,10 +551,26 @@ inline StatusCard ComputeStatusCard(const CardInputs& in) {
         return card;
       }
       card.issues = in.issues;
+      if (in.recent.has_value() && !continuing && !in.fg_submitted_frames.has_value()
+          && !in.recent->gpu_completed && !in.recent->partial) {
+        if (in.issues != 0) {
+          Set(card, CardId::kStarting, CardTone::kWarn, CardGlyph::kWarning,
+              "Neural Rendering needs attention",
+              "Check the warnings below while NR checks the current settings.");
+          SetFix(card, "Each issue below names what to change.");
+          card.action = CardAction::kOpenDiagnostics;
+        } else {
+          Set(card, CardId::kStarting, CardTone::kIdle, CardGlyph::kWaiting,
+              "Checking Neural Rendering",
+              "Waiting for a fresh GPU result for the current settings.");
+        }
+        return card;
+      }
       const bool whole = continuing
-          || in.verdict.eligible < kPartialMinEligible
+          || (in.recent.has_value() ? !in.recent->partial
+          : in.verdict.eligible < kPartialMinEligible
           || in.verdict.ratio
-                 >= (in.partial_latched ? kPartialLeaveRatio : kPartialEnterRatio);
+                 >= (in.partial_latched ? kPartialLeaveRatio : kPartialEnterRatio));
       if (whole && in.issues != 0) {
         // Engaged is not the same as well: the SH2 session ran its
         // stabilizer without motion on 80.5% of frames under a green card.
@@ -565,7 +585,7 @@ inline StatusCard ComputeStatusCard(const CardInputs& in) {
       }
       if (whole) {
         Set(card, CardId::kActive, CardTone::kGood, CardGlyph::kCheck,
-            "Neural Rendering is active",
+            in.fg_submitted_frames.has_value() ? "NR submitted before FG" : "NR running normally",
             in.present  ? "Enhancing the frame the game presents"
             : in.pre_sr ? "Enhancing the game's DLSS input before upscaling"
                         : "Replacing the game's DLSS output");
@@ -759,28 +779,16 @@ inline int FormatCardDetail(char* buffer, std::size_t size,
   }
 }
 
-// NR's cost (rc11, NRCostMeter): its GPU time per frame NR enhances
-// (`gpu_ms`, per NR evaluate since rc5) and, while NR's share of each
-// presented frame (`present_ms`) is under 90 % of the frame, the frame rate
-// without it beside the one now.  The estimate subtracts the per-present
-// share, not gpu_ms: under frame generation a present carries half an
-// evaluate, and frame_ms is the present interval.  An estimate, and worded as
-// one: it holds while the GPU limits the frame.  `translate`: the panel's
-// language; the log's "NR cost:" line is English.  Writes nothing (returns
-// 0) while the cost is unmeasured.
-inline int FormatNrCost(char* buffer, std::size_t size, float gpu_ms, float present_ms,
-                        float frame_ms, bool translate) {
+// A completed group is measured GPU work, not a removable share of a frame.
+// No current producer proves the CPU/GPU bottleneck or excludes a frame cap.
+// Keep the compatibility arguments without using them to invent a saving.
+inline int FormatNrCost(char* buffer, std::size_t size, float gpu_ms, float /*present_ms*/,
+                        float /*frame_ms*/, bool translate) {
   if (size == 0) return 0;
   buffer[0] = '\0';
-  if (gpu_ms <= 0.f || present_ms <= 0.f || frame_ms <= 0.f) return 0;
-  if (present_ms >= 0.9f * frame_ms) {
-    const char* format = "NR: %.1f ms of GPU time per frame";
-    return std::snprintf(buffer, size, translate ? Tr(format) : format, gpu_ms);
-  }
-  const char* format =
-      "NR: %.1f ms of GPU time per frame (estimate: %.0f fps without NR, %.0f fps with it)";
-  return std::snprintf(buffer, size, translate ? Tr(format) : format, gpu_ms,
-                       1000.f / (frame_ms - present_ms), 1000.f / frame_ms);
+  if (!std::isfinite(gpu_ms) || gpu_ms <= 0.f) return 0;
+  const char* format = "NR: %.1f ms GPU per completed stage group.";
+  return std::snprintf(buffer, size, translate ? Tr(format) : format, gpu_ms);
 }
 
 // i18n: end

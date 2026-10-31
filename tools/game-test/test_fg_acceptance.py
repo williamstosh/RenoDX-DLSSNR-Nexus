@@ -13,7 +13,12 @@ class ModelInstallationTests(unittest.TestCase):
     def test_model_overrides_require_full_restoration_before_input_access(self):
         script = fg_acceptance.ROOT / 'tools' / 'run-fg-acceptance.ps1'
         for overrides in (['-NrPreset', '2'], ['-NrPasses', '2'],
-                          ['-NrPass2Preset', '1', '-RestoreInstallation', '-InstallOnly']):
+                          ['-NrPass2Preset', '1', '-RestoreInstallation', '-InstallOnly'],
+                          ['-NrHookPoint', '1'], ['-NrPass2Stage', '2'],
+                          ['-NrPass3Stage', '0'], ['-NrPass4Stage', '3'],
+                          ['-SrOnly'], ['-SrOnly', '-RestoreInstallation', '-InstallOnly'],
+                          ['-TelemetrySeconds', '1'],
+                          ['-NrHookPoint', '1', '-NrPass2Stage', '2', '-RestoreInstallation', '-InstallOnly']):
             with self.subTest(overrides=overrides):
                 result = subprocess.run(['pwsh.exe', '-NoProfile', '-File', str(script),
                     '-CandidateManifest', 'missing-test-manifest', '-GameBinaryDirectory', 'missing-test-game',

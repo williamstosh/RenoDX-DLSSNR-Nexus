@@ -21,22 +21,32 @@
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "state_card.hpp"
 #include "strings.hpp"
 #include "theme.hpp"
+#include "../stage_plan.hpp"
+#include "frame_metrics.hpp"
 
 namespace renodx::addons::dlss5::ui {
 
 // i18n: begin - display strings (tools/i18n/ui_strings.py catalog)
+inline const char* StageDisplayName(stage_plan::Stage stage) {
+  return Tr(stage_plan::Name(stage));
+}
 
 // ImGui::SetItemTooltip, with the text wrapped at kTooltipEm.  The one way
 // the add-on shows a tooltip.
 inline void ItemTooltip(const char* fmt, ...) {
   if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) return;
+  StyleScope tooltip;
+  tooltip.Color(ImGuiCol_Text, CurrentTheme().text_primary);
   ImGui::BeginTooltip();
   ImGui::PushTextWrapPos((std::min)(ImGui::GetFontSize() * 28.f, ImGui::GetIO().DisplaySize.x * 0.65f));
   va_list args;
@@ -119,72 +129,222 @@ inline std::string Ellipsize(const char* text, float width) {
   return shown + "...";
 }
 
-// Only this child participates in the settings layout. Full messages, actions
-// and repair steps belong to the Diagnostics page.
-inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count) {
+inline bool ProfileSlotButton(const char* id, const char* label, ImVec2 size, bool selected) {
+  StyleScope style;
+  if (selected) {
+    style.Color(ImGuiCol_Button, CurrentTheme().accent)
+        .Color(ImGuiCol_ButtonHovered, CurrentTheme().accent_hover)
+        .Color(ImGuiCol_ButtonActive, CurrentTheme().accent_active)
+        .Color(ImGuiCol_Text, CurrentTheme().on_accent);
+  }
+  bool pressed;
+  {
+    StyleScope hidden;
+    hidden.Color(ImGuiCol_Text, ImVec4(0.f, 0.f, 0.f, 0.f));
+    pressed = ImGui::Button(id, size);
+  }
+  const ImVec2 begin = ImGui::GetItemRectMin();
+  const ImVec2 end = ImGui::GetItemRectMax();
+  const std::string shown = Ellipsize(label, end.x - begin.x - ImGui::GetStyle().FramePadding.x * 2.f);
+  const ImVec2 text = ImGui::CalcTextSize(shown.c_str());
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  draw->PushClipRect(begin, end, true);
+  draw->AddText(ImVec2(begin.x + (end.x - begin.x - text.x) * 0.5f,
+                       begin.y + (end.y - begin.y - text.y) * 0.5f),
+                ImGui::GetColorU32(ImGuiCol_Text), shown.c_str());
+  draw->PopClipRect();
+  return pressed;
+}
+
+struct ProcessingChainLine {
+  std::string text;
+  ImVec2 size;
+};
+
+struct ProcessingChainNode {
+  std::vector<ProcessingChainLine> lines;
+  float content_height = 0.f;
+};
+
+// Measure the actual wrapped lines, rather than centering a multiline button's
+// widest bounding box. Use ImGui's exported measurement API for ReShade hosts.
+inline ProcessingChainNode MeasureProcessingChainNode(const std::array<std::string, 3>& text, float width) {
+  ProcessingChainNode node;
+  const float available = (std::max)(1.f, width - ImGui::GetStyle().FramePadding.x * 2.f);
+  for (const auto& section : text) {
+    size_t begin = 0;
+    do {
+      size_t end = begin;
+      size_t word_break = begin;
+      while (end < section.size() && section[end] != '\n') {
+        size_t next = end + 1;
+        while (next < section.size() && (static_cast<unsigned char>(section[next]) & 0xC0) == 0x80) {
+          ++next;
+        }
+        if (end > begin && ImGui::CalcTextSize(section.data() + begin, section.data() + next, false).x > available) {
+          if (word_break > begin) end = word_break;
+          break;
+        }
+        if (section[end] == ' ') word_break = end;
+        end = next;
+      }
+      std::string line = section.substr(begin, end - begin);
+      const ImVec2 size = ImGui::CalcTextSize(line.c_str(), nullptr, false);
+      node.lines.push_back({.text = std::move(line), .size = size});
+      node.content_height += size.y;
+      begin = end;
+      if (begin < section.size() && section[begin] == '\n') ++begin;
+      while (begin < section.size() && section[begin] == ' ') ++begin;
+    } while (begin < section.size());
+  }
+  node.content_height += ImGui::GetStyle().ItemInnerSpacing.y * (node.lines.size() - 1);
+  return node;
+}
+
+inline bool ProcessingChainButton(const ProcessingChainNode& node, ImVec2 size, bool selected) {
+  StyleScope style;
+  style.Color(ImGuiCol_Button, selected ? CurrentTheme().node_selected : CurrentTheme().bg_card)
+      .Color(ImGuiCol_Border, selected ? CurrentTheme().accent : CurrentTheme().node_border)
+      .Var(ImGuiStyleVar_FrameBorderSize, selected ? 2.f : 1.f);
+  // Keep a real button for keyboard navigation, hit testing and tooltips.
+  const bool pressed = ImGui::Button("###chain_pass", size);
+  const ImVec2 begin = ImGui::GetItemRectMin();
+  const ImVec2 end = ImGui::GetItemRectMax();
+  float y = begin.y + (size.y - node.content_height) * 0.5f;
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  draw->PushClipRect(begin, end, true);
+  size_t line_index = 0;
+  for (const auto& line : node.lines) {
+    draw->AddText(ImVec2(begin.x + (size.x - line.size.x) * 0.5f, y),
+                  ToU32(line_index++ == 0 ? CurrentTheme().text_primary : CurrentTheme().text_secondary), line.text.c_str());
+    y += line.size.y + ImGui::GetStyle().ItemInnerSpacing.y;
+  }
+  draw->PopClipRect();
+  return pressed;
+}
+
+struct StatusSummaryFields {
+  // Already formatted snapshot values. No runtime state is read by this widget.
+  std::string resolution;
+  std::string stage;
+  std::string gpu;
+  std::string fps;
+  std::string fg;
+  const char* fps_tip = frame_metrics::SourceTip(frame_metrics::Source::NONE);
+  const char* fg_tip = "Observed frame generation route. FG GPU duration is unavailable.";
+  const char* resolution_tip = "Configured working ratio and current completed working dimensions when available.";
+  const char* stage_tip = "Execution evidence for the current chain. A requested stage is not proof of execution.";
+  const char* gpu_tip = "Recent valid NR GPU time. Shows — when no measurement is available.";
+  bool gpu_reference = false;
+};
+
+// Only the compact child participates in settings layout. The caller opens
+// complete runtime details without expanding the summary's default height.
+inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, const StatusSummaryFields& fields,
+                              const std::string& monitor_hotkey = {}) {
   StyleScope frame;
   frame.FontSize(BodyFontSize())
       .Color(ImGuiCol_ChildBg, CurrentTheme().bg_card)
       .Var(ImGuiStyleVar_WindowPadding, ImVec2(tokens::kCardPadding + kStripeWidth, tokens::kCardPadding));
-  const float height = ImGui::GetTextLineHeightWithSpacing() * 4.f
-                       + ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y * 2.f;
+  const float font = ImGui::GetFontSize();
+  const float available = (std::max)(1.f, ImGui::GetContentRegionAvail().x - ImGui::GetStyle().WindowPadding.x * 2.f);
+  const float gap = ImGui::GetStyle().ItemSpacing.x;
+  const std::string monitor_label = std::string(Tr("Monitor"))
+      + (available >= font * 42.f && !monitor_hotkey.empty() ? " · " + monitor_hotkey : "")
+      + (warning_count != 0 ? " !" : "");
+  const float action_width = (std::min)(available, ImGui::CalcTextSize(monitor_label.c_str()).x
+      + ImGui::GetStyle().FramePadding.x * 2.f);
+  const float title_width = (std::max)(1.f, available - action_width - gap);
+  const bool auxiliary = available >= font * 56.f;
+  const int columns = (available >= font * 28.f ? 3 : 2);
+  const float field_width = (available - gap * (columns - 1)) / columns;
+  const float heading_height = ImGui::GetFrameHeight();
+  const float height = ImGui::GetStyle().WindowPadding.y * 2.f + heading_height
+      + ImGui::GetStyle().ItemSpacing.y + ImGui::GetTextLineHeight()
+      + (auxiliary ? ImGui::GetTextLineHeightWithSpacing() : 0.f);
+  char title[256];
+  FormatCardTitle(title, sizeof(title), card);
+  const char* short_title = title;
+  switch (card.id) {
+    case CardId::kOffByUser: short_title = Tr("NR disabled"); break;
+    case CardId::kActive: short_title = Tr(card.fg_submitted_frames.has_value() ? "NR submitted before FG" : "NR running normally"); break;
+    case CardId::kActiveWithIssues: short_title = Tr("Active with warnings"); break;
+    case CardId::kPartlyActive: short_title = Tr("Partly active"); break;
+    case CardId::kStarting: short_title = Tr(card.tone == CardTone::kWarn ? "Needs attention" : "Checking NR"); break;
+    default: break;
+  }
   bool details = false;
-  if (ImGui::BeginChild("##nr_status_summary", ImVec2(0.f, height),
-                        ImGuiChildFlags_AlwaysUseWindowPadding,
+  if (ImGui::BeginChild("##nr_status_summary", ImVec2(0.f, height), ImGuiChildFlags_AlwaysUseWindowPadding,
                         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
     const ImVec2 origin = ImGui::GetWindowPos();
-    ImGui::GetWindowDrawList()->AddRectFilled(
-        origin, ImVec2(origin.x + kStripeWidth, origin.y + ImGui::GetWindowSize().y),
+    ImGui::GetWindowDrawList()->AddRectFilled(origin, ImVec2(origin.x + kStripeWidth, origin.y + ImGui::GetWindowSize().y),
         ToU32(ToneColor(card.tone)), tokens::kRadiusCard, ImDrawFlags_RoundCornersLeft);
-    // A missing measurement still consumes its line. Wrapping is disabled
-    // locally even when the surrounding ReShade panel enables it.
-    const auto line = [](const char* value, const ImVec4& color) {
-      StyleScope text;
-      text.Color(ImGuiCol_Text, color);
-      std::string single_line(value);
-      std::replace(single_line.begin(), single_line.end(), '\n', ' ');
-      std::replace(single_line.begin(), single_line.end(), '\r', ' ');
-      ImGui::PushTextWrapPos(-1.f);
-      ImGui::TextUnformatted(Ellipsize(single_line.c_str(), ImGui::GetContentRegionAvail().x).c_str());
-      ImGui::PopTextWrapPos();
-      ItemTooltip("%s", value);
-    };
-    char title[256];
-    FormatCardTitle(title, sizeof(title), card);
-    const std::string heading = std::string(GlyphIcon(card.glyph)) + " " + title;
-    line(heading.c_str(), ToneColor(card.tone));
-    char detail[256];
-    if (FormatCardDetail(detail, sizeof(detail), card) == 0) {
-      std::snprintf(detail, sizeof(detail), "%s", Tr(card.body));
-    }
-    line(detail, CurrentTheme().text_secondary);
-    char cost[256];
-    if (FormatNrCost(cost, sizeof(cost), card.nr_gpu_ms, card.nr_present_ms, card.frame_ms, true) == 0) {
-      std::snprintf(cost, sizeof(cost), "%s: %s", Tr(text::kNrCost), Tr(text::kNoneYet));
-    }
-    line(cost, CurrentTheme().text_secondary);
-    char path[256];
-    if (card.frame_gen_multiplier > 1 || card.fg_declared || card.observed_fg_route != FgRoute::kUnknown) {
-      std::snprintf(path, sizeof(path), Tr(FrameGenText(card)),
-                    card.frame_gen_multiplier);
-    } else {
-      std::snprintf(path, sizeof(path), "%s", Tr(card.path_note != nullptr ? card.path_note : card.body));
-    }
-    line(path, CurrentTheme().text_secondary);
-    char label[160];
-    std::snprintf(label, sizeof(label), Tr(text::kStatusDetails), warning_count);
+    const ImVec2 heading_at = ImGui::GetCursorPos();
+    ImGui::AlignTextToFramePadding();
     {
-      StyleScope button;
-      if (warning_count != 0) {
-        button.Color(ImGuiCol_Text, CurrentTheme().warn).Color(ImGuiCol_Border, CurrentTheme().warn);
-      }
-      const std::string shown = Ellipsize(label, ImGui::GetContentRegionAvail().x - ImGui::GetStyle().FramePadding.x * 2.f);
-      details = ImGui::Button((shown + "###status_details").c_str(), ImVec2(-1.f, 0.f));
+      StyleScope tone;
+      tone.Color(ImGuiCol_Text, ToneColor(card.tone));
+      const std::string heading = std::string(GlyphIcon(card.glyph)) + " " + short_title;
+      ImGui::TextUnformatted(Ellipsize(heading.c_str(), title_width).c_str());
+      ItemTooltip("%s\n%s", title, card.body != nullptr ? Tr(card.body) : "");
     }
-    ItemTooltip("%s", label);
+    ImGui::SetCursorPos(ImVec2(heading_at.x + available - action_width, heading_at.y));
+    details = ImGui::Button((monitor_label + "###status_details").c_str(), ImVec2(action_width, 0.f));
+    ItemTooltip("%s%s%s\n%s", Tr("Runtime monitor"), monitor_hotkey.empty() ? "" : " · ", monitor_hotkey.c_str(),
+        Tr("Open the movable runtime monitor. Diagnostics remain available separately."));
+    const float metric_y = heading_at.y + heading_height + ImGui::GetStyle().ItemSpacing.y;
+    const char* names[] = {"NR GPU", "FPS", "FG"};
+    const std::string* values[] = {&fields.gpu, &fields.fps, &fields.fg};
+    const char* tips[] = {fields.gpu_tip, fields.fps_tip, fields.fg_tip};
+    for (int column = 0; column < columns; ++column) {
+      const int index = (columns == 2 && column == 1 && fields.fps.empty() ? 2 : column);
+      const std::string value = (index == 0 && fields.gpu_reference && !values[index]->empty() ? "~ " : "")
+          + (values[index]->empty() ? std::string("—") : *values[index]);
+      const std::string metric = std::string(Tr(names[index])) + "  " + value;
+      ImGui::SetCursorPos(ImVec2(heading_at.x + column * (field_width + gap), metric_y));
+      const float value_width = ImGui::CalcTextSize(value.c_str()).x;
+      const auto label = Ellipsize(Tr(names[index]), (std::max)(0.f, field_width - value_width - font * 0.4f));
+      const std::string shown = label.empty() ? value : label + " " + value;
+      ImGui::TextUnformatted(Ellipsize(shown.c_str(), field_width).c_str());
+      ItemTooltip("%s\n%s", metric.c_str(), tips[index] != nullptr ? Tr(tips[index]) : "");
+    }
+    if (auxiliary) {
+      const float width = (available - gap) * 0.5f;
+      const char* labels[] = {"Working resolution", "Execution stage"};
+      const std::string* values[] = {&fields.resolution, &fields.stage};
+      const char* tips[] = {fields.resolution_tip, fields.stage_tip};
+      StyleScope muted;
+      muted.Color(ImGuiCol_Text, CurrentTheme().text_secondary);
+      for (int column = 0; column < 2; ++column) {
+        const std::string text = std::string(Tr(labels[column])) + "  "
+            + (values[column]->empty() ? "—" : values[column]->c_str());
+        ImGui::SetCursorPos(ImVec2(heading_at.x + column * (width + gap), metric_y + ImGui::GetTextLineHeightWithSpacing()));
+        ImGui::TextUnformatted(Ellipsize(text.c_str(), width).c_str());
+        ItemTooltip("%s\n%s", text.c_str(), tips[column] != nullptr ? Tr(tips[column]) : "");
+      }
+    }
   }
   ImGui::EndChild();
   return details;
+}
+
+inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, const char* execution = nullptr) {
+  StatusSummaryFields fields;
+  const bool off = card.id == CardId::kOffByUser;
+  if (!off && card.input_width != 0 && card.input_height != 0 && card.output_width != 0 && card.output_height != 0) {
+    char sizes[96];
+    std::snprintf(sizes, sizeof(sizes), "%ux%u -> %ux%u", card.input_width, card.input_height,
+                  card.output_width, card.output_height);
+    fields.resolution = sizes;
+  }
+  if (!off && execution != nullptr) fields.stage = execution;
+  if (!off && card.nr_gpu_ms > 0.f) {
+    char gpu[96];
+    std::snprintf(gpu, sizeof(gpu), "%.1f ms", card.nr_gpu_ms);
+    fields.gpu = gpu;
+  }
+  fields.fg = Tr(card.fg_declared || card.frame_gen_multiplier > 1 ? "On" : "Unknown");
+  return DrawStatusSummary(card, warning_count, fields);
 }
 
 // The glyph in the card's tone and the title, at the title size: the card's
@@ -494,6 +654,10 @@ inline bool Slider(const char* id, float* value, float min, float max,
     // ImGui centres a grab of GrabMinSize on the value: the knob's diameter,
     // so the knob drawn below sits where the mouse drags it.
     hidden.Var(ImGuiStyleVar_GrabMinSize, knob * 2.f);
+    // Fluent Light and Midnight OLED use a useful border on ordinary controls;
+    // the custom rail already supplies the slider's edge, so suppress only the
+    // invisible backing frame around this widget.
+    hidden.Var(ImGuiStyleVar_FrameBorderSize, 0.f);
     if (!was_typing) {
       const ImVec4 clear(0.f, 0.f, 0.f, 0.f);
       hidden.Color(ImGuiCol_FrameBg, clear)
@@ -563,19 +727,28 @@ inline bool RightLink(const char* label, float right) {
 // An always-open section's caption: small text in the primary colour
 // over a hairline, and at the right end a link that resets the section,
 // shown while `modified`.  Returns true on the frame the link was clicked.
-inline bool SectionCaption(const char* caption, const char* reset_label, bool modified) {
+inline bool SectionCaption(const char* caption, const char* reset_label, bool modified, bool prominent = false) {
+  StyleScope caption_font;
+  caption_font.FontSize(prominent ? TitleFontSize() : ModuleFontSize());
   const char* title = Tr(caption);
   reset_label = Tr(reset_label);
   ImGui::Dummy(ImVec2(0.f, tokens::kRowGap * 0.5f));
-  const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
-  const float width = ImGui::GetContentRegionAvail().x;
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  const float padding = (prominent ? BaseFontSize() * 0.3f : 0.f);
+  const float width = ImGui::GetContentRegionAvail().x - padding * 2.f;
+  const float right = at.x + width + padding;
+  if (prominent) {
+    ImGui::GetWindowDrawList()->AddRectFilled(at,
+        ImVec2(right + padding, at.y + ImGui::GetFontSize() + padding * 2.f),
+        ToU32(CurrentTheme().bg_card), tokens::kRadiusSmall);
+    ImGui::SetCursorScreenPos(ImVec2(at.x + padding, at.y + padding));
+  }
   const bool words = !modified || ImGui::CalcTextSize(title).x + ImGui::CalcTextSize(reset_label).x + ImGui::GetFontSize() <= width;
   const char* shown_reset = (words ? reset_label : icons::kUndo);
   const float title_width = width - (modified ? ImGui::CalcTextSize(shown_reset).x + ImGui::GetFontSize() : 0.f);
   bool clicked = false;
   {
     StyleScope caption_text;
-    caption_text.FontSize(SmallFontSize());
     {
       StyleScope secondary;
       secondary.Color(ImGuiCol_Text, CurrentTheme().text_primary);
@@ -587,7 +760,12 @@ inline bool SectionCaption(const char* caption, const char* reset_label, bool mo
       ItemTooltip("%s", reset_label);
     }
   }
-  ImGui::Separator();
+  if (prominent) {
+    ImGui::SetCursorScreenPos(ImVec2(at.x,
+        at.y + ImGui::GetFontSize() + padding * 2.f + ImGui::GetStyle().ItemSpacing.y));
+  } else {
+    ImGui::Separator();
+  }
   return clicked;
 }
 
@@ -749,6 +927,48 @@ inline int Segmented(const char* id, const char* const* english, int count,
   }
   ImGui::PopID();
   return clicked;
+}
+
+// The caller owns the ID scope so independent position menus can share this grid.
+inline bool DrawPositionGrid(int* anchor) {
+  const char* labels[] = {"Top left", "Top center", "Top right",
+      "Center left", "Center", "Center right",
+      "Bottom left", "Bottom center", "Bottom right"};
+  const float gap = ImGui::GetStyle().ItemSpacing.x;
+  const float side = (std::max)(1.f, (std::min)(ImGui::GetFrameHeight() * 1.5f,
+      (ImGui::CalcItemWidth() - 2.f * gap) / 3.f));
+  bool changed = false;
+  ImGui::BeginGroup();
+  for (int index = 0; index < 9; ++index) {
+    if (index % 3 != 0) {
+      ImGui::SameLine();
+    }
+    char id[24];
+    std::snprintf(id, sizeof(id), "##position_anchor_%d", index);
+    {
+      StyleScope selected;
+      if (*anchor == index) {
+        selected.Color(ImGuiCol_Button, CurrentTheme().accent)
+            .Color(ImGuiCol_ButtonHovered, CurrentTheme().accent_hover)
+            .Color(ImGuiCol_ButtonActive, CurrentTheme().accent_active);
+      }
+      if (ImGui::Button(id, ImVec2(side, side)) && *anchor != index) {
+        *anchor = index;
+        changed = true;
+      }
+      const auto lo = ImGui::GetItemRectMin();
+      const auto hi = ImGui::GetItemRectMax();
+      const ImU32 ink = ToU32(*anchor == index ? CurrentTheme().on_accent : CurrentTheme().text_secondary);
+      auto* draw = ImGui::GetWindowDrawList();
+      draw->AddRect(ImVec2(lo.x + side * .2f, lo.y + side * .2f),
+          ImVec2(hi.x - side * .2f, hi.y - side * .2f), ink, 1.f);
+      draw->AddCircleFilled(ImVec2(lo.x + side * (.25f + .25f * static_cast<float>(index % 3)),
+          lo.y + side * (.25f + .25f * static_cast<float>(index / 3))), side * .075f, ink);
+    }
+    ItemTooltip("%s", Tr(labels[index]));
+  }
+  ImGui::EndGroup();
+  return changed;
 }
 
 // i18n: end

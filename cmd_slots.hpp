@@ -39,6 +39,8 @@ namespace renodx::addons::dlss5 {
 constexpr std::uint32_t kCmdSlotRelease = 2;
 constexpr std::uint32_t kCmdSlotReset = 10;
 constexpr std::uint32_t kCmdSlotClearState = 11;
+constexpr std::uint32_t kCmdSlotCopyTextureRegion = 16;
+constexpr std::uint32_t kCmdSlotCopyResource = 17;
 constexpr std::uint32_t kCmdSlotSetPipelineState = 25;
 constexpr std::uint32_t kCmdSlotExecuteBundle = 27;
 constexpr std::uint32_t kCmdSlotSetDescriptorHeaps = 28;
