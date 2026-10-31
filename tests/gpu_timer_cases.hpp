@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -312,6 +313,34 @@ int Run() {
               "each separated stage uses local slot zero and keeps its global pass identity");
         }
         const auto pixels = delivered.Pixels();
+        const auto samples = std::array{timers::stage_stats[0], timers::stage_stats[1], timers::stage_stats[2]};
+        std::array<bool, 3> current{};
+        for (size_t stage = 0; stage < samples.size(); ++stage) {
+          current[stage] = native::CurrentGpuSample(samples[stage], timers::NowNs());
+        }
+        const auto total = addon::SummarizeMonitorGpu(native::RequestedStagePlan(), samples, current, {1, 2, 0, 0});
+        const uint64_t expected_us = samples[1].total_us + (mixed ? static_cast<uint64_t>(samples[0].total_us) : 0);
+        if (!current[1] || (mixed && !current[0])) {
+          Check(!total.valid, "a group recorded before the second model's rebuild cannot become current HUD cost");
+          continue;
+        }
+        if (!total.valid) {
+          addon::gpu_comparison::Identity live;
+          native::comparison_ui::CaptureSettings(&live);
+          for (size_t stage = 0; stage < samples.size(); ++stage) {
+            const auto& sample = samples[stage];
+            std::cout << "HUD_TIMER mixed=" << mixed << " stage=" << stage << " current=" << current[stage]
+                      << " missing=" << total.missing_stages << " incompatible=" << total.incompatible
+                      << " source=" << sample.identity.source_generation
+                      << " epoch=" << sample.identity.stable_epoch << "/" << native::comparison_stable_epochs[stage]
+                      << " settings=" << sample.identity.settings_hash << "/" << live.settings_hash
+                      << " config=" << sample.identity.configuration_generation << "/" << live.configuration_generation
+                      << " age_ns=" << timers::NowNs() - sample.recorded_ns << '\n';
+          }
+        }
+        Check(total.valid && total.reference == mixed
+                  && std::abs(total.milliseconds - static_cast<float>(expected_us) / 1000.f) < .001f,
+              "actual single/cross-stage GPU recordings produce complete correctly scoped HUD cost");
         Check(delivered.width == 16 && delivered.height == 16
                   && std::any_of(pixels.begin(), pixels.end(), [](uint8_t value) { return value != 0; }),
               "full extent production image reaches GPU readback");

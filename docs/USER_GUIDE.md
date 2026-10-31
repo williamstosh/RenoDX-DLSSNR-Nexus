@@ -137,11 +137,15 @@ dev.8 起提供每游戏六个 **Profile／Slot（快速方案／槽位）**及�
 
 诊断集中显示 NR 状态、原因、工作尺寸、GPU 开销和反馈入口。先解决状态问题，再比较性能；需要细节时展开**详细诊断**。
 
-##### F11 运行监视器（开发版可用）
+##### F11 常驻性能 HUD（开发版可用，尚未打包）
 
 - **F11** 显示／隐藏，在**高级 → 快捷键**可改绑定。默认关闭主菜单后仍显示。
-- 游戏中不接收鼠标或键盘输入；打开 ReShade 主菜单后可拖动、缩放、锁定位置与尺寸，切换**精简／详细**，设置会保存。
-- 精简视图显示 NR 状态、GPU 开销、可用的 ReShade FPS 和 FG 状态；逐层链显示位置、模型配置和实际尺寸，详细视图增加逐层开销与异常。
+- 游戏中不接收鼠标或键盘输入；按 **Home** 打开 ReShade 主菜单后可拖动、缩放、锁定位置与尺寸。拖动后记忆自定义位置。
+- **精简／详细（Compact／Details）**显示 NR 状态、GPU 开销、帧率和 FG 状态；详细视图增加逐层开销与异常。逐层链显示位置、模型配置和实际尺寸。两种视图均可选开**趋势（Trends）**，查看最近 **10／30／60 秒**，并选择帧率、UI 更新间隔（ms）、NR GPU 或各 Pass GPU 曲线。
+- 帧率来自 **ImGui／ReShade 的平滑更新节奏**，更新间隔是实际 UI 更新间隔；不以 FG 生成输出作数据源。GPU 曲线使用已完成的原始计时样本，以 **50 ms** 分桶并保留峰值，缺测时留空。
+- **高级 → 快捷键 → 运行时监视器**可设置 **0–100% 背景不透明度，默认 80%**；仅背景变淡，文字和曲线保持清晰。九宫格快捷定位后可用水平／垂直偏移微调（UI 像素），或重置位置和尺寸；拖动会切回自定义位置。
+
+跨阶段的 NR GPU 仅在所有阶段组都有近期有效样本，且配置、设备、来源、显示条件与队列一致时显示 **~ 参考合计**。每个阶段组的总耗时只计一次，包含组内共用开销；它是近期成本参考，并非同一帧的端到端延迟。条件不足时查看独立 Pass 数据；缺测与未运行分别显示。
 
 F6 立即提示开关操作，随后状态更新为正在检查、正常运行、已提交至 FG 或具体原因。等待／暂无时让游戏正常运行片刻，持续存在再查看原因。FG 倍率未知时，分别看 FG 活动和 NR 路径。
 
@@ -390,7 +394,7 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 
 **NR 开销计量**默认开，**GPU 分阶段计时**默认关，可在详细诊断开启。DX12／DX11 Bridge 支持查看各层位置、模型配置、工作／输出尺寸和 GPU 耗时，及 Encode、模型求值（NGX）、Resolve、阶段总耗时。
 
-GPU 时间描述 NR 工作；ReShade FPS 来自宿主。跨阶段分别查看，不能相加当整帧延迟。FG、CPU 瓶颈和限帧影响整体 FPS，整体流畅度在游戏中比较。Look 已含于 Resolve，NGX 含边界操作；读数须新鲜、已完成且匹配当前配置。模型标签是兼容规则解析后的配置，运行时内部网络不提供回读。
+GPU 时间描述 NR 工作；监视器帧率反映 ImGui／ReShade 更新节奏。跨阶段的 **~ 参考合计**与独立 Pass 数据见上方[性能 HUD](#zh-diagnostics)说明。FG、CPU 瓶颈和限帧影响整体 FPS，整体流畅度在游戏中比较。Look 已含于 Resolve，NGX 含边界操作；读数须新鲜、已完成且匹配当前配置。模型标签是兼容规则解析后的配置，运行时内部网络不提供回读。
 
 GPU A/B 每组收集 16 有效样本，开始／重建后 1 秒稳定期、10 秒超时；显示中位数、波动和 B−A，只接受一层实际尺寸变化。场景、位置、模型、FG、HDR 和其他设置保持相同；采集中改设置或换场景需重新采集。
 
@@ -595,11 +599,15 @@ For garbled Chinese, use the **keyboard button** by the field title or right-cli
 
 Read NR status, reasons, dimensions, GPU cost and reporting here. Address status issues first, then compare performance; expand **Detailed diagnostics** for more.
 
-##### F11 runtime monitor (available in development)
+##### F11 persistent performance HUD (development source, not yet packaged)
 
 - **F11** toggles it; rebind under **Advanced → Hotkeys**. By default it stays visible after the menu closes.
-- It accepts no gameplay mouse/keyboard input. Open ReShade to move, resize, lock position/size or select **Compact/Detailed**; preferences are saved.
-- Compact shows NR state, GPU cost, available ReShade FPS and FG status. The pass chain shows location, configured model and actual size; Detailed adds pass costs and issues.
+- It accepts no gameplay mouse/keyboard input. Press **Home** to open ReShade, then move, resize or lock position/size. Dragging saves a custom position.
+- **Compact/Details** show NR state, GPU cost, FPS and FG status; Details adds pass costs and issues. The pass chain shows location, configured model and actual size. Either view can show optional **Trends** for the last **10/30/60 seconds**; select FPS, UI update interval (ms), NR GPU or individual pass GPU curves.
+- FPS is the **smoothed ImGui/ReShade update cadence**; update interval is the actual UI update interval. Frame-generated output is not a data source. GPU curves use raw completed timing samples, grouped into **50 ms** buckets that preserve peaks and leave missing data empty.
+- Under **Advanced → Hotkeys → Runtime monitor**, set **background opacity from 0–100%, default 80%**. Only backgrounds fade; text and graphs stay clear. Choose one of nine anchor positions, fine-tune horizontal/vertical offsets in UI pixels, or reset position and size. Dragging switches back to a custom position.
+
+Across stages, NR GPU shows an **~ reference sum** only when every stage group has recent valid samples with matching configuration, device, source, display conditions and queue. Each stage group's total span is counted once, including its shared work. This describes recent cost rather than same-frame end-to-end latency. Otherwise, read individual pass data; missing measurements and passes that did not run are shown separately.
 
 F6 confirms the switch immediately; status then updates to checking, running, submitted to FG or a specific reason. Let gameplay run briefly for waiting/no-data states, then inspect the reason if persistent. With an unknown FG multiplier, read FG activity and NR route separately.
 
@@ -848,7 +856,7 @@ Compatible ordinary Present Optional/Never can also work without game DLSS, subj
 
 **NR cost meter** defaults on; **GPU stage profiling** defaults off in Detailed diagnostics. DX12/DX11 Bridge show per-pass location, configured model, working/output size and GPU cost, plus Encode, model evaluation (NGX), Resolve and stage total.
 
-GPU time describes NR work; ReShade FPS comes from the host. Read stages separately instead of summing as frame latency. FG, CPU limits and caps affect overall FPS; compare smoothness in gameplay. Look is included in Resolve, and NGX includes boundary operations. Readings must be fresh, completed and match settings. Model labels reflect compatibility-resolved configuration; internal runtime networks offer no readback.
+GPU time describes NR work; monitor FPS reflects ImGui/ReShade update cadence. See the [performance HUD](#en-diagnostics) above for the cross-stage **~ reference sum** and individual pass data. FG, CPU limits and caps affect overall FPS; compare smoothness in gameplay. Look is included in Resolve, and NGX includes boundary operations. Readings must be fresh, completed and match settings. Model labels reflect compatibility-resolved configuration; internal runtime networks offer no readback.
 
 GPU A/B collects 16 valid samples, with a 1-second settling period at start/rebuild and 10-second timeout. It shows median, variation and B−A, accepting one pass's actual size change. Keep scene, location, models, FG, HDR and other settings constant; recapture after changes during collection or a scene change.
 

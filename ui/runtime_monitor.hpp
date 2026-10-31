@@ -13,6 +13,7 @@
 
 #include "widgets.hpp"
 #include "recent_health.hpp"
+#include "monitor_history.hpp"
 
 namespace renodx::addons::dlss5::ui {
 
@@ -56,6 +57,8 @@ struct MonitorInputs {
   // Same monotonic nanosecond clock as recent.last_sample_ns; zero means unknown.
   std::int64_t now_ns = 0;
   StatusSummaryFields summary;
+  const MonitorHistory* history = nullptr;
+  std::string gpu_notice;
 };
 
 // Physical screen coordinates with the UI scale used when they were saved.
@@ -74,6 +77,14 @@ struct MonitorState {
   bool pin = false;  // Locks movement/resizing while editing.
   MonitorGeometry geometry;
   bool detailed = false;  // The caller persists this together with pin and geometry.
+  float background_opacity = .8f;
+  bool trends = false;
+  int history_seconds = 30;
+  uint32_t trend_mask = 0x7f;
+  bool apply_geometry = false;
+  bool fit_content = false;
+  int anchor = -1;
+  ImVec2 offset{};
 };
 
 struct MonitorActions {
@@ -102,7 +113,7 @@ inline MonitorGeometry ClampMonitorGeometry(MonitorGeometry geometry, ImVec2 wor
   geometry.size.x = std::clamp(finite(geometry.size.x * ratio, 520.f * ui_scale),
       (std::min)(320.f * ui_scale, work_size.x), work_size.x);
   geometry.size.y = std::clamp(finite(geometry.size.y * ratio, 640.f * ui_scale),
-      (std::min)(160.f * ui_scale, work_size.y), work_size.y);
+      (std::min)(120.f * ui_scale, work_size.y), work_size.y);
   geometry.position.x = std::clamp(finite(geometry.position.x, work_pos.x), work_pos.x,
                                  work_pos.x + work_size.x - geometry.size.x);
   geometry.position.y = std::clamp(finite(geometry.position.y, work_pos.y), work_pos.y,
@@ -112,6 +123,27 @@ inline MonitorGeometry ClampMonitorGeometry(MonitorGeometry geometry, ImVec2 wor
   geometry.work_position = work_pos;
   geometry.work_size = work_size;
   return geometry;
+}
+
+// Anchors run left-to-right, top-to-bottom. Offsets are unscaled UI pixels.
+inline MonitorGeometry PositionMonitorGeometry(MonitorGeometry geometry, int anchor, ImVec2 offset,
+                                               ImVec2 work_pos, ImVec2 work_size, float scale) {
+  geometry = ClampMonitorGeometry(geometry, work_pos, work_size, scale);
+  if (anchor < 0 || anchor > 8) return geometry;
+  const float x = static_cast<float>(anchor % 3) * .5f;
+  const float y = static_cast<float>(anchor / 3) * .5f;
+  geometry.position = ImVec2(geometry.work_position.x + (geometry.work_size.x - geometry.size.x) * x
+                                + (std::isfinite(offset.x) ? offset.x * geometry.ui_scale : 0.f),
+                            geometry.work_position.y + (geometry.work_size.y - geometry.size.y) * y
+                                + (std::isfinite(offset.y) ? offset.y * geometry.ui_scale : 0.f));
+  return ClampMonitorGeometry(geometry, geometry.work_position, geometry.work_size, geometry.ui_scale);
+}
+
+inline bool CanConnectMonitorPoints(const MonitorPoint& previous, const MonitorPoint& current, MonitorMetric metric) {
+  const int64_t max_gap = (metric == MonitorMetric::FPS || metric == MonitorMetric::INTERVAL
+      ? 200'000'000LL : 750'000'000LL);
+  return previous.valid && current.valid && previous.reference == current.reference
+      && current.time_ns > previous.time_ns && current.time_ns - previous.time_ns <= max_gap;
 }
 
 // Legacy callers draw inside a panel and may use a narrow inline disclosure.
@@ -140,11 +172,29 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
   theme.Color(ImGuiCol_TitleBg, CurrentTheme().bg_control)
       .Color(ImGuiCol_TitleBgActive, CurrentTheme().bg_control_hover)
       .Color(ImGuiCol_TitleBgCollapsed, CurrentTheme().bg_control);
+  const float opacity = (std::isfinite(state->background_opacity)
+      ? std::clamp(state->background_opacity, 0.f, 1.f) : .8f);
+  for (ImGuiCol color : {ImGuiCol_WindowBg, ImGuiCol_ChildBg, ImGuiCol_Border, ImGuiCol_BorderShadow,
+                         ImGuiCol_TitleBg, ImGuiCol_TitleBgActive, ImGuiCol_TitleBgCollapsed,
+                         ImGuiCol_TableHeaderBg, ImGuiCol_TableBorderStrong, ImGuiCol_TableBorderLight,
+                         ImGuiCol_TableRowBg, ImGuiCol_TableRowBgAlt}) {
+    ImVec4 background = ImGui::GetStyle().Colors[color];
+    if (color == ImGuiCol_WindowBg || color == ImGuiCol_ChildBg || color == ImGuiCol_TitleBg
+        || color == ImGuiCol_TitleBgActive || color == ImGuiCol_TitleBgCollapsed) {
+      background.w = opacity;
+    } else {
+      background.w *= opacity;
+    }
+    theme.Color(color, background);
+  }
   bool visible = true;
+  bool geometry_applied = false;
+  bool fit_content = state->fit_content;
   if (inline_mode) {
     visible = ImGui::CollapsingHeader((std::string(Tr("Runtime monitor")) + "###nr_monitor_inline").c_str());
   } else {
     const bool initialize_geometry = !state->geometry.valid;
+    fit_content |= initialize_geometry && (saved_geometry == nullptr || !saved_geometry->valid);
     if (!state->geometry.valid) {
       if (saved_geometry != nullptr && saved_geometry->valid) {
         state->geometry = *saved_geometry;
@@ -183,18 +233,24 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
       }
     }
     const auto previous = state->geometry;
-    state->geometry = ClampMonitorGeometry(previous, work_pos, work_size, ui_scale);
+    const bool area_changed = previous.work_position.x != work_pos.x || previous.work_position.y != work_pos.y
+        || previous.work_size.x != work_size.x || previous.work_size.y != work_size.y
+        || previous.ui_scale != ui_scale;
+    state->geometry = (state->anchor >= 0 && (initialize_geometry || state->apply_geometry || area_changed)
+        ? PositionMonitorGeometry(previous, state->anchor, state->offset, work_pos, work_size, ui_scale)
+        : ClampMonitorGeometry(previous, work_pos, work_size, ui_scale));
     const bool corrected = previous.position.x != state->geometry.position.x || previous.position.y != state->geometry.position.y
         || previous.size.x != state->geometry.size.x || previous.size.y != state->geometry.size.y
         || previous.ui_scale != state->geometry.ui_scale;
-    actions.geometry_changed = initialize_geometry || corrected;
+    geometry_applied = initialize_geometry || corrected || state->apply_geometry;
+    actions.geometry_changed = geometry_applied;
     // Only apply corrected geometry. Reapplying it each frame would defeat dragging.
     ImGui::SetNextWindowPos(state->geometry.position,
-                            initialize_geometry || corrected ? ImGuiCond_Always : ImGuiCond_Appearing);
+                            geometry_applied ? ImGuiCond_Always : ImGuiCond_Appearing);
     ImGui::SetNextWindowSize(state->geometry.size,
-                             initialize_geometry || corrected ? ImGuiCond_Always : ImGuiCond_Appearing);
+                             geometry_applied ? ImGuiCond_Always : ImGuiCond_Appearing);
     ImGui::SetNextWindowSizeConstraints(
-        ImVec2((std::min)(320.f * ui_scale, work_size.x), (std::min)(160.f * ui_scale, work_size.y)),
+        ImVec2((std::min)(320.f * ui_scale, work_size.x), (std::min)(120.f * ui_scale, work_size.y)),
         work_size);
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoSavedSettings;
     if (standalone) {
@@ -243,6 +299,15 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
       if (tool("Close", "###status_close", "Close monitor")) {
         state->open = false;
       }
+      if (!inline_mode) {
+        if (tool("Fit to content", "###monitor_fit", "Fit height to current content.")) {
+          fit_content = true;
+        }
+        if (tool("Trends", "###monitor_trends", "Show performance history")) {
+          state->trends = !state->trends;
+          actions.settings_changed = true;
+        }
+      }
     }
     const auto row = [](const char* label, const std::string& value) {
       ImGui::TableNextRow();
@@ -270,18 +335,20 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
           + ImGui::GetStyle().ItemSpacing.x * 3.f;
     };
     const float widest_metric = (std::max)({metric_width("NR GPU", inputs.summary.gpu),
-        metric_width("ReShade FPS", inputs.summary.fps), metric_width("FG", inputs.summary.fg)});
+        metric_width("FPS", inputs.summary.fps), metric_width("FG", inputs.summary.fg)});
     const float metric_available = ImGui::GetContentRegionAvail().x;
     const int metric_columns = (metric_available >= widest_metric * 3.f ? 3
                                 : (metric_available >= widest_metric * 2.f ? 2 : 1));
     if (ImGui::BeginTable("monitor_dashboard", metric_columns, ImGuiTableFlags_SizingStretchSame)) {
-      const auto metric = [](const char* label, const std::string& value) {
+      const auto metric = [](const char* label, const std::string& value, const char* tip) {
         ImGui::TableNextColumn();
         ImGui::TextWrapped("%s  %s", Tr(label), value.empty() ? "—" : value.c_str());
+        ItemTooltip("%s", Tr(tip));
       };
-      metric("NR GPU", inputs.summary.gpu);
-      metric("ReShade FPS", inputs.summary.fps);
-      metric("FG", inputs.summary.fg);
+      metric("NR GPU", (inputs.summary.gpu_reference && !inputs.summary.gpu.empty() ? "~ " : "")
+          + inputs.summary.gpu, inputs.summary.gpu_tip);
+      metric("FPS", inputs.summary.fps, inputs.summary.fps_tip);
+      metric("FG", inputs.summary.fg, inputs.summary.fg_tip);
       ImGui::EndTable();
     }
     const auto field = [](const char* label, const std::string& value) {
@@ -377,12 +444,170 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
     } else {
       field("Stage", inputs.summary.stage);
     }
-    if (!inline_mode && state->detailed) {
-      field("Dimensions", inputs.summary.resolution);
-      field("Measurement scope", inputs.gpu_scope);
-      field("Limitation", inputs.current_limit);
+    if (!inline_mode && state->trends) {
+      ImGui::SeparatorText(Tr("Trends"));
+      const int seconds = (state->history_seconds == 10 || state->history_seconds == 60 ? state->history_seconds : 30);
       if (interactive) {
-        ImGui::TextWrapped("%s", Tr("A created model request does not prove the internal network actually used."));
+        const char* durations[] = {"10 s", "30 s", "60 s"};
+        const int durations_seconds[] = {10, 30, 60};
+        for (int index = 0; index < 3; ++index) {
+          if (index != 0) {
+            SameLineIfFits(ImGui::CalcTextSize(Tr(durations[index])).x + ImGui::GetFrameHeight()
+                + ImGui::GetStyle().ItemInnerSpacing.x);
+          }
+          if (ImGui::RadioButton(Tr(durations[index]), seconds == durations_seconds[index])) {
+            state->history_seconds = durations_seconds[index];
+            actions.settings_changed = true;
+          }
+        }
+      }
+      const char* names[] = {"FPS", "Update interval (ms)", "NR GPU", "Pass 1 GPU", "Pass 2 GPU", "Pass 3 GPU", "Pass 4 GPU"};
+      const unsigned metric_count = 3u + (std::min)(inputs.pass_count, 4u);
+      const ImVec4 colors[] = {CurrentTheme().accent, CurrentTheme().good, CurrentTheme().accent,
+          CurrentTheme().good, CurrentTheme().warn, CurrentTheme().text_primary, CurrentTheme().text_secondary};
+      if (interactive) {
+        for (unsigned metric = 0; metric < metric_count; ++metric) {
+          if (metric != 0) SameLineIfFits(ImGui::CalcTextSize(Tr(names[metric])).x + ImGui::GetFrameHeight()
+              + ImGui::GetStyle().ItemInnerSpacing.x);
+          bool selected = (state->trend_mask & (1u << metric)) != 0;
+          StyleScope legend;
+          legend.Color(ImGuiCol_Text, colors[metric]);
+          if (Checkbox(Tr(names[metric]), &selected)) {
+            state->trend_mask ^= 1u << metric;
+            actions.settings_changed = true;
+          }
+        }
+      }
+      const int64_t duration_ns = static_cast<int64_t>(seconds) * 1'000'000'000LL;
+      const int64_t begin_ns = inputs.now_ns - duration_ns;
+      const auto in_window = [&](const MonitorPoint& point) {
+        return point.valid && point.time_ns >= begin_ns && point.time_ns <= inputs.now_ns
+            && std::isfinite(point.value) && std::isfinite(point.low) && std::isfinite(point.high);
+      };
+      const auto plot = [&](unsigned first, unsigned end, const char* unit) {
+        const uint32_t mask = ((1u << end) - (1u << first)) & state->trend_mask;
+        if (mask == 0) return;
+        float maximum = 0.f;
+        bool available = false;
+        bool first_label = true;
+        for (unsigned metric = first; metric < end; ++metric) {
+          if ((mask & (1u << metric)) == 0) continue;
+          bool reference = false;
+          if (inputs.history != nullptr) {
+            const auto& series = inputs.history->series[metric];
+            for (size_t index = 0; index < series.count; ++index) {
+              const auto& point = series.At(index);
+              if (!in_window(point)) continue;
+              maximum = (std::max)(maximum, point.high);
+              available = true;
+              reference |= point.reference;
+            }
+          }
+          if (!first_label) {
+            SameLineIfFits(ImGui::CalcTextSize(Tr(names[metric])).x + font * 2.f);
+          }
+          ImGui::TextColored(colors[metric], "%s%s", reference ? "~ " : "", Tr(names[metric]));
+          first_label = false;
+        }
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const ImVec2 size((std::max)(1.f, ImGui::GetContentRegionAvail().x), font * 6.f);
+        ImGui::Dummy(size);
+        ItemTooltip("%s", Tr("FPS is smoothed UI cadence; interval is the actual ImGui update interval. GPU points are completed events. Bucket ranges preserve peaks; gaps stay empty."));
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const ImVec2 edge(origin.x + size.x, origin.y + size.y);
+        draw->AddRectFilled(origin, edge, ImGui::GetColorU32(ImGuiCol_ChildBg), 3.f);
+        draw->AddRect(origin, edge, ImGui::GetColorU32(ImGuiCol_Border), 3.f);
+        const float top = origin.y + font * 1.5f;
+        const float bottom = edge.y - font * 1.4f;
+        const float left = origin.x + 4.f;
+        const float right = edge.x - 4.f;
+        maximum = (std::max)(maximum * 1.05f, .001f);
+        char range[96];
+        std::snprintf(range, sizeof(range), "0–%.1f %s", maximum, unit);
+        draw->AddText(ImVec2(left, origin.y + 2.f), ImGui::GetColorU32(ImGuiCol_Text), available ? range : "—");
+        char span[32];
+        std::snprintf(span, sizeof(span), "-%d s", seconds);
+        draw->AddText(ImVec2(left, bottom + 3.f), ImGui::GetColorU32(ImGuiCol_Text), span);
+        draw->AddText(ImVec2(right - ImGui::CalcTextSize("0 s").x, bottom + 3.f), ImGui::GetColorU32(ImGuiCol_Text), "0 s");
+        if (inputs.history == nullptr || !available) return;
+        const auto position = [&](int64_t time, float value) {
+          return ImVec2(left + static_cast<float>(static_cast<double>(time - begin_ns) / duration_ns) * (right - left),
+                        bottom - value / maximum * (bottom - top));
+        };
+        draw->PushClipRect(ImVec2(left, top), ImVec2(right + 1.f, bottom + 1.f), true);
+        const ImDrawListFlags draw_flags = draw->Flags;
+        draw->Flags &= ~ImDrawListFlags_AntiAliasedLines;
+        // Bound the mesh for long windows with all seven curves. Display columns
+        // retain raw extrema and split at every gap or reference transition.
+        const float column_width = (std::max)(1.f, (right - left) / 256.f);
+        for (unsigned metric = first; metric < end; ++metric) {
+          if ((mask & (1u << metric)) == 0) continue;
+          const auto& series = inputs.history->series[metric];
+          const ImU32 color = ImGui::GetColorU32(colors[metric]);
+          const MonitorPoint* previous = nullptr;
+          MonitorPoint column;
+          int column_index = -1;
+          bool pending = false, connect = false, have_previous = false;
+          ImVec2 previous_at;
+          MonitorPoint previous_column;
+          const auto flush = [&] {
+            if (!pending) return;
+            const ImVec2 at = position(column.time_ns, column.value);
+            if (column.low != column.high) {
+              draw->AddLine(position(column.time_ns, column.low), position(column.time_ns, column.high), color, 1.f);
+            }
+            draw->AddRectFilled(ImVec2(at.x - 1.f, at.y - 1.f), ImVec2(at.x + 1.f, at.y + 1.f), color);
+            if (connect && have_previous
+                && CanConnectMonitorPoints(previous_column, column, static_cast<MonitorMetric>(metric))) {
+              draw->AddLine(previous_at, at, color, 1.f);
+            }
+            previous_at = at;
+            previous_column = column;
+            have_previous = true;
+            pending = false;
+          };
+          for (size_t index = 0; index < series.count; ++index) {
+            const auto& point = series.At(index);
+            if (!in_window(point)) {
+              flush();
+              previous = nullptr;
+              have_previous = false;
+              continue;
+            }
+            const bool continuous = previous != nullptr
+                && CanConnectMonitorPoints(*previous, point, static_cast<MonitorMetric>(metric));
+            const int next_column = static_cast<int>((position(point.time_ns, point.value).x - left) / column_width);
+            if (pending && continuous && column_index == next_column) {
+              column.time_ns = point.time_ns;
+              column.value = point.value;
+              column.low = (std::min)(column.low, point.low);
+              column.high = (std::max)(column.high, point.high);
+            } else {
+              flush();
+              column = point;
+              column_index = next_column;
+              pending = true;
+              connect = continuous;
+            }
+            previous = &point;
+          }
+          flush();
+        }
+        draw->Flags = draw_flags;
+        draw->PopClipRect();
+      };
+      plot(0, 1, "FPS");
+      plot(1, 2, "ms");
+      plot(2, metric_count, "ms");
+    }
+    if (!inline_mode) {
+      if (!inputs.current_limit.empty()) {
+        ImGui::TextWrapped("%s", inputs.current_limit.c_str());
+      }
+      if (!inputs.gpu_notice.empty()) {
+        StyleScope muted;
+        muted.Color(ImGuiCol_Text, CurrentTheme().text_secondary);
+        ImGui::TextWrapped("%s", inputs.gpu_notice.c_str());
       }
     }
     // Passive gameplay submits no disclosure controls; edit mode owns raw evidence.
@@ -390,6 +615,8 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
         && ImGui::CollapsingHeader((std::string(Tr("Raw evidence")) + "###monitor_raw_evidence").c_str(),
                                    ImGuiTreeNodeFlags_NoAutoOpenOnLog)) {
       ImGui::SeparatorText(Tr("Recent evidence"));
+      field("Dimensions", inputs.summary.resolution);
+      ImGui::TextWrapped("%s", Tr("A created model request does not prove the internal network actually used."));
       if (ImGui::BeginTable("conclusion", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
         ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthStretch, 0.38f);
         ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch, 0.62f);
@@ -484,12 +711,31 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
     }
   }
   if (!inline_mode) {
+    if (fit_content && visible) {
+      auto geometry = state->geometry;
+      geometry.position = ImGui::GetWindowPos();
+      geometry.size = ImVec2(ImGui::GetWindowSize().x, ImGui::GetCursorPosY()
+          + ImGui::GetStyle().WindowPadding.y - ImGui::GetStyle().ItemSpacing.y);
+      geometry = PositionMonitorGeometry(geometry, state->anchor, state->offset, work_pos, work_size, ui_scale);
+      ImGui::SetWindowSize(geometry.size, ImGuiCond_Always);
+      ImGui::SetWindowPos(geometry.position, ImGuiCond_Always);
+      geometry_applied = true;
+      actions.geometry_changed = true;
+      state->fit_content = false;
+    }
     const ImVec2 pos = ImGui::GetWindowPos();
     const ImVec2 size = ImGui::GetWindowSize();
-    actions.geometry_changed |= pos.x != state->geometry.position.x || pos.y != state->geometry.position.y
-        || size.x != state->geometry.size.x || size.y != state->geometry.size.y;
+    const bool geometry_changed = std::abs(pos.x - state->geometry.position.x) > .5f
+        || std::abs(pos.y - state->geometry.position.y) > .5f
+        || std::abs(size.x - state->geometry.size.x) > .5f || std::abs(size.y - state->geometry.size.y) > .5f;
+    if (geometry_changed && interactive && !state->pin && !geometry_applied) {
+      state->anchor = -1;
+      actions.settings_changed = true;
+    }
+    actions.geometry_changed |= geometry_changed;
     state->geometry = {.position = pos, .size = size, .ui_scale = ui_scale, .valid = true,
                        .work_position = work_pos, .work_size = work_size};
+    state->apply_geometry = false;
     ImGui::End();
   }
   return actions;

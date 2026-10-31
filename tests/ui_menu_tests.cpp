@@ -359,7 +359,28 @@ int main() {
       runtime::LoadConfiguration();
       check(runtime::ui_theme_choice.load() == theme.id, "theme preference did not survive production reload");
     }
+    for (const auto opacity : {0.f, .8f, 1.f}) {
+      load_theme_case((section + "UiTheme=cyber_neon\nUiMonitorOpacity=" + std::to_string(opacity)
+          + "\nUiMonitorTrends=1\nUiMonitorHistorySeconds=60\nUiMonitorAnchor=8\nUiMonitorOffsetX=-12\nUiMonitorOffsetY=-9\n").c_str(), ui::ThemeId::CYBER_NEON);
+      const auto& monitor = runtime::ui_runtime_monitor_state;
+      check(std::abs(monitor.background_opacity - opacity) < .001f && monitor.trends
+                && monitor.history_seconds == 60 && monitor.anchor == 8 && monitor.apply_geometry
+                && monitor.offset.x == -12.f && monitor.offset.y == -9.f,
+            "monitor opacity endpoints, history and anchored position survive production configuration loading");
+    }
+    load_theme_case((section + "UiTheme=cyber_neon\nUiMonitorOpacity=nan\nUiMonitorHistorySeconds=7\n"
+        "UiMonitorAnchor=99\nUiMonitorOffsetX=inf\nUiMonitorOffsetY=nan\nUiMonitorTrendMask=4294967295\n").c_str(), ui::ThemeId::CYBER_NEON);
+    check(runtime::ui_runtime_monitor_state.background_opacity == .8f
+              && runtime::ui_runtime_monitor_state.history_seconds == 30
+              && runtime::ui_runtime_monitor_state.anchor == 8
+              && runtime::ui_runtime_monitor_state.offset.x == 0.f
+              && runtime::ui_runtime_monitor_state.offset.y == 0.f
+              && runtime::ui_runtime_monitor_state.trend_mask == 0x7f,
+          "malformed persisted monitor settings are sanitized without disabling the UI");
     load_theme_case("", ui::ThemeId::CYBER_NEON);
+    check(runtime::ui_runtime_monitor_state.background_opacity == .8f
+              && !runtime::ui_runtime_monitor_state.trends && runtime::ui_runtime_monitor_state.anchor == -1,
+          "absent monitor settings retain safe defaults and the existing custom geometry model");
     runtime::ui_welcomed = true;
     runtime::ui_language_choice = 1;
     float panel_width = 1000.f;

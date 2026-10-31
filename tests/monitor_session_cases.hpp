@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -103,6 +104,7 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   preserve_atomic(r::monitor_requested);
   preserve_atomic(r::monitor_keep_visible);
   preserve_atomic(r::monitor_observation_epoch);
+  preserve_atomic(r::monitor_history_epoch);
   preserve_atomic(r::monitor_runtime);
   preserve_atomic(r::enabled);
   preserve_atomic(r::hook_point);
@@ -135,6 +137,7 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   preserve(r::card_observation.last_decline_ns);
   preserve(r::card_observation.last_decline);
   preserve(timers::comparison_settings);
+  preserve(r::stage_telemetry);
   for (auto& stats : timers::stage_stats) preserve(stats);
   for (auto& proof : timers::execution_stats) preserve(proof);
   preserve(ImGui::GetStyle());
@@ -238,11 +241,14 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
     r::OnReshadeOpenOverlay(nullptr, true, reshade::api::input_source::keyboard);
     r::hotkey_capture_target = 5;
     const auto epoch = r::monitor_observation_epoch.load();
+    const auto history_epoch = r::monitor_history_epoch.load();
     check(!r::OnReshadeOpenOverlay(nullptr, false, reshade::api::input_source::keyboard)
               && !r::hud_overlay_open.load() && r::monitor_requested.load() == keep
               && r::monitor_observation_epoch.load() == epoch + 1 && r::flush_profile_storage == nullptr
               && r::hotkey_capture_target.load() == 0,
           "closing Home honors keep-visible, cancels monitor rebinding and never flushes profiles");
+    check(r::monitor_history_epoch.load() == history_epoch + (keep ? 0u : 1u),
+          "Home editing preserves HUD history unless closing the menu actually closes the monitor");
   }
 
   // The holder has a bounded escape so a regression to blocking acquisition
@@ -383,7 +389,8 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   measured.identity = identity;
   measured.total_us = 1250;
   measured.sequence = 1;
-  measured.passes[0] = {.id = 0, .width = 2560, .height = 1440, .total_us = 1250,
+  measured.passes[0] = {.id = 0, .model = addon::nr_model::ResolvePreset(r::preset.load(), 0, r::direct_runtime_requirements.dual_models),
+                        .width = 2560, .height = 1440, .output_width = 2560, .output_height = 1440, .total_us = 1250,
                         .state = timers::SampleState::VALID};
   r::monitor_snapshot = {};
   const auto current = r::RefreshMonitorSnapshot(true);
@@ -425,13 +432,134 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   r::pass_stage[0] = 2;
   auto& render = timers::stage_stats[0];
   render = measured;
+  std::strcpy(render.path, "preSR");
   measured.passes[0].id = 1;
+  measured.passes[0].model = addon::nr_model::ResolvePreset(r::preset.load(), r::pass_preset[0].load(), r::direct_runtime_requirements.dual_models);
+  for (auto* sample : {&render, &measured}) {
+    sample->queue = reinterpret_cast<void*>(uintptr_t{0x1234});
+    sample->identity.source_generation = 77;
+    sample->identity.sr_width = 1280;
+    sample->identity.sr_height = 720;
+    sample->identity.out_width = 2560;
+    sample->identity.out_height = 1440;
+    const auto sample_stage = timers::StageIndex(sample->path);
+    sample->identity.stable_epoch = r::comparison_stable_epochs[sample_stage];
+    r::stage_telemetry[sample_stage].last_evaluate.source_generation = 77;
+    r::stage_telemetry[sample_stage].last_evaluate.source_released = false;
+  }
+  render.total_us = 1809;
+  measured.total_us = 4781;
   r::monitor_snapshot.attempted_ns = 0;
   const auto cross_stage = r::RefreshMonitorSnapshot(true);
   check(cross_stage.monitor.passes[0].execution_confirmed && cross_stage.monitor.passes[1].execution_confirmed
-            && cross_stage.summary.gpu.empty() && cross_stage.card.nr_gpu_ms == 0.f
+            && cross_stage.summary.gpu == "6.6 ms" && cross_stage.summary.gpu_reference && cross_stage.card.nr_gpu_ms == 0.f
             && cross_stage.card.nr_present_ms == 0.f,
-        "same-configuration same-time Stage samples cannot establish a common execution cycle or total");
+        "complete compatible stage spans expose a reference sum without claiming common-cycle latency");
+  const auto valid_cross = measured;
+  for (int rejection = 0; rejection < 12; ++rejection) {
+    measured = valid_cross;
+    switch (rejection) {
+      case 0: measured.queue = reinterpret_cast<void*>(uintptr_t{0x5678}); break;
+      case 1: ++measured.identity.configuration_generation; break;
+      case 2: ++measured.identity.device_session; break;
+      case 3: ++measured.identity.source_generation; break;
+      case 4: measured.recorded_ns -= timers::internal::kSampleAgeNs + 1; break;
+      case 5: measured.state = timers::SampleState::REPLAYED; break;
+      case 6: measured.passes[0].state = timers::SampleState::NOT_EXECUTED; break;
+      case 7: measured.passes[0].id = 0; break;
+      case 8: measured.passes[0].model = 99; break;
+      case 9: measured.passes[0].width = 0; break;
+      case 10: ++measured.identity.hdr; break;
+      case 11: measured.passes[1] = measured.passes[0]; break;
+    }
+    r::monitor_snapshot.attempted_ns = 0;
+    const auto unavailable = r::RefreshMonitorSnapshot(true);
+    check(unavailable.summary.gpu.empty() && !unavailable.summary.gpu_reference
+              && unavailable.monitor.passes[0].gpu_state == ui::MonitorGpuState::CURRENT,
+          "missing, stale, mismatched, replayed, duplicate or incompatible stage data never produces a partial sum");
+  }
+  measured = valid_cross;
+  // Group totals include common processing; pass totals and Look are not added.
+  render.passes[0].total_us = 1000;
+  render.passes[0].look_us = 200;
+  measured.passes[0].total_us = 4000;
+  measured.passes[0].look_us = 300;
+  r::monitor_snapshot.attempted_ns = 0;
+  check(r::RefreshMonitorSnapshot(true).summary.gpu == "6.6 ms",
+        "cross-stage reference counts each group's common overhead and nested Look exactly once");
+  {
+    const auto saved_history = std::make_shared<r::MonitorHistoryRuntime>(r::monitor_history);
+    const auto saved_events = std::make_shared<decltype(timers::monitor_events.samples)>(timers::monitor_events.samples);
+    const auto saved_published = timers::monitor_events.published;
+    const bool saved_recording = timers::monitor_events.enabled.load();
+    restore_values.emplace_back([saved_history, saved_events, saved_published, saved_recording] {
+      r::monitor_history = *saved_history;
+      timers::monitor_events.samples = *saved_events;
+      timers::monitor_events.published = saved_published;
+      timers::monitor_events.enabled = saved_recording;
+    });
+    auto& history = r::monitor_history;
+    r::monitor_requested = true;
+    history.values.Clear();
+    history.active = true;
+    history.needs_baseline = false;
+    history.session = timers::device_session;
+    history.consumed = timers::monitor_events.published;
+    history.latest = {};
+    history.contracts = {};
+    history.summed = {};
+    timers::monitor_events.enabled = true;
+    auto raw_render = render;
+    auto raw_upscaled = measured;
+    raw_render.sequence = 100;
+    raw_upscaled.sequence = 101;
+    raw_render.measured_ns = raw_upscaled.measured_ns = r::SteadyNowNs();
+    timers::QueueMonitorSample(raw_render);
+    timers::QueueMonitorSample(raw_upscaled);
+    r::monitor_snapshot.attempted_ns = 0;
+    r::RefreshMonitorSnapshot(true);
+    const auto& gpu_history = history.values.series[static_cast<unsigned>(ui::MonitorMetric::GPU)];
+    const auto valid_points = [&] {
+      size_t count = 0;
+      for (size_t index = 0; index < gpu_history.count; ++index) count += gpu_history.At(index).valid;
+      return count;
+    };
+    check(valid_points() == 1 && gpu_history.At(gpu_history.count - 1).reference,
+          "new raw completion events produce one reference-history sample");
+    for (int tick = 0; tick < 3; ++tick) {
+      r::monitor_snapshot.attempted_ns = 0;
+      r::RefreshMonitorSnapshot(true);
+    }
+    check(valid_points() == 1, "repeated UI cache refreshes cannot duplicate a real GPU measurement");
+    ++raw_render.sequence;
+    timers::QueueMonitorSample(raw_render);
+    r::monitor_snapshot.attempted_ns = 0;
+    r::RefreshMonitorSnapshot(true);
+    check(valid_points() == 1, "cross-stage history waits for a new event from every required stage");
+    raw_upscaled.sequence += 2;
+    const auto recovered_upscaled = raw_upscaled;
+    raw_upscaled.valid = false;
+    raw_upscaled.state = timers::SampleState::REPLAYED;
+    raw_upscaled.queue = nullptr;
+    raw_upscaled.width = raw_upscaled.height = 0;
+    timers::QueueMonitorSample(raw_upscaled);
+    r::monitor_snapshot.attempted_ns = 0;
+    r::RefreshMonitorSnapshot(true);
+    check(!gpu_history.At(gpu_history.count - 1).valid, "rejected GPU events leave explicit curve gaps");
+    const auto history_generation = history.values.generation;
+    raw_upscaled = recovered_upscaled;
+    ++raw_upscaled.sequence;
+    timers::QueueMonitorSample(raw_upscaled);
+    r::monitor_snapshot.attempted_ns = 0;
+    r::RefreshMonitorSnapshot(true);
+    check(valid_points() == 2 && history.values.generation == history_generation,
+          "same-contract recovery preserves earlier GPU history and the rejected-event gap");
+    const auto published = timers::monitor_events.published;
+    timers::monitor_events.enabled = false;
+    timers::QueueMonitorSample(raw_render);
+    check(timers::monitor_events.published == published, "closed trend recording does no dedicated GPU history work");
+    history.active = false;
+  }
   render = {};
   measured = saved_measured;
   r::stack_passes = 1;

@@ -203,6 +203,16 @@ inline uint64_t lease_starved_segments = 0;
 inline gpu_comparison::Engine comparison;
 inline gpu_comparison::Comparison comparison_result;
 inline uint64_t device_session = 0;
+// Dedicated HUD history is dormant until the visible trend view requests it.
+// Producers and the UI drain hold runtime_mutex; only the enable flag crosses
+// callbacks without that lock. Overflow is reported as a history gap.
+struct MonitorEvents {
+  static constexpr size_t CAPACITY = 256;
+  std::atomic_bool enabled{false};
+  std::array<Stats, CAPACITY> samples{};
+  uint64_t published = 0;
+};
+inline MonitorEvents monitor_events;
 inline void (*comparison_settings)(gpu_comparison::Identity*) = nullptr;
 inline gpu_comparison::Identity comparison_capture_settings;
 
@@ -222,6 +232,12 @@ inline int64_t NowNs() {
 
 inline uint32_t StageIndex(const char* path) {
   return (std::strcmp(path, "preSR") == 0 ? 0u : (std::strcmp(path, "present") == 0 ? 2u : 1u));
+}
+
+inline void QueueMonitorSample(const Stats& sample) {
+  if (!monitor_events.enabled.load(std::memory_order_relaxed)) return;
+  monitor_events.samples[monitor_events.published % MonitorEvents::CAPACITY] = sample;
+  ++monitor_events.published;
 }
 
 namespace internal {
@@ -284,6 +300,7 @@ inline void Release() {
   for (auto& stage : stage_stats) stage = Stats{};
   for (auto& stage : execution_stats) stage = Stats{};
   display_windows = {};
+  monitor_events.published = 0;
 }
 
 inline bool Ensure(ID3D12Device* device) {
@@ -346,7 +363,10 @@ inline void Reject(const Segment& s, SampleState state) {
   }
   auto& target = stage_stats[StageIndex(s.path)];
   if (s.sequence < target.sequence) return;
-  target = Stats{.passes = s.passes, .state = state, .sequence = s.sequence};
+  target = Stats{.passes = s.passes, .state = state, .sequence = s.sequence, .measured_ns = NowNs(),
+                 .identity = s.comparison.identity, .recorded_ns = static_cast<int64_t>(s.comparison.recorded_ns)};
+  std::memcpy(target.path, s.path, sizeof(target.path));
+  QueueMonitorSample(target);
   display_windows[StageIndex(s.path)] = {};
   if (s.sequence >= stats.sequence) stats = target;
 }
@@ -437,6 +457,7 @@ inline bool Publish(const Segment& s, bool log, const void* queue) {
   next.recorded_ns = static_cast<int64_t>(s.comparison.recorded_ns);
   next.queue = queue;
   next.samples = 1;
+  QueueMonitorSample(next);
   if (s.comparison.sequence != 0 && ComparisonActive()) {
     auto sample = s.comparison;
     sample.completed_ns = next.measured_ns;
@@ -802,6 +823,7 @@ inline void Poll(bool exact_proofs, bool log) {
             std::memcpy(target.path, s.path, sizeof(target.path));
             for (uint32_t pass = 0; pass < s.pass_count; ++pass) {
               target.passes[pass].state = SampleState::VALID;
+              target.passes[pass].look_measured = (s.written & (uint64_t{1} << PassLookEnd(pass))) != 0;
             }
           }
         } else {

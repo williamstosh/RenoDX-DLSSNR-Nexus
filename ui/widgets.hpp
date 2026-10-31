@@ -224,11 +224,12 @@ struct StatusSummaryFields {
   std::string gpu;
   std::string fps;
   std::string fg;
-  const char* fps_tip = "ReShade overlay cadence. This is not a separate measurement of game render FPS or generated output FPS.";
+  const char* fps_tip = "Smoothed ImGui/ReShade update cadence. Does not measure frame-generated output FPS.";
   const char* fg_tip = "Observed frame generation route. FG GPU duration is unavailable.";
   const char* resolution_tip = "Configured working ratio and current completed working dimensions when available.";
   const char* stage_tip = "Execution evidence for the current chain. A requested stage is not proof of execution.";
-  const char* gpu_tip = "Completed GPU timestamp samples only. Missing or stale samples are not current execution cost.";
+  const char* gpu_tip = "Recent valid NR GPU time. Shows — when no measurement is available.";
+  bool gpu_reference = false;
 };
 
 // Only the compact child participates in settings layout. The caller opens
@@ -282,16 +283,16 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, co
     details = ImGui::Button((action + "###status_details").c_str(), ImVec2(action_width, 0.f));
     ItemTooltip("%s", Tr("Open the movable runtime monitor. Diagnostics remain available separately."));
     const float metric_y = heading_at.y + heading_height + ImGui::GetStyle().ItemSpacing.y;
-    const char* names[] = {"NR GPU", "ReShade FPS", "FG"};
+    const char* names[] = {"NR GPU", "FPS", "FG"};
     const std::string* values[] = {&fields.gpu, &fields.fps, &fields.fg};
     const char* tips[] = {fields.gpu_tip, fields.fps_tip, fields.fg_tip};
     for (int column = 0; column < columns; ++column) {
       const int index = (columns == 2 && column == 1 && fields.fps.empty() ? 2 : column);
-      const std::string metric = std::string(Tr(names[index])) + "  "
-          + (values[index]->empty() ? "—" : values[index]->c_str());
+      const std::string value = (index == 0 && fields.gpu_reference && !values[index]->empty() ? "~ " : "")
+          + (values[index]->empty() ? std::string("—") : *values[index]);
+      const std::string metric = std::string(Tr(names[index])) + "  " + value;
       ImGui::SetCursorPos(ImVec2(heading_at.x + column * (field_width + gap), metric_y));
-      const char* value = values[index]->empty() ? "—" : values[index]->c_str();
-      const float value_width = ImGui::CalcTextSize(value).x;
+      const float value_width = ImGui::CalcTextSize(value.c_str()).x;
       const auto label = Ellipsize(Tr(names[index]), (std::max)(0.f, field_width - value_width - font * 0.4f));
       const std::string shown = label.empty() ? value : label + " " + value;
       ImGui::TextUnformatted(Ellipsize(shown.c_str(), field_width).c_str());

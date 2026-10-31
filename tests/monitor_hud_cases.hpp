@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -122,9 +123,8 @@ void RunMonitorHudCases(const Check& check) {
                   "first size respects mode, pass count and available screen space");
             previous_height = state.geometry.size.y;
             if (display.x == 2400.f) {
-              check(std::abs(state.geometry.size.y
-                                 - (detailed ? 340.f + 156.f * count : 132.f + 62.f * count) * scale) <= 1.f,
-                    "first height grows with pass count rather than previous window contents");
+              check(window->ScrollMax.y <= 1.f && window->InnerRect.Max.y - window->DC.CursorMaxPos.y <= 32.f * scale,
+                    "first height fits actual content without reserving blank detail rows");
             }
             check(output.find("Confirmed source frames") != std::string::npos
                       && output.find("Execution chain") != std::string::npos,
@@ -132,7 +132,7 @@ void RunMonitorHudCases(const Check& check) {
             check(output.find("Created model request") == std::string::npos
                       && output.find("Eligible / injected / gaps") == std::string::npos,
                   "neither passive dashboard submits raw tables or counters");
-            check(output.find("ReShade FPS") != std::string::npos
+            check(output.find("FPS") != std::string::npos
                       && output.find("SOURCE_FPS") != std::string::npos && output.find("FG_STATUS") != std::string::npos
                       && output.find("4.8 ms") != std::string::npos && output.find("67%") != std::string::npos
                       && output.find("2560x1440") != std::string::npos,
@@ -217,6 +217,10 @@ void RunMonitorHudCases(const Check& check) {
   inputs.passes[2].gpu_cost = "UNAVAILABLE_GPU_MUST_NOT_BE_CURRENT";
   state.detailed = true;
   frame();
+  check(output.find("Dimensions") == std::string::npos
+            && output.find("A created model request does not prove") == std::string::npos
+            && output.find("Measurement scope") == std::string::npos,
+        "ordinary detailed view keeps per-pass data without global dimensions or repeated developer notes");
   check(output.find("CURRENT_GPU_COST") != std::string::npos
             && output.find("Stale GPU sample") != std::string::npos
             && output.find("Pending confirmation") != std::string::npos
@@ -261,8 +265,9 @@ void RunMonitorHudCases(const Check& check) {
         "editing exposes mode and pin settings");
   const auto click_tool = [&](unsigned index) {
     const char* labels[] = {state.pin ? "Unlock" : "Lock", state.detailed ? "Compact" : "Details",
-                            "Diagnostics", "Close"};
-    const char* ids[] = {"###monitor_pin", "###monitor_details", "###status_open_diagnostics", "###status_close"};
+                            "Diagnostics", "Close", "Fit to content", "Trends"};
+    const char* ids[] = {"###monitor_pin", "###monitor_details", "###status_open_diagnostics", "###status_close",
+                         "###monitor_fit", "###monitor_trends"};
     ImVec2 target = window->DC.CursorStartPos;
     {
       ui::StyleScope theme;
@@ -346,6 +351,153 @@ void RunMonitorHudCases(const Check& check) {
   const auto expected = ui::ClampMonitorGeometry(edited_geometry, ImVec2(0.f, 0.f), io.DisplaySize, 2.f);
   check(frame().geometry_changed && same_geometry(expected, state.geometry),
         "saved geometry uses the existing DPI and screen-boundary clamp");
+
+  saved_geometry = nullptr;
+  ImGui::GetStyle().FontSizeBase = 13.f;
+  io.DisplaySize = ImVec2(2400.f, 1400.f);
+  interactive = true;
+  state = {.open = true, .geometry = {.size = ImVec2(800.f, 900.f), .valid = true},
+           .apply_geometry = true, .anchor = 8, .offset = ImVec2(-20.f, -30.f)};
+  frame();
+  check(!state.apply_geometry && state.anchor == 8
+            && state.geometry.position.x == 1580.f && state.geometry.position.y == 470.f,
+        "active geometry application preserves the requested anchor and clears its one-shot flag");
+  io.DisplaySize = ImVec2(2000.f, 1200.f);
+  frame();
+  check(state.anchor == 8 && state.geometry.position.x == 1180.f && state.geometry.position.y == 270.f,
+        "display changes recompute anchored position without becoming manual dragging");
+  ImGui::SetWindowPos(window->Name, ImVec2(900.f, 100.f));
+  ImGui::SetWindowSize(window->Name, ImVec2(700.f, 800.f));
+  const auto manual = frame();
+  check(manual.geometry_changed && manual.settings_changed && state.anchor == -1
+            && state.geometry.position.x == 900.f && state.geometry.size.x == 700.f,
+        "manual movement and resizing detach an anchor and persist custom geometry");
+  const auto fit = click_tool(4);
+  check(fit.geometry_changed && !state.fit_content && state.geometry.size.y < 800.f,
+        "Fit to content shrinks the current height once and clears the command");
+  const auto fitted = state.geometry;
+  inputs.current_conclusion.assign(500, 'W');
+  frame();
+  check(same_geometry(fitted, state.geometry), "later text changes never reapply Fit to content");
+  inputs.current_conclusion = "Confirmed source frames";
+  check(click_tool(5).settings_changed && state.trends && !state.detailed,
+        "trends toggle combines with compact mode instead of replacing it");
+  state.detailed = true;
+  state.fit_content = true;
+  frame();
+  check(state.trends && state.detailed && !state.fit_content, "trends also combine with detailed mode");
+
+  auto history = std::make_unique<ui::MonitorHistory>();
+  inputs.now_ns = 60'000'000'000LL;
+  inputs.history = history.get();
+  for (unsigned metric = 0; metric < static_cast<unsigned>(ui::MonitorMetric::COUNT); ++metric) {
+    auto& series = history->series[metric];
+    series.Add(inputs.now_ns - 200'000'000LL, 1.f);
+    series.Add(inputs.now_ns - 180'000'000LL, 12.f);
+    series.Add(inputs.now_ns - 150'000'000LL, 0.f, false);
+    series.Add(inputs.now_ns - 100'000'000LL, 2.f, true, metric == 2);
+  }
+  inputs.summary.gpu_reference = true;
+  interactive = false;
+  for (const auto& theme : ui::kThemes) {
+    ui::SetTheme(theme.id);
+    for (float opacity : {0.f, .8f, 1.f}) {
+      state.background_opacity = opacity;
+      state.geometry.size = ImVec2(800.f, 1000.f);
+      state.apply_geometry = true;
+      for (int seconds : {10, 30, 60}) {
+        state.history_seconds = seconds;
+        for (unsigned metric = 0; metric < 7; ++metric) {
+          state.trend_mask = 1u << metric;
+          frame(); frame();
+          const char* names[] = {"FPS", "Update interval (ms)", "NR GPU", "Pass 1 GPU",
+                                 "Pass 2 GPU", "Pass 3 GPU", "Pass 4 GPU"};
+          check(output.find(names[metric]) != std::string::npos && state.trends
+                    && (window->Flags & ImGuiWindowFlags_NoInputs) == ImGuiWindowFlags_NoInputs,
+                "every metric supports independent 10/30/60 second passive trends at each background opacity");
+          bool text_opaque = false, curve_opaque = false, background_present = false;
+          const ImU32 text_color = ImGui::ColorConvertFloat4ToU32(ui::CurrentTheme().text_primary);
+          const ImU32 curve_color = ImGui::ColorConvertFloat4ToU32(ui::CurrentTheme().accent);
+          ImVec4 background = ui::CurrentTheme().bg_card;
+          background.w = opacity;
+          const ImU32 background_color = ImGui::ColorConvertFloat4ToU32(background);
+          for (const auto& vertex : window->DrawList->VtxBuffer) {
+            text_opaque |= vertex.col == text_color;
+            curve_opaque |= vertex.col == curve_color;
+            background_present |= opacity > 0.f && vertex.col == background_color;
+          }
+          check(text_opaque && curve_opaque && (opacity == 0.f || background_present),
+                "window opacity is exact, including opaque 100 percent, while text and accent alpha remain unchanged");
+          check(output.find("Execution chain") < output.find("Trends")
+                    && output.find("P4") < output.find("Trends"),
+                "passive HUD draws every pass summary before the optional trend section");
+        }
+      }
+    }
+  }
+  check(output.find("~ ") != std::string::npos, "reference GPU totals have a font-safe approximate marker");
+  check(history->series[0].At(0).low == 1.f && history->series[0].At(0).high == 12.f
+            && !history->series[0].At(1).valid && history->series[0].count == 3,
+        "drawing consumes true bucket peaks and explicit gaps without modifying history");
+  state.trend_mask = 0x7f;
+  for (bool edit : {false, true}) {
+    interactive = edit;
+    for (unsigned count = 0; count <= 4; ++count) {
+      inputs.pass_count = count;
+      frame();
+      for (unsigned pass = 1; pass <= 4; ++pass) {
+        const std::string label = "Pass " + std::to_string(pass) + " GPU";
+        check((output.find(label) != std::string::npos) == (pass <= count),
+              "trend checkboxes and GPU plot legends include only configured passes");
+      }
+      check(state.trend_mask == 0x7f, "hiding absent pass curves preserves their saved mask bits");
+    }
+  }
+  window->StateStorage.SetInt(window->GetID("###monitor_raw_evidence"), 1);
+  frame();
+  const auto chain_at = output.find("Execution chain");
+  const auto trends_at = output.find("Trends", chain_at);
+  check(chain_at < trends_at && trends_at < output.find("Raw evidence"),
+        "editable HUD orders pass summaries, optional trends and raw evidence disclosure");
+  window->StateStorage.SetInt(window->GetID("###monitor_raw_evidence"), 0);
+  interactive = false;
+  state.trend_mask = 0;
+  frame();
+  check(output.find("Update interval (ms)") == std::string::npos
+            && output.find("Pass 4 GPU") == std::string::npos,
+        "disabling all trend metrics leaves no empty plots");
+  inputs.current_limit = "Synthetic exception reason";
+  inputs.gpu_notice = "Synthetic missing GPU timing group: Render";
+  for (bool detailed : {false, true}) {
+    state.detailed = detailed;
+    for (bool trends : {false, true}) {
+      state.trends = trends;
+      state.trend_mask = 0x7f;
+      frame();
+      const auto limit_at = output.find(inputs.current_limit);
+      const auto notice_at = output.find(inputs.gpu_notice);
+      const auto section_at = output.find(trends ? "Trends" : "P4");
+      check(limit_at != std::string::npos && notice_at != std::string::npos
+                && section_at < limit_at && limit_at < notice_at,
+            "passive compact and detailed HUDs show exception reasons and missing GPU groups after summaries and trends");
+    }
+  }
+  interactive = true;
+  window->StateStorage.SetInt(window->GetID("###monitor_raw_evidence"), 1);
+  frame();
+  check(output.find(inputs.gpu_notice) < output.find("Raw evidence")
+            && output.find(inputs.current_limit, output.find(inputs.current_limit) + 1) == std::string::npos,
+        "footer notices precede raw evidence without repeating the current limitation inside it");
+  window->StateStorage.SetInt(window->GetID("###monitor_raw_evidence"), 0);
+  interactive = false;
+  inputs.current_limit.clear();
+  inputs.gpu_notice.clear();
+  frame();
+  check(output.find("Synthetic exception reason") == std::string::npos
+            && output.find("Synthetic missing GPU timing group") == std::string::npos,
+        "empty exception and GPU notices add no default footer text");
+  inputs.history = nullptr;
+  inputs.summary.gpu_reference = false;
 
   state.open = false;
   frame();

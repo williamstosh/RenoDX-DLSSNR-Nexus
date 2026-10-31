@@ -29,6 +29,20 @@ inline bool ui_monitor_was_interactive = false;
 inline bool ui_monitor_saved_detailed = false;
 inline uint64_t ui_monitor_save_batches = 0;
 
+struct MonitorHistoryRuntime {
+  ui::MonitorHistory values;
+  bool active = false;
+  bool needs_baseline = true;
+  uint64_t epoch = UINT64_MAX;
+  uint64_t configuration = UINT64_MAX;
+  uint64_t session = UINT64_MAX;
+  uint64_t consumed = 0;
+  std::array<gpu_timers::Stats, 3> latest{};
+  std::array<gpu_timers::Stats, 3> contracts{};
+  std::array<uint64_t, 3> summed{};
+};
+inline thread_local MonitorHistoryRuntime monitor_history;
+
 struct MonitorCadence {
   const reshade::api::effect_runtime* owner = nullptr;
   int frame = -1;
@@ -47,7 +61,7 @@ inline void UpdateMonitorCadence(reshade::api::effect_runtime* runtime) {
   const auto owner = monitor_runtime.load();
   if (runtime != nullptr && owner != nullptr && runtime != owner) return;
   const auto now = SteadyNowNs();
-  const auto epoch = monitor_observation_epoch.load();
+  const auto epoch = monitor_history_epoch.load();
   auto& cadence = monitor_cadence;
   if (runtime == nullptr || cadence.owner != runtime || cadence.epoch != epoch
       || now < cadence.last_ns || now - cadence.last_ns > 500'000'000) {
@@ -58,6 +72,14 @@ inline void UpdateMonitorCadence(reshade::api::effect_runtime* runtime) {
   cadence.last_ns = now;
   ++cadence.samples;
   const auto fps = ImGui::GetIO().Framerate;
+  if (monitor_history.active && monitor_requested.load()) {
+    const float interval_ms = ImGui::GetIO().DeltaTime * 1000.f;
+    monitor_history.values.Add(ui::MonitorMetric::INTERVAL, now, interval_ms,
+        runtime != nullptr && std::isfinite(interval_ms) && interval_ms > 0.f);
+    monitor_history.values.Add(ui::MonitorMetric::FPS, now, fps,
+        runtime != nullptr && cadence.samples >= 8 && now - cadence.first_ns >= 750'000'000
+            && std::isfinite(fps) && fps > 0.f);
+  }
   if (cadence.samples < 8 || now - cadence.first_ns < 750'000'000 || !std::isfinite(fps) || fps <= 0.f) {
     cadence.text.clear();
     return;
@@ -136,12 +158,16 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
   const auto queried = need_monitor ? QueryConfigurationCapability() : capability::Result{};
   const auto timings = std::array{gpu_timers::stage_stats[0], gpu_timers::stage_stats[1], gpu_timers::stage_stats[2]};
   const auto proofs = std::array{gpu_timers::execution_stats[0], gpu_timers::execution_stats[1], gpu_timers::execution_stats[2]};
+  gpu_comparison::Identity current_identity;
+  if (gpu_timers::comparison_settings != nullptr) gpu_timers::comparison_settings(&current_identity);
   std::array<bool, 3> timing_current{}, proof_current{};
   for (size_t stage = 0; stage < timings.size(); ++stage) {
-    timing_current[stage] = CurrentGpuSample(timings[stage], now)
-        && timings[stage].state == gpu_timers::SampleState::VALID;
-    proof_current[stage] = CurrentGpuSample(proofs[stage], now)
-        && proofs[stage].state == gpu_timers::SampleState::VALID;
+    timing_current[stage] = CurrentGpuSample(timings[stage], now, &current_identity)
+        && timings[stage].state == gpu_timers::SampleState::VALID
+        && gpu_timers::StageIndex(timings[stage].path) == stage;
+    proof_current[stage] = CurrentGpuSample(proofs[stage], now, &current_identity)
+        && proofs[stage].state == gpu_timers::SampleState::VALID
+        && gpu_timers::StageIndex(proofs[stage].path) == stage;
     // A newer completion can prove a different working contract while an
     // older timed recording is still fresh. Do not attach its cost to that size.
     if (timing_current[stage] && proof_current[stage] && proofs[stage].sequence > timings[stage].sequence) {
@@ -151,15 +177,93 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
         timing_current[stage] &= timed.id == completed.id && timed.model == completed.model
             && timed.width == completed.width && timed.height == completed.height
             && timed.output_width == completed.output_width && timed.output_height == completed.output_height
-            && timed.state == completed.state;
+            && timed.state == completed.state && timed.look_measured == completed.look_measured;
       }
     }
   }
   std::array<PassResolutionSettings, kMaxNrPasses> resolutions;
   std::array<uint32_t, kMaxNrPasses> models{};
+  std::array<uint32_t, kMaxNrPasses> resolved_models{};
   for (uint32_t pass = 0; pass < plan.pass_count; ++pass) {
     resolutions[pass] = CurrentPassResolution(pass);
     models[pass] = pass == 0 || pass_preset[pass - 1].load() == 0 ? preset.load() : pass_preset[pass - 1].load();
+    resolved_models[pass] = nr_model::ResolvePreset(models[pass], 0, direct_runtime_requirements.dual_models);
+  }
+  if (monitor_history.active && monitor_requested.load()) {
+    auto& history = monitor_history;
+    auto& events = gpu_timers::monitor_events;
+    if (history.needs_baseline || history.session != gpu_timers::device_session) {
+      history.values.ClearGpu();
+      history.latest = {};
+      history.contracts = {};
+      history.summed = {};
+      history.consumed = events.published;
+      history.session = gpu_timers::device_session;
+      history.needs_baseline = false;
+    }
+    if (events.published < history.consumed || events.published - history.consumed > events.CAPACITY) {
+      history.values.ClearGpu();
+      history.latest = {};
+      history.contracts = {};
+      history.summed = {};
+      history.consumed = (events.published > events.CAPACITY ? events.published - events.CAPACITY : 0);
+    }
+    for (; history.consumed < events.published; ++history.consumed) {
+      const auto& event = events.samples[history.consumed % events.CAPACITY];
+      const size_t stage = gpu_timers::StageIndex(event.path);
+      const auto group = plan.At(static_cast<stage_plan::Stage>(stage));
+      if (group.count == 0) continue;
+      const bool current = CurrentGpuSample(event, now, &current_identity);
+      const auto& previous = history.contracts[stage];
+      bool same_contract = previous.sequence == 0 || (previous.identity == event.identity
+          && previous.queue == event.queue && previous.width == event.width && previous.height == event.height);
+      for (size_t pass = 0; pass < event.passes.size() && same_contract && previous.sequence != 0; ++pass) {
+        const auto& a = previous.passes[pass];
+        const auto& b = event.passes[pass];
+        same_contract = a.id == b.id && a.model == b.model && a.width == b.width && a.height == b.height
+            && a.output_width == b.output_width && a.output_height == b.output_height && a.look_measured == b.look_measured;
+      }
+      if (current && !same_contract) {
+        history.values.ClearGpu();
+        history.latest = {};
+        history.contracts = {};
+        history.summed = {};
+      }
+      // Rejected events invalidate the latest measurement and leave a gap;
+      // their absent queue/dimensions cannot replace a known valid contract.
+      if (current) history.contracts[stage] = event;
+      history.latest[stage] = event;
+      for (uint32_t local = 0; local < group.count; ++local) {
+        const auto id = group.begin + local;
+        const auto& pass = event.passes[local];
+        history.values.Add(static_cast<ui::MonitorMetric>(static_cast<unsigned>(ui::MonitorMetric::PASS_1) + id),
+            event.measured_ns, pass.total_us / 1000.f, current && pass.id == id
+                && pass.model == resolved_models[id] && pass.state == gpu_timers::SampleState::VALID
+                && pass.width != 0 && pass.height != 0 && pass.output_width != 0 && pass.output_height != 0);
+      }
+      std::array<bool, 3> raw_current{};
+      bool all_new = true;
+      for (uint32_t index = 0; index < plan.group_count; ++index) {
+        const auto required = static_cast<size_t>(plan.groups[index].stage);
+        raw_current[required] = CurrentGpuSample(history.latest[required], now, &current_identity);
+        all_new &= history.latest[required].sequence > history.summed[required];
+      }
+      const auto raw_total = SummarizeMonitorGpu(plan, history.latest, raw_current, resolved_models);
+      if (raw_total.valid && all_new) {
+        history.values.Add(ui::MonitorMetric::GPU, event.measured_ns, raw_total.milliseconds, true, raw_total.reference);
+        for (size_t index = 0; index < history.latest.size(); ++index) history.summed[index] = history.latest[index].sequence;
+      } else if (!raw_total.valid) {
+        history.values.Add(ui::MonitorMetric::GPU, event.measured_ns, 0.f, false);
+      }
+    }
+    // Expiry marks a gap once. A UI cache read never appends a measurement.
+    for (uint32_t pass = 0; pass < plan.pass_count; ++pass) {
+      const auto stage = static_cast<size_t>(plan.effective[pass]);
+      if (!CurrentGpuSample(history.latest[stage], now, &current_identity)) {
+        history.values.Add(static_cast<ui::MonitorMetric>(static_cast<unsigned>(ui::MonitorMetric::PASS_1) + pass), now, 0.f, false);
+        history.values.Add(ui::MonitorMetric::GPU, now, 0.f, false);
+      }
+    }
   }
   lock.unlock();
 
@@ -186,33 +290,27 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
     execution += stage_plan::Name(static_cast<stage_plan::Stage>(stage));
   }
   if (execution.empty()) execution = ui::Tr("Execution stage pending confirmation");
-  // Stage samples have independent cadence and smoothing windows. Neither
-  // completion time nor queue equality establishes a shared execution cycle.
+  // Independent stage windows support a reference work sum, never a shared
+  // execution-cycle latency. Keep that distinction out of the legacy FPS estimate.
   card.nr_gpu_ms = card.nr_present_ms = 0.f;
-  if (plan.valid && plan.group_count == 1) {
-    const auto& group = plan.groups[0];
-    const auto stage = static_cast<size_t>(group.stage);
-    const auto& timing = timings[stage];
-    bool complete = timing_current[stage];
-    for (uint32_t local = 0; local < gpu_timers::kTimerMaxPasses; ++local) {
-      const auto& pass = timing.passes[local];
-      if (local < group.count) {
-        complete &= pass.id == group.begin + local && pass.state == gpu_timers::SampleState::VALID
-            && pass.width != 0 && pass.height != 0;
-      } else {
-        complete &= pass.state != gpu_timers::SampleState::VALID;
-      }
-    }
-    if (complete) card.nr_gpu_ms = timing.total_us / 1000.f;
-  }
+  const auto gpu_total = SummarizeMonitorGpu(plan, timings, timing_current, resolved_models);
+  if (gpu_total.valid && !gpu_total.reference) card.nr_gpu_ms = gpu_total.milliseconds;
   ui::StatusSummaryFields summary;
   summary.fps = monitor_cadence.text;
   summary.stage = execution;
   summary.fg = ui::Tr(card.fg_declared || card.frame_gen_multiplier > 1 ? "On"
       : native_fg_declaration.load() == NativeFgDeclaration::kOff ? "Off" : "Unknown");
-  if (card.nr_gpu_ms > 0.f) {
+  summary.gpu_reference = gpu_total.reference;
+  if (gpu_total.reference) {
+    summary.gpu_tip = "Reference sum of recent stage GPU times, including each stage's shared work once. Not same-frame or FG end-to-end latency.";
+  } else if (gpu_total.incompatible) {
+    summary.gpu_tip = "Stage measurements use different queues or conditions. See per-pass GPU times.";
+  } else if (gpu_total.missing_stages != 0) {
+    summary.gpu_tip = "Some stages have no current GPU measurement. See per-pass GPU times.";
+  }
+  if (gpu_total.valid) {
     char cost[64];
-    std::snprintf(cost, sizeof(cost), "%.1f ms", card.nr_gpu_ms);
+    std::snprintf(cost, sizeof(cost), "%.1f ms", gpu_total.milliseconds);
     summary.gpu = cost;
   }
   const auto base = resolutions[0];
@@ -227,7 +325,19 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
           .eligible = recent.eligible, .injected = recent.injected, .gaps = recent.gaps, .last_sample_ns = recent.last_sample_ns};
     }
     monitor.pass_count = plan.pass_count;
-    monitor.gpu_scope = ui::Tr("Completed single submissions; stage spans are not frame latency.");
+    monitor.gpu_scope = ui::Tr(summary.gpu_tip);
+    if (gpu_total.incompatible) monitor.gpu_notice = ui::Tr(summary.gpu_tip);
+    if (gpu_total.missing_stages != 0) {
+      monitor.gpu_notice = std::string(ui::Tr("GPU timing unavailable")) + ": ";
+      bool first = true;
+      for (size_t stage = 0; stage < timings.size(); ++stage) {
+        if ((gpu_total.missing_stages & (1u << stage)) == 0) continue;
+        if (!first) monitor.gpu_notice += ", ";
+        monitor.gpu_notice += stage_plan::Name(static_cast<stage_plan::Stage>(stage));
+        first = false;
+      }
+      monitor.gpu_scope += std::string("\n") + monitor.gpu_notice;
+    }
     monitor.current_limit = queried.CanSubmit() ? ""
         : ui::Tr(queried.configuration.reason == capability::Reason::PLAN_REJECTED
             ? stage_plan::ReasonText(queried.plan_reason) : capability::ReasonText(queried.configuration.reason));
@@ -271,7 +381,9 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
       }
       if (timing_current[stage]) {
         for (const auto& sample : timing.passes) {
-          if (sample.id != pass || sample.state != gpu_timers::SampleState::VALID) continue;
+          if (sample.id != pass || sample.state != gpu_timers::SampleState::VALID
+              || sample.model != resolved_models[pass] || sample.width == 0 || sample.height == 0
+              || sample.output_width == 0 || sample.output_height == 0) continue;
           char cost[64];
           std::snprintf(cost, sizeof(cost), "%.3f ms", sample.total_us / 1000.f);
           row.gpu_cost = cost;
@@ -305,6 +417,36 @@ inline ui::StatusCard MonitorDisplayCard() {
   return RefreshMonitorSnapshot(true).card;
 }
 
+inline void SaveMonitorSettings() {
+  if (!ui_monitor_geometry_dirty || ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsAnyItemActive()) return;
+  {
+    std::shared_lock config_lock(present_restore_configuration.mutex);
+    if (!present_restore_configuration.global_writable) return;
+  }
+  ++ui_monitor_save_batches;
+  const auto& state = ui_runtime_monitor_state;
+  const auto& geometry = state.geometry;
+  if (geometry.valid) {
+    reshade::set_config_value(nullptr, kConfigSection, "UiMonitorX", geometry.position.x);
+    reshade::set_config_value(nullptr, kConfigSection, "UiMonitorY", geometry.position.y);
+    reshade::set_config_value(nullptr, kConfigSection, "UiMonitorWidth", geometry.size.x);
+    reshade::set_config_value(nullptr, kConfigSection, "UiMonitorHeight", geometry.size.y);
+    reshade::set_config_value(nullptr, kConfigSection, "UiMonitorScale", geometry.ui_scale);
+  }
+  reshade::set_config_value(nullptr, kConfigSection, "UiMonitorPinned", state.pin);
+  reshade::set_config_value(nullptr, kConfigSection, "UiMonitorDetailed", state.detailed);
+  reshade::set_config_value(nullptr, kConfigSection, "UiMonitorOpacity", state.background_opacity);
+  reshade::set_config_value(nullptr, kConfigSection, "UiMonitorTrends", state.trends);
+  reshade::set_config_value(nullptr, kConfigSection, "UiMonitorHistorySeconds", state.history_seconds);
+  reshade::set_config_value(nullptr, kConfigSection, "UiMonitorTrendMask", state.trend_mask);
+  reshade::set_config_value(nullptr, kConfigSection, "UiMonitorAnchor", state.anchor);
+  reshade::set_config_value(nullptr, kConfigSection, "UiMonitorOffsetX", state.offset.x);
+  reshade::set_config_value(nullptr, kConfigSection, "UiMonitorOffsetY", state.offset.y);
+  ui_monitor_geometry_dirty = false;
+  ui_monitor_saved_pin = state.pin;
+  ui_monitor_saved_detailed = state.detailed;
+}
+
 inline void DrawIndependentMonitor(reshade::api::effect_runtime* runtime, bool menu) {
   if (shutting_down.load() || !monitor_requested.load()) return;
   const auto* owner = monitor_runtime.load();
@@ -321,8 +463,26 @@ inline void DrawIndependentMonitor(reshade::api::effect_runtime* runtime, bool m
   RefreshUiLanguage();
   ui::SetTheme(ui_theme_choice.load());
   ui_runtime_monitor_state.open = true;
+  auto& history = monitor_history;
+  const bool record_history = ui_runtime_monitor_state.trends;
+  const auto history_epoch = monitor_history_epoch.load();
+  const auto configuration = configuration_generation.load();
+  if (history.active != record_history || history.epoch != history_epoch || history.configuration != configuration) {
+    history.values.Clear();
+    history.latest = {};
+    history.contracts = {};
+    history.summed = {};
+    history.needs_baseline = true;
+    history.epoch = history_epoch;
+    history.configuration = configuration;
+    monitor_snapshot.attempted_ns = 0;
+  }
+  history.active = record_history;
+  gpu_timers::monitor_events.enabled = record_history;
   UpdateMonitorCadence(runtime);
   const auto& snapshot = RefreshMonitorSnapshot(true);
+  monitor_snapshot.monitor.history = (record_history ? &history.values : nullptr);
+  monitor_snapshot.monitor.now_ns = SteadyNowNs();
   const bool interactive = menu || hud_overlay_open.load();
   if (interactive && !ui_monitor_was_interactive) ImGui::SetNextWindowFocus();
   ui_monitor_was_interactive = interactive;
@@ -330,23 +490,13 @@ inline void DrawIndependentMonitor(reshade::api::effect_runtime* runtime, bool m
   if (actions.open_diagnostics) ui_open_diagnostics = true;
   if (!ui_runtime_monitor_state.open) {
     monitor_requested = false;
+    gpu_timers::monitor_events.enabled = false;
+    history.active = false;
     monitor_observation_epoch.fetch_add(1);
+    monitor_history_epoch.fetch_add(1);
   }
   ui_monitor_geometry_dirty |= actions.geometry_changed || actions.settings_changed
       || ui_monitor_saved_pin != ui_runtime_monitor_state.pin
       || ui_monitor_saved_detailed != ui_runtime_monitor_state.detailed;
-  if (ui_monitor_geometry_dirty && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-    ++ui_monitor_save_batches;
-    const auto& geometry = ui_runtime_monitor_state.geometry;
-    reshade::set_config_value(nullptr, kConfigSection, "UiMonitorX", geometry.position.x);
-    reshade::set_config_value(nullptr, kConfigSection, "UiMonitorY", geometry.position.y);
-    reshade::set_config_value(nullptr, kConfigSection, "UiMonitorWidth", geometry.size.x);
-    reshade::set_config_value(nullptr, kConfigSection, "UiMonitorHeight", geometry.size.y);
-    reshade::set_config_value(nullptr, kConfigSection, "UiMonitorScale", geometry.ui_scale);
-    reshade::set_config_value(nullptr, kConfigSection, "UiMonitorPinned", ui_runtime_monitor_state.pin);
-    reshade::set_config_value(nullptr, kConfigSection, "UiMonitorDetailed", ui_runtime_monitor_state.detailed);
-    ui_monitor_geometry_dirty = false;
-    ui_monitor_saved_pin = ui_runtime_monitor_state.pin;
-    ui_monitor_saved_detailed = ui_runtime_monitor_state.detailed;
-  }
+  SaveMonitorSettings();
 }

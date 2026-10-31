@@ -22,10 +22,40 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     float width = 827.f;
     float font = 18.f;
     std::string doc_role;
+    unsigned monitor_passes = 1;
+    float monitor_width = 480.f;
+    bool monitor_detailed = false;
+    bool monitor_trends = false;
+    float monitor_opacity = .8f;
   };
   const char* pages[] = {"quality", "multipass", "diagnostics", "advanced"};
   std::vector<Scenario> scenarios;
   if (!docs_only) {
+    for (unsigned count = 1; count <= 4; ++count) {
+      for (bool narrow : {false, true}) {
+        const std::string id = "r5-monitor-" + std::to_string(count) + (narrow ? "-narrow" : "-wide");
+        scenarios.push_back({.id = id, .action = "r5-monitor", .language = (narrow ? 14 : 1), .width = 2100.f,
+                             .monitor_passes = count, .monitor_width = (narrow ? 360.f : 1100.f),
+                             .monitor_detailed = count >= 3, .monitor_trends = count == 2});
+      }
+    }
+    for (float opacity : {0.f, 1.f}) {
+      scenarios.push_back({.id = opacity == 0.f ? "r5-monitor-opacity0" : "r5-monitor-opacity100",
+                           .action = "r5-monitor", .width = 2100.f, .monitor_passes = 2,
+                           .monitor_width = 900.f, .monitor_trends = true, .monitor_opacity = opacity});
+    }
+    scenarios.push_back({.id = "r5-monitor-trends-detailed", .action = "r5-monitor", .language = 1, .width = 2100.f,
+                         .monitor_passes = 4, .monitor_width = 1100.f, .monitor_detailed = true, .monitor_trends = true});
+    if (snapshot_mode == "Full") {
+      unsigned index = 0;
+      for (const auto& theme : ui::kThemes) {
+        scenarios.push_back({.id = std::string("r5-monitor-") + theme.slug + "-long-scale",
+                             .action = "r5-monitor-long", .theme = theme.id,
+                             .language = (index++ % 2 == 0 ? 2 : 14), .width = 2400.f, .font = 24.f,
+                             .monitor_passes = 3, .monitor_width = 1100.f, .monitor_detailed = true,
+                             .monitor_trends = true});
+      }
+    }
     for (const int language : {1, 14}) {
       const std::string suffix = (language == 1 ? "-en" : "-zh");
       for (const char* action : {"a-stage-preview", "a-stage-cancel", "a-stage-confirm", "a-stage-direct", "a-stage-escape",
@@ -416,8 +446,10 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     }
     profile::active = -1;
     ui::MonitorInputs window_evidence;
-    const bool synthetic_window = scenario.action.starts_with("r3-")
-        && scenario.action != "r3-hotkey" && scenario.action != "r3-fixed-scale" && scenario.action != "r3-custom-scale";
+    const bool round_five_monitor = scenario.action.starts_with("r5-monitor");
+    auto window_history = (round_five_monitor ? std::make_unique<ui::MonitorHistory>() : nullptr);
+    const bool synthetic_window = round_five_monitor || (scenario.action.starts_with("r3-")
+        && scenario.action != "r3-hotkey" && scenario.action != "r3-fixed-scale" && scenario.action != "r3-custom-scale");
     if (synthetic_window) {
       window_evidence.card = {.tone = ui::CardTone::kGood, .glyph = ui::CardGlyph::kCheck,
                               .title = "Neural Rendering is on"};
@@ -426,6 +458,9 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
                                 .last_sample_ns = 1'000'000'000LL};
       window_evidence.now_ns = 1'500'000'000LL;
       window_evidence.pass_count = (scenario.action == "r3-pass1" ? 1u : (scenario.action == "r3-pass4" ? 4u : 2u));
+      if (round_five_monitor) {
+        window_evidence.pass_count = scenario.monitor_passes;
+      }
       runtime::hook_point = runtime::kHookRender;
       runtime::stack_passes = window_evidence.pass_count;
       runtime::preset = 2;
@@ -468,6 +503,36 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       }
       monitor_fixture = &window_evidence;
       synthetic_monitor_state.open = true;
+      if (round_five_monitor) {
+        window_evidence.current_conclusion = (scenario.action == "r5-monitor-long"
+            ? "Synthetic evidence: a deliberately long status for testing wrapping at a larger UI scale"
+            : "Synthetic monitor — layout preview");
+        window_evidence.now_ns = 60'000'000'000LL;
+        window_evidence.summary = {.resolution = "Synthetic global dimensions (raw evidence only)",
+            .gpu = "3.6 ms", .fps = "60.0", .fg = "Off", .gpu_reference = true};
+        for (unsigned metric = 0; metric < 7; ++metric) {
+          auto& series = window_history->series[metric];
+          for (int tick = 0; tick < 600; ++tick) {
+            const int64_t time = 100'000'000LL * (tick + 1);
+            const bool valid = tick < 440 || tick > 460;
+            const float value = (metric == 0 ? 60.f : (metric == 1 ? 16.7f : 1.f + metric * .25f))
+                * (1.f + .12f * std::sin(tick * .12f));
+            series.Add(time, value, valid, metric == 2 && tick < 400);
+            if (tick % 63 == 0 && valid) {
+              series.Add(time + 10'000'000LL, value * 1.7f, true, metric == 2 && tick < 400);
+            }
+          }
+        }
+        window_evidence.history = window_history.get();
+        for (auto& pass : window_evidence.passes) {
+          pass.execution_confirmed = true;
+        }
+        synthetic_monitor_state = {.open = true,
+            .geometry = {.position = ImVec2(690.f, 30.f), .size = ImVec2(scenario.monitor_width, 1000.f),
+                         .ui_scale = scenario.font / 13.f, .valid = true},
+            .detailed = scenario.monitor_detailed, .background_opacity = scenario.monitor_opacity,
+            .trends = scenario.monitor_trends, .history_seconds = 30, .apply_geometry = true, .fit_content = true};
+      }
     } else if (scenario.action == "r3-fixed-scale") {
       runtime::nr_follow_input_res = false;
       runtime::nr_resolution_scale = .58f;
@@ -481,7 +546,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       runtime::pass_resolution_scale[0] = .63f;
     }
     panel_width = scenario.width;
-    panel_height = (scenario.action == "viewport" ? 900.f : 1100.f);
+    panel_height = (round_five_monitor ? 1800.f : (scenario.action == "viewport" ? 900.f : 1100.f));
     font_size = scenario.font;
     io.DisplaySize = ImVec2(panel_width, panel_height);
     for (auto* window : ImGui::GetCurrentContext()->Windows) {
@@ -673,6 +738,39 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       diagnostic = &phase_a_card;
       interaction = "synthetic checking / completed GPU evidence card; no measured performance values";
     } else if (synthetic_window) {
+      if (round_five_monitor) {
+        const auto* monitor = ImGui::FindWindowByName("###nr_runtime_monitor");
+        check(monitor != nullptr && monitor->Active && monitor->ScrollMax.y <= 1.f,
+              "round-five synthetic monitor fits selected content after one Fit command");
+        check(monitor->DC.CursorMaxPos.x <= monitor->InnerRect.Max.x + 1.f,
+              "round-five synthetic monitor has no horizontal overflow");
+        check(synthetic_monitor_state.detailed == scenario.monitor_detailed
+                  && synthetic_monitor_state.trends == scenario.monitor_trends
+                  && synthetic_monitor_state.background_opacity == scenario.monitor_opacity,
+              "synthetic snapshot preserves independent detail, trend and background controls");
+        if (scenario.monitor_trends) {
+          float pass_bottom = 0.f;
+          float trend_top = panel_height;
+          bool found_pass = false, found_trend = false;
+          for (const auto& text : rendered_text) {
+            if (text.window != monitor) continue;
+            if (text.text.starts_with(ui::Tr("Observed working size"))
+                || text.text.starts_with(ui::Tr("GPU cost"))) {
+              pass_bottom = (std::max)(pass_bottom, text.rect.Max.y);
+              found_pass = true;
+            }
+          }
+          for (const auto& [id, item] : items) {
+            if (item.window == monitor
+                && (item.label == ui::Tr("FPS") || item.label == ui::Tr("Update interval (ms)"))) {
+              trend_top = (std::min)(trend_top, item.rect.Min.y);
+              found_trend = true;
+            }
+          }
+          check(found_pass && found_trend && pass_bottom <= trend_top,
+                "synthetic capture positions trends below the last pass summary");
+        }
+      }
       if (scenario.action == "r3-recovered") {
         ui::RecentHealthWindow recent;
         std::uint64_t eligible = 0, injected = 0, gaps = 0;
@@ -1106,6 +1204,15 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
                {"font_size", font_size}, {"width", static_cast<int>(panel_width)}, {"height", static_cast<int>(panel_height)},
                {"kind", (long_page ? "full-page" : "viewport")}, {"interaction", interaction},
                {"regions", regions}, {"checks", {{"synthetic", true}, {"capture_bounds", true}}}};
+    if (round_five_monitor) {
+      const auto* monitor = ImGui::FindWindowByName("###nr_runtime_monitor");
+      regions["runtime_monitor"] = {monitor->Pos.x, monitor->Pos.y,
+          monitor->Pos.x + monitor->Size.x, monitor->Pos.y + monitor->Size.y};
+      entry["regions"] = regions;
+      entry["monitor"] = {{"synthetic", true}, {"passes", scenario.monitor_passes},
+          {"detailed", scenario.monitor_detailed}, {"trends", scenario.monitor_trends},
+          {"background_opacity", scenario.monitor_opacity}, {"history_seconds", 30}};
+    }
     if (long_page) entry["checks"]["zero_scroll"] = true;
     if (cross_stage) {
       const auto plan = runtime::RequestedStagePlan();

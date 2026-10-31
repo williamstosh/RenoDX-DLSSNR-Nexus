@@ -111,6 +111,7 @@
 #include "screenshot.hpp"
 #include "edit_trace.hpp"
 #include "gpu_timers.hpp"
+#include "monitor_gpu.hpp"
 #include "look_stage.hpp"
 #include "norm_trace.hpp"
 #include "telemetry.hpp"
@@ -2020,6 +2021,7 @@ inline std::atomic_bool monitor_requested{false};
 inline thread_local const ui::MonitorInputs* ui_monitor_view = nullptr;
 inline std::atomic_bool monitor_keep_visible{true};
 inline std::atomic_uint64_t monitor_observation_epoch{0};
+inline std::atomic_uint64_t monitor_history_epoch{0};
 inline std::atomic_uint64_t monitor_settings_epoch{0};
 inline std::atomic<reshade::api::effect_runtime*> monitor_runtime{nullptr};
 inline std::mutex monitor_key_mutex;
@@ -2036,7 +2038,9 @@ inline bool MonitorKeyConflict(uint32_t key) {
 inline void ToggleMonitor() {
   bool previous = monitor_requested.load();
   while (!monitor_requested.compare_exchange_weak(previous, !previous)) {}
+  if (previous) gpu_timers::monitor_events.enabled = false;
   monitor_observation_epoch.fetch_add(1);
+  monitor_history_epoch.fetch_add(1);
 }
 
 inline void PollMonitorKey(bool down, bool permitted, bool overlay_input) {
@@ -19288,7 +19292,8 @@ struct CardObservation {
 };
 inline CardObservation card_observation;
 
-inline bool CurrentGpuSample(const gpu_timers::Stats& sample, int64_t now_ns) {
+inline bool CurrentGpuSample(const gpu_timers::Stats& sample, int64_t now_ns,
+                             const gpu_comparison::Identity* current_identity = nullptr) {
   if (!enabled.load() || !sample.valid || sample.state != gpu_timers::SampleState::VALID
       || sample.recorded_ns <= 0 || sample.recorded_ns > sample.measured_ns
       || now_ns < sample.recorded_ns || now_ns - sample.recorded_ns > gpu_timers::internal::kSampleAgeNs
@@ -19302,8 +19307,12 @@ inline bool CurrentGpuSample(const gpu_timers::Stats& sample, int64_t now_ns) {
         || observed.source_released
         || (observed.source_generation != 0 && observed.source_generation != sample.identity.source_generation)) return false;
   }
-  gpu_comparison::Identity current;
-  gpu_timers::comparison_settings(&current);
+  gpu_comparison::Identity captured;
+  if (current_identity == nullptr) {
+    gpu_timers::comparison_settings(&captured);
+    current_identity = &captured;
+  }
+  const auto& current = *current_identity;
   return sample.identity.configuration_generation == current.configuration_generation
       && sample.identity.config_epoch == current.config_epoch
       && sample.identity.device_session == gpu_timers::device_session
@@ -19583,7 +19592,11 @@ inline bool OnReshadeOpenOverlay(reshade::api::effect_runtime* /*runtime*/,
                                  reshade::api::input_source /*source*/) {
   hud_overlay_open.store(open, std::memory_order_relaxed);
   monitor_observation_epoch.fetch_add(1);
-  if (!open && !monitor_keep_visible.load()) monitor_requested = false;
+  if (!open && !monitor_keep_visible.load()) {
+    monitor_requested = false;
+    gpu_timers::monitor_events.enabled = false;
+    monitor_history_epoch.fetch_add(1);
+  }
   if (!open) {
     uint32_t monitor_capture = 5;
     hotkey_capture_target.compare_exchange_strong(monitor_capture, 0);
@@ -21009,7 +21022,10 @@ inline void NgxLifecycleTick() {
 inline void OnInitEffectRuntime(reshade::api::effect_runtime* runtime) {
   std::scoped_lock lock(overlay_listener_mutex);
   live_effect_runtimes.push_back(runtime);
-  if (monitor_runtime.load() == nullptr) monitor_runtime = runtime;
+  if (monitor_runtime.load() == nullptr) {
+    monitor_runtime = runtime;
+    monitor_history_epoch.fetch_add(1);
+  }
   monitor_observation_epoch.fetch_add(1);
 }
 
@@ -21018,6 +21034,8 @@ inline void OnDestroyEffectRuntime(reshade::api::effect_runtime* runtime) {
   std::erase(live_effect_runtimes, runtime);
   if (monitor_runtime.load() == runtime) {
     monitor_runtime = live_effect_runtimes.empty() ? nullptr : live_effect_runtimes.front();
+    gpu_timers::monitor_events.enabled = false;
+    monitor_history_epoch.fetch_add(1);
     monitor_observation_epoch.fetch_add(1);
     std::scoped_lock key_lock(monitor_key_mutex);
     monitor_key_edge = {};
@@ -25302,6 +25320,64 @@ inline ui::MonitorState ui_runtime_monitor_state;
 inline bool ui_monitor_geometry_dirty = false;
 inline bool ui_monitor_saved_pin = false;
 #include "monitor_runtime.hpp"
+
+// i18n: begin - display strings (tools/i18n/ui_strings.py catalog)
+inline void DrawSectionMonitorSettings() {
+  auto& state = ui_runtime_monitor_state;
+  bool changed = false;
+  float opacity = state.background_opacity * 100.f;
+  ui::RowLabel("Background opacity", "Only monitor backgrounds fade. Text and graphs keep their opacity.");
+  if (ui::Slider("##monitor_opacity", &opacity, 0.f, 100.f, "%.0f%%",
+      "Only monitor backgrounds fade. Text and graphs keep their opacity.")) {
+    state.background_opacity = opacity / 100.f;
+    changed = true;
+  }
+  const char* anchors[] = {"Custom position", "Top left", "Top center", "Top right",
+      "Center left", "Center", "Center right", "Bottom left", "Bottom center", "Bottom right"};
+  ui::RowLabel("Quick position", "Drag the monitor with the menu open to keep a custom position.");
+  if (ImGui::BeginCombo("##monitor_anchor", ui::Tr(anchors[state.anchor + 1]))) {
+    for (int index = 0; index < static_cast<int>(std::size(anchors)); ++index) {
+      if (ImGui::Selectable(ui::Tr(anchors[index]), state.anchor == index - 1)) {
+        state.anchor = index - 1;
+        state.offset = {};
+        state.apply_geometry = true;
+        changed = true;
+      }
+    }
+    ImGui::EndCombo();
+  }
+  const float scale = ui::BodyFontSize() / 13.f;
+  const auto display = ImGui::GetIO().DisplaySize;
+  const auto axis = [&](const char* label, const char* id, float* value, float extent) {
+    ui::RowLabel(label, "Position offset in UI pixels.");
+    if (ui::Slider(id, value, -extent / scale, extent / scale, "%.0f px", "Position offset in UI pixels.")) {
+      state.apply_geometry = true;
+      changed = true;
+    }
+  };
+  // Presets and dragging share the same saved geometry.
+  ImGui::BeginDisabled(state.anchor < 0);
+  axis("Horizontal offset", "##monitor_offset_x", &state.offset.x, display.x);
+  axis("Vertical offset", "##monitor_offset_y", &state.offset.y, display.y);
+  ImGui::EndDisabled();
+  if (ui::ActionButton(ui::Tr("Reset monitor position and size"), "monitor_reset_geometry")) {
+    state.geometry = {.position = ImVec2(12.f * scale, 12.f * scale),
+        .size = ImVec2(480.f * scale, (132.f + 62.f * std::clamp(stack_passes.load(), 1u, 4u)) * scale),
+        .ui_scale = scale, .valid = true};
+    state.anchor = 0;
+    state.offset = ImVec2(12.f, 12.f);
+    state.apply_geometry = true;
+    state.fit_content = false;
+    changed = true;
+  }
+  if (changed && state.apply_geometry) {
+    state.geometry = ui::PositionMonitorGeometry(state.geometry, state.anchor, state.offset,
+        ImVec2(0.f, 0.f), display, scale);
+  }
+  ui_monitor_geometry_dirty |= changed;
+  SaveMonitorSettings();
+}
+// i18n: end
 inline profile_ui::FirstInstallEvidence first_install_evidence = profile_ui::FirstInstallEvidence::UNKNOWN;
 
 // ReShade's frame callback owns profile transactions even with the add-on panel
@@ -25624,6 +25700,7 @@ inline void DrawClassicLayout(reshade::api::effect_runtime* runtime, const ui::S
   }
   if (ui::TreeNode("Hotkeys", "Hotkeys", kSectionFlags)) {
     DrawSectionHotkeys(text);
+    DrawSectionMonitorSettings();
   }
   ImGui::Separator();
   DrawSectionTheme();
@@ -25752,6 +25829,9 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
       if (ui::SectionHeader(ui::text::kHotkeys, hotkeys, ui::text::kResetHotkeys,
                             AnyModified({kHotkeySettings}), &reset)) {
         DrawSectionHotkeys(text);
+        ImGui::Separator();
+        ImGui::TextWrapped("%s", ui::Tr("Runtime monitor"));
+        DrawSectionMonitorSettings();
       }
       if (reset) ResetSettings({kHotkeySettings});
 
@@ -26297,6 +26377,31 @@ inline void LoadConfiguration() {
   reshade::get_config_value(nullptr, kConfigSection, "UiMonitorPinned", ui_runtime_monitor_state.pin);
   ui_runtime_monitor_state.detailed = false;
   reshade::get_config_value(nullptr, kConfigSection, "UiMonitorDetailed", ui_runtime_monitor_state.detailed);
+  auto& monitor_state = ui_runtime_monitor_state;
+  monitor_state.background_opacity = .8f;
+  monitor_state.trends = false;
+  monitor_state.history_seconds = 30;
+  monitor_state.trend_mask = 0x7f;
+  monitor_state.anchor = -1;
+  monitor_state.offset = {};
+  reshade::get_config_value(nullptr, kConfigSection, "UiMonitorOpacity", monitor_state.background_opacity);
+  reshade::get_config_value(nullptr, kConfigSection, "UiMonitorTrends", monitor_state.trends);
+  reshade::get_config_value(nullptr, kConfigSection, "UiMonitorHistorySeconds", monitor_state.history_seconds);
+  reshade::get_config_value(nullptr, kConfigSection, "UiMonitorTrendMask", monitor_state.trend_mask);
+  reshade::get_config_value(nullptr, kConfigSection, "UiMonitorAnchor", monitor_state.anchor);
+  reshade::get_config_value(nullptr, kConfigSection, "UiMonitorOffsetX", monitor_state.offset.x);
+  reshade::get_config_value(nullptr, kConfigSection, "UiMonitorOffsetY", monitor_state.offset.y);
+  monitor_state.background_opacity = (std::isfinite(monitor_state.background_opacity)
+      ? std::clamp(monitor_state.background_opacity, 0.f, 1.f) : .8f);
+  if (monitor_state.history_seconds != 10 && monitor_state.history_seconds != 30 && monitor_state.history_seconds != 60) {
+    monitor_state.history_seconds = 30;
+  }
+  monitor_state.trend_mask &= 0x7f;
+  monitor_state.anchor = std::clamp(monitor_state.anchor, -1, 8);
+  monitor_state.offset.x = (std::isfinite(monitor_state.offset.x) ? std::clamp(monitor_state.offset.x, -16384.f, 16384.f) : 0.f);
+  monitor_state.offset.y = (std::isfinite(monitor_state.offset.y) ? std::clamp(monitor_state.offset.y, -16384.f, 16384.f) : 0.f);
+  monitor_state.apply_geometry = monitor_state.anchor >= 0;
+  monitor_state.fit_content = false;
   ui_monitor_saved_pin = ui_runtime_monitor_state.pin;
   ui_monitor_saved_detailed = ui_runtime_monitor_state.detailed;
   uint32_t saved_monitor_key = VK_F11;
@@ -28092,6 +28197,7 @@ inline void Use(DWORD reason, HMODULE module, LPVOID reserved) {
       break;
     case DLL_PROCESS_DETACH:
       internal::monitor_requested = false;
+      gpu_timers::monitor_events.enabled = false;
       internal::monitor_runtime = nullptr;
       internal::monitor_observation_epoch.fetch_add(1);
       reshade::unregister_event<reshade::addon_event::reshade_present>(internal::OnProfilePresent);

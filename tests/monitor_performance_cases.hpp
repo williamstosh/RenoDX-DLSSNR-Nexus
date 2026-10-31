@@ -32,17 +32,19 @@ void RunMonitorPerformanceCases(const Check& check) {
     for (const bool profiling : {false, true}) {
       runtime::stack_passes = passes;
       runtime::gpu_timers_enabled = profiling;
-      for (unsigned scene = 0; scene < 7; ++scene) {
-        const bool menu = scene == 1 || scene == 2 || scene >= 4;
+      for (unsigned scene = 0; scene < 10; ++scene) {
+        const bool menu = scene == 1 || scene == 2 || (scene >= 4 && scene <= 6) || scene == 9;
         const bool hud = scene >= 2;
         const char* label = scene == 0 ? "closed" : scene == 1 ? "menu" : scene == 2 ? "menu_monitor"
-            : scene == 3 ? "passive_hud" : scene == 4 ? "drag" : scene == 5 ? "resize" : "view_switch";
+            : scene == 3 ? "passive_hud" : scene == 4 ? "drag" : scene == 5 ? "resize" : scene == 6 ? "view_switch"
+            : scene == 7 ? "passive_detailed" : scene == 8 ? "passive_trends" : "menu_trends";
         runtime::monitor_requested = hud;
         runtime::hud_overlay_open = menu;
         runtime::monitor_snapshot = {};
         runtime::monitor_observation_epoch.fetch_add(1);
-        runtime::ui_runtime_monitor_state = {.open = hud, .detailed = false};
-        runtime::ui_monitor_saved_detailed = false;
+        runtime::ui_runtime_monitor_state = {.open = hud, .detailed = scene == 7};
+        runtime::ui_runtime_monitor_state.trends = scene >= 8;
+        runtime::ui_monitor_saved_detailed = scene == 7;
         runtime::ui_monitor_saved_pin = false;
         runtime::ui_monitor_geometry_dirty = false;
         std::vector<double> times;
@@ -79,6 +81,16 @@ void RunMonitorPerformanceCases(const Check& check) {
           if (hud && !menu) check(ImGui::GetCurrentContext()->NavWindow == focus_before, "passive monitor never changes focus");
           ImGui::Render();
           const auto elapsed = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
+          if (scene >= 8 && frame == 23) {
+            const auto now = runtime::SteadyNowNs();
+            for (int64_t point = 0; point < 1200; ++point) {
+              const auto time = now - (1200 - point) * ui::MonitorSeries::BUCKET_NS;
+              for (unsigned metric = 0; metric < static_cast<unsigned>(ui::MonitorMetric::COUNT); ++metric) {
+                runtime::monitor_history.values.Add(static_cast<ui::MonitorMetric>(metric), time,
+                    metric == 0 ? 120.f + static_cast<float>(point % 20) : 2.f + static_cast<float>(point % 11));
+              }
+            }
+          }
           if (frame >= 24) times.push_back(elapsed);
           if (paced) std::this_thread::sleep_until(start + std::chrono::microseconds(16667));
         }
@@ -89,7 +101,7 @@ void RunMonitorPerformanceCases(const Check& check) {
         const auto deferred = runtime::monitor_snapshot.deferred - before_deferred;
         const auto saves = runtime::ui_monitor_save_batches - before_saves;
         check(times.size() == frames, "monitor benchmark includes every measured CPU frame");
-        if (scene <= 3) check(saves == 0, "stationary monitor never persists settings on a timer");
+        if (scene <= 3 || scene >= 7) check(saves == 0, "stationary monitor never persists settings on a timer");
         if (!menu && !hud) check(refreshes == 0, "closed UI does not collect monitor snapshots");
         std::printf("MONITOR_CPU scene=%s passes=%u profiling_setting=%u frames=%u p50_us=%.3f p95_us=%.3f p99_us=%.3f max_us=%.3f refreshes=%llu deferred=%llu save_batches=%llu paced_hz=%u gpu_measured=0\n",
             label, passes, profiling, frames, percentile(.50), percentile(.95), percentile(.99), times.back(),

@@ -33,7 +33,7 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 | **独立工作分辨率（开发版可用）** | 按层分配 NR 的工作尺寸，在细节与 GPU 开销间取舍，不改变游戏 DLSS SR 的分辨率。支持范围和设置方法见[画质](docs/USER_GUIDE.md#zh-quality)与[叠层指南](docs/USER_GUIDE.md#zh-multipass)。 |
 | **处理位置与 NR／FG 协同** | 选择 Render、Upscaled 或 Present，将 NR 放在超分前、超分后或最终游戏画面；支持与原生 DLSS FG/MFG 或 XeFG 协同。组合规则见[叠层指南](docs/USER_GUIDE.md#zh-multipass)。 |
 | **每游戏六槽与共享方案库** | 三个官方起点加三个自定义方案，保存不同游戏与场景的偏好；通过可搜索方案库导入、导出和分享。见[方案指南](docs/USER_GUIDE.md#zh-presets)。 |
-| **F11 运行监视器（开发版可用）** | 游戏中随时查看 NR 状态、GPU 开销、ReShade FPS 与 FG 状态；关闭主菜单后仍可显示，打开菜单即可调整位置和大小。 |
+| **F11 常驻性能 HUD（开发版可用，尚未打包）** | 精简／详细视图查看 NR 状态、GPU 开销、帧率与 FG 状态，可选 10／30／60 秒趋势。支持背景透明度、九宫格定位及打开 Home 菜单后拖动记忆。 |
 | **逐层 GPU 诊断与 A/B 对比（开发版可用）** | 查看每层模型、工作／输出尺寸及 GPU 耗时，比较调整一层工作尺寸前后的开销，帮助定位昂贵的层。见[诊断指南](docs/USER_GUIDE.md#zh-diagnostics)。 |
 | **15 种界面语言与辅助输入** | 自动跟随 ReShade 或手动选语言；输入法遇到问题时，使用 Windows 原生 Unicode 编辑窗填写方案名称和反馈文字。 |
 | **四套界面主题** | 在 Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED 中选择喜欢的菜单外观。 |
@@ -183,7 +183,7 @@ Features marked “available in development” are implemented in dev.11 and awa
 | **Independent working resolution (available in development)** | Allocate NR working sizes per layer to balance detail and GPU cost, while keeping the game's DLSS SR resolution unchanged. See [Quality](docs/USER_GUIDE.md#en-quality) and [Multi-Pass](docs/USER_GUIDE.md#en-multipass) for supported combinations and controls. |
 | **Processing location and NR/FG coordination** | Choose Render, Upscaled or Present to process before upscaling, after upscaling or on the final game image. Coordinate NR with native DLSS FG/MFG or XeFG; see [Multi-Pass](docs/USER_GUIDE.md#en-multipass) for combination rules. |
 | **Six slots per game and a shared profile library** | Start with three official profiles and keep three custom ones for different games and scenes. Search, import, export and share profiles through the library. See [Profiles](docs/USER_GUIDE.md#en-presets). |
-| **F11 runtime monitor (available in development)** | Check NR status, GPU cost, ReShade FPS and FG status during play. Keep it visible after closing the menu; open the menu to move or resize it. |
+| **F11 persistent performance HUD (development source, not yet packaged)** | Compact/Details views show NR state, GPU cost, FPS and FG status, with optional 10/30/60-second trends. Adjust background opacity, choose a nine-position anchor or open the Home menu to drag it; placement is remembered. |
 | **Per-pass GPU diagnostics and A/B comparison (available in development)** | Inspect each layer's model, working/output dimensions and GPU time. Compare costs before and after changing one layer's working size to identify expensive passes. See [Diagnostics](docs/USER_GUIDE.md#en-diagnostics). |
 | **15 interface languages and assisted input** | Follow ReShade's language automatically or choose one manually. If inline IME input fails, use the native Windows Unicode editor for profile names and feedback text. |
 | **Four interface themes** | Choose Cyber Neon, Nexus Dark, Fluent Light or Midnight OLED for the menu's appearance. |

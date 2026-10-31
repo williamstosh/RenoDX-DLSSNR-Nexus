@@ -92,6 +92,46 @@ void RunRuntimeMonitorCases(const Check& check) {
   const auto tiny = ui::ClampMonitorGeometry(scaled, ImVec2(0.f, 0.f), ImVec2(200.f, 150.f), 1.f);
   check(tiny.position.x == 0.f && tiny.position.y == 0.f
         && tiny.size.x <= 200.f && tiny.size.y <= 150.f, "small work area keeps the entire monitor reachable");
+  for (int anchor = 0; anchor < 9; ++anchor) {
+    const ui::MonitorGeometry source{.size = ImVec2(400.f, 300.f), .ui_scale = 1.f, .valid = true};
+    const auto positioned = ui::PositionMonitorGeometry(source, anchor, ImVec2(10.f, -5.f),
+        ImVec2(-1200.f, 100.f), ImVec2(1600.f, 1200.f), 2.f);
+    const float expected_x = std::clamp(-1200.f + 400.f * (anchor % 3) + 20.f, -1200.f, -400.f);
+    const float expected_y = std::clamp(100.f + 300.f * (anchor / 3) - 10.f, 100.f, 700.f);
+    check(positioned.position.x == expected_x && positioned.position.y == expected_y
+              && positioned.size.x == 800.f && positioned.size.y == 600.f,
+          "all nine anchors share scaled offsets and the viewport clamp");
+  }
+  const auto custom = ui::PositionMonitorGeometry(scaled, -1, ImVec2(999.f, 999.f),
+      ImVec2(-1200.f, 100.f), ImVec2(1600.f, 1200.f), 2.f);
+  check(custom.position.x == scaled.position.x && custom.position.y == scaled.position.y,
+        "custom geometry ignores anchor offsets");
+  const ui::MonitorPoint previous{.time_ns = 1'000'000'000LL, .value = 1.f, .valid = true};
+  ui::MonitorPoint next{.time_ns = 1'200'000'000LL, .value = 2.f, .valid = true};
+  check(ui::CanConnectMonitorPoints(previous, next, ui::MonitorMetric::FPS),
+        "cadence points connect at the inclusive 200 ms boundary");
+  ++next.time_ns;
+  check(!ui::CanConnectMonitorPoints(previous, next, ui::MonitorMetric::FPS)
+            && ui::CanConnectMonitorPoints(previous, next, ui::MonitorMetric::GPU),
+        "cadence and GPU use independent connection windows");
+  next.time_ns = 1'750'000'000LL;
+  check(ui::CanConnectMonitorPoints(previous, next, ui::MonitorMetric::PASS_4),
+        "GPU points connect at the inclusive 750 ms boundary");
+  ++next.time_ns;
+  check(!ui::CanConnectMonitorPoints(previous, next, ui::MonitorMetric::GPU),
+        "GPU points do not bridge long gaps");
+  next.time_ns = 1'100'000'000LL;
+  next.reference = true;
+  check(!ui::CanConnectMonitorPoints(previous, next, ui::MonitorMetric::GPU),
+        "reference and current series never connect");
+  next.reference = false;
+  next.valid = false;
+  check(!ui::CanConnectMonitorPoints(previous, next, ui::MonitorMetric::GPU),
+        "invalid points break the curve rather than becoming zero measurements");
+  next.valid = true;
+  next.time_ns = previous.time_ns;
+  check(!ui::CanConnectMonitorPoints(previous, next, ui::MonitorMetric::GPU),
+        "equal timestamps do not invent an event interval");
 
   ui::MonitorInputs inputs;
   inputs.card.title = "Neural Rendering is on";

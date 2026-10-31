@@ -436,6 +436,46 @@ int main() {
       "Official template: Render B (Cinematic), then Upscaled A (Default); both at scale 0.67.",
       "Configured working ratio and current completed working dimensions when available.",
   };
+  const char* monitor_v2_strings[] = {
+      "FPS",
+      "Smoothed ImGui/ReShade update cadence. Does not measure frame-generated output FPS.",
+      "Recent valid NR GPU time. Shows — when no measurement is available.",
+      "Fit to content",
+      "Fit height to current content.",
+      "Trends",
+      "Show performance history",
+      "Update interval (ms)",
+      "Pass 1 GPU",
+      "Pass 2 GPU",
+      "Pass 3 GPU",
+      "Pass 4 GPU",
+      "10 s",
+      "30 s",
+      "60 s",
+      "FPS is smoothed UI cadence; interval is the actual ImGui update interval. GPU points are completed events. Bucket ranges preserve peaks; gaps stay empty.",
+      "Reference sum of recent stage GPU times, including each stage's shared work once. Not same-frame or FG end-to-end latency.",
+      "Stage measurements use different queues or conditions. See per-pass GPU times.",
+      "Some stages have no current GPU measurement. See per-pass GPU times.",
+      "GPU timing unavailable",
+      "Background opacity",
+      "Only monitor backgrounds fade. Text and graphs keep their opacity.",
+      "Quick position",
+      "Drag the monitor with the menu open to keep a custom position.",
+      "Custom position",
+      "Top left",
+      "Top center",
+      "Top right",
+      "Center left",
+      "Center",
+      "Center right",
+      "Bottom left",
+      "Bottom center",
+      "Bottom right",
+      "Position offset in UI pixels.",
+      "Horizontal offset",
+      "Vertical offset",
+      "Reset monitor position and size",
+  };
   if (FormatConversions("Estimated working resolution: %ux%u") != "%u|%u|") return 7;
   for (int language = 0; language < kLanguageCount; ++language) {
     SelectLanguage(language);
@@ -520,6 +560,17 @@ int main() {
         return 7;
       }
     }
+    for (const char* english : monitor_v2_strings) {
+      if (!check_preset_translation(english)) return 7;
+      const std::string_view key = english;
+      const bool technical_label = key == "FPS" || key == "10 s" || key == "30 s" || key == "60 s"
+                                   || key == "Pass 1 GPU" || key == "Pass 2 GPU"
+                                   || key == "Pass 3 GPU" || key == "Pass 4 GPU";
+      if (language != 0 && !technical_label && std::string_view(Tr(english)) == english) {
+        std::fprintf(stderr, "Untranslated monitor 2.0 text: language=%s key=%s\n", kLanguages[language].code, english);
+        return 7;
+      }
+    }
     const std::string_view code = kLanguages[language].code;
     if (code == "zh-Hans" || code == "zh-Hant") {
       const bool simplified = code == "zh-Hans";
@@ -528,6 +579,7 @@ int main() {
         const char* simplified;
         const char* traditional;
       } terms[] = {
+          {"FPS", "帧率", "幀率"},
           {"Working resolution", "工作分辨率", "工作分辨率"},
           {"Estimated working resolution", "预计工作分辨率", "預計工作分辨率"},
           {"Actual working resolution", "实际工作分辨率", "實際工作分辨率"},

@@ -19,6 +19,7 @@
 #include "chain_ux_cases.hpp"
 #include "recent_health_cases.hpp"
 #include "runtime_monitor_cases.hpp"
+#include "monitor_history_cases.hpp"
 #include "monitor_hud_cases.hpp"
 
 namespace ui = renodx::addons::dlss5::ui;
@@ -454,6 +455,7 @@ int main() {
     }
   }
   RunRuntimeMonitorCases(check);
+  RunMonitorHistoryCases(check);
   RunMonitorHudCases(check);
   std::printf("summary scenarios=%u languages=%d max_delta_y=%.3f px checks=%u failures=%u\n",
               scenarios, ui::kLanguageCount, max_delta, checks, failures);
