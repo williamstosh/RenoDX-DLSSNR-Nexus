@@ -32,6 +32,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -99,9 +100,11 @@
 #include "funnel.hpp"
 #include "health.hpp"
 #include "ui/fg_route.hpp"
+#include "ui/frame_metrics.hpp"
 #include "ui/state_card.hpp"
 #include "ui/strings.hpp"
 #include "ui/widgets.hpp"
+#include "ui/notice_position.hpp"
 #include "ui/profile_hotkeys.hpp"
 #include "ui/runtime_monitor.hpp"
 #include "ui/text_input.hpp"
@@ -2016,6 +2019,10 @@ inline std::atomic_bool hud_overlay_open{false};
 inline std::atomic_uint32_t monitor_hotkey{VK_F11};
 inline std::atomic_uint32_t host_overlay_hotkey{VK_HOME};
 inline std::atomic_bool monitor_requested{false};
+inline std::atomic_bool monitor_visible_preference{false};
+inline std::atomic_bool monitor_visibility_dirty{false};
+inline std::atomic_bool monitor_visibility_initialized{false};
+inline std::shared_mutex monitor_visibility_mutex;
 // Borrowed from the UI thread's copied snapshot, whose storage lasts for the
 // thread. Resolution editors do not acquire the runtime lock while drawing.
 inline thread_local const ui::MonitorInputs* ui_monitor_view = nullptr;
@@ -2036,8 +2043,11 @@ inline bool MonitorKeyConflict(uint32_t key) {
 }
 
 inline void ToggleMonitor() {
+  std::unique_lock visibility_lock(monitor_visibility_mutex);
   bool previous = monitor_requested.load();
   while (!monitor_requested.compare_exchange_weak(previous, !previous)) {}
+  monitor_visible_preference = !previous;
+  monitor_visibility_dirty = true;
   if (previous) gpu_timers::monitor_events.enabled = false;
   monitor_observation_epoch.fetch_add(1);
   monitor_history_epoch.fetch_add(1);
@@ -2664,10 +2674,6 @@ inline std::atomic_uint32_t last_input_width = 0;
 inline std::atomic_uint32_t last_input_height = 0;
 inline std::atomic_uint32_t last_output_width = 0;
 inline std::atomic_uint32_t last_output_height = 0;
-// The game's render area over its DLSS output area, from the last NR
-// evaluate after upscaling (the path that sees both); 0 until one ran.  The
-// Faster estimates need it to price a move between the insertion points.
-inline std::atomic<float> dlss_render_share{0.f};
 inline std::atomic_uint64_t intercepted_creates = 0;
 // Game creates that entered a hooked copy while a teardown held
 // `shutting_down` and so went unrecorded (HookedCreateFeatureSlot, F3).
@@ -2868,7 +2874,16 @@ inline int64_t SteadyNowNs() {
 // whether every workset and NR feature the addon retired was actually
 // released.  runtime_mutex guards all of it.
 inline telemetry::Pacing telemetry_pacing;
-inline int64_t telemetry_previous_present_ns = 0;
+struct PresentMetrics {
+  std::shared_mutex mutex;
+  std::atomic<bool> interrupted{false};
+  ui::frame_metrics::Identity target;
+  ui::frame_metrics::Stream stream;
+  ui::frame_metrics::Stream telemetry_stream;
+};
+inline PresentMetrics present_metrics;
+inline uint64_t telemetry_present_sequence = 0;
+inline uint64_t telemetry_present_generation = 0;
 inline int64_t telemetry_session_start_ns = 0;
 inline int64_t telemetry_window_start_ns = 0;
 inline uint64_t telemetry_window_ticks = 0;
@@ -3014,27 +3029,9 @@ inline void Log(reshade::log::level level, const std::string& message) {
   reshade::log::message(level, (NR_NEXUS_NAME ": " + message).c_str());
 }
 
-// ---- NR's cost, as the player sees it (rc11, NRCostMeter) -------------------
-// The evaluate hooks time one NR chain per kCostSampleNs (BeginChainTimers);
-// the lifecycle tick folds the published chain times and the present
-// intervals into windows of kCostWindowNs (TickNrCost) and publishes three
-// numbers.  nr_cost_gpu_ms: NR's GPU time per NR evaluate (the mean sampled
-// chain), the number the panel states.  nr_cost_present_ms: NR's GPU time
-// per presented frame, chain x evaluates / presents: two NR chains a frame
-// cost twice, and under frame generation two presents share one chain, so
-// frame_ms - present_ms is the frame time without NR either way - when the
-// GPU is what limits the frame, which is why every place that shows it says
-// "estimate".  nr_cost_frame_ms: the mean present interval.  The per-present
-// figure is NOT what NR costs: AW2 (rc4, DLSS-G, NR toggled in the window)
-// read 0.8 ms "per frame" over 4,891 presents and 854 evaluates while one
-// evaluate cost 4.1 ms, which is why the panel states the per-evaluate time
-// (rc5).  Presents with NR off (F6) are left out of the window: their
-// frames carry no NR, and counting them diluted both numbers.  Measured at
-// 4K on the e2e host (README, Performance): the GPU-bound frame moves by
-// NR's chain time to within 0.1 ms.  0 = not measured: the meter off, no
-// timestamps on this device, NR idle or off, or presents too few to pace.
-// The window is runtime_mutex's; the overlay and the health ledger read the
-// atomics.
+// The legacy scalar readers receive only a current complete StageGroup cost
+// and independently sampled Present interval. A removable NR share is
+// unknown: GPU work alone cannot prove a GPU bottleneck or exclude frame caps.
 inline constexpr int64_t kCostSampleNs = 250'000'000;
 inline constexpr int64_t kCostWindowNs = 1'000'000'000;
 inline std::atomic<float> nr_cost_gpu_ms{0.f};
@@ -3053,7 +3050,7 @@ struct CostWindow {
   uint32_t samples = 0;
 };
 inline CostWindow cost_window;
-// The last window's mean chain, carried into a window without a sample.
+// Single-group compatibility scalar; never carries a missing/expired result.
 inline double cost_chain_ms = 0.0;
 inline uint64_t cost_seen_published = 0;
 inline uint64_t cost_seen_total_us = 0;
@@ -11959,10 +11956,6 @@ inline bool ProcessInline(
   last_input_height = nr_input_height;
   last_output_width = width;
   last_output_height = height;
-  dlss_render_share.store(
-      static_cast<float>(static_cast<double>(current.input_width) * current.input_height
-                         / (static_cast<double>(width) * height)),
-      std::memory_order_relaxed);
   // The line counts per path (v8.0.2), so a hook point switched mid-session
   // still says when its first frame was recorded.  Code Vein II's log ended
   // on the first Present evaluate after 5040 Upscaled successes had spent
@@ -19152,57 +19145,6 @@ inline void EmitHealthSummary() {
   Log(reshade::log::level::info, line);
 }
 
-// Lifecycle tick (runtime_mutex), after gpu_timers::Poll: this tick's
-// present interval (0 when it has none) and any newly published chain into
-// the window; the window out once it is kCostWindowNs old.  A window needs 8
-// presents to be paced, as the health ledger's windows do.
-inline void TickNrCost(int64_t now_ns, double interval_ms) {
-  uint32_t recent_stages = 0;
-  for (const auto& timing : gpu_timers::stage_stats) {
-    recent_stages += timing.valid && now_ns - timing.measured_ns <= gpu_timers::internal::kSampleAgeNs;
-  }
-  // The legacy FPS estimate assumes one chain on one stage. Do not carry a
-  // stale value forward or turn separate stage/queue spans into frame latency.
-  const bool comparable = recent_stages == 1 && !RequestedStagePlan().mixed;
-  if (!comparable) {
-    cost_chain_ms = 0;
-    nr_cost_gpu_ms.store(0.f, std::memory_order_relaxed);
-    nr_cost_present_ms.store(0.f, std::memory_order_relaxed);
-  }
-  if (gpu_timers::published_segments != cost_seen_published) {
-    const uint64_t samples = gpu_timers::stage_published[0] + gpu_timers::stage_published[1]
-        + gpu_timers::stage_published[2];
-    static uint64_t seen_samples = 0;
-    cost_window.chain_ms += (gpu_timers::measured_total_us - cost_seen_total_us) / 1000.0;
-    cost_window.samples += static_cast<uint32_t>(samples - seen_samples);
-    seen_samples = samples;
-    cost_seen_total_us = gpu_timers::measured_total_us;
-    cost_seen_published = gpu_timers::published_segments;
-  }
-  if (interval_ms > 0.0 && enabled.load(std::memory_order_relaxed)) {
-    ++cost_window.presents;
-    cost_window.frame_ms += interval_ms;
-  }
-  const uint64_t evals = successful_evaluations.load(std::memory_order_relaxed)
-                         + successful_pre_sr_evaluations.load(std::memory_order_relaxed);
-  if (cost_window.start_ns != 0 && now_ns - cost_window.start_ns < kCostWindowNs) return;
-  const uint64_t nr_evals = evals - cost_window.start_evals;
-  const uint64_t sources = SourceSuccessfulEvaluations();
-  const uint64_t nr_sources = sources - cost_window.start_source_evals;
-  if (comparable && cost_window.samples != 0) cost_chain_ms = cost_window.chain_ms / cost_window.samples;
-  if (nr_evals == 0) cost_chain_ms = 0.0;
-  const bool paced = cost_window.start_ns != 0 && cost_window.presents >= 8;
-  nr_cost_frame_ms.store(paced ? static_cast<float>(cost_window.frame_ms / cost_window.presents)
-                               : 0.f,
-                         std::memory_order_relaxed);
-  nr_cost_present_ms.store(
-      paced ? static_cast<float>(cost_chain_ms * nr_evals / cost_window.presents) : 0.f,
-      std::memory_order_relaxed);
-  nr_cost_gpu_ms.store(paced && nr_sources != 0
-                          ? static_cast<float>(cost_chain_ms * nr_evals / nr_sources) : 0.f,
-                       std::memory_order_relaxed);
-  cost_window = {.start_ns = now_ns, .start_evals = evals, .start_source_evals = sources};
-}
 
 // Lifecycle tick (runtime_mutex).  `frame`: a real present; synthetic ticks
 // advance time only, so a starved stretch closes windows at 4 s, not per tick.
@@ -19318,6 +19260,33 @@ inline bool CurrentGpuSample(const gpu_timers::Stats& sample, int64_t now_ns,
       && sample.identity.device_session == gpu_timers::device_session
       && sample.identity.settings_hash == current.settings_hash && sample.identity.resolution_hash == current.resolution_hash
       && sample.identity.route == current.route && sample.identity.fg == current.fg;
+}
+
+// Current completed single-group cost. Independent stage windows are reference
+// work sums; neither those sums nor evaluate/present ratios establish a frame
+// saving. CPU bottleneck and frame-cap evidence are unavailable here.
+inline void TickNrCost(int64_t now_ns, double /*interval_ms*/) {
+  const auto plan = RequestedStagePlan();
+  const auto timings = std::array{gpu_timers::stage_stats[0], gpu_timers::stage_stats[1], gpu_timers::stage_stats[2]};
+  std::array<bool, 3> current{};
+  std::array<uint32_t, kMaxNrPasses> models{};
+  gpu_comparison::Identity current_identity;
+  if (gpu_timers::comparison_settings != nullptr) gpu_timers::comparison_settings(&current_identity);
+  for (size_t stage = 0; stage < timings.size(); ++stage) {
+    current[stage] = CurrentGpuSample(timings[stage], now_ns, &current_identity);
+  }
+  for (uint32_t pass = 0; pass < plan.pass_count; ++pass) {
+    const auto model = (pass == 0 || pass_preset[pass - 1].load() == 0 ? preset.load() : pass_preset[pass - 1].load());
+    models[pass] = nr_model::ResolvePreset(model, 0, direct_runtime_requirements.dual_models);
+  }
+  const auto total = SummarizeMonitorGpu(plan, timings, current, models);
+  cost_chain_ms = (total.valid && !total.reference ? total.milliseconds : 0.f);
+  nr_cost_gpu_ms.store(static_cast<float>(cost_chain_ms), std::memory_order_relaxed);
+  nr_cost_present_ms.store(0.f, std::memory_order_relaxed);
+  std::shared_lock pacing_lock(present_metrics.mutex);
+  const auto frame = present_metrics.telemetry_stream.Read(now_ns);
+  const bool frame_current = frame.valid && frame.identity.configuration == configuration_generation.load();
+  nr_cost_frame_ms.store(frame_current ? frame.interval_ms : 0.f, std::memory_order_relaxed);
 }
 
 inline capability::Size CurrentPassWorkingEstimate(uint32_t pass, int64_t now_ns, capability::Size* stage_reference = nullptr) {
@@ -19531,8 +19500,45 @@ inline std::atomic_bool hud_pill{false};
 // visible pill but cannot consume recovery before a proven submission.
 inline bool hud_recovery_pending = false;
 inline std::atomic_int64_t hud_toast_until_ns{0};
+// Preset adapters keep these percentage fields as the legacy custom position.
 inline std::atomic<float> hud_position_x{50.f};
 inline std::atomic<float> hud_position_y{0.f};
+struct HudPositionState {
+  std::shared_mutex mutex;
+  int anchor = -1;
+  ImVec2 offset{0.f, 0.f};
+};
+inline HudPositionState hud_position;
+
+inline ui::NoticePosition GetHudPosition() {
+  std::shared_lock lock(hud_position.mutex);
+  return {.anchor = hud_position.anchor,
+          .legacy_percent = ImVec2(hud_position_x.load(std::memory_order_relaxed),
+              hud_position_y.load(std::memory_order_relaxed)),
+          .offset = hud_position.offset};
+}
+
+inline void StoreHudPosition(ui::NoticePosition position) {
+  position = ui::NormalizeNoticePosition(position);
+  std::unique_lock lock(hud_position.mutex);
+  hud_position.anchor = position.anchor;
+  hud_position.offset = position.offset;
+  hud_position_x.store(position.legacy_percent.x, std::memory_order_relaxed);
+  hud_position_y.store(position.legacy_percent.y, std::memory_order_relaxed);
+}
+
+inline void PersistHudPosition() {
+  {
+    std::shared_lock config_lock(present_restore_configuration.mutex);
+    if (!present_restore_configuration.global_writable) return;
+  }
+  const auto position = GetHudPosition();
+  reshade::set_config_value(nullptr, kConfigSection, "UiHudAnchor", position.anchor);
+  reshade::set_config_value(nullptr, kConfigSection, "UiHudOffsetX", position.offset.x);
+  reshade::set_config_value(nullptr, kConfigSection, "UiHudOffsetY", position.offset.y);
+  reshade::set_config_value(nullptr, kConfigSection, "UiHudX", position.legacy_percent.x);
+  reshade::set_config_value(nullptr, kConfigSection, "UiHudY", position.legacy_percent.y);
+}
 
 inline void MaybeEmitStatusCard(const NrVerdict& verdict, int64_t now_ns) {
   const ui::CardInputs inputs = CollectCardInputs(verdict, now_ns);
@@ -19592,6 +19598,9 @@ inline bool OnReshadeOpenOverlay(reshade::api::effect_runtime* /*runtime*/,
                                  reshade::api::input_source /*source*/) {
   hud_overlay_open.store(open, std::memory_order_relaxed);
   monitor_observation_epoch.fetch_add(1);
+  if (open && monitor_visible_preference.load()) {
+    monitor_requested = true;
+  }
   if (!open && !monitor_keep_visible.load()) {
     monitor_requested = false;
     gpu_timers::monitor_events.enabled = false;
@@ -19777,10 +19786,8 @@ inline void OnHudOverlay(reshade::api::effect_runtime* runtime) {
     const auto detail_size = detail != nullptr ? ImGui::CalcTextSize(detail, nullptr, false, wrap) : ImVec2();
     const ImVec2 size((std::max)(title_size.x, detail_size.x) + padding.x * 2.f,
         title_size.y + (detail != nullptr ? gap + detail_size.y : 0.f) + padding.y * 2.f);
-    const ImVec2 anchor(hud_position_x.load(std::memory_order_relaxed) / 100.f,
-                        hud_position_y.load(std::memory_order_relaxed) / 100.f);
-    const ImVec2 lo(gap + (display.x - gap * 2.f - size.x) * anchor.x,
-                   gap + (display.y - gap * 2.f - size.y) * anchor.y);
+    const auto position = GetHudPosition();
+    const ImVec2 lo = ui::NoticeTopLeft(position, display, size, gap, ui::BaseFontSize() / 13.f);
     const ImVec2 hi(lo.x + size.x, lo.y + size.y);
     const float alpha = (std::min)(1.f, static_cast<float>(profile_feedback_until_ns.load() - now_ns) / 1e9f);
     const auto color = [&](ImVec4 value) { value.w *= alpha; return ui::ToU32(value); };
@@ -19846,13 +19853,12 @@ inline void OnHudOverlay(reshade::api::effect_runtime* runtime) {
       .Color(ImGuiCol_Border, ui::CurrentTheme().stroke)
       .Color(ImGuiCol_Text, ui::CurrentTheme().text_primary);
   const ImVec2 display_size = ImGui::GetIO().DisplaySize;
-  const ImVec2 anchor(hud_position_x.load(std::memory_order_relaxed) / 100.f,
-                      hud_position_y.load(std::memory_order_relaxed) / 100.f);
+  const auto position = GetHudPosition();
+  const ImVec2 anchor = ui::NoticePivot(position);
   // Matching the pivot to the normalized position keeps an auto-sized
   // notice inside the screen at either edge and centered at 50%.
   ImGui::SetNextWindowPos(
-      ImVec2(ui::tokens::kRowGap + (display_size.x - 2.f * ui::tokens::kRowGap) * anchor.x,
-             ui::tokens::kRowGap + (display_size.y - 2.f * ui::tokens::kRowGap) * anchor.y),
+      ui::NoticeTopLeft(position, display_size, ImVec2(), ui::tokens::kRowGap, ui::BaseFontSize() / 13.f),
       ImGuiCond_Always, anchor);
   if (ImGui::Begin("##nr_hud", nullptr,
                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs
@@ -19860,6 +19866,10 @@ inline void OnHudOverlay(reshade::api::effect_runtime* runtime) {
                        | ImGuiWindowFlags_NoDocking
                        | ImGuiWindowFlags_NoFocusOnAppearing
                        | ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (position.anchor >= 0) {
+      ImGui::SetWindowPos(ui::NoticeTopLeft(position, display_size, ImGui::GetWindowSize(),
+          ui::tokens::kRowGap, ui::BaseFontSize() / 13.f), ImGuiCond_Always);
+    }
     // A tooltip's width (tokens::kTooltipEm): the hint and a long translated
     // ledger title ran as one strip across the top of the screen.
     ImGui::PushTextWrapPos(ImGui::GetFontSize() * ui::tokens::kTooltipEm);
@@ -20231,7 +20241,9 @@ inline void EmitTelemetry(int64_t now_ns, bool force = false) {
   line << "telemetry t=" << (now_ns - telemetry_session_start_ns) / 1e9
        << "s win=" << window_s << "s presents=" << telemetry_pacing.count
        << " ticks=" << telemetry_window_ticks << " fps="
-       << telemetry_pacing.count / window_s << " frame_ms[avg="
+       << (telemetry_pacing.sum_ms > 0.0 ? 1000.0 * telemetry_pacing.count / telemetry_pacing.sum_ms : 0.0)
+       << " fps_source=present_callback fps_scope=present_stream fps_available=" << (telemetry_pacing.count != 0)
+       << " frame_ms[avg="
        << (telemetry_pacing.count != 0
                ? telemetry_pacing.sum_ms / telemetry_pacing.count
                : 0.0)
@@ -20722,10 +20734,7 @@ inline void EmitTelemetry(int64_t now_ns, bool force = false) {
       Log(reshade::log::level::info, logged_settings);
     }
   }
-  // NR's cost (NRCostMeter) in the words the panel shows, on the same
-  // cadence: a report's log says what NR cost that session's frame rate.
-  // gpu_ms is per NR evaluate since rc5 (per present before); present_ms is
-  // the old per-present figure, share its part of frame_ms.
+  // Keep measured group work separate from callback pacing and frame savings.
   if (const float gpu_ms = nr_cost_gpu_ms.load(std::memory_order_relaxed); gpu_ms > 0.f) {
     const float present_ms = nr_cost_present_ms.load(std::memory_order_relaxed);
     const float frame_ms = nr_cost_frame_ms.load(std::memory_order_relaxed);
@@ -20733,8 +20742,8 @@ inline void EmitTelemetry(int64_t now_ns, bool force = false) {
     ui::FormatNrCost(text, sizeof(text), gpu_ms, present_ms, frame_ms, false);
     char cost[400];
     std::snprintf(cost, sizeof(cost),
-                  "NR cost: gpu_ms=%.2f frame_ms=%.2f share=%.3f present_ms=%.2f | %s", gpu_ms,
-                  frame_ms, present_ms / frame_ms, present_ms, text);
+                  "NR cost: gpu_ms=%.2f frame_ms=%.2f share=%.3f present_ms=%.2f share_available=0 no_nr_fps_available=0 | %s", gpu_ms,
+                  frame_ms, 0.0, present_ms, text);
     Log(reshade::log::level::info, cost);
   }
   {
@@ -20884,11 +20893,9 @@ inline void RunLifecycleTick(int64_t present_ns, bool from_present) {
       }
       lock.lock();
     }
-    // A merged tick: the deferred present's pacing sample would span two
-    // frames, so this present starts the next one instead.
-    if (from_present
-        && lifecycle_tick_owed_ns.exchange(0, std::memory_order_relaxed) != 0) {
-      telemetry_previous_present_ns = 0;
+    // Pacing is sampled at the callback, before lifecycle contention or merging.
+    if (from_present) {
+      lifecycle_tick_owed_ns.exchange(0, std::memory_order_relaxed);
     }
     generation = ++present_generation;
     processed_outputs.clear();
@@ -20933,15 +20940,28 @@ inline void RunLifecycleTick(int64_t present_ns, bool from_present) {
     gpu_timers::Poll(queue_tracking_active.load(), gpu_timers_enabled.load());
     norm_trace::Poll(queue_tracking_active.load());
     edit_trace::Poll(queue_tracking_active.load());
-    double interval_ms = 0.0;
-    if (present_ns != 0) {
-      if (telemetry_previous_present_ns != 0) {
-        interval_ms = (present_ns - telemetry_previous_present_ns) / 1e6;
-        telemetry_pacing.Add(interval_ms);
+    {
+      std::shared_lock pacing_lock(present_metrics.mutex);
+      const auto& stream = present_metrics.telemetry_stream;
+      const bool current = stream.Read(SteadyNowNs()).raw_valid
+          && stream.identity.configuration == configuration_generation.load();
+      if (!current) {
+        telemetry_pacing = {};
+        telemetry_present_sequence = stream.published;
       }
-      telemetry_previous_present_ns = present_ns;
+      if (telemetry_present_generation != stream.generation
+          || stream.published < telemetry_present_sequence
+          || stream.published - telemetry_present_sequence > stream.CAPACITY) {
+        telemetry_pacing = {};
+        telemetry_present_generation = stream.generation;
+        telemetry_present_sequence = (stream.published > stream.CAPACITY ? stream.published - stream.CAPACITY : 0);
+      }
+      for (; telemetry_present_sequence < stream.published; ++telemetry_present_sequence) {
+        const auto& sample = stream.events[telemetry_present_sequence % stream.CAPACITY];
+        if (sample.generation == stream.generation && sample.raw_valid) telemetry_pacing.Add(sample.raw_interval_ms);
+      }
     }
-    TickNrCost(present_ns != 0 ? present_ns : SteadyNowNs(), interval_ms);
+    TickNrCost(present_ns != 0 ? present_ns : SteadyNowNs(), 0.0);
     ++telemetry_window_ticks;
     EmitTelemetry(present_ns != 0 ? present_ns : SteadyNowNs());
     // The verdict is emitted the moment engagement changes, not only on the
@@ -21021,7 +21041,9 @@ inline void NgxLifecycleTick() {
 // runtime, before its first overlay pass and before it is deleted.
 inline void OnInitEffectRuntime(reshade::api::effect_runtime* runtime) {
   std::scoped_lock lock(overlay_listener_mutex);
-  live_effect_runtimes.push_back(runtime);
+  if (std::find(live_effect_runtimes.begin(), live_effect_runtimes.end(), runtime) == live_effect_runtimes.end()) {
+    live_effect_runtimes.push_back(runtime);
+  }
   if (monitor_runtime.load() == nullptr) {
     monitor_runtime = runtime;
     monitor_history_epoch.fetch_add(1);
@@ -21136,6 +21158,38 @@ inline void OnPresent(
     uint32_t,
     const reshade::api::rect*) {
   if (shutting_down.load(std::memory_order_acquire)) return;
+  // Bind to the selected runtime's device and first backbuffer, rather than
+  // interleaving different swapchains or treating lifecycle ticks as presents.
+  if (swapchain != nullptr && swapchain->get_back_buffer_count() != 0
+      && queue != nullptr && queue->get_device() != nullptr) {
+    const auto now_ns = SteadyNowNs();
+    const auto device = reinterpret_cast<uint64_t>(queue->get_device());
+    const auto surface = swapchain->get_back_buffer(0).handle;
+    std::unique_lock pacing_lock(present_metrics.mutex, std::try_to_lock);
+    if (pacing_lock.owns_lock()) {
+      const ui::frame_metrics::Identity telemetry_identity{.device = device, .surface = surface,
+          .configuration = configuration_generation.load(), .queue = reinterpret_cast<uint64_t>(queue)};
+      const bool interrupted = present_metrics.interrupted.exchange(false, std::memory_order_relaxed);
+      if (interrupted) {
+        present_metrics.telemetry_stream.Reset(ui::frame_metrics::Source::PRESENT, telemetry_identity);
+      }
+      present_metrics.telemetry_stream.Observe(ui::frame_metrics::Source::PRESENT, telemetry_identity, now_ns);
+      auto identity = present_metrics.target;
+      if (identity.device == device && identity.surface != 0 && identity.surface == surface
+          && identity.runtime == reinterpret_cast<uint64_t>(monitor_runtime.load())
+          && identity.epoch == monitor_history_epoch.load()
+          && identity.configuration == configuration_generation.load()) {
+        identity.queue = reinterpret_cast<uint64_t>(queue);
+        if (interrupted) {
+          present_metrics.stream.Reset(ui::frame_metrics::Source::PRESENT, identity);
+        }
+        present_metrics.stream.Observe(ui::frame_metrics::Source::PRESENT, identity, now_ns);
+      }
+    } else {
+      // Missing callbacks cannot be treated as one long frame interval.
+      present_metrics.interrupted.store(true, std::memory_order_relaxed);
+    }
+  }
   // Counted before ANY early return below it: the question this answers is
   // "did the addon get ticked", not "did it get far".
   fg::xefg::Poll(false);
@@ -22231,11 +22285,12 @@ inline constexpr const Setting* kStackingSettings[] = {
     &kSetPassAutoMask[2], &kSetPassUiCorrection[0], &kSetPassUiCorrection[1],
     &kSetPassUiCorrection[2]};
 inline constexpr const Setting* kHotkeySettings[] = {
-    &kSetMonitorKey, &kSetMonitorKeepVisible,
+    &kSetMonitorKey,
     &kSetOfficialCycleKey, &kSetCustomCycleKey, &kSetOfficialCycleEnabled, &kSetCustomCycleEnabled,
     &kSetToggleKey,        &kSetScreenshotKey,         &kSetScreenshotSource,
     &kSetScreenshotFormat, &kSetScreenshotLayout,      &kSetScreenshotJpegQuality,
     &kSetScreenshotMaxMB};
+inline constexpr const Setting* kMonitorSettings[] = {&kSetMonitorKeepVisible};
 inline constexpr const Setting* kDiagnosticsSettings[] = {&kSetGpuTimers, &kSetCostMeter,
     &kSetEditTrace, &kSetDebugRestore, &kSetDebugLook, &kSetPresentModelUi,
     &kSetDebugGuides, &kSetDebugPlanes};
@@ -22252,7 +22307,7 @@ inline constexpr const Setting* kFixesSettings[] = {
 inline constexpr SettingGroup kSettingSections[] = {
     kCoreSettings,        kStrengthSettings, kLookSettings,
     kLookResultSettings, kPassLookResultSettings, kHookPointSettings,   kPerformanceSettings, kStackingSettings,
-    kHotkeySettings,      kDiagnosticsSettings, kFixesSettings};
+    kHotkeySettings,      kMonitorSettings, kDiagnosticsSettings, kFixesSettings};
 
 // The same planner and size policy serve controls, profiles and import preview.
 // No saved values are rewritten by a query, including unavailable legacy data.
@@ -22526,8 +22581,7 @@ inline void PersistConfig(bool persist_present_restore = true) {
       nullptr, kConfigSection, "UiMode",
       ui_classic_layout.load() ? "classic" : "modern");
   StoreUiLanguage(ui_language_choice.load());
-  reshade::set_config_value(nullptr, kConfigSection, "UiHudX", hud_position_x.load());
-  reshade::set_config_value(nullptr, kConfigSection, "UiHudY", hud_position_y.load());
+  PersistHudPosition();
 }
 
 // The test-only panel capture (U0): see OnUiCapturePresent.
@@ -23233,7 +23287,8 @@ inline void DrawSectionHookPoint(const ui::PanelText& text, bool present_details
   // NR runs on the swapchain's back buffer at the present event, after the
   // game's own post-processing and UI and before ReShade's effects and
   // overlay (present_path.hpp).
-  constexpr const char* kHookPoints[] = {"Render", "Upscaled", "Present"};
+  const char* kHookPoints[] = {ui::StageDisplayName(stage_plan::Stage::RENDER),
+      ui::StageDisplayName(stage_plan::Stage::UPSCALED), ui::StageDisplayName(stage_plan::Stage::PRESENT)};
   constexpr uint32_t kHookValues[] = {1, 0, 2};
   ChoiceSetting(
       text, kSetHookPoint, text.hook_point, kHookPoints,
@@ -23577,7 +23632,7 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
               }
               for (const char* status : {ui::text::kEditing, ui::text::kConfigured}) {
                 const auto measured = ui::MeasureProcessingChainNode(
-                    {title, std::string(ui::Tr(stage_plan::Name(stage_plan.requested[measure_pass])))
+                    {title, std::string(ui::StageDisplayName(stage_plan.requested[measure_pass]))
                                 + " | " + ui::Tr(model_name) + " *", ui::Tr(status)}, width);
                 node_height = (std::max)(node_height, measured.content_height);
               }
@@ -23601,7 +23656,7 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
                                 || (pass != 0 && kSetPassFollow[pass - 1].Modified())
                                 || (pass == 0 && (kSetSkinIndependent.Modified() || AnyModified({kLookResultSettings})));
           const auto node = ui::MeasureProcessingChainNode(
-              {caption, std::string(ui::Tr(stage_plan::Name(stage_plan.requested[pass])))
+              {caption, std::string(ui::StageDisplayName(stage_plan.requested[pass]))
                             + " | " + ui::Tr(model) + (modified ? " *" : ""),
                ui::Tr(pass == ui_selected_pass ? ui::text::kEditing : ui::text::kConfigured)}, width);
           if (ui::ProcessingChainButton(node, ImVec2(width, node_height), pass == ui_selected_pass)) {
@@ -23612,7 +23667,7 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
                           ui::Tr(pass != 0 && pass_follow[pass - 1].load() ? ui::text::kStyleFollows : ui::text::kStyleIndependent),
                           ui::Tr(pass != 0 && pass_look_result[pass - 1].follow.load() ? ui::text::kResultFollows : ui::text::kResultIndependent),
                           ui::Tr(ui::text::kRuntimeUnconfirmed), ui::Tr(ui::text::kChainMarkTip),
-                          ui::Tr(ui::text::kRequestedStage), ui::Tr(stage_plan::Name(stage_plan.requested[pass])),
+                          ui::Tr(ui::text::kRequestedStage), ui::StageDisplayName(stage_plan.requested[pass]),
                           ui::Tr(ui::text::kEffectiveStage),
                           ui::Tr(stage_plan.valid ? stage_plan::Name(stage_plan.effective[pass]) : ui::text::kStageBlocked));
           const ImVec2 begin = ImGui::GetItemRectMin();
@@ -23661,9 +23716,11 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
     } else {
       ImGui::TextUnformatted(caption);
     }
-    constexpr const char* kFirstStages[] = {"Render", "Upscaled", "Present"};
+    const char* kFirstStages[] = {ui::StageDisplayName(stage_plan::Stage::RENDER),
+        ui::StageDisplayName(stage_plan::Stage::UPSCALED), ui::StageDisplayName(stage_plan::Stage::PRESENT)};
     constexpr uint32_t kFirstStageValues[] = {1, 0, 2};
-    const char* stage_choices[] = {ui::text::kPreviousStage, "Render", "Upscaled", "Present"};
+    const char* stage_choices[] = {ui::text::kPreviousStage, ui::StageDisplayName(stage_plan::Stage::RENDER),
+        ui::StageDisplayName(stage_plan::Stage::UPSCALED), ui::StageDisplayName(stage_plan::Stage::PRESENT)};
     if (pass == 0) {
       ChoiceSetting(text, kSetHookPoint, ui::text::kPassStage, kFirstStages, ui::text::kPassStageTip,
                     ui::text::kHookTips, kFirstStageValues);
@@ -24365,7 +24422,7 @@ inline void DrawSectionDiagnosticsRaw() {
     ImGui::TextWrapped("%s", ui::Tr(stage_plan::ReasonText(plan.reason)));
     for (uint32_t pass = 0; pass < plan.pass_count; ++pass) {
       ImGui::Text("%s %u | %s: %s | %s: %s", ui::Tr("Pass"), pass + 1,
-                  ui::Tr(ui::text::kRequestedStage), ui::Tr(stage_plan::Name(plan.requested[pass])),
+                  ui::Tr(ui::text::kRequestedStage), ui::StageDisplayName(plan.requested[pass]),
                   ui::Tr(ui::text::kEffectiveStage),
                   ui::Tr(plan.valid ? stage_plan::Name(plan.effective[pass]) : ui::text::kStageBlocked));
     }
@@ -24536,8 +24593,7 @@ inline void DrawSectionDiagnosticsRaw() {
     kSetCostMeter.Commit(ui_cost_meter ? 1.f : 0.f);
   }
   ui::ItemTooltip(
-      "What the status card's NR cost line and the Faster options read.  Off,"
-      " the panel cannot say what NR costs.");
+      "Measures completed NR stage groups for the status card and monitor.");
   // The edit trace is D3D12-only (vulkan_path.hpp records none): in a Vulkan
   // session the box is disabled with the reason, and an On it cannot show
   // is named outside the disabled scope.
@@ -24697,8 +24753,6 @@ inline void DrawSectionHotkeys(const ui::PanelText& text) {
                 "Recommended F10: cycle saved, available custom slots. Empty slots are skipped.");
   hotkey_button("Cycle custom profiles", kSetCustomCycleKey, kSetOfficialCycleKey, 4);
   hotkey_button("Show / hide runtime monitor", kSetMonitorKey, kSetToggleKey, 5);
-  ToggleSetting(text, kSetMonitorKeepVisible, "Keep monitor visible after closing the menu",
-      "Default F11 toggles the monitor. Open the menu to move, resize or edit it.");
   if (MonitorKeyConflict(monitor_hotkey.load())) {
     ImGui::TextWrapped("%s", ui::Tr("Monitor key conflicts with another shortcut. Choose a different key."));
   }
@@ -24922,36 +24976,60 @@ inline void DrawSectionIssueNotice(const ui::PanelText& text) {
 }
 
 inline void DrawSectionHudPosition(const ui::PanelText& text) {
-  const auto draw_axis = [&](const char* key, const char* label,
-                             std::atomic<float>* position, float fallback) {
-    ImGui::PushID(key);
+  auto position = GetHudPosition();
+  ImGui::PushID("notice_position");
+  ui::SubCaption("Screen notifications");
+  if (text.modern) {
+    ui::RowLabel("Quick position");
+  }
+  bool changed = ui::DrawPositionGrid(&position.anchor);
+  if (changed) {
+    position.offset = ImVec2();
+  }
+  if (position.anchor == -1) {
+    ImGui::TextWrapped("%s", ui::Tr("Custom position: your saved notification placement is unchanged. Choose a grid position to adjust offsets."));
+  }
+  const auto draw_axis = [&](const char* id, const char* label, float* value, float limit) {
     if (text.modern) {
-      ui::RowLabel(label, ui::text::kHudPositionTip);
+      ui::RowLabel(label);
+      return ui::Slider(id, value, -limit, limit, "%.0f px", nullptr);
     }
-    float value = position->load(std::memory_order_relaxed);
-    bool changed = false;
-    if (text.modern) {
-      changed = ui::Slider("##position", &value, 0.f, 100.f, "%.0f%%", ui::text::kHudPositionTip);
-    } else {
-      changed = ImGui::SliderFloat(ui::ControlLabel(text.Tr(label)).c_str(), &value, 0.f, 100.f, "%.0f%%",
-                                   ImGuiSliderFlags_AlwaysClamp);
-    }
-    ui::ItemTooltip("%s", text.Tr(ui::text::kHudPositionTip));
-    char default_label[16];
-    std::snprintf(default_label, sizeof(default_label), "%.0f%%", fallback);
-    if (text.modern && value != fallback && ui::ResetButton("reset", default_label)) {
-      value = fallback;
-      changed = true;
-    }
-    if (changed) {
-      value = std::isfinite(value) ? std::clamp(value, 0.f, 100.f) : fallback;
-      position->store(value, std::memory_order_relaxed);
-      reshade::set_config_value(nullptr, kConfigSection, key, value);
-    }
-    ImGui::PopID();
+    return ImGui::SliderFloat(ui::ControlLabel(text.Tr(label)).c_str(), value, -limit, limit,
+        "%.0f px", ImGuiSliderFlags_AlwaysClamp);
   };
-  draw_axis("UiHudX", ui::text::kHudPositionX, &hud_position_x, 50.f);
-  draw_axis("UiHudY", ui::text::kHudPositionY, &hud_position_y, 0.f);
+  const auto display = ImGui::GetIO().DisplaySize;
+  const float scale = ui::BaseFontSize() / 13.f;
+  ImGui::BeginDisabled(position.anchor == -1);
+  changed |= draw_axis("##notice_offset_x", "Horizontal offset", &position.offset.x, display.x / scale);
+  changed |= draw_axis("##notice_offset_y", "Vertical offset", &position.offset.y, display.y / scale);
+  ImGui::EndDisabled();
+  if (ui::ActionButton(ui::Tr("Reset notification position"), "reset_notice_position")) {
+    position = {.anchor = 1};
+    changed = true;
+  }
+  if (changed) {
+    StoreHudPosition(position);
+    position = GetHudPosition();
+    PersistHudPosition();
+  }
+  static bool preview = false;
+  ui::Checkbox(ui::Tr("Preview notification position"), &preview);
+  if (preview) {
+    const char* title = ui::Tr("Notification preview");
+    const float wrap = (std::max)(1.f, (std::min)(ImGui::GetFontSize() * ui::tokens::kTooltipEm,
+        display.x - 2.f * (ui::tokens::kRowGap + ui::tokens::kCardPadding)));
+    const auto content = ImGui::CalcTextSize(title, nullptr, false, wrap);
+    const ImVec2 size(content.x + 2.f * ui::tokens::kCardPadding, content.y + 2.f * ui::tokens::kRowGap);
+    const auto lo = ui::NoticeTopLeft(position, display, size, ui::tokens::kRowGap, scale);
+    const ImVec2 hi(lo.x + size.x, lo.y + size.y);
+    auto* draw = ImGui::GetForegroundDrawList();
+    draw->AddRectFilled(lo, hi, ui::ToU32(ui::CurrentTheme().bg_card), ui::tokens::kRadiusCard);
+    draw->AddRect(lo, hi, ui::ToU32(ui::CurrentTheme().stroke), ui::tokens::kRadiusCard);
+    draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
+        ImVec2(lo.x + ui::tokens::kCardPadding, lo.y + ui::tokens::kRowGap),
+        ui::ToU32(ui::CurrentTheme().text_primary), title, nullptr, wrap);
+  }
+  ImGui::PopID();
 }
 
 // A header the card's "Open Diagnostics" button opens and scrolls to: the
@@ -25332,20 +25410,10 @@ inline void DrawSectionMonitorSettings() {
     state.background_opacity = opacity / 100.f;
     changed = true;
   }
-  const char* anchors[] = {"Custom position", "Top left", "Top center", "Top right",
-      "Center left", "Center", "Center right", "Bottom left", "Bottom center", "Bottom right"};
   ui::RowLabel("Quick position", "Drag the monitor with the menu open to keep a custom position.");
-  if (ImGui::BeginCombo("##monitor_anchor", ui::Tr(anchors[state.anchor + 1]))) {
-    for (int index = 0; index < static_cast<int>(std::size(anchors)); ++index) {
-      if (ImGui::Selectable(ui::Tr(anchors[index]), state.anchor == index - 1)) {
-        state.anchor = index - 1;
-        state.offset = {};
-        state.apply_geometry = true;
-        changed = true;
-      }
-    }
-    ImGui::EndCombo();
-  }
+  ImGui::PushID("monitor_placement");
+  changed |= ui::DrawMonitorPlacement(&state);
+  ImGui::PopID();
   const float scale = ui::BodyFontSize() / 13.f;
   const auto display = ImGui::GetIO().DisplaySize;
   const auto axis = [&](const char* label, const char* id, float* value, float extent) {
@@ -25360,16 +25428,6 @@ inline void DrawSectionMonitorSettings() {
   axis("Horizontal offset", "##monitor_offset_x", &state.offset.x, display.x);
   axis("Vertical offset", "##monitor_offset_y", &state.offset.y, display.y);
   ImGui::EndDisabled();
-  if (ui::ActionButton(ui::Tr("Reset monitor position and size"), "monitor_reset_geometry")) {
-    state.geometry = {.position = ImVec2(12.f * scale, 12.f * scale),
-        .size = ImVec2(480.f * scale, (132.f + 62.f * std::clamp(stack_passes.load(), 1u, 4u)) * scale),
-        .ui_scale = scale, .valid = true};
-    state.anchor = 0;
-    state.offset = ImVec2(12.f, 12.f);
-    state.apply_geometry = true;
-    state.fit_content = false;
-    changed = true;
-  }
   if (changed && state.apply_geometry) {
     state.geometry = ui::PositionMonitorGeometry(state.geometry, state.anchor, state.offset,
         ImVec2(0.f, 0.f), display, scale);
@@ -25388,6 +25446,7 @@ inline void OnProfilePresent(reshade::api::effect_runtime* runtime) {
     std::unique_lock lock(overlay_listener_mutex);
     if (!live_effect_runtimes.empty() && runtime != live_effect_runtimes.front()) return;
   }
+  SaveMonitorVisibility();
   profile_ui::capability_validator = ValidateConfigurationCapability;
   profile_ui::interaction_busy = [] { return preset_ui::manager_geometry.was_open; };
   profile_ui::Initialize();
@@ -25435,144 +25494,6 @@ inline void DrawSectionRestoreDefaults(reshade::api::effect_runtime* runtime,
     ui_reset_open = true;
   }
 }
-
-
-
-// ---- Faster (rc11): NR's cheaper settings, one click each ------------------
-// A player measured 57 fps with another NR add-on and 38 with this one, and
-// the difference was where and at what size NR ran: settings they could not
-// see the price of.  The status card now states the price (FormatNrCost), and
-// these put the cheaper settings one click away.
-
-// Where NR runs and at what size: the settings a Faster option moves.
-struct NrPlacement {
-  uint32_t hook = kHookUpscaled;  // NRHookPoint
-  bool follow = false;            // NRFollowInputRes (Match game)
-  float scale = 1.f;              // NRResolutionScale
-};
-
-// NR's working pixels at a placement, from the last evaluate's sizes
-// (ComputeNrWorkingResolution's rule): the render resolution before
-// upscaling or under Match game, the DLSS output after it, times the scale
-// squared.  `now_pre`: the path that last ran, whose reference last_output_*
-// is.  0 while a size is unknown (the render share needs one evaluate after
-// upscaling).
-inline double NrWorkingPixels(const NrPlacement& at, bool now_pre) {
-  const double reference = static_cast<double>(last_output_width.load(std::memory_order_relaxed))
-                           * last_output_height.load(std::memory_order_relaxed);
-  const double share = dlss_render_share.load(std::memory_order_relaxed);
-  const double render = now_pre ? reference : reference * share;
-  const double output = now_pre ? (share > 0.0 ? reference / share : 0.0) : reference;
-  const double scale = std::clamp(at.scale, 0.33f, 1.f);
-  return at.follow ? render : (at.hook == kHookRender ? render : output) * scale * scale;
-}
-
-// NR's GPU time at another working size, scaled from the measured time by a
-// fixed part plus a per-pixel part fitted to NR 310.8 at one pass on an RTX
-// 5090: 7.71-7.82 ms at 3840x2160 and 2.84 ms at 1920x1080 give 1.20 ms +
-// 0.79 ms per million pixels.  The ratio carries it to other GPUs and pass
-// counts.  On the same GPU it models pre-SR from 2560x1440 at 4.1 ms (the
-// frame moved 3.9 ms) and 50 % at 4K at 2.8 ms (3.02 measured, the
-// upsampling included): an estimate, and the panel says so.
-inline float EstimateNrMs(float measured_ms, double now_pixels, double target_pixels) {
-  constexpr double kFixedMs = 1.20;
-  constexpr double kMsPerPixel = 0.79e-6;
-  return static_cast<float>(measured_ms * (kFixedMs + kMsPerPixel * target_pixels)
-                            / (kFixedMs + kMsPerPixel * now_pixels));
-}
-
-// A Faster option, or its Undo: the insertion point and the working
-// resolution as the panel's own controls set them, applied at once.
-inline void ApplyNrPlacement(const NrPlacement& to) {
-  if (to.hook != hook_point.load()) kSetHookPoint.Commit(static_cast<float>(to.hook));
-  if (to.follow != nr_follow_input_res.load()
-      || std::abs(to.scale - nr_resolution_scale.load()) >= 0.005f) {
-    CommitResolutionMode(to.follow ? 1 : to.scale < 0.999f ? 2 : 0, to.follow, to.scale);
-  }
-}
-
-// The Faster options, under the status card: before upscaling, resolution
-// 50 %, both, each with NR's
-// estimated GPU time per frame after it.  An option is drawn only when it
-// changes something and saves time, and nothing is applied by itself; Undo
-// puts back the settings from before the first click.  Every click is
-// logged.  Overlay thread: published atomics only.
-inline void DrawFasterPresets() {
-  // These estimates assume every pass uses one global placement/size.
-  if (RequestedStagePlan().mixed) return;
-  for (uint32_t pass = 1; pass < std::clamp(stack_passes.load(), 1u, kMaxNrPasses); ++pass) {
-    if (pass_resolution_mode[pass - 1].load() != 0) return;
-  }
-  static NrPlacement undo;
-  static bool undo_armed = false;
-  const float gpu_ms = nr_cost_gpu_ms.load(std::memory_order_relaxed);
-  const NrPlacement now{hook_point.load(), nr_follow_input_res.load(),
-                        nr_resolution_scale.load()};
-  // Ray Reconstruction keeps NR after upscaling (PreSrTakes).
-  const bool pre_possible = !stage_source_rr.load(std::memory_order_relaxed);
-  const bool now_pre = now.hook == kHookRender && pre_possible;
-  const double now_pixels = NrWorkingPixels(now, now_pre);
-  const NrPlacement options[] = {
-      {kHookRender, now.follow, now.scale}, {now.hook, false, 0.5f}, {kHookRender, false, 0.5f}};
-  static_assert(std::size(options) == std::size(ui::text::kFasterOptions));
-  double drawn[std::size(options)] = {};
-  size_t drawn_count = 0;
-  for (size_t i = 0; i < std::size(options); ++i) {
-    const NrPlacement& to = options[i];
-    if (gpu_ms <= 0.f || now_pixels <= 0.0 || (to.hook == kHookRender && !pre_possible)) continue;
-    const double to_pixels = NrWorkingPixels(to, now_pre);
-    // The same placement, no saving, an unknown size, or the same as an
-    // option already drawn (Both, once one half is set): not an option.
-    if (to_pixels <= 0.0 || to_pixels >= 0.95 * now_pixels
-        || std::any_of(drawn, drawn + drawn_count,
-                       [to_pixels](double pixels) { return std::abs(pixels - to_pixels) < 0.01 * to_pixels; })) {
-      continue;
-    }
-    if (drawn_count == 0) {
-      ImGui::AlignTextToFramePadding();
-      ImGui::TextUnformatted(ui::Tr(ui::text::kFaster));
-    }
-    drawn[drawn_count++] = to_pixels;
-    const float to_ms = EstimateNrMs(gpu_ms, now_pixels, to_pixels);
-    char label[160];
-    std::snprintf(label, sizeof(label), ui::Tr(ui::text::kFasterOptions[i]), to_ms);
-    ui::SameLineIfFits(ImGui::CalcTextSize(label).x + 2.f * ImGui::GetStyle().FramePadding.x);
-    if (ui::ActionButton(label, ("faster" + std::to_string(i)).c_str())) {
-      if (!undo_armed) {
-        undo = now;
-        undo_armed = true;
-      }
-      char english[160];
-      std::snprintf(english, sizeof(english), ui::text::kFasterOptions[i], to_ms);
-      char line[400];
-      std::snprintf(line, sizeof(line),
-                    "NR Faster option: %s chosen at %.2f ms of NR GPU time per frame (was"  // i18n: skip
-                    " NRHookPoint=%u NRFollowInputRes=%d NRResolutionScale=%.2f); Undo"
-                    " restores NRHookPoint=%u NRFollowInputRes=%d NRResolutionScale=%.2f",
-                    english, gpu_ms, now.hook, now.follow, now.scale, undo.hook, undo.follow,
-                    undo.scale);
-      Log(reshade::log::level::info, line);
-      ApplyNrPlacement(to);
-    }
-    ui::ItemTooltip("%s", ui::Tr(ui::text::kFasterTips[i]));
-  }
-  if (!undo_armed) return;
-  if (drawn_count != 0) {
-    ui::SameLineIfFits(ImGui::CalcTextSize(ui::Tr(ui::text::kFasterUndo)).x
-                       + 2.f * ImGui::GetStyle().FramePadding.x);
-  }
-  if (ui::ActionButton(ui::Tr(ui::text::kFasterUndo))) {
-    char line[200];
-    std::snprintf(line, sizeof(line),
-                  "NR Faster option undone: NRHookPoint=%u NRFollowInputRes=%d"  // i18n: skip
-                  " NRResolutionScale=%.2f",
-                  undo.hook, undo.follow, undo.scale);
-    Log(reshade::log::level::info, line);
-    ApplyNrPlacement(undo);
-    undo_armed = false;
-  }
-}
-
 // The health ledger's active rows under the status card (rc11), one card
 // each with the row's own fix: warnings amber, a game's limits gray, in table
 // order.  Log-tone rows are the log's alone.  Published atomics and the ini
@@ -25691,7 +25612,6 @@ inline void DrawClassicLayout(reshade::api::effect_runtime* runtime, const ui::S
   }
   if (DiagnosticsHeader(text)) {
     DrawRuntimeStatus(card);
-    DrawFasterPresets();
     DrawIssueReport();
     DrawSectionGuideOverrides(text);
     ImGui::Separator();
@@ -25811,7 +25731,6 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
         ResetSettings({kStackingSettings, kPassLookResultSettings});
       }
       DrawSectionStackingResolution(text);
-      DrawFasterPresets();
     } else if (ui_menu_page == 2) {
       if (ui::SectionCaption(ui::text::kDiagnostics, ui::text::kResetDiagnostics,
                              AnyModified({kDiagnosticsSettings}))) {
@@ -25829,13 +25748,26 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
       if (ui::SectionHeader(ui::text::kHotkeys, hotkeys, ui::text::kResetHotkeys,
                             AnyModified({kHotkeySettings}), &reset)) {
         DrawSectionHotkeys(text);
-        ImGui::Separator();
-        ImGui::TextWrapped("%s", ui::Tr("Runtime monitor"));
-        DrawSectionMonitorSettings();
       }
       if (reset) ResetSettings({kHotkeySettings});
 
-      if (ui::SectionHeader(ui::text::kFixes, ui::text::kFixesHint, ui::text::kResetFixes,
+      if (ui::SectionHeader("Runtime monitor", nullptr, "Restore monitor visibility default",
+                            AnyModified({kMonitorSettings}), &reset)) {
+        ToggleSetting(text, kSetMonitorKeepVisible, "Keep monitor visible after closing the menu",
+            "Default F11 toggles the monitor. Open the menu to move, resize or edit it.");
+        DrawSectionMonitorSettings();
+      }
+      if (reset) ResetSettings({kMonitorSettings});
+
+      if (ui::SectionHeader("Interface & notifications", nullptr, nullptr, false, &reset)) {
+        DrawSectionTheme();
+        ui::SectionGap();
+        DrawSectionLanguage(text);
+        DrawSectionIssueNotice(text);
+        DrawSectionHudPosition(text);
+      }
+
+      if (ui::SectionHeader("Game fixes & compatibility", ui::text::kFixesHint, ui::text::kResetFixes,
                             AnyModified({kFixesSettings}), &reset)) {
         {
           ui::StyleScope warning;
@@ -25854,22 +25786,14 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
       }
       if (reset) ResetSettings({kFixesSettings});
 
-      ui::SectionGap();
-      DrawSectionTheme();
-      ui::SectionGap();
-      ui::SectionCaption(ui::text::kGeneral, nullptr, false);
-      DrawSectionLanguage(text);
-      DrawSectionIssueNotice(text);
-      DrawSectionHudPosition(text);
-      ImGui::Separator();
-      DrawSectionLayoutToggle();
-      ImGui::Separator();
-      if (ui::SectionHeader(ui::text::kRestoreAll, nullptr, nullptr, false, &reset)) {
+      if (ui::SectionHeader("Development & maintenance", nullptr, nullptr, false, &reset)) {
+        DrawSectionLayoutToggle();
+        ImGui::Separator();
         ImGui::PushID("restore_action");
         DrawSectionRestoreDefaults(runtime, text);
         ImGui::PopID();
+        DrawAbout();
       }
-      DrawAbout();
     }
     ImGui::PopTextWrapPos();
   }
@@ -25889,7 +25813,9 @@ inline void DrawPanelBody(reshade::api::effect_runtime* runtime) {
     ui_drawn_card.store(static_cast<uint16_t>((static_cast<unsigned>(card.tone) << 8)
                                               | static_cast<unsigned>(card.id)), std::memory_order_relaxed);
   }
-  if (ui::DrawStatusSummary(card, snapshot.warnings, snapshot.summary)) ToggleMonitor();
+  const auto monitor_binding = monitor_hotkey.load();
+  if (ui::DrawStatusSummary(card, snapshot.warnings, snapshot.summary,
+      monitor_binding != 0 && !MonitorKeyConflict(monitor_binding) ? VirtualKeyName(monitor_binding) : "")) ToggleMonitor();
   DrawIndependentMonitor(runtime, true);
   ui::SectionGap();
   if (profile_ui::Resetting()) {
@@ -26401,15 +26327,27 @@ inline void LoadConfiguration() {
   monitor_state.offset.x = (std::isfinite(monitor_state.offset.x) ? std::clamp(monitor_state.offset.x, -16384.f, 16384.f) : 0.f);
   monitor_state.offset.y = (std::isfinite(monitor_state.offset.y) ? std::clamp(monitor_state.offset.y, -16384.f, 16384.f) : 0.f);
   monitor_state.apply_geometry = monitor_state.anchor >= 0;
-  monitor_state.fit_content = false;
+  monitor_state.auto_fit = !monitor_geometry.valid;
+  reshade::get_config_value(nullptr, kConfigSection, "UiMonitorAutoFit", monitor_state.auto_fit);
+  monitor_state.fit_content = monitor_state.auto_fit;
+  monitor_state.layout_initialized = false;
+  monitor_state.measured_height = 0.f;
   ui_monitor_saved_pin = ui_runtime_monitor_state.pin;
   ui_monitor_saved_detailed = ui_runtime_monitor_state.detailed;
   uint32_t saved_monitor_key = VK_F11;
   bool saved_monitor_keep = true;
   reshade::get_config_value(nullptr, kConfigSection, "NRMonitorKey", saved_monitor_key);
   reshade::get_config_value(nullptr, kConfigSection, "UiMonitorKeepVisible", saved_monitor_keep);
-  monitor_hotkey = saved_monitor_key >= 0x08 && saved_monitor_key <= 0xFE ? saved_monitor_key : VK_F11;
+  monitor_hotkey = (saved_monitor_key == 0 || (saved_monitor_key >= 0x08 && saved_monitor_key <= 0xFE)
+      ? saved_monitor_key : 0);
   monitor_keep_visible = saved_monitor_keep;
+  if (!monitor_visibility_initialized.exchange(true)) {
+    bool saved_visible = false;
+    reshade::get_config_value(nullptr, kConfigSection, "UiMonitorVisible", saved_visible);
+    monitor_visible_preference = saved_visible;
+    monitor_requested = saved_visible && saved_monitor_keep;
+    monitor_visibility_dirty = false;
+  }
   uint32_t overlay_key = VK_HOME;
   reshade::get_config_value(nullptr, "INPUT", "KeyOverlay", overlay_key);
   host_overlay_hotkey = overlay_key >= 0x08 && overlay_key <= 0xFE ? overlay_key : VK_HOME;
@@ -26909,14 +26847,14 @@ inline void LoadConfiguration() {
     hud_enabled = saved_notice;
   }
   {
-    const auto load_position = [](const char* key, std::atomic<float>* position, float fallback) {
-      float value = fallback;
-      reshade::get_config_value(nullptr, kConfigSection, key, value);
-      position->store(std::isfinite(value) ? std::clamp(value, 0.f, 100.f) : fallback,
-                       std::memory_order_relaxed);
-    };
-    load_position("UiHudX", &hud_position_x, 50.f);
-    load_position("UiHudY", &hud_position_y, 0.f);
+    ui::NoticePosition position;
+    reshade::get_config_value(nullptr, kConfigSection, "UiHudX", position.legacy_percent.x);
+    reshade::get_config_value(nullptr, kConfigSection, "UiHudY", position.legacy_percent.y);
+    // Missing anchor retains the old percentages and pivot without migrating the file.
+    reshade::get_config_value(nullptr, kConfigSection, "UiHudAnchor", position.anchor);
+    reshade::get_config_value(nullptr, kConfigSection, "UiHudOffsetX", position.offset.x);
+    reshade::get_config_value(nullptr, kConfigSection, "UiHudOffsetY", position.offset.y);
+    StoreHudPosition(position);
   }
   // NRReportHost (rc11, ini-only): the issue report's upload hosts, tried in
   // order; "none" saves the zip only.  ReShade splits the value on its

@@ -59,6 +59,7 @@ struct MonitorInputs {
   StatusSummaryFields summary;
   const MonitorHistory* history = nullptr;
   std::string gpu_notice;
+  std::string hotkey;
 };
 
 // Physical screen coordinates with the UI scale used when they were saved.
@@ -85,6 +86,13 @@ struct MonitorState {
   bool fit_content = false;
   int anchor = -1;
   ImVec2 offset{};
+  bool layout_initialized = false;
+  bool last_interactive = false;
+  bool last_detailed = false;
+  bool last_trends = false;
+  bool raw_evidence = false;
+  bool auto_fit = false;
+  float measured_height = 0.f;
 };
 
 struct MonitorActions {
@@ -146,6 +154,35 @@ inline bool CanConnectMonitorPoints(const MonitorPoint& previous, const MonitorP
       && current.time_ns > previous.time_ns && current.time_ns - previous.time_ns <= max_gap;
 }
 
+inline bool DrawMonitorPlacement(MonitorState* state) {
+  bool changed = DrawPositionGrid(&state->anchor);
+  if (changed) {
+    state->offset = {};
+    state->apply_geometry = true;
+  }
+  if (ActionButton(Tr("Custom position"), "monitor_custom_position")) {
+    state->anchor = -1;
+    state->offset = {};
+    changed = true;
+  }
+  if (ActionButton(Tr("Fit to content"), "monitor_fit_position")) {
+    state->fit_content = true;
+    changed = true;
+  }
+  if (ActionButton(Tr("Reset monitor position and size"), "monitor_reset_geometry")) {
+    const float scale = BodyFontSize() / 13.f;
+    state->geometry = {.position = ImVec2(12.f * scale, 12.f * scale),
+        .size = ImVec2((state->detailed ? 620.f : 480.f) * scale, 200.f * scale),
+        .ui_scale = scale, .valid = true};
+    state->anchor = 0;
+    state->offset = ImVec2(12.f, 12.f);
+    state->apply_geometry = true;
+    state->fit_content = true;
+    changed = true;
+  }
+  return changed;
+}
+
 // Legacy callers draw inside a panel and may use a narrow inline disclosure.
 // Independent callers need no parent window. Passive drawing never accepts input;
 // the caller owns visibility and supplies interactive=true when Home opens editing.
@@ -189,12 +226,22 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
   }
   bool visible = true;
   bool geometry_applied = false;
-  bool fit_content = state->fit_content;
+  const bool view_changed = state->layout_initialized
+      && (state->last_detailed != state->detailed || state->last_trends != state->trends);
+  const bool context_changed = state->layout_initialized && state->last_interactive != interactive;
+  bool fit_content = state->fit_content || view_changed || context_changed;
+  bool preserve_height = context_changed && !state->auto_fit && !state->fit_content && !view_changed;
+  if (state->fit_content || view_changed) {
+    state->auto_fit = true;
+  }
   if (inline_mode) {
     visible = ImGui::CollapsingHeader((std::string(Tr("Runtime monitor")) + "###nr_monitor_inline").c_str());
   } else {
     const bool initialize_geometry = !state->geometry.valid;
     fit_content |= initialize_geometry && (saved_geometry == nullptr || !saved_geometry->valid);
+    if (initialize_geometry && (saved_geometry == nullptr || !saved_geometry->valid)) {
+      state->auto_fit = true;
+    }
     if (!state->geometry.valid) {
       if (saved_geometry != nullptr && saved_geometry->valid) {
         state->geometry = *saved_geometry;
@@ -236,6 +283,7 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
     const bool area_changed = previous.work_position.x != work_pos.x || previous.work_position.y != work_pos.y
         || previous.work_size.x != work_size.x || previous.work_size.y != work_size.y
         || previous.ui_scale != ui_scale;
+    fit_content |= area_changed && state->auto_fit;
     state->geometry = (state->anchor >= 0 && (initialize_geometry || state->apply_geometry || area_changed)
         ? PositionMonitorGeometry(previous, state->anchor, state->offset, work_pos, work_size, ui_scale)
         : ClampMonitorGeometry(previous, work_pos, work_size, ui_scale));
@@ -253,6 +301,9 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
         ImVec2((std::min)(320.f * ui_scale, work_size.x), (std::min)(120.f * ui_scale, work_size.y)),
         work_size);
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoSavedSettings;
+    if (fit_content) {
+      flags |= ImGuiWindowFlags_NoScrollbar;
+    }
     if (standalone) {
       flags |= ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoCollapse;
       // A previous editable/legacy window may have been collapsed. Gameplay
@@ -266,8 +317,13 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
     if (state->pin) {
       flags |= ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
     }
-    visible = ImGui::Begin((std::string(Tr("Runtime monitor")) + "###nr_runtime_monitor").c_str(),
+    const std::string title = std::string(Tr("Runtime monitor"))
+        + (inputs.hotkey.empty() ? "" : " · " + inputs.hotkey) + "###nr_runtime_monitor";
+    visible = ImGui::Begin(title.c_str(),
                            interactive ? &state->open : nullptr, flags);
+    // Consume only the request applied by this Begin. Toolbar commands below
+    // belong to the next frame and must survive geometry capture.
+    state->apply_geometry = false;
   }
   if (visible) {
     if (interactive) {
@@ -292,6 +348,9 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
         actions.settings_changed |= pin_changed;
         if (tool(state->detailed ? "Compact" : "Details", "###monitor_details", "Detailed monitor")) {
           state->detailed = !state->detailed;
+          fit_content = true;
+          preserve_height = false;
+          state->auto_fit = true;
           actions.settings_changed = true;
         }
       }
@@ -302,10 +361,27 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
       if (!inline_mode) {
         if (tool("Fit to content", "###monitor_fit", "Fit height to current content.")) {
           fit_content = true;
+          preserve_height = false;
+          state->auto_fit = true;
         }
         if (tool("Trends", "###monitor_trends", "Show performance history")) {
           state->trends = !state->trends;
+          fit_content = true;
+          preserve_height = false;
+          state->auto_fit = true;
           actions.settings_changed = true;
+        }
+        if (tool("Position", "###monitor_position", "Quick position")) {
+          ImGui::OpenPopup("##monitor_position_menu");
+        }
+        const ImVec2 popup_position(ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y);
+        ImGui::SetNextWindowPos(popup_position, ImGuiCond_Appearing);
+        if (ImGui::BeginPopup("##monitor_position_menu")) {
+          if (DrawMonitorPlacement(state)) {
+            actions.settings_changed = true;
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::EndPopup();
         }
       }
     }
@@ -461,7 +537,7 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
           }
         }
       }
-      const char* names[] = {"FPS", "Update interval (ms)", "NR GPU", "Pass 1 GPU", "Pass 2 GPU", "Pass 3 GPU", "Pass 4 GPU"};
+      const char* names[] = {"FPS", "Frame interval (ms)", "NR GPU", "Pass 1 GPU", "Pass 2 GPU", "Pass 3 GPU", "Pass 4 GPU"};
       const unsigned metric_count = 3u + (std::min)(inputs.pass_count, 4u);
       const ImVec4 colors[] = {CurrentTheme().accent, CurrentTheme().good, CurrentTheme().accent,
           CurrentTheme().good, CurrentTheme().warn, CurrentTheme().text_primary, CurrentTheme().text_secondary};
@@ -512,7 +588,7 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
         const ImVec2 origin = ImGui::GetCursorScreenPos();
         const ImVec2 size((std::max)(1.f, ImGui::GetContentRegionAvail().x), font * 6.f);
         ImGui::Dummy(size);
-        ItemTooltip("%s", Tr("FPS is smoothed UI cadence; interval is the actual ImGui update interval. GPU points are completed events. Bucket ranges preserve peaks; gaps stay empty."));
+        ItemTooltip("%s\n%s", Tr(inputs.summary.fps_tip), Tr("FPS averages the latest 16 intervals; frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty."));
         ImDrawList* draw = ImGui::GetWindowDrawList();
         const ImVec2 edge(origin.x + size.x, origin.y + size.y);
         draw->AddRectFilled(origin, edge, ImGui::GetColorU32(ImGuiCol_ChildBg), 3.f);
@@ -611,9 +687,14 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
       }
     }
     // Passive gameplay submits no disclosure controls; edit mode owns raw evidence.
-    if (!inline_mode && state->detailed && interactive
+    const bool raw_evidence = !inline_mode && state->detailed && interactive
         && ImGui::CollapsingHeader((std::string(Tr("Raw evidence")) + "###monitor_raw_evidence").c_str(),
-                                   ImGuiTreeNodeFlags_NoAutoOpenOnLog)) {
+                                   ImGuiTreeNodeFlags_NoAutoOpenOnLog);
+    if (raw_evidence != state->raw_evidence) {
+      fit_content = true;
+      state->raw_evidence = raw_evidence;
+    }
+    if (raw_evidence) {
       ImGui::SeparatorText(Tr("Recent evidence"));
       field("Dimensions", inputs.summary.resolution);
       ImGui::TextWrapped("%s", Tr("A created model request does not prove the internal network actually used."));
@@ -711,31 +792,47 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
     }
   }
   if (!inline_mode) {
+    const bool placement_requested = state->apply_geometry;
+    const float measured_height = ImGui::GetCursorPosY()
+        + ImGui::GetStyle().WindowPadding.y - ImGui::GetStyle().ItemSpacing.y;
+    const ImVec2 pos = ImGui::GetWindowPos();
+    const ImVec2 size = ImGui::GetWindowSize();
     if (fit_content && visible) {
       auto geometry = state->geometry;
-      geometry.position = ImGui::GetWindowPos();
-      geometry.size = ImVec2(ImGui::GetWindowSize().x, ImGui::GetCursorPosY()
-          + ImGui::GetStyle().WindowPadding.y - ImGui::GetStyle().ItemSpacing.y);
+      geometry.position = pos;
+      geometry.size = ImVec2(size.x, preserve_height
+          ? size.y + measured_height - state->measured_height : measured_height);
       geometry = PositionMonitorGeometry(geometry, state->anchor, state->offset, work_pos, work_size, ui_scale);
-      ImGui::SetWindowSize(geometry.size, ImGuiCond_Always);
-      ImGui::SetWindowPos(geometry.position, ImGuiCond_Always);
+      // Apply next frame: Begin has already chosen this frame's content region.
+      state->geometry = geometry;
+      state->apply_geometry = true;
       geometry_applied = true;
       actions.geometry_changed = true;
       state->fit_content = false;
     }
-    const ImVec2 pos = ImGui::GetWindowPos();
-    const ImVec2 size = ImGui::GetWindowSize();
     const bool geometry_changed = std::abs(pos.x - state->geometry.position.x) > .5f
         || std::abs(pos.y - state->geometry.position.y) > .5f
         || std::abs(size.x - state->geometry.size.x) > .5f || std::abs(size.y - state->geometry.size.y) > .5f;
-    if (geometry_changed && interactive && !state->pin && !geometry_applied) {
+    if (geometry_changed && interactive && !state->pin && !geometry_applied && !placement_requested) {
       state->anchor = -1;
+      if (std::abs(size.x - state->geometry.size.x) > .5f || std::abs(size.y - state->geometry.size.y) > .5f) {
+        state->auto_fit = false;
+      }
       actions.settings_changed = true;
     }
     actions.geometry_changed |= geometry_changed;
-    state->geometry = {.position = pos, .size = size, .ui_scale = ui_scale, .valid = true,
-                       .work_position = work_pos, .work_size = work_size};
-    state->apply_geometry = false;
+    if (!(fit_content && visible) && !placement_requested) {
+      state->geometry = {.position = pos, .size = size, .ui_scale = ui_scale, .valid = true,
+                         .work_position = work_pos, .work_size = work_size};
+      state->apply_geometry = false;
+    }
+    if (visible) {
+      state->measured_height = measured_height;
+    }
+    state->layout_initialized = true;
+    state->last_interactive = interactive;
+    state->last_detailed = state->detailed;
+    state->last_trends = state->trends;
     ImGui::End();
   }
   return actions;

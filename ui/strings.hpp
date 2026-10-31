@@ -367,7 +367,7 @@ inline constexpr const char* kDiagnostics = "Diagnostics";
 inline constexpr const char* kDiagnosticsHint = "counters, support report";
 // Diagnostics holds three settings (GPU stage timers, the NR cost meter, the
 // edit trace); through v8.0.2 its header never showed one had changed, and
-// the cost meter off silently removes the card's cost line and Faster.
+// the cost meter off removes the card's measured cost line.
 inline constexpr const char* kResetDiagnostics = "Reset diagnostics";
 inline constexpr const char* kFixes = "Fixes";
 inline constexpr const char* kFixesHint = "only change if you know what you are doing";
@@ -403,23 +403,10 @@ inline constexpr const char* kResolutionTip =
     "NR working size relative to the effective stage reference. Fixed presets use 100/67/58/50 percent per side; Follow input uses valid guides, otherwise the saved scale. Does not change the game's DLSS mode.";
 inline constexpr const char* kCustomResolution = "Custom (%.0f%%)";
 
-// NR's cost line (FormatNrCost) and the Faster options beside it (rc11).
-// Each option shows NR's estimated GPU time per frame with it.
+// Measured work is not an estimate of the frame rate with NR disabled.
 inline constexpr const char* kNrCostTip =
-    "Estimated from NR's measured GPU time and the time between frames.  It"
-    " holds while the GPU limits the frame rate; a game held back by the CPU"
-    " or a frame cap gains less without NR.";
+    "Measured GPU time for the current completed stage group. Compare configurations using GPU A/B; overall FPS also depends on the game and frame limits.";
 inline constexpr const char* kNrCost = "NR cost";
-inline constexpr const char* kFaster = "Faster:";
-inline constexpr const char* kFasterOptions[] = {
-    "Before upscaling ~%.1f ms", "Resolution 50%% ~%.1f ms", "Both ~%.1f ms"};
-inline constexpr const char* kFasterTips[] = {
-    "Runs NR on the game's image before DLSS upscales it (Hook point:"
-    " Render), so NR works on fewer pixels.",
-    "Runs NR at half the output resolution per side (Resolution:"
-    " Performance).  NR then steadies shimmering detail less than at Full.",
-    "Both of the above."};
-inline constexpr const char* kFasterUndo = "Undo";
 
 // Diagnostics, translated (U3).  Raw details keeps the alpha44 counters.
 inline constexpr const char* kLastFrame = "Last frame";

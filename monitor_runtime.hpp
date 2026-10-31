@@ -11,6 +11,7 @@ struct MonitorSnapshot {
   ui::StatusCard card;
   ui::MonitorInputs monitor;
   ui::StatusSummaryFields summary;
+  ui::frame_metrics::Sample frame;
   std::string execution;
   unsigned warnings = 0;
   uint64_t key = 0;
@@ -52,41 +53,76 @@ struct MonitorCadence {
   int64_t last_ns = 0;
   int64_t formatted_ns = 0;
   std::string text;
+  ui::frame_metrics::Stream fallback;
+  ui::frame_metrics::Stream present;
+  ui::frame_metrics::Sample selected;
+  uint64_t consumed = 0;
+  bool recording = false;
 };
 inline thread_local MonitorCadence monitor_cadence;
 
-// ReShade uses IO.Framerate in its OSD, from its host frame duration.
-// Warm up after a gap; this cadence does not identify FG output.
+// One source for the summary, monitor and both cadence curves. Present is
+// accepted only for the selected runtime's device/backbuffer identity.
 inline void UpdateMonitorCadence(reshade::api::effect_runtime* runtime) {
   const auto owner = monitor_runtime.load();
   if (runtime != nullptr && owner != nullptr && runtime != owner) return;
   const auto now = SteadyNowNs();
   const auto epoch = monitor_history_epoch.load();
   auto& cadence = monitor_cadence;
-  if (runtime == nullptr || cadence.owner != runtime || cadence.epoch != epoch
-      || now < cadence.last_ns || now - cadence.last_ns > 500'000'000) {
+  if (runtime == nullptr || cadence.owner != runtime || cadence.epoch != epoch) {
     cadence = {.owner = runtime, .epoch = epoch, .first_ns = now};
+    monitor_history.values.ClearCadence();
   }
   if (runtime == nullptr || cadence.frame == ImGui::GetFrameCount()) return;
   cadence.frame = ImGui::GetFrameCount();
   cadence.last_ns = now;
   ++cadence.samples;
-  const auto fps = ImGui::GetIO().Framerate;
-  if (monitor_history.active && monitor_requested.load()) {
-    const float interval_ms = ImGui::GetIO().DeltaTime * 1000.f;
-    monitor_history.values.Add(ui::MonitorMetric::INTERVAL, now, interval_ms,
-        runtime != nullptr && std::isfinite(interval_ms) && interval_ms > 0.f);
-    monitor_history.values.Add(ui::MonitorMetric::FPS, now, fps,
-        runtime != nullptr && cadence.samples >= 8 && now - cadence.first_ns >= 750'000'000
-            && std::isfinite(fps) && fps > 0.f);
+  const ui::frame_metrics::Identity target{
+      .device = reinterpret_cast<uint64_t>(runtime->get_device()),
+      .surface = (runtime->get_back_buffer_count() != 0 ? runtime->get_back_buffer(0).handle : 0),
+      .runtime = reinterpret_cast<uint64_t>(runtime), .epoch = epoch,
+      .configuration = configuration_generation.load()};
+  cadence.fallback.Observe(ui::frame_metrics::Source::IMGUI, target, now, ImGui::GetIO().DeltaTime * 1000.f);
+  std::unique_lock pacing_lock(present_metrics.mutex);
+  if (present_metrics.target != target) {
+    present_metrics.target = target;
+    present_metrics.stream.Reset(ui::frame_metrics::Source::PRESENT, target);
   }
-  if (cadence.samples < 8 || now - cadence.first_ns < 750'000'000 || !std::isfinite(fps) || fps <= 0.f) {
+  cadence.present = present_metrics.stream;
+  pacing_lock.unlock();
+  const auto selected = ui::frame_metrics::Select(cadence.present.Read(now), cadence.fallback.Read(now), target, now);
+  const bool changed = selected.source != cadence.selected.source || selected.identity != cadence.selected.identity
+      || selected.generation != cadence.selected.generation;
+  const bool record = monitor_history.active && monitor_requested.load();
+  const auto& stream = (selected.source == ui::frame_metrics::Source::PRESENT ? cadence.present : cadence.fallback);
+  if (changed || record != cadence.recording || stream.published < cadence.consumed
+      || stream.published - cadence.consumed > stream.CAPACITY) {
+    monitor_history.values.ClearCadence();
+    cadence.consumed = stream.published;
+  }
+  cadence.selected = selected;
+  cadence.recording = record;
+  if (record) {
+    for (; cadence.consumed < stream.published; ++cadence.consumed) {
+      const auto& sample = stream.events[cadence.consumed % stream.CAPACITY];
+      if (sample.generation != selected.generation || sample.identity != selected.identity) continue;
+      monitor_history.values.Add(ui::MonitorMetric::INTERVAL, sample.time_ns, sample.raw_interval_ms, sample.valid);
+      monitor_history.values.Add(ui::MonitorMetric::FPS, sample.time_ns, sample.Fps(), sample.valid);
+    }
+    if (!selected.valid) {
+      monitor_history.values.Add(ui::MonitorMetric::INTERVAL, now, 0.f, false);
+      monitor_history.values.Add(ui::MonitorMetric::FPS, now, 0.f, false);
+    }
+  } else {
+    cadence.consumed = stream.published;
+  }
+  if (!selected.valid) {
     cadence.text.clear();
     return;
   }
-  if (now - cadence.formatted_ns >= kMonitorRefreshNs) {
-    char value[32];
-    std::snprintf(value, sizeof(value), "%.0f", fps);
+  if (changed || now - cadence.formatted_ns >= kMonitorRefreshNs) {
+    char value[96];
+    std::snprintf(value, sizeof(value), "%.0f (%s)", selected.Fps(), ui::Tr(ui::frame_metrics::SourceName(selected.source)));
     cadence.text = value;
     cadence.formatted_ns = now;
   }
@@ -132,9 +168,25 @@ inline void InvalidateMonitorDisplay() {
 
 inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
   auto& cached = monitor_snapshot;
+  const auto now = SteadyNowNs();
+  const auto& frame = monitor_cadence.selected;
+  const bool frame_current = frame.valid && now >= frame.time_ns
+      && now - frame.time_ns <= ui::frame_metrics::Stream::STALE_NS
+      && frame.identity.runtime == reinterpret_cast<uint64_t>(monitor_runtime.load())
+      && frame.identity.epoch == monitor_history_epoch.load()
+      && frame.identity.configuration == configuration_generation.load();
+  if (!frame_current) monitor_cadence.text.clear();
+  cached.frame = frame;
+  cached.frame.valid = frame_current;
+  if (!frame_current && monitor_history.active && monitor_requested.load()) {
+    monitor_history.values.Add(ui::MonitorMetric::INTERVAL, now, 0.f, false);
+    monitor_history.values.Add(ui::MonitorMetric::FPS, now, 0.f, false);
+  }
   cached.summary.fps = monitor_cadence.text;
   cached.monitor.summary.fps = monitor_cadence.text;
-  const auto now = SteadyNowNs();
+  cached.summary.fps_tip = cached.monitor.summary.fps_tip = ui::frame_metrics::SourceTip(
+      frame_current ? frame.source : ui::frame_metrics::Source::NONE);
+  cached.card.frame_ms = cached.monitor.card.frame_ms = (frame_current ? frame.interval_ms : 0.f);
   const auto key = MonitorSnapshotKey();
   const bool changed = key != cached.key;
   if (!changed && (!need_monitor || cached.complete) && now <= cached.valid_until_ns && now >= cached.attempted_ns
@@ -142,6 +194,10 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
   if (changed || now > cached.valid_until_ns
       || (cached.sampled_ns != 0 && now - cached.sampled_ns > ui::RecentHealthWindow::kStaleNs)) {
     InvalidateMonitorDisplay();
+    cached.summary.fps = cached.monitor.summary.fps = monitor_cadence.text;
+    cached.summary.fps_tip = cached.monitor.summary.fps_tip = ui::frame_metrics::SourceTip(
+        frame_current ? frame.source : ui::frame_metrics::Source::NONE);
+    cached.card.frame_ms = cached.monitor.card.frame_ms = (frame_current ? frame.interval_ms : 0.f);
   }
   cached.key = key;
   cached.attempted_ns = now;
@@ -287,16 +343,18 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
   for (size_t stage = 0; stage < timings.size(); ++stage) {
     if (!timing_current[stage] && !proof_current[stage]) continue;
     if (!execution.empty()) execution += " + ";
-    execution += stage_plan::Name(static_cast<stage_plan::Stage>(stage));
+    execution += ui::StageDisplayName(static_cast<stage_plan::Stage>(stage));
   }
   if (execution.empty()) execution = ui::Tr("Execution stage pending confirmation");
   // Independent stage windows support a reference work sum, never a shared
   // execution-cycle latency. Keep that distinction out of the legacy FPS estimate.
   card.nr_gpu_ms = card.nr_present_ms = 0.f;
+  card.frame_ms = (frame_current ? frame.interval_ms : 0.f);
   const auto gpu_total = SummarizeMonitorGpu(plan, timings, timing_current, resolved_models);
   if (gpu_total.valid && !gpu_total.reference) card.nr_gpu_ms = gpu_total.milliseconds;
   ui::StatusSummaryFields summary;
   summary.fps = monitor_cadence.text;
+  summary.fps_tip = ui::frame_metrics::SourceTip(frame_current ? frame.source : ui::frame_metrics::Source::NONE);
   summary.stage = execution;
   summary.fg = ui::Tr(card.fg_declared || card.frame_gen_multiplier > 1 ? "On"
       : native_fg_declaration.load() == NativeFgDeclaration::kOff ? "Off" : "Unknown");
@@ -333,7 +391,7 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
       for (size_t stage = 0; stage < timings.size(); ++stage) {
         if ((gpu_total.missing_stages & (1u << stage)) == 0) continue;
         if (!first) monitor.gpu_notice += ", ";
-        monitor.gpu_notice += stage_plan::Name(static_cast<stage_plan::Stage>(stage));
+        monitor.gpu_notice += ui::StageDisplayName(static_cast<stage_plan::Stage>(stage));
         first = false;
       }
       monitor.gpu_scope += std::string("\n") + monitor.gpu_notice;
@@ -351,8 +409,8 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
     for (uint32_t pass = 0; pass < plan.pass_count; ++pass) {
       auto& row = monitor.passes[pass];
       const auto stage = static_cast<size_t>(plan.effective[pass]);
-      row.requested_stage = stage_plan::Name(plan.requested[pass]);
-      row.effective_stage = plan.valid ? stage_plan::Name(plan.effective[pass]) : ui::Tr("Blocked");
+      row.requested_stage = ui::StageDisplayName(plan.requested[pass]);
+      row.effective_stage = plan.valid ? ui::StageDisplayName(plan.effective[pass]) : ui::Tr("Blocked");
       if (!plan.valid || plan.requested[pass] != plan.effective[pass]) {
         row.stage_reason = ui::Tr(stage_plan::ReasonText(plan.reason));
       }
@@ -417,7 +475,26 @@ inline ui::StatusCard MonitorDisplayCard() {
   return RefreshMonitorSnapshot(true).card;
 }
 
+inline void SaveMonitorVisibility() {
+  if (!monitor_visibility_dirty.load()) return;
+  {
+    std::shared_lock config_lock(present_restore_configuration.mutex);
+    if (!present_restore_configuration.global_writable) return;
+  }
+  std::optional<bool> visible_preference;
+  {
+    std::unique_lock visibility_lock(monitor_visibility_mutex);
+    if (monitor_visibility_dirty.exchange(false)) {
+      visible_preference = monitor_visible_preference.load();
+    }
+  }
+  if (visible_preference.has_value()) {
+    reshade::set_config_value(nullptr, kConfigSection, "UiMonitorVisible", *visible_preference);
+  }
+}
+
 inline void SaveMonitorSettings() {
+  SaveMonitorVisibility();
   if (!ui_monitor_geometry_dirty || ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsAnyItemActive()) return;
   {
     std::shared_lock config_lock(present_restore_configuration.mutex);
@@ -435,6 +512,7 @@ inline void SaveMonitorSettings() {
   }
   reshade::set_config_value(nullptr, kConfigSection, "UiMonitorPinned", state.pin);
   reshade::set_config_value(nullptr, kConfigSection, "UiMonitorDetailed", state.detailed);
+  reshade::set_config_value(nullptr, kConfigSection, "UiMonitorAutoFit", state.auto_fit);
   reshade::set_config_value(nullptr, kConfigSection, "UiMonitorOpacity", state.background_opacity);
   reshade::set_config_value(nullptr, kConfigSection, "UiMonitorTrends", state.trends);
   reshade::set_config_value(nullptr, kConfigSection, "UiMonitorHistorySeconds", state.history_seconds);
@@ -483,13 +561,19 @@ inline void DrawIndependentMonitor(reshade::api::effect_runtime* runtime, bool m
   const auto& snapshot = RefreshMonitorSnapshot(true);
   monitor_snapshot.monitor.history = (record_history ? &history.values : nullptr);
   monitor_snapshot.monitor.now_ns = SteadyNowNs();
+  const auto binding = monitor_hotkey.load();
+  monitor_snapshot.monitor.hotkey = (binding != 0 && !MonitorKeyConflict(binding)
+      ? VirtualKeyName(binding) : "");
   const bool interactive = menu || hud_overlay_open.load();
   if (interactive && !ui_monitor_was_interactive) ImGui::SetNextWindowFocus();
   ui_monitor_was_interactive = interactive;
   const auto actions = ui::DrawRuntimeMonitor(snapshot.monitor, &ui_runtime_monitor_state, nullptr, interactive, true);
   if (actions.open_diagnostics) ui_open_diagnostics = true;
   if (!ui_runtime_monitor_state.open) {
+    std::unique_lock visibility_lock(monitor_visibility_mutex);
     monitor_requested = false;
+    monitor_visible_preference = false;
+    monitor_visibility_dirty = true;
     gpu_timers::monitor_events.enabled = false;
     history.active = false;
     monitor_observation_epoch.fetch_add(1);

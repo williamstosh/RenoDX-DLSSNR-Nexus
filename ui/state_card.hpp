@@ -31,6 +31,7 @@
 #include "recent_health.hpp"
 
 #include <cstddef>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -778,28 +779,16 @@ inline int FormatCardDetail(char* buffer, std::size_t size,
   }
 }
 
-// NR's cost (rc11, NRCostMeter): its GPU time per frame NR enhances
-// (`gpu_ms`, per NR evaluate since rc5) and, while NR's share of each
-// presented frame (`present_ms`) is under 90 % of the frame, the frame rate
-// without it beside the one now.  The estimate subtracts the per-present
-// share, not gpu_ms: under frame generation a present carries half an
-// evaluate, and frame_ms is the present interval.  An estimate, and worded as
-// one: it holds while the GPU limits the frame.  `translate`: the panel's
-// language; the log's "NR cost:" line is English.  Writes nothing (returns
-// 0) while the cost is unmeasured.
-inline int FormatNrCost(char* buffer, std::size_t size, float gpu_ms, float present_ms,
-                        float frame_ms, bool translate) {
+// A completed group is measured GPU work, not a removable share of a frame.
+// No current producer proves the CPU/GPU bottleneck or excludes a frame cap.
+// Keep the compatibility arguments without using them to invent a saving.
+inline int FormatNrCost(char* buffer, std::size_t size, float gpu_ms, float /*present_ms*/,
+                        float /*frame_ms*/, bool translate) {
   if (size == 0) return 0;
   buffer[0] = '\0';
-  if (gpu_ms <= 0.f || present_ms <= 0.f || frame_ms <= 0.f) return 0;
-  if (present_ms >= 0.9f * frame_ms) {
-    const char* format = "NR: %.1f ms of GPU time per frame";
-    return std::snprintf(buffer, size, translate ? Tr(format) : format, gpu_ms);
-  }
-  const char* format =
-      "NR: %.1f ms of GPU time per frame (estimate: %.0f fps without NR, %.0f fps with it)";
-  return std::snprintf(buffer, size, translate ? Tr(format) : format, gpu_ms,
-                       1000.f / (frame_ms - present_ms), 1000.f / frame_ms);
+  if (!std::isfinite(gpu_ms) || gpu_ms <= 0.f) return 0;
+  const char* format = "NR: %.1f ms GPU per completed stage group.";
+  return std::snprintf(buffer, size, translate ? Tr(format) : format, gpu_ms);
 }
 
 // i18n: end

@@ -14,6 +14,21 @@ void RunRuntimeMonitorCases(const Check& check) {
   namespace ui = renodx::addons::dlss5::ui;
   auto& io = ImGui::GetIO();
   const auto original_display = io.DisplaySize;
+  for (int language = 0; language < ui::kLanguageCount; ++language) {
+    ui::SelectLanguage(language);
+    for (auto stage : {renodx::addons::dlss5::stage_plan::Stage::RENDER,
+                       renodx::addons::dlss5::stage_plan::Stage::UPSCALED,
+                       renodx::addons::dlss5::stage_plan::Stage::PRESENT}) {
+      check(std::strcmp(ui::StageDisplayName(stage), ui::Tr(renodx::addons::dlss5::stage_plan::Name(stage))) == 0,
+            "all supported languages share the menu and monitor stage vocabulary");
+    }
+  }
+  ui::SelectLanguage(ui::kLanguageCount - 2);
+  check(std::strcmp(ui::StageDisplayName(renodx::addons::dlss5::stage_plan::Stage::RENDER), "渲染") == 0
+            && std::strcmp(ui::StageDisplayName(renodx::addons::dlss5::stage_plan::Stage::UPSCALED), "超分后") == 0
+            && std::strcmp(ui::StageDisplayName(renodx::addons::dlss5::stage_plan::Stage::PRESENT), "呈现") == 0,
+        "Simplified Chinese uses the existing player-facing stage names");
+  ui::SelectLanguage(0);
   ui::StatusSummaryFields fields{.resolution = "3840x2160 -> 7680x4320",
                                  .stage = "Render -> Upscaled -> Present", .gpu = "1.2 ms",
                                  .resolution_tip = "Resolution evidence help",
@@ -199,6 +214,7 @@ void RunRuntimeMonitorCases(const Check& check) {
   }
   ui::SelectLanguage(0);
   scale = 1.f;
+  draw();
   draw();
   const ImVec2 moved(900.f, 130.f), resized(800.f, 610.f);
   draw(&moved, &resized);

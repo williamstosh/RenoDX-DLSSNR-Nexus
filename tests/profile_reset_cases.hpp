@@ -23,6 +23,33 @@
   }
   auto original = full_defaults;
   for (auto& [key, value] : original.settings.items()) value = adapter::ReadSetting(key);
+  Check(adapter::Apply({.scope = presets::Scope::FULL, .settings = {{"NRMonitorKey", 0}}}, true, true, &error),
+        "An unbound monitor shortcut is valid in a full profile.");
+  Check(adapter::Capture(presets::Scope::FULL, Json::object()).settings["NRMonitorKey"] == 0
+            && adapter::Undo(&error), "Full profile capture and undo retain an unbound shortcut.");
+  Check(adapter::Apply({.scope = presets::Scope::FULL,
+                        .settings = {{"UiHudAnchor", 8}, {"UiHudOffsetX", -12.5f}, {"UiHudOffsetY", -7.25f}}},
+                       true, false, &error), "Apply signed fractional notice offsets through the preset adapter.");
+  Check(runtime::GetHudPosition().anchor == 8 && runtime::GetHudPosition().offset.x == -12.5f
+            && runtime::GetHudPosition().offset.y == -7.25f, "Preset apply updates independent notice placement.");
+  Check(adapter::Apply({.scope = presets::Scope::FULL, .settings = {{"UiHudAnchor", 8}, {"UiHudX", 41.f}}},
+                       true, true, &error), "A new-format profile may keep its existing anchor.");
+  Check(adapter::Undo(&error) && runtime::GetHudPosition().anchor == 8
+            && runtime::GetHudPosition().offset.x == -12.5f,
+        "Undo deltas never masquerade as old percentage-only profiles.");
+  Check(adapter::Apply({.scope = presets::Scope::FULL, .settings = {{"UiHudX", 33.3f}, {"UiHudY", 73.f}}},
+                       true, true, &error), "Old percentage profiles remain applicable with a current grid anchor.");
+  Check(runtime::GetHudPosition().anchor == -1 && runtime::GetHudPosition().offset.x == 0.f
+            && std::abs(runtime::GetHudPosition().legacy_percent.x - 33.3f) < .001f,
+        "Legacy profiles restore their exact percentage placement rather than a new anchor.");
+  Check(adapter::Undo(&error) && runtime::GetHudPosition().anchor == 8
+            && runtime::GetHudPosition().offset.x == -12.5f, "Undo restores grid placement and fractional offsets.");
+  Check(adapter::DefaultsDocument(2).settings["UiHudAnchor"] == -1
+            && full_defaults.settings["UiHudOffsetX"] == 0.f
+            && full_defaults.settings["UiHudOffsetY"] == 0.f,
+        "Advanced and global defaults own the new placement fields.");
+  Check(adapter::Apply(original, true, false, &error, false, nullptr, true),
+        "Restore placement before the existing reset matrix.");
   const auto config_values = [&]() {
     Json result = Json::object();
     for (const auto& rule : presets::FieldRules()) result[rule.key] = adapter::ReadSetting(rule.key);

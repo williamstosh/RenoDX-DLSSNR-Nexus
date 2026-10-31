@@ -163,7 +163,7 @@ inline const std::vector<FieldRule>& FieldRules() {
 
       {.key = "NeuralUplift", .label = "Neural Rendering", .group = "General", .minimum = 0, .maximum = 1, .category = FieldRule::GENERAL},
       {.key = "NRToggleKey", .label = "Toggle NR", .group = "Hotkeys", .minimum = 0x08, .maximum = 0xFE, .category = FieldRule::GENERAL},
-      {.key = "NRMonitorKey", .label = "Show / hide runtime monitor", .group = "Hotkeys", .minimum = 0x08, .maximum = 0xFE, .category = FieldRule::GENERAL},
+      {.key = "NRMonitorKey", .label = "Show / hide runtime monitor", .group = "Hotkeys", .minimum = 0, .maximum = 0xFE, .category = FieldRule::GENERAL},
       {.key = "UiMonitorKeepVisible", .label = "Keep monitor visible after closing the menu", .group = "Interface", .minimum = 0, .maximum = 1, .category = FieldRule::GENERAL},
       {.key = "NROfficialCycleKey", .label = "Cycle official profiles", .group = "Hotkeys", .minimum = 0x08, .maximum = 0xFE, .category = FieldRule::GENERAL},
       {.key = "NRCustomCycleKey", .label = "Cycle custom profiles", .group = "Hotkeys", .minimum = 0x08, .maximum = 0xFE, .category = FieldRule::GENERAL},
@@ -185,6 +185,9 @@ inline const std::vector<FieldRule>& FieldRules() {
       {.key = "UiIssueNotice", .label = "On-screen notices", .group = "UI", .minimum = 0, .maximum = 1, .category = FieldRule::GENERAL},
       {.key = "UiHudX", .label = "Notice horizontal position", .group = "UI", .minimum = 0, .maximum = 100, .category = FieldRule::GENERAL},
       {.key = "UiHudY", .label = "Notice vertical position", .group = "UI", .minimum = 0, .maximum = 100, .category = FieldRule::GENERAL},
+      {.key = "UiHudAnchor", .label = "Screen notifications", .group = "UI", .minimum = -1, .maximum = 8, .category = FieldRule::GENERAL},
+      {.key = "UiHudOffsetX", .label = "Horizontal offset", .group = "UI", .minimum = -16384, .maximum = 16384, .category = FieldRule::GENERAL},
+      {.key = "UiHudOffsetY", .label = "Vertical offset", .group = "UI", .minimum = -16384, .maximum = 16384, .category = FieldRule::GENERAL},
 
       // Debug overrides and capture/trace requests must not travel in presets.
       {.key = "NRDebugBypassSdrRestore", .label = "Bypass SDR restore", .group = "Session debug", .minimum = 0, .maximum = 1, .category = FieldRule::EXCLUDED},

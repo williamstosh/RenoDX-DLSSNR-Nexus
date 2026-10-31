@@ -300,7 +300,6 @@ int main() {
     runtime::native_fg_public_off = true;
     runtime::last_input_width = runtime::last_output_width = 3840;
     runtime::last_input_height = runtime::last_output_height = 2160;
-    runtime::dlss_render_share = 4.f / 9.f;
     unsigned checks = 0;
     std::function<void()> capture_failure;
     const auto check = [&](bool condition, const char* message) {
@@ -337,6 +336,50 @@ int main() {
     load_theme_case("", ui::ThemeId::CYBER_NEON);
     load_theme_case("[OTHER]\nValue=1\n", ui::ThemeId::CYBER_NEON);
     const std::string section = std::string("[") + runtime::kConfigSection + "]\n";
+    const auto load_monitor_session = [&](const std::string& values) {
+      runtime::monitor_visibility_initialized = false;
+      load_theme_case((section + "UiTheme=cyber_neon\n" + values).c_str(), ui::ThemeId::CYBER_NEON);
+    };
+    load_monitor_session("");
+    check(!runtime::monitor_requested.load() && !runtime::monitor_visible_preference.load(),
+          "first installation keeps the monitor hidden without opening the host overlay");
+    load_monitor_session("UiMonitorVisible=1\nUiMonitorKeepVisible=1\n");
+    check(runtime::monitor_requested.load() && runtime::monitor_visible_preference.load(),
+          "a new game session restores an explicitly visible monitor");
+    runtime::monitor_requested = false;
+    runtime::LoadConfiguration();
+    check(!runtime::monitor_requested.load(), "repeated configuration initialization does not reopen a closed monitor");
+    runtime::monitor_requested = true;
+    runtime::ToggleMonitor();
+    auto* monitor_config_context = ImGui::GetCurrentContext();
+    ImGui::SetCurrentContext(nullptr);
+    runtime::SaveMonitorVisibility();
+    ImGui::SetCurrentContext(monitor_config_context);
+    bool saved_monitor_visible = true;
+    reshade::get_config_value(nullptr, runtime::kConfigSection, "UiMonitorVisible", saved_monitor_visible);
+    check(!saved_monitor_visible && !runtime::monitor_visibility_dirty.load(),
+          "F11 close persists immediately so normal and abnormal exits retain the choice");
+    runtime::ToggleMonitor();
+    runtime::SaveMonitorSettings();
+    reshade::get_config_value(nullptr, runtime::kConfigSection, "UiMonitorVisible", saved_monitor_visible);
+    check(saved_monitor_visible, "F11 open persists without relying on game shutdown");
+    runtime::monitor_keep_visible = false;
+    runtime::OnReshadeOpenOverlay(nullptr, false, reshade::api::input_source::keyboard);
+    runtime::SaveMonitorSettings();
+    reshade::get_config_value(nullptr, runtime::kConfigSection, "UiMonitorVisible", saved_monitor_visible);
+    check(!runtime::monitor_requested.load() && saved_monitor_visible,
+          "Home temporary hiding preserves the player's saved display intent");
+    load_monitor_session("UiMonitorVisible=1\nUiMonitorKeepVisible=0\n");
+    check(!runtime::monitor_requested.load() && runtime::monitor_visible_preference.load(),
+          "restoration respects disabled keep-visible without capturing gameplay input");
+    runtime::OnReshadeOpenOverlay(nullptr, true, reshade::api::input_source::keyboard);
+    check(runtime::monitor_requested.load(), "the saved intent becomes visible when the player opens Home");
+    runtime::OnReshadeOpenOverlay(nullptr, false, reshade::api::input_source::keyboard);
+    load_monitor_session("UiMonitorVisible=0\nNRMonitorKey=0\n");
+    check(!runtime::monitor_requested.load() && runtime::monitor_hotkey.load() == 0,
+          "an explicit hidden choice and an unbound shortcut survive initialization");
+    load_monitor_session("");
+    check(!runtime::monitor_requested.load(), "a different game's empty configuration cannot inherit visibility");
     load_theme_case((section + "; empty section\n").c_str(), ui::ThemeId::CYBER_NEON);
     load_theme_case((section + "NRIntensity=1.3\n").c_str(), ui::ThemeId::NEXUS_DARK);
     load_theme_case((section + "ConfigVersion=8\n").c_str(), ui::ThemeId::NEXUS_DARK);
@@ -869,6 +912,7 @@ int main() {
     panel_width = 1400.f;
     frame();
     frame();
+    click(find("Interface & notifications"));
     for (const auto& theme : ui::kThemes) {
       click(find(theme.name));
       check(runtime::ui_theme_choice.load() == theme.id && ui::CurrentThemeId() == theme.id,
@@ -1438,7 +1482,7 @@ int main() {
     frame();
     check(runtime::ui_menu_page == 2 && !runtime::ui_open_diagnostics, "status action cannot reach Diagnostics");
     click(find("Advanced"));
-    click(find(ui::Tr(ui::text::kRestoreAll) + std::string("###") + ui::text::kRestoreAll));
+    click(find("Development & maintenance"));
     click(find("open_reset_all"));
     click(find("confirm_page_reset"));
     {

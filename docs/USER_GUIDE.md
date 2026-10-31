@@ -139,11 +139,11 @@ dev.8 起提供每游戏六个 **Profile／Slot（快速方案／槽位）**及�
 
 ##### F11 常驻性能 HUD（开发版可用，尚未打包）
 
-- **F11** 显示／隐藏，在**高级 → 快捷键**可改绑定。默认关闭主菜单后仍显示。
+- **F11** 显示／隐藏，在**高级 → 快捷键与截图**可改绑定，监视器标题显示实际按键。首次默认隐藏；之后按本游戏记住最近的显示选择，下次启动自动恢复。关闭主菜单后是否常驻由**高级 → 运行时监视器**控制。
 - 游戏中不接收鼠标或键盘输入；按 **Home** 打开 ReShade 主菜单后可拖动、缩放、锁定位置与尺寸。拖动后记忆自定义位置。
-- **精简／详细（Compact／Details）**显示 NR 状态、GPU 开销、帧率和 FG 状态；详细视图增加逐层开销与异常。逐层链显示位置、模型配置和实际尺寸。两种视图均可选开**趋势（Trends）**，查看最近 **10／30／60 秒**，并选择帧率、UI 更新间隔（ms）、NR GPU 或各 Pass GPU 曲线。
-- 帧率来自 **ImGui／ReShade 的平滑更新节奏**，更新间隔是实际 UI 更新间隔；不以 FG 生成输出作数据源。GPU 曲线使用已完成的原始计时样本，以 **50 ms** 分桶并保留峰值，缺测时留空。
-- **高级 → 快捷键 → 运行时监视器**可设置 **0–100% 背景不透明度，默认 80%**；仅背景变淡，文字和曲线保持清晰。九宫格快捷定位后可用水平／垂直偏移微调（UI 像素），或重置位置和尺寸；拖动会切回自定义位置。
+- **精简／详细（Compact／Details）**显示 NR 状态、GPU 开销、帧率和 FG 状态；详细视图增加逐层开销与异常。切换视图或趋势时自动适应一次，手动缩放后保留尺寸偏好；也可主动点击**适应内容**。逐层链显示渲染、超分后、呈现等位置、模型配置和实际尺寸。两种视图均可选开**趋势（Trends）**，查看最近 **10／30／60 秒**，并选择帧率、帧间隔（ms）、NR GPU 或各 Pass GPU 曲线。
+- 顶部、监视器和帧率曲线使用同一采样口径，优先读取当前运行时的 **Present 回调节奏**，无有效数据时回退到 **ImGui 更新节奏**并标明来源；切换来源时重新开始相应曲线。该帧率不是 FG 后最终输出帧率。GPU 曲线使用已完成的原始计时样本，以 **50 ms** 分桶并保留峰值，缺测时留空。
+- **高级 → 运行时监视器**可设置 **0–100% 背景不透明度，默认 80%**；仅背景变淡，文字和曲线保持清晰。监视器内的**位置**菜单与高级页共用九宫格、自定义、适应内容和重置操作；高级页还可用水平／垂直偏移微调（UI 像素）。拖动会切回自定义位置。
 
 跨阶段的 NR GPU 仅在所有阶段组都有近期有效样本，且配置、设备、来源、显示条件与队列一致时显示 **~ 参考合计**。每个阶段组的总耗时只计一次，包含组内共用开销；它是近期成本参考，并非同一帧的端到端延迟。条件不足时查看独立 Pass 数据；缺测与未运行分别显示。
 
@@ -172,6 +172,8 @@ F6 立即提示开关操作，随后状态更新为正在检查、正常运行�
 #### 高级页：界面、按键与截图
 
 在这里选 **15 种语言**、**Cyber Neon／Nexus Dark／Fluent Light／Midnight OLED** 四套主题，修改按键和截图设置。主题只影响插件界面。
+
+设置分为**快捷键与截图、运行时监视器、界面与通知、游戏修正与兼容性、开发与维护**。常驻显示与监视器定位在运行时监视器中；提示定位与预览在界面与通知中。
 
 ![四套主题](images/ui/themes-zh.webp)
 
@@ -306,7 +308,7 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 | 恢复默认主题 | Cyber Neon | 仅恢复主题；当前开发源码的高级页恢复与全量恢复也将主题恢复为 Cyber Neon，画质／叠层页恢复不改主题。 |
 | 语言 | **Auto** 或 15 种语言 | 英、德、法、西、意、葡萄牙语（巴西）、俄、保加利亚、斯洛文尼亚、土耳其、泰、日、韩、简中、繁中。Auto 跟随 ReShade 的语言，后者未手动选择时跟随 Windows；未匹配的语言回退英文。选择名称保留英文便于找回。ReShade 为自身语言加载字体；插件检测到缺字会保持英文并在 `ReShade.log` 警告，需同时在 ReShade 选择对应语言，并检查自定义字体覆盖。 |
 | 通知 | **开** | 控制游戏内启用／失败／健康提示；关闭仍可看覆盖层状态和诊断。 |
-| 提示 HUD 位置 X／Y | **50%／0%**；各 **0–100%** | 插件通知位置，不是游戏 HUD 位置。 |
+| 屏幕提示位置 | 九宫格、水平／垂直偏移、预览与重置 | 在**界面与通知**中调整。旧配置的百分比自定义位置原样保留；选择九宫格后使用像素偏移。 |
 | 开发者视图 | **关**，默认现代视图 | 切换经典平铺布局，含英文技术／原始控件，共用同一配置，同一按钮可返回。 |
 | 恢复全部默认 | 确认恢复／取消 | 当前开发源码恢复本游戏受管理的 NR、兼容性、快捷键、界面及诊断设置；主题恢复 Cyber Neon。保留项见恢复默认章节。 |
 | 版本与关于 | 只读 | 显示插件版本、已加载 NR 运行时版本、游戏可执行文件名；插件与运行时版本独立。 |
@@ -394,11 +396,11 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 
 **NR 开销计量**默认开，**GPU 分阶段计时**默认关，可在详细诊断开启。DX12／DX11 Bridge 支持查看各层位置、模型配置、工作／输出尺寸和 GPU 耗时，及 Encode、模型求值（NGX）、Resolve、阶段总耗时。
 
-GPU 时间描述 NR 工作；监视器帧率反映 ImGui／ReShade 更新节奏。跨阶段的 **~ 参考合计**与独立 Pass 数据见上方[性能 HUD](#zh-diagnostics)说明。FG、CPU 瓶颈和限帧影响整体 FPS，整体流畅度在游戏中比较。Look 已含于 Resolve，NGX 含边界操作；读数须新鲜、已完成且匹配当前配置。模型标签是兼容规则解析后的配置，运行时内部网络不提供回读。
+GPU 时间描述 NR 工作；监视器帧率采用已标明来源的呈现回调或界面更新节奏。跨阶段的 **~ 参考合计**与独立 Pass 数据见上方[性能 HUD](#zh-diagnostics)说明。FG、CPU 瓶颈和限帧影响整体 FPS，整体流畅度在游戏中比较；目前不显示缺少可靠瓶颈依据的“无 NR FPS”估算。Look 已含于 Resolve，NGX 含边界操作；读数须新鲜、已完成且匹配当前配置。模型标签是兼容规则解析后的配置，运行时内部网络不提供回读。
 
 GPU A/B 每组收集 16 有效样本，开始／重建后 1 秒稳定期、10 秒超时；显示中位数、波动和 B−A，只接受一层实际尺寸变化。场景、位置、模型、FG、HDR 和其他设置保持相同；采集中改设置或换场景需重新采集。
 
-**Faster／加速**在路径和测量可用时提供放大前运行、50% 尺寸或两者组合，附估计和撤销；应用后检查画面与实际路径。**NR edit trace**默认关，仅 D3D12，以日志／CSV 记录改变量供排查。
+比较配置开销使用上方的 **GPU A/B 实测**。旧固定像素模型的 Faster 预测入口已撤下。**NR edit trace**默认关，仅 D3D12，以日志／CSV 记录改变量供排查。
 
 <a id="zh-profile-details"></a>
 #### 方案文件与文字输入
@@ -601,11 +603,11 @@ Read NR status, reasons, dimensions, GPU cost and reporting here. Address status
 
 ##### F11 persistent performance HUD (development source, not yet packaged)
 
-- **F11** toggles it; rebind under **Advanced → Hotkeys**. By default it stays visible after the menu closes.
+- **F11** toggles it; rebind under **Advanced → Hotkeys & screenshots**. The monitor title shows the actual binding. It starts hidden on first use, then remembers this game's last display choice for the next launch. **Advanced → Runtime monitor** controls whether it stays visible after closing the menu.
 - It accepts no gameplay mouse/keyboard input. Press **Home** to open ReShade, then move, resize or lock position/size. Dragging saves a custom position.
-- **Compact/Details** show NR state, GPU cost, FPS and FG status; Details adds pass costs and issues. The pass chain shows location, configured model and actual size. Either view can show optional **Trends** for the last **10/30/60 seconds**; select FPS, UI update interval (ms), NR GPU or individual pass GPU curves.
-- FPS is the **smoothed ImGui/ReShade update cadence**; update interval is the actual UI update interval. Frame-generated output is not a data source. GPU curves use raw completed timing samples, grouped into **50 ms** buckets that preserve peaks and leave missing data empty.
-- Under **Advanced → Hotkeys → Runtime monitor**, set **background opacity from 0–100%, default 80%**. Only backgrounds fade; text and graphs stay clear. Choose one of nine anchor positions, fine-tune horizontal/vertical offsets in UI pixels, or reset position and size. Dragging switches back to a custom position.
+- **Compact/Details** show NR state, GPU cost, FPS and FG status; Details adds pass costs and issues. Changing the view or trends fits content once. Manual resizing retains your size preference; **Fit to content** recalculates it on demand. The pass chain shows stage, configured model and actual size. Either view can show optional **Trends** for the last **10/30/60 seconds**; select FPS, frame interval (ms), NR GPU or individual pass GPU curves.
+- The top summary, monitor and FPS curve share one measurement source: the current runtime's **Present callback cadence**, with a labelled **ImGui update cadence** fallback when valid Present data is unavailable. Source changes restart the corresponding curves. This is not final frame-generated output FPS. GPU curves use raw completed timing samples, grouped into **50 ms** buckets that preserve peaks and leave missing data empty.
+- Under **Advanced → Runtime monitor**, set **background opacity from 0–100%, default 80%**. Only backgrounds fade; text and graphs stay clear. The monitor's **Position** menu shares nine anchors, custom placement, Fit to content and reset with Advanced; Advanced also offers horizontal/vertical offsets in UI pixels. Dragging switches back to a custom position.
 
 Across stages, NR GPU shows an **~ reference sum** only when every stage group has recent valid samples with matching configuration, device, source, display conditions and queue. Each stage group's total span is counted once, including its shared work. This describes recent cost rather than same-frame end-to-end latency. Otherwise, read individual pass data; missing measurements and passes that did not run are shown separately.
 
@@ -634,6 +636,8 @@ Local saving, uploading to displayed temporary hosts, including public summary/l
 #### Advanced: interface, keys and capture
 
 Choose **15 languages**, **Cyber Neon/Nexus Dark/Fluent Light/Midnight OLED** themes, keys and capture settings here. Themes affect the add-on interface only.
+
+Settings are grouped into **Hotkeys & screenshots, Runtime monitor, Interface & notifications, Game fixes & compatibility, and Development & maintenance**. Monitor visibility and placement are under Runtime monitor; notification placement and preview are under Interface & notifications.
 
 ![Four themes](images/ui/themes.webp)
 
@@ -768,7 +772,7 @@ Passes 2–4 retain model strength (1, 0–2), HDR transfer (1, 0–1) and Color
 | Restore default theme | Cyber Neon | Restores only the theme. In current development source, Advanced and full resets also restore Cyber Neon; Quality and Multi-Pass page resets keep the theme. |
 | Language | **Auto**, or one of 15 languages | English, German, French, Spanish, Italian, Portuguese (Brazil), Russian, Bulgarian, Slovenian, Turkish, Thai, Japanese, Korean, Chinese (Simplified), Chinese (Traditional). Auto follows ReShade's language, which follows Windows unless selected there; an unmatched language falls back to English. Choices remain readable in English. ReShade loads fonts for its own language; if the add-on detects missing glyphs, it stays in English and warns in `ReShade.log`. Select the corresponding language in ReShade too, and check any custom font override. |
 | Notifications | **On** | Controls gameplay activation/failure/health notices. Turning it off retains the overlay status and Diagnostics. |
-| HUD position X / Y | **50% / 0%**, **0–100%** each | Position of the add-on's notification HUD, not the game's HUD. |
+| Screen notification position | Nine anchors, horizontal/vertical offsets, preview and reset | Adjust under **Interface & notifications**. Existing percentage-based custom placement is preserved; choosing an anchor enables pixel offsets. |
 | Developer view | **Off** (modern view) | Switches to the classic flat layout, with technical/raw English controls. Same underlying settings. Use the same button to return. |
 | Restore all defaults | Confirm restore / Cancel | Current development source restores this game's managed NR, compatibility, hotkey, interface and diagnostic settings, including the Cyber Neon theme. See the reset section for retained data. |
 | Version & about | Readout | Shows the add-on version, loaded NR runtime version and game executable name. Runtime and add-on versions are independent. |
@@ -856,11 +860,11 @@ Compatible ordinary Present Optional/Never can also work without game DLSS, subj
 
 **NR cost meter** defaults on; **GPU stage profiling** defaults off in Detailed diagnostics. DX12/DX11 Bridge show per-pass location, configured model, working/output size and GPU cost, plus Encode, model evaluation (NGX), Resolve and stage total.
 
-GPU time describes NR work; monitor FPS reflects ImGui/ReShade update cadence. See the [performance HUD](#en-diagnostics) above for the cross-stage **~ reference sum** and individual pass data. FG, CPU limits and caps affect overall FPS; compare smoothness in gameplay. Look is included in Resolve, and NGX includes boundary operations. Readings must be fresh, completed and match settings. Model labels reflect compatibility-resolved configuration; internal runtime networks offer no readback.
+GPU time describes NR work; monitor FPS uses the labelled Present callback or UI update cadence. See the [performance HUD](#en-diagnostics) above for the cross-stage **~ reference sum** and individual pass data. FG, CPU limits and caps affect overall FPS; compare smoothness in gameplay. Without reliable bottleneck evidence, a without-NR FPS estimate stays hidden. Look is included in Resolve, and NGX includes boundary operations. Readings must be fresh, completed and match settings. Model labels reflect compatibility-resolved configuration; internal runtime networks offer no readback.
 
 GPU A/B collects 16 valid samples, with a 1-second settling period at start/rebuild and 10-second timeout. It shows median, variation and B−A, accepting one pass's actual size change. Keep scene, location, models, FG, HDR and other settings constant; recapture after changes during collection or a scene change.
 
-**Faster** offers Before upscaling, Resolution 50% or Both when routing/measurements allow, with estimates and Undo; inspect the picture/route afterwards. **NR edit trace** defaults off, D3D12-only, logging changes to logs/CSV for diagnosis.
+Use the **measured GPU A/B comparison** above to compare configuration cost. The old fixed-pixel Faster predictor has been removed. **NR edit trace** defaults off, D3D12-only, logging changes to logs/CSV for diagnosis.
 
 <a id="en-profile-details"></a>
 #### Profile files and text input

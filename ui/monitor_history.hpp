@@ -85,6 +85,14 @@ struct MonitorHistory {
     ++generation;
   }
 
+  void ClearCadence() {
+    for (auto metric : {MonitorMetric::FPS, MonitorMetric::INTERVAL}) {
+      auto& values = series[static_cast<size_t>(metric)];
+      values.begin = values.count = 0;
+    }
+    ++generation;
+  }
+
   void Add(MonitorMetric metric, int64_t time_ns, float value, bool valid = true, bool reference = false) {
     series[static_cast<size_t>(metric)].Add(time_ns, value, valid, reference);
   }

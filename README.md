@@ -18,7 +18,7 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 
 | 版本 | 功能范围 |
 | --- | --- |
-| **0.2.0-dev.11 开发源码，未发布** | 新增逐层独立工作分辨率、F11 运行监视器、逐层 GPU 诊断与手动 GPU A/B 对比，以及更新的阶段选择、方案操作和自适应界面布局。 |
+| **0.2.0-dev.11 开发源码，未发布** | 新增逐层独立工作分辨率、记住本游戏显示选择的 F11 监视器、统一帧率与逐层 GPU 诊断、手动 GPU A/B 对比，以及自适应布局和统一定位操作。 |
 | **0.2.0-dev.8 公开预发布** | 已含逐层阶段选择、DX12／DX11 Bridge 的 Render → 游戏 DLSS SR/DLAA → Upscaled 链、方案库与每游戏六槽方案，以及辅助输入。 |
 | **0.1.0 正式版** | 已含最多四层处理、双模型、逐层独立外观／结果编辑及四套主题；不含逐层阶段选择、方案库／六槽和辅助输入，也不含上述 dev.11 新增功能。 |
 
@@ -168,7 +168,7 @@ The current development source is **0.2.0-dev.11**, which has not been publicly 
 
 | Version | Available features |
 | --- | --- |
-| **0.2.0-dev.11 development source, unreleased** | Adds independent per-pass working resolution, the F11 runtime monitor, per-pass GPU diagnostics and manual GPU A/B comparison, plus updated stage selection, profile controls and adaptive layouts. |
+| **0.2.0-dev.11 development source, unreleased** | Adds independent per-pass working resolution, an F11 monitor that remembers this game's display choice, shared FPS and per-pass GPU diagnostics, manual GPU A/B comparison, adaptive layouts and consistent placement controls. |
 | **0.2.0-dev.8 public pre-release** | Includes per-pass stages, the DX12/DX11 Bridge Render → game DLSS SR/DLAA → Upscaled chain, the profile library and six slots per game, and assisted input. |
 | **0.1.0 stable** | Includes up to four passes, dual models, independent per-pass look/result editing and four themes. Per-pass stages, the profile library/six slots, assisted input and the dev.11 additions above are absent. |
 

@@ -31,10 +31,15 @@
 #include "state_card.hpp"
 #include "strings.hpp"
 #include "theme.hpp"
+#include "../stage_plan.hpp"
+#include "frame_metrics.hpp"
 
 namespace renodx::addons::dlss5::ui {
 
 // i18n: begin - display strings (tools/i18n/ui_strings.py catalog)
+inline const char* StageDisplayName(stage_plan::Stage stage) {
+  return Tr(stage_plan::Name(stage));
+}
 
 // ImGui::SetItemTooltip, with the text wrapped at kTooltipEm.  The one way
 // the add-on shows a tooltip.
@@ -224,7 +229,7 @@ struct StatusSummaryFields {
   std::string gpu;
   std::string fps;
   std::string fg;
-  const char* fps_tip = "Smoothed ImGui/ReShade update cadence. Does not measure frame-generated output FPS.";
+  const char* fps_tip = frame_metrics::SourceTip(frame_metrics::Source::NONE);
   const char* fg_tip = "Observed frame generation route. FG GPU duration is unavailable.";
   const char* resolution_tip = "Configured working ratio and current completed working dimensions when available.";
   const char* stage_tip = "Execution evidence for the current chain. A requested stage is not proof of execution.";
@@ -234,7 +239,8 @@ struct StatusSummaryFields {
 
 // Only the compact child participates in settings layout. The caller opens
 // complete runtime details without expanding the summary's default height.
-inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, const StatusSummaryFields& fields) {
+inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, const StatusSummaryFields& fields,
+                              const std::string& monitor_hotkey = {}) {
   StyleScope frame;
   frame.FontSize(BodyFontSize())
       .Color(ImGuiCol_ChildBg, CurrentTheme().bg_card)
@@ -242,7 +248,10 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, co
   const float font = ImGui::GetFontSize();
   const float available = (std::max)(1.f, ImGui::GetContentRegionAvail().x - ImGui::GetStyle().WindowPadding.x * 2.f);
   const float gap = ImGui::GetStyle().ItemSpacing.x;
-  const float action_width = (std::min)(available, ImGui::CalcTextSize((std::string(Tr("Runtime monitor")) + " !").c_str()).x
+  const std::string monitor_label = std::string(Tr("Monitor"))
+      + (available >= font * 42.f && !monitor_hotkey.empty() ? " · " + monitor_hotkey : "")
+      + (warning_count != 0 ? " !" : "");
+  const float action_width = (std::min)(available, ImGui::CalcTextSize(monitor_label.c_str()).x
       + ImGui::GetStyle().FramePadding.x * 2.f);
   const float title_width = (std::max)(1.f, available - action_width - gap);
   const bool auxiliary = available >= font * 56.f;
@@ -279,9 +288,9 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, co
       ItemTooltip("%s\n%s", title, card.body != nullptr ? Tr(card.body) : "");
     }
     ImGui::SetCursorPos(ImVec2(heading_at.x + available - action_width, heading_at.y));
-    const std::string action = std::string(Tr("Runtime monitor")) + (warning_count != 0 ? " !" : "");
-    details = ImGui::Button((action + "###status_details").c_str(), ImVec2(action_width, 0.f));
-    ItemTooltip("%s", Tr("Open the movable runtime monitor. Diagnostics remain available separately."));
+    details = ImGui::Button((monitor_label + "###status_details").c_str(), ImVec2(action_width, 0.f));
+    ItemTooltip("%s%s%s\n%s", Tr("Runtime monitor"), monitor_hotkey.empty() ? "" : " · ", monitor_hotkey.c_str(),
+        Tr("Open the movable runtime monitor. Diagnostics remain available separately."));
     const float metric_y = heading_at.y + heading_height + ImGui::GetStyle().ItemSpacing.y;
     const char* names[] = {"NR GPU", "FPS", "FG"};
     const std::string* values[] = {&fields.gpu, &fields.fps, &fields.fg};
@@ -900,6 +909,48 @@ inline int Segmented(const char* id, const char* const* english, int count,
   }
   ImGui::PopID();
   return clicked;
+}
+
+// The caller owns the ID scope so independent position menus can share this grid.
+inline bool DrawPositionGrid(int* anchor) {
+  const char* labels[] = {"Top left", "Top center", "Top right",
+      "Center left", "Center", "Center right",
+      "Bottom left", "Bottom center", "Bottom right"};
+  const float gap = ImGui::GetStyle().ItemSpacing.x;
+  const float side = (std::max)(1.f, (std::min)(ImGui::GetFrameHeight() * 1.5f,
+      (ImGui::CalcItemWidth() - 2.f * gap) / 3.f));
+  bool changed = false;
+  ImGui::BeginGroup();
+  for (int index = 0; index < 9; ++index) {
+    if (index % 3 != 0) {
+      ImGui::SameLine();
+    }
+    char id[24];
+    std::snprintf(id, sizeof(id), "##position_anchor_%d", index);
+    {
+      StyleScope selected;
+      if (*anchor == index) {
+        selected.Color(ImGuiCol_Button, CurrentTheme().accent)
+            .Color(ImGuiCol_ButtonHovered, CurrentTheme().accent_hover)
+            .Color(ImGuiCol_ButtonActive, CurrentTheme().accent_active);
+      }
+      if (ImGui::Button(id, ImVec2(side, side)) && *anchor != index) {
+        *anchor = index;
+        changed = true;
+      }
+      const auto lo = ImGui::GetItemRectMin();
+      const auto hi = ImGui::GetItemRectMax();
+      const ImU32 ink = ToU32(*anchor == index ? CurrentTheme().on_accent : CurrentTheme().text_secondary);
+      auto* draw = ImGui::GetWindowDrawList();
+      draw->AddRect(ImVec2(lo.x + side * .2f, lo.y + side * .2f),
+          ImVec2(hi.x - side * .2f, hi.y - side * .2f), ink, 1.f);
+      draw->AddCircleFilled(ImVec2(lo.x + side * (.25f + .25f * static_cast<float>(index % 3)),
+          lo.y + side * (.25f + .25f * static_cast<float>(index / 3))), side * .075f, ink);
+    }
+    ItemTooltip("%s", Tr(labels[index]));
+  }
+  ImGui::EndGroup();
+  return changed;
 }
 
 // i18n: end

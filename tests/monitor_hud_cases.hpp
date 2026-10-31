@@ -217,6 +217,7 @@ void RunMonitorHudCases(const Check& check) {
   inputs.passes[2].gpu_cost = "UNAVAILABLE_GPU_MUST_NOT_BE_CURRENT";
   state.detailed = true;
   frame();
+  frame();
   check(output.find("Dimensions") == std::string::npos
             && output.find("A created model request does not prove") == std::string::npos
             && output.find("Measurement scope") == std::string::npos,
@@ -234,9 +235,9 @@ void RunMonitorHudCases(const Check& check) {
   inputs.pass_count = 4;
   state.detailed = false;
   frame();
-  check(same_geometry(compact_geometry, state.geometry)
+  check(state.geometry.size.y < compact_geometry.size.y
             && output.find("Created model request") == std::string::npos,
-        "mode changes replace content without auto-sizing established geometry");
+        "switching to compact automatically fits the actual content once");
 
   // Establish no foreground ImGui window, then move/click/type over the HUD.
   ImGui::SetWindowFocus(nullptr);
@@ -300,7 +301,8 @@ void RunMonitorHudCases(const Check& check) {
   };
   const auto mode_actions = click_tool(1);
   check(state.detailed && mode_actions.settings_changed, "details tool reports a persistable settings change");
-  check(same_geometry(compact_geometry, state.geometry), "interactive mode toggle preserves geometry");
+  check(state.geometry.size.y > 0.f && window->ScrollMax.y <= 1.f,
+        "interactive view switch automatically fits details without a second click");
   const auto pin_actions = click_tool(0);
   check(state.pin && pin_actions.settings_changed && pin_actions.geometry_changed
             && (window->Flags & (ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize))
@@ -337,8 +339,10 @@ void RunMonitorHudCases(const Check& check) {
   const auto edited_geometry = state.geometry;
   ImGui::SetWindowCollapsed(window->Name, true);
   frame();
-  check(!window->Collapsed && same_geometry(edited_geometry, state.geometry),
-        "returning to gameplay recovers collapsed contents and preserves edited geometry");
+  frame();
+  check(!window->Collapsed && state.geometry.size.x == edited_geometry.size.x
+            && state.geometry.size.y < edited_geometry.size.y && !state.auto_fit,
+        "returning to gameplay removes edit chrome while preserving manual width and height preference");
   state.open = false;
   frame();
   check(!window->Active, "hidden HUD submits no window");
@@ -410,7 +414,7 @@ void RunMonitorHudCases(const Check& check) {
         for (unsigned metric = 0; metric < 7; ++metric) {
           state.trend_mask = 1u << metric;
           frame(); frame();
-          const char* names[] = {"FPS", "Update interval (ms)", "NR GPU", "Pass 1 GPU",
+          const char* names[] = {"FPS", "Frame interval (ms)", "NR GPU", "Pass 1 GPU",
                                  "Pass 2 GPU", "Pass 3 GPU", "Pass 4 GPU"};
           check(output.find(names[metric]) != std::string::npos && state.trends
                     && (window->Flags & ImGuiWindowFlags_NoInputs) == ImGuiWindowFlags_NoInputs,
@@ -463,7 +467,7 @@ void RunMonitorHudCases(const Check& check) {
   interactive = false;
   state.trend_mask = 0;
   frame();
-  check(output.find("Update interval (ms)") == std::string::npos
+  check(output.find("Frame interval (ms)") == std::string::npos
             && output.find("Pass 4 GPU") == std::string::npos,
         "disabling all trend metrics leaves no empty plots");
   inputs.current_limit = "Synthetic exception reason";
@@ -498,6 +502,32 @@ void RunMonitorHudCases(const Check& check) {
         "empty exception and GPU notices add no default footer text");
   inputs.history = nullptr;
   inputs.summary.gpu_reference = false;
+  for (const auto& theme : ui::kThemes) {
+    ui::SetTheme(theme.id);
+    for (int view = 0; view < 3; ++view) {
+      state = {.open = true, .detailed = view == 1, .trends = view == 2};
+      for (bool edit : {true, false, true, false}) {
+        interactive = edit;
+        frame(); frame(); frame();
+        check(window->ScrollMax.y <= 1.f
+                  && window->InnerRect.Max.y - window->DC.CursorMaxPos.y <= 32.f,
+              "each view fits actual edit and gameplay content across repeated Home transitions");
+        const auto geometry = state.geometry;
+        const auto stable = frame();
+        check(!stable.geometry_changed && same_geometry(geometry, state.geometry),
+              "settled layout never re-fits or queues periodic geometry writes");
+      }
+    }
+  }
+  interactive = true;
+  inputs.hotkey = "F8";
+  frame();
+  check(output.find("F8") != std::string::npos && output.find("F11") == std::string::npos,
+        "interactive title displays the current shortcut");
+  inputs.hotkey.clear();
+  frame();
+  check(output.find("F8") == std::string::npos && output.find("F11") == std::string::npos,
+        "unavailable shortcut leaves no stale binding in the window title");
 
   state.open = false;
   frame();

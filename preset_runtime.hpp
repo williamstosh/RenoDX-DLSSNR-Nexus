@@ -48,6 +48,9 @@ inline const Setting* FindSetting(std::string_view key) {
 }
 
 inline Json ReadSetting(std::string_view key) {
+  if (key == "UiHudAnchor") return GetHudPosition().anchor;
+  if (key == "UiHudOffsetX") return GetHudPosition().offset.x;
+  if (key == "UiHudOffsetY") return GetHudPosition().offset.y;
   if (const auto* setting = FindSetting(key)) {
     float value = setting->Get();
     if (setting->b != nullptr) {
@@ -165,11 +168,13 @@ inline bool ValidateValue(const presets::FieldRule& rule, const Json& value) {
     return false;
   }
   const double number = value.get<double>();
+  if (key == "NRMonitorKey" && number != 0.0 && number < 0x08) return false;
   if (!std::isfinite(number) || number < rule.minimum || number > rule.maximum) {
     return false;
   }
   const auto* setting = FindSetting(key);
-  return (setting != nullptr && setting->f != nullptr) || std::floor(number) == number;
+  return (setting != nullptr && setting->f != nullptr)
+      || key == "UiHudOffsetX" || key == "UiHudOffsetY" || std::floor(number) == number;
 }
 
 inline presets::Document Capture(presets::Scope scope, const Json& metadata) {
@@ -234,6 +239,7 @@ inline presets::Document DefaultsDocument(int target) {
           || (rule.category == presets::FieldRule::GENERAL && std::string_view(rule.group) != "Diagnostics"));
     } else if (target == 3) {
       owned = setting != nullptr || key == "UiTheme" || key == "UiLanguage" || key == "UiMode"
+          || key == "UiHudAnchor" || key == "UiHudOffsetX" || key == "UiHudOffsetY"
           || key == "DedupeMode" || key == "ListStateMode"
           || key == "NRPresentHdrPedestalPolicy" || key == "NRPresentRestoreScope";
     }
@@ -246,6 +252,10 @@ inline presets::Document DefaultsDocument(int target) {
       } else {
         document.settings[key] = setting->fallback;
       }
+    } else if (key == "UiHudAnchor") {
+      document.settings[key] = -1;
+    } else if (key == "UiHudOffsetX" || key == "UiHudOffsetY") {
+      document.settings[key] = 0.f;
     } else if (key == "UiTheme") {
       document.settings[key] = ui::GetTheme(ui::ThemeId::CYBER_NEON).slug;
     } else if (key == "UiLanguage") {
@@ -354,6 +364,17 @@ inline bool Apply(const presets::Document& document, bool compatibility, bool re
                   const Json* expected = nullptr) {
   SettleSlider(true);
   auto differences = Preview(document, compatibility, builtin_reset);
+  if (!restore_missing && !document.settings.contains("UiHudAnchor")
+      && (document.settings.contains("UiHudX") || document.settings.contains("UiHudY"))) {
+    // Old full profiles own percentage placement; a current anchor must not mask it.
+    auto legacy = document;
+    legacy.settings = {{"UiHudAnchor", -1}, {"UiHudOffsetX", 0.f}, {"UiHudOffsetY", 0.f}};
+    for (auto& row : Preview(legacy, compatibility, builtin_reset)) {
+      if (legacy.settings.contains(row.key)) {
+        differences.push_back(std::move(row));
+      }
+    }
+  }
   for (const auto& row : differences) {
     if (!builtin_reset && IsCapabilitySetting(row.key) && std::string_view(row.status) == "Unsupported") {
       *error = "Requested execution option is unavailable. Current settings were kept.";
@@ -474,6 +495,10 @@ inline bool Apply(const presets::Document& document, bool compatibility, bool re
       reshade::set_config_value(nullptr, kConfigSection, key.c_str(), value.get_ref<const std::string&>().c_str());
     } else if (value.is_boolean()) {
       reshade::set_config_value(nullptr, kConfigSection, key.c_str(), value.get<bool>());
+    } else if (key == "UiHudAnchor") {
+      reshade::set_config_value(nullptr, kConfigSection, key.c_str(), value.get<int>());
+    } else if (key == "UiHudOffsetX" || key == "UiHudOffsetY") {
+      reshade::set_config_value(nullptr, kConfigSection, key.c_str(), value.get<float>());
     } else if (const auto* setting = FindSetting(key); setting != nullptr && setting->f != nullptr) {
       reshade::set_config_value(nullptr, kConfigSection, key.c_str(), value.get<float>());
     } else {
@@ -491,7 +516,12 @@ inline bool Apply(const presets::Document& document, bool compatibility, bool re
       bool actual = !value.get<bool>();
       return reshade::get_config_value(nullptr, kConfigSection, key.c_str(), actual) && actual == value.get<bool>();
     }
-    if (const auto* setting = FindSetting(key); setting != nullptr && setting->f != nullptr) {
+    if (key == "UiHudAnchor") {
+      int actual = -2;
+      return reshade::get_config_value(nullptr, kConfigSection, key.c_str(), actual) && actual == value.get<int>();
+    }
+    if (const auto* setting = FindSetting(key); (setting != nullptr && setting->f != nullptr)
+        || key == "UiHudOffsetX" || key == "UiHudOffsetY") {
       float actual = NAN;
       return reshade::get_config_value(nullptr, kConfigSection, key.c_str(), actual)
              && std::isfinite(actual) && std::abs(actual - value.get<float>()) <= 0.000001f;
@@ -529,6 +559,16 @@ inline bool Apply(const presets::Document& document, bool compatibility, bool re
     }
     if (const auto* setting = FindSetting(row.key)) {
       setting->StoreLocked(row.after.is_boolean() ? (row.after.get<bool>() ? 1.f : 0.f) : row.after.get<float>());
+    } else if (row.key == "UiHudAnchor" || row.key == "UiHudOffsetX" || row.key == "UiHudOffsetY") {
+      auto position = GetHudPosition();
+      if (row.key == "UiHudAnchor") {
+        position.anchor = row.after.get<int>();
+      } else if (row.key == "UiHudOffsetX") {
+        position.offset.x = row.after.get<float>();
+      } else {
+        position.offset.y = row.after.get<float>();
+      }
+      StoreHudPosition(position);
     } else if (row.key == "UiTheme") {
       ui_theme_choice = ui::ParseTheme(row.after.get<std::string>());
     } else if (row.key == "UiLanguage") {

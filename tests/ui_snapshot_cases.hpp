@@ -46,6 +46,11 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     }
     scenarios.push_back({.id = "r5-monitor-trends-detailed", .action = "r5-monitor", .language = 1, .width = 2100.f,
                          .monitor_passes = 4, .monitor_width = 1100.f, .monitor_detailed = true, .monitor_trends = true});
+    for (int language : {1, 14}) {
+      scenarios.push_back({.id = (language == 1 ? "r6-monitor-position-en" : "r6-monitor-position-zh"),
+          .action = "r5-monitor-position", .language = language, .width = 2100.f,
+          .monitor_passes = 2, .monitor_width = 640.f});
+    }
     if (snapshot_mode == "Full") {
       unsigned index = 0;
       for (const auto& theme : ui::kThemes) {
@@ -299,6 +304,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     io.AddMousePosEvent(-100.f, -100.f);
     runtime::ui_theme_choice = scenario.theme;
     runtime::ui_language_choice = scenario.language;
+    runtime::RefreshUiLanguage();
     runtime::ui_menu_page = scenario.page;
     runtime::ui_selected_pass = ((scenario.action == "pass-first" || scenario.action == "r2-pass1") ? 0 : 1);
     runtime::hook_point = runtime::kHookPresent;
@@ -468,7 +474,9 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       runtime::nr_resolution_scale = .67f;
       for (unsigned index = 0; index < window_evidence.pass_count; ++index) {
         auto& pass = window_evidence.passes[index];
-        const char* stage = (index == 0 ? "Render" : "Upscaled");
+        const char* stage = ui::StageDisplayName(index == 0
+            ? renodx::addons::dlss5::stage_plan::Stage::RENDER
+            : renodx::addons::dlss5::stage_plan::Stage::UPSCALED);
         const char* model = (index == 0 ? "B" : "A");
         if (index != 0) {
           runtime::pass_stage[index - 1] = 2;
@@ -504,6 +512,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       monitor_fixture = &window_evidence;
       synthetic_monitor_state.open = true;
       if (round_five_monitor) {
+        window_evidence.hotkey = "F11";
         window_evidence.current_conclusion = (scenario.action == "r5-monitor-long"
             ? "Synthetic evidence: a deliberately long status for testing wrapping at a larger UI scale"
             : "Synthetic monitor — layout preview");
@@ -762,13 +771,37 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
           }
           for (const auto& [id, item] : items) {
             if (item.window == monitor
-                && (item.label == ui::Tr("FPS") || item.label == ui::Tr("Update interval (ms)"))) {
+                && (item.label == ui::Tr("FPS") || item.label == ui::Tr("Frame interval (ms)"))) {
               trend_top = (std::min)(trend_top, item.rect.Min.y);
               found_trend = true;
             }
           }
           check(found_pass && found_trend && pass_bottom <= trend_top,
                 "synthetic capture positions trends below the last pass summary");
+        }
+        if (scenario.action == "r5-monitor-position") {
+          click(find("monitor_position"));
+          const auto grid = find("##position_anchor_8");
+          check(grid.window != nullptr && (grid.window->Flags & ImGuiWindowFlags_Popup) != 0,
+                "monitor placement opens the shared nine-anchor popup");
+          const auto trigger = find("monitor_position").rect;
+          check(std::abs(grid.window->Pos.x - trigger.Min.x) <= 2.f
+                    && std::abs(grid.window->Pos.y - trigger.Max.y) <= 2.f,
+                "placement popup appears next to its toolbar trigger");
+          click(grid);
+          settle();
+          check(synthetic_monitor_state.anchor == 8 && !synthetic_monitor_state.apply_geometry
+                    && std::abs(synthetic_monitor_state.geometry.position.x + synthetic_monitor_state.geometry.size.x
+                        - ImGui::GetIO().DisplaySize.x) < 2.f,
+                "toolbar placement survives frame-end capture and reaches the requested screen edge");
+          click(find("monitor_position"));
+          click(find("monitor_reset_geometry"));
+          settle();
+          check(synthetic_monitor_state.anchor == 0
+                    && std::abs(synthetic_monitor_state.geometry.position.x - 12.f * scenario.font / 13.f) < 2.f
+                    && std::abs(synthetic_monitor_state.geometry.size.x - 480.f * scenario.font / 13.f) < 2.f,
+                "toolbar reset preserves its queued position and size instead of capturing the old window");
+          click(find("monitor_position"));
         }
       }
       if (scenario.action == "r3-recovered") {

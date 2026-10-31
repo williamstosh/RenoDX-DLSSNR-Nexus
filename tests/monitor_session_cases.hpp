@@ -102,6 +102,9 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   preserve_atomic(r::hotkey_capture_target);
   preserve_atomic(r::hud_overlay_open);
   preserve_atomic(r::monitor_requested);
+  preserve_atomic(r::monitor_visible_preference);
+  preserve_atomic(r::monitor_visibility_dirty);
+  preserve_atomic(r::monitor_visibility_initialized);
   preserve_atomic(r::monitor_keep_visible);
   preserve_atomic(r::monitor_observation_epoch);
   preserve_atomic(r::monitor_history_epoch);
@@ -160,6 +163,8 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
     r::official_cycle_key = VK_F9;
     r::custom_cycle_key = VK_F10;
     r::monitor_requested = false;
+    r::monitor_visible_preference = false;
+    r::monitor_visibility_dirty = false;
     r::hud_overlay_open = false;
     std::scoped_lock lock(r::monitor_key_mutex);
     r::monitor_key_edge = {};
@@ -169,9 +174,24 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   r::ToggleMonitor();
   check(r::monitor_requested.load() && r::monitor_observation_epoch.load() == toggle_epoch + 1,
         "ToggleMonitor opens once and invalidates the observation epoch");
+  check(r::monitor_visible_preference.load() && r::monitor_visibility_dirty.load(),
+        "an explicit opening queues the visible preference without an exit-time write");
   r::ToggleMonitor();
   check(!r::monitor_requested.load() && r::monitor_observation_epoch.load() == toggle_epoch + 2,
         "ToggleMonitor closes once and invalidates the observation epoch");
+  check(!r::monitor_visible_preference.load() && r::monitor_visibility_dirty.load(),
+        "an explicit closing queues the hidden preference");
+  {
+    const auto toggle_many = [] {
+      for (int index = 0; index < 50; ++index) r::ToggleMonitor();
+    };
+    std::thread first(toggle_many), second(toggle_many);
+    first.join();
+    second.join();
+    check(!r::monitor_requested.load() && !r::monitor_visible_preference.load(),
+          "concurrent user toggles cannot persist an out-of-order display intent");
+  }
+  reset_key();
   r::PollMonitorKey(true, true, false);
   check(!r::monitor_requested.load(), "initially held default F11 is consumed");
   r::PollMonitorKey(false, true, false);
@@ -334,25 +354,17 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
         "recreating a runtime establishes a fresh owner epoch");
   check(no_old_gpu(refresh_while_locked()), "runtime recreation cannot reuse old cached GPU evidence");
 
-  // Test host cadence interpretation using explicit synthetic IO data.
+  // Opaque census tokens have no runtime vtable. Source selection and warming
+  // are exercised with deterministic timestamps in RunFrameMetricsCases.
   r::monitor_cadence = {};
   ImGui::GetIO().Framerate = 144.f;
-  r::UpdateMonitorCadence(runtime_a);
-  check(r::monitor_cadence.text.empty(), "new runtime never presents startup ImGui FPS as observed cadence");
-  r::monitor_cadence.first_ns = r::SteadyNowNs() - 1'000'000'000;
-  r::monitor_cadence.last_ns = r::SteadyNowNs();
-  r::monitor_cadence.samples = 8;
-  r::monitor_cadence.frame = -1;
-  r::UpdateMonitorCadence(runtime_a);
-  check(r::monitor_cadence.text == "144", "warmed cadence uses the exact ReShade IO value without FG multiplication");
-  const auto cadence_samples = r::monitor_cadence.samples;
-  r::UpdateMonitorCadence(runtime_a);
-  check(r::monitor_cadence.samples == cadence_samples, "panel and HUD count one cadence sample per ImGui frame");
-  r::monitor_cadence.last_ns = r::SteadyNowNs() - 600'000'000;
-  r::UpdateMonitorCadence(runtime_a);
-  check(r::monitor_cadence.text.empty(), "cadence gap invalidates old FPS before warming again");
   r::UpdateMonitorCadence(nullptr);
   check(r::monitor_cadence.text.empty(), "offscreen null-runtime fixtures cannot invent a real FPS source");
+  const auto visible_intent = r::monitor_visible_preference.load();
+  const auto runtime_count = r::live_effect_runtimes.size();
+  r::OnInitEffectRuntime(runtime_a);
+  check(r::live_effect_runtimes.size() == runtime_count && r::monitor_visible_preference.load() == visible_intent,
+        "repeated runtime initialization keeps a single owner and cannot overwrite player intent");
 
   // Synthetic published metadata, never a model invocation or measured GPU cost.
   static thread_local addon::gpu_comparison::Identity identity;

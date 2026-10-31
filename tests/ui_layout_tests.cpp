@@ -21,6 +21,8 @@
 #include "runtime_monitor_cases.hpp"
 #include "monitor_history_cases.hpp"
 #include "monitor_hud_cases.hpp"
+#include "notice_position_cases.hpp"
+#include "frame_metrics_cases.hpp"
 
 namespace ui = renodx::addons::dlss5::ui;
 
@@ -49,6 +51,7 @@ int main() {
 
   RunChainUxCases(check);
   RunRecentHealthCases(check);
+  RunNoticePositionCases(check);
 
   const auto luminance = [](const ImVec4& color) {
     const auto linear = [](float value) {
@@ -394,7 +397,7 @@ int main() {
           "Off summary does not present retained NR submissions or GPU measurements as execution");
     char action[160];
     std::snprintf(action, sizeof(action), ui::Tr(ui::text::kStatusDetails), 0u);
-    check(output.find(ui::Tr("Runtime monitor")) != std::string::npos, "Off summary preserves its monitor action");
+    check(output.find(ui::Tr("Monitor")) != std::string::npos, "Off summary preserves its compact monitor action");
     ImGui::End();
     ImGui::Render();
   }
@@ -456,6 +459,8 @@ int main() {
   }
   RunRuntimeMonitorCases(check);
   RunMonitorHistoryCases(check);
+  RunFrameMetricsCases(check);
+  RunNoticePositionCases(check);
   RunMonitorHudCases(check);
   std::printf("summary scenarios=%u languages=%d max_delta_y=%.3f px checks=%u failures=%u\n",
               scenarios, ui::kLanguageCount, max_delta, checks, failures);
