@@ -41,20 +41,18 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 
 | 能力 | 玩家用途 |
 | --- | --- |
-| **最多四层，分别塑造外观和结果** | 在一次 NR 调整之外继续叠加处理，例如自然底层＋电影感第二层。每层分别调模型风格、人物／皮肤及亮暗、颜色、细节和光晕；可共享第 1 层设置，也可独立编辑。[两层实例](docs/USER_GUIDE.md#zh-two-pass-example) |
+| **最多四层，分别塑造外观和结果** | 在一次 NR 调整之外继续叠加处理，例如自然底层＋电影感第二层。每层分别调模型风格、人物／皮肤及亮暗、颜色、细节和光晕；可共享第 1 层设置，也可独立编辑。增加层数会增加 GPU 工作量，建议从单层开始。[两层实例](docs/USER_GUIDE.md#zh-two-pass-example) · [阶段与 FG 兼容性](#zh-compatibility) |
 | **A/B 双模型与逐层选择** | 在兼容且识别为 **310.9.16.0** 的 Runtime 上比较 A（Legacy）和 B（Small FP8），组合 AA、AB、BA、BB，寻找喜欢的细节与风格，而不只做单模型开关。[模型与画质](docs/USER_GUIDE.md#zh-quality) |
 | **超分前、超分后，或最终游戏画面** | Render、Upscaled、Present 决定在哪一步增强。支持的 DX11／DX12 链可用 **Render（B）→ 游戏 DLSS SR → Upscaled（A）**，兼顾前后两次处理，也可与原生 DLSS FG/MFG 或 XeFG 并用。[叠层与阶段](docs/USER_GUIDE.md#zh-multipass) |
 | **逐层分配工作分辨率** | 例如 **Upscaled Pass 1（100%）→ Pass 2（67%）**，比较第二层降低尺寸后的细节与开销。同一 Render 阶段的双 Pass 也可各用不同尺寸；不改变游戏 DLSS SR 设置。[工作分辨率](docs/USER_GUIDE.md#zh-resolution) |
 | **三套官方方案＋三个自定义槽＋共享方案库** | 从轻量、均衡、极致开始，将精心调好的一套或多套配置存入共享方案库；换游戏时导入后即可一键应用复用，省去逐项重调，也能导出分享。[方案管理](docs/USER_GUIDE.md#zh-presets) |
 | **看清开销，再做取舍** | F11 常驻监视器显示帧率、NR GPU 和逐层信息；F8 切换精简／详细与趋势。手动 GPU A/B 比较一层尺寸调整前后的成本，帮助找到昂贵的层；画质仍由你在游戏中比较。[监视器与 GPU 对比](docs/USER_GUIDE.md#zh-diagnostics) |
 
-增加层数会增加 GPU 工作量，建议从单层开始；阶段与 FG 组合见[兼容性](#zh-compatibility)。
-
-界面支持 **15 种语言、七套主题**，可跟随 ReShade 语言；详细操作与参数见[玩家指南](docs/USER_GUIDE.md#zh-start)。
-
 <a id="zh-interface"></a>
 
 ### 菜单界面
+
+界面支持 **15 种语言、七套主题**，可跟随 ReShade 语言；详细操作与参数见[玩家指南](docs/USER_GUIDE.md#zh-start)。
 
 ![NR Nexus 界面总览](docs/images/ui/overview-zh.webp)
 
@@ -198,7 +196,7 @@ Runtime DLL、模型和游戏资源另行获取。
 [version.h](version.h) 定义插件版本，Git Commit 标识源码。`dev.N` 和可选的 `rc.N` 为预发布版本；
 当前稳定版为 **v0.2.0**；较早正式版与预发布的功能变化统一查阅 [Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)。
 [CI](.github/workflows/ci.yml) 构建源码，版本 Tag 触发[发布工作流](.github/workflows/release.yml)。
-日常提交和 Actions artifacts 是开发构建。打包流程随插件附带 README、玩家指南、配图和许可文件。
+日常提交和 Actions artifacts 是开发构建。当前开发构建的 Windows ZIP 还会自动附带 **NR-Nexus-Guide.html 离线玩家手册**：解压后双击，即可在浏览器阅读完整中英文 README 与指南，无需联网或 Markdown 阅读器。手册内嵌配图，游戏画面采用已审核的 SDR 静态预览；在线交互对比、下载和外部参考链接需要网络。原 README、玩家指南、配图和许可文件仍保留。已发布的 v0.2.0 安装包不变。
 
 <a id="zh-sources"></a>
 ### 来源、致谢与许可证
@@ -252,20 +250,18 @@ These features are included in 0.2.0. See the guide for compatibility conditions
 
 | Feature | What you can use it for |
 | --- | --- |
-| **Up to four passes, with separate look and result controls** | Build on one NR adjustment with another, such as a Natural base plus a Cinematic second layer. Tune model styling, characters/skin, brightness, colour, detail and halos per pass, sharing Pass 1 settings or editing independently. [Two-pass example](docs/USER_GUIDE.md#en-two-pass-example) |
+| **Up to four passes, with separate look and result controls** | Build on one NR adjustment with another, such as a Natural base plus a Cinematic second layer. Tune model styling, characters/skin, brightness, colour, detail and halos per pass, sharing Pass 1 settings or editing independently. More passes add GPU work; start with one. [Two-pass example](docs/USER_GUIDE.md#en-two-pass-example) · [Stage and FG compatibility](#en-compatibility) |
 | **Dual models A/B, chosen per pass** | With a compatible runtime identified as **310.9.16.0**, compare A (Legacy) and B (Small FP8) in AA, AB, BA or BB combinations to find preferred detail and styling, beyond a single-model toggle. [Models and quality](docs/USER_GUIDE.md#en-quality) |
 | **Before upscaling, after upscaling, or on the final game image** | Render, Upscaled and Present choose where enhancement happens. Supported DX11/DX12 chains can use **Render (B) → game DLSS SR → Upscaled (A)** to combine both stages, alongside native DLSS FG/MFG or XeFG. [Passes and stages](docs/USER_GUIDE.md#en-multipass) |
 | **Allocate working resolution per pass** | Try **Upscaled Pass 1 (100%) → Pass 2 (67%)** to compare the second layer's detail and cost at a smaller size. Two passes within Render can also use separate sizes, without changing game DLSS SR settings. [Working resolution](docs/USER_GUIDE.md#en-resolution) |
 | **Three official profiles, three custom slots and a shared library** | Start with Lite, Balanced or Max, then save one or several carefully tuned configurations to the shared library. Import them in another game and apply with one click to reuse your work instead of tuning every setting again; export them to share as well. [Profiles](docs/USER_GUIDE.md#en-presets) |
 | **See the cost before choosing** | The F11 monitor shows FPS, NR GPU cost and pass information; F8 cycles compact/detailed views and trends. Manual GPU A/B compares a single pass's cost before and after a size change to identify expensive layers. Compare image quality in gameplay. [Monitor and GPU comparison](docs/USER_GUIDE.md#en-diagnostics) |
 
-More passes add GPU work; start with one. See [Compatibility](#en-compatibility) for stage and FG combinations.
-
-The interface offers **15 languages and seven themes**, with automatic ReShade language selection. See the [User Guide](docs/USER_GUIDE.md#en-start) for controls and parameters.
-
 <a id="en-interface"></a>
 
 ### Interface
+
+The interface offers **15 languages and seven themes**, with automatic ReShade language selection. See the [User Guide](docs/USER_GUIDE.md#en-start) for controls and parameters.
 
 ![NR Nexus interface overview](docs/images/ui/overview.webp)
 
@@ -421,7 +417,7 @@ DLLs, models and game assets are obtained separately.
 see [Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases) for earlier stable and pre-release feature changes.
 [CI](.github/workflows/ci.yml) builds the source, and version tags trigger the
 [release workflow](.github/workflows/release.yml). Daily commits and Actions artifacts are development builds.
-The packaging workflow includes the README, User Guide, images and licenses alongside the add-on.
+Windows ZIPs from current development builds also include an automatically generated **NR-Nexus-Guide.html offline player guide**. Extract it and double-click to read the complete Chinese and English README and User Guide in a browser, without a connection or Markdown reader. Images are embedded, with approved static SDR previews for game scenes; online interactive comparisons, downloads and external references require a connection. The original README, User Guide, images and licenses remain included. The published v0.2.0 package is unchanged.
 
 <a id="en-sources"></a>
 ### Origins, thanks and license

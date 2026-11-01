@@ -113,6 +113,8 @@ foreach ($taskDocument in $taskDocuments.Keys) {
     })
     $taskFiles[$taskDocuments[$taskDocument]] = [Text.Encoding]::UTF8.GetBytes($taskPackedText)
 }
+$taskGuide = & (Join-Path $PSScriptRoot 'build-offline-guide.ps1') -SourceRoot $taskRoot -SourceCommit $taskCommit
+$taskFiles['NR-Nexus-Guide.html'] = $taskGuide.Bytes
 Assert-PinnedRepository $taskHost $taskLock.host.commit
 $taskFiles['licenses/RenoDX/LICENSE'] = Read-PinnedFile $taskHost $taskLock.host.commit 'LICENSE'
 $taskHostNotices = foreach ($taskHeader in @(
@@ -196,14 +198,16 @@ try {
         $taskNames = @($taskZip.Entries | ForEach-Object FullName)
         if ($taskNames.Count -ne $taskFiles.Count -or
             (Compare-Object @($taskFiles.Keys) $taskNames -CaseSensitive)) { throw 'ZIP entry whitelist mismatch.' }
-        $taskEntryStream = $taskZip.GetEntry('renodx-dlss5.addon64').Open()
-        try {
-            $taskHasher = [Security.Cryptography.SHA256]::Create()
-            try { $taskEmbeddedHash = [Convert]::ToHexString($taskHasher.ComputeHash($taskEntryStream)) }
-            finally { $taskHasher.Dispose() }
-        } finally { $taskEntryStream.Dispose() }
-        if ($taskEmbeddedHash -cne [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($taskBytes))) {
-            throw 'ZIP add-on hash mismatch.'
+        foreach ($taskName in $taskFiles.Keys) {
+            $taskEntryStream = $taskZip.GetEntry($taskName).Open()
+            try {
+                $taskHasher = [Security.Cryptography.SHA256]::Create()
+                try { $taskEmbeddedHash = [Convert]::ToHexString($taskHasher.ComputeHash($taskEntryStream)) }
+                finally { $taskHasher.Dispose() }
+            } finally { $taskEntryStream.Dispose() }
+            if ($taskEmbeddedHash -cne [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($taskFiles[$taskName]))) {
+                throw "ZIP file hash mismatch: $taskName"
+            }
         }
     } finally { $taskZip.Dispose() }
     $taskHash = (Get-FileHash -LiteralPath $taskArchive -Algorithm SHA256).Hash.ToLowerInvariant()

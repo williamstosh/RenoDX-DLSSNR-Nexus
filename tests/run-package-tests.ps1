@@ -105,7 +105,7 @@ Assert-Test ([IO.Path]::GetFileName($taskResult.ArchivePath) -ceq ($taskVersion.
 $taskZip = [IO.Compression.ZipFile]::OpenRead($taskResult.ArchivePath)
 try {
     $taskNames = @($taskZip.Entries | ForEach-Object FullName)
-    $taskExpected = @('renodx-dlss5.addon64', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md', 'USER_GUIDE.md', 'VERSION.txt',
+    $taskExpected = @('renodx-dlss5.addon64', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md', 'USER_GUIDE.md', 'NR-Nexus-Guide.html', 'VERSION.txt',
         'licenses/RenoDX/LICENSE', 'licenses/RenoDX/NOTICE.txt', 'licenses/Detours/LICENSE.md',
         'licenses/ReShade/LICENSE.md', 'licenses/DearImGui/LICENSE.txt', 'licenses/nlohmann-json/LICENSE.MIT',
         'licenses/nlohmann-json/NOTICE.txt', 'licenses/Streamline/license.txt', 'licenses/Streamline/NOTICE.txt',
@@ -127,6 +127,13 @@ try {
     try { $taskAddonHash = [Convert]::ToHexString($taskHasher.ComputeHash($taskAddonStream)) }
     finally { $taskHasher.Dispose(); $taskAddonStream.Dispose() }
     Assert-Test ($taskAddonHash -ceq (Get-FileHash -LiteralPath $taskBinary).Hash) 'Archived add-on differs from real build.'
+    $taskGuideStream = $taskZip.GetEntry('NR-Nexus-Guide.html').Open()
+    $taskGuideMemory = [IO.MemoryStream]::new()
+    try { $taskGuideStream.CopyTo($taskGuideMemory); $taskGuideBytes = $taskGuideMemory.ToArray() }
+    finally { $taskGuideStream.Dispose(); $taskGuideMemory.Dispose() }
+    $taskCommit = & git --no-optional-locks -C $taskRoot rev-parse HEAD
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot identify guide source commit.' }
+    $taskGuideChecks = & (Join-Path $PSScriptRoot 'run-offline-guide-tests.ps1') -GuideBytes $taskGuideBytes -SourceCommit $taskCommit -OutputDirectory (Join-Path $taskOutput 'offline-guide')
     foreach ($taskDocument in @('LICENSE', 'THIRD_PARTY_NOTICES.md')) {
         $taskReader = [IO.StreamReader]::new($taskZip.GetEntry($taskDocument).Open())
         try { $taskText = $taskReader.ReadToEnd() } finally { $taskReader.Dispose() }
@@ -282,4 +289,4 @@ try {
 } finally { $taskPackage = $taskOriginalPackage }
 
 Complete-TestOutput $taskOutput
-[pscustomobject]@{ TestsPassed = $taskPassed; ArchivePath = $taskResult.ArchivePath; OutputDirectory = $taskOutput }
+[pscustomobject]@{ TestsPassed = $taskPassed; GuideTestsPassed = $taskGuideChecks.TestsPassed; ArchivePath = $taskResult.ArchivePath; OutputDirectory = $taskOutput }
