@@ -1,5 +1,48 @@
 # Third-party notices
 
+## jxr2uhdr HDR comparison tooling
+
+- Source: https://github.com/tfx2001/jxr2uhdr
+- Reference commit: `4b7519195a52eee6b8f5316412e02ef738eb149d`.
+- License: MIT, Copyright (c) 2026 tfx2001.
+- Files: `tools/game_compare_hdr.py` adapts the fixed max-RGB Hable
+  SDR-base formula and scRGB 80-nit / Ultra HDR 203-nit reference scaling
+  from `jxr2uhdr-cli/src/tonemap.rs` and `encode.rs`.
+- Adaptations: Python/NumPy implementation; explicit Rec.709-to-Rec.2020
+  linear gamut conversion to preserve extended scRGB colors; one shared
+  pair peak instead of independent percentile peaks; linear-light annotations,
+  synthetic tests and local review reports. No Rust source or executable is
+  bundled.
+
+MIT License
+
+Copyright (c) 2026 tfx2001
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+The optional imagecodecs dependency (BSD-3-Clause) supplies jxrlib (BSD)
+and Google libultrahdr 2.0.2 (Apache-2.0 OR MIT), together with NumPy (BSD-3-Clause).
+They are installed into the local Python environment and are not vendored or
+included in NR Nexus add-on packages. Their original licenses remain with
+the installed distributions. Sources: https://github.com/cgohlke/imagecodecs,
+https://github.com/google/libultrahdr and https://numpy.org/.
+
 ## RenoDX and Lecram V8.5 RC10 source
 
 - RenoDX: <https://github.com/clshortfuse/renodx>

@@ -1,0 +1,4 @@
+# Optional, known-compatible HDR codecs; install in the local tool environment.
+Pillow>=13.0.0
+numpy==2.5.4
+imagecodecs==2026.10.10

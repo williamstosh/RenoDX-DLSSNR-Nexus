@@ -4,7 +4,7 @@
 
 [简体中文](#简体中文) · [English](#english)
 
-[**下载 / Download**](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases) · [**玩家指南 / User Guide**](docs/USER_GUIDE.md) · [**兼容性 / Compatibility**](#兼容性与已知限制) · [**问题反馈 / GitHub Issues**](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/issues)
+[**玩家指南 / User Guide**](docs/USER_GUIDE.md) · [**显卡兼容性 / GPU Compatibility**](#zh-gpu) · [**问题反馈 / GitHub Issues**](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/issues)
 
 ## 简体中文
 
@@ -13,14 +13,25 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 将最多四层 NR 串成顺序处理链，为每层独立选择模型、调整外观和编辑结果，组合你想要的画面。
 插件不执行降噪。
 
-**[下载公开版本](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)**：
-正式版 **v0.2.0** 包含本页介绍的方案、监视器与主题功能；早期预发布 **v0.2.0-dev.8** 仍保留在版本历史中。
+**[下载 v0.2.0（Windows x64 ZIP）](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip)** · **[查看最新正式版](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/latest)**
 
-| 版本 | 功能范围 |
+本页介绍 **v0.2.0 正式版**。[SHA-256 校验文件](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip.sha256)与 [Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.0) 可用于核对下载；GitHub 的 **Source code** ZIP 是源码，不是插件安装包。
+
+<a id="zh-gpu"></a>
+### 显卡兼容性
+
+先按显卡选择 NR Runtime，再安装 Nexus。以下为系列级速查，兼容性仍取决于具体 Runtime、驱动、游戏及图形 API。
+
+| 显卡系列 | Runtime 选择 |
 | --- | --- |
-| **0.2.0 正式版** | 新增逐层独立工作分辨率、记住本游戏显示选择的 F11 监视器、F8 四模式循环、统一帧率与逐层 GPU 诊断、手动 GPU A/B 对比，以及自适应布局和统一定位操作。 |
-| **0.2.0-dev.8 公开预发布** | 已含逐层阶段选择、DX12／DX11 Bridge 的 Render → 游戏 DLSS SR/DLAA → Upscaled 链、方案库与每游戏六槽方案，以及辅助输入。 |
-| **0.1.0 早期正式版** | 已含最多四层处理、双模型、逐层独立外观／结果编辑及四套主题；不含逐层阶段选择、方案库／六槽和辅助输入，也不含上述 0.2.0 新增功能。 |
+| **GeForce RTX 50** | 原生 NVIDIA Runtime，属于 [NVIDIA 官方硬件支持范围](https://www.nvidia.com/en-us/geforce/news/dlss-5-3d-guided-neural-rendering/)。 |
+| **GeForce RTX 40／30／20** | 可尝试社区兼容 Runtime，优先 DX11／DX12。 |
+| **AMD／Intel** | 暂无本项目确认可替换 NVIDIA NR DLL 的方案。 |
+
+[RHI](https://github.com/RankFTW/RHI) 的 [Runtime 清单](https://github.com/RankFTW/RHI/blob/main/dlss_manifest.json)提供 **`310.9.16 (20/30/40/50)`**（2026-11-01 核对）。这是社区兼容版本，不能等同于 NVIDIA 官方支持；其具体来源与支持范围应随上游版本核对。
+[openNR](https://github.com/clshortfuse/openNR) 为 RTX 20／30／40 提供兼容代码，是使用自备 NVIDIA DLL 的**源码构建工具**，不分发 NVIDIA DLL；[RTX 30 优化项目](https://github.com/lmxxf/DLSS5-RTX-3080-laptop)目前仅针对 **Preset 2／Small**，不能据此推断完整 A/B、多 Pass、FG 或 Vulkan 支持，其整合包也并非 Nexus 安装包。
+
+只要社区 Runtime 保持 Nexus 所需的 NGX 接口和行为兼容，原则上可沿用现有插件主体；实际仍须确认模型、处理位置和功能组合。上游架构代码与系列标签不是全型号、全游戏验证。本项目已有[限定范围的运行与自动化验证](docs/USER_GUIDE.md#zh-paths)，尚未完成 RTX 20／30／40／50 全系列兼容矩阵；openNR 也未声明其 CUDA／Vulkan 后端兼容。
 
 ### 核心特色
 
@@ -28,22 +39,34 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 
 | 能力 | 玩家用途 |
 | --- | --- |
-| **最多四层顺序链，每层独立模型／外观／结果** | 将前一层的输出交给下一层；分别调整风格、局部色调、结构、角色遮罩与皮肤，再编辑亮度、色彩、细节、光晕和时序稳定。附加层可独立设置，也可继承第 1 层。 |
-| **A/B 双模型** | 在兼容的 310.9.16.0 Runtime 上选择 A（Legacy）或 B（Small FP8），尝试 AA、AB、BA、BB 等不同组合。 |
-| **独立工作分辨率** | 按层分配 NR 的工作尺寸，在细节与 GPU 开销间取舍，不改变游戏 DLSS SR 的分辨率。支持范围和设置方法见[画质](docs/USER_GUIDE.md#zh-quality)与[叠层指南](docs/USER_GUIDE.md#zh-multipass)。 |
-| **处理位置与 NR／FG 协同** | 选择 Render、Upscaled 或 Present，将 NR 放在超分前、超分后或最终游戏画面；支持与原生 DLSS FG/MFG 或 XeFG 协同。组合规则见[叠层指南](docs/USER_GUIDE.md#zh-multipass)。 |
-| **每游戏六槽与共享方案库** | 三个官方起点加三个自定义方案，保存不同游戏与场景的偏好；通过可搜索方案库导入、导出和分享。见[方案指南](docs/USER_GUIDE.md#zh-presets)。 |
-| **F11 常驻性能 HUD** | F11 显示／隐藏监视器，F8 按精简、详细、精简＋趋势、详细＋趋势循环；可选 10／30／60 秒趋势，配置变化前后的曲线分段保留。 |
-| **逐层 GPU 诊断与 A/B 对比** | 查看每层模型、工作／输出尺寸及 GPU 耗时，比较调整一层工作尺寸前后的开销，帮助定位昂贵的层。见[诊断指南](docs/USER_GUIDE.md#zh-diagnostics)。 |
-| **15 种界面语言与辅助输入** | 自动跟随 ReShade 或手动选语言；输入法遇到问题时，使用 Windows 原生 Unicode 编辑窗填写方案名称和反馈文字。 |
-| **七套界面主题** | 保留 Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED，并新增 Neon Violet、Tactical Amber、Aurora Glass；Ivory Studio 与 Crimson Noir 仍是设计候选。 |
+| **最多四层，分别塑造外观和结果** | 在一次 NR 调整之外继续叠加处理，例如自然底层＋电影感第二层。每层分别调模型风格、人物／皮肤及亮暗、颜色、细节和光晕；可共享第 1 层设置，也可独立编辑。[两层实例](docs/USER_GUIDE.md#zh-two-pass-example) |
+| **A/B 双模型与逐层选择** | 在兼容且识别为 **310.9.16.0** 的 Runtime 上比较 A（Legacy）和 B（Small FP8），组合 AA、AB、BA、BB，寻找喜欢的细节与风格，而不只做单模型开关。[模型与画质](docs/USER_GUIDE.md#zh-quality) |
+| **超分前、超分后，或最终游戏画面** | Render、Upscaled、Present 决定在哪一步增强。支持的 DX11／DX12 链可用 **Render（B）→ 游戏 DLSS SR → Upscaled（A）**，兼顾前后两次处理，也可与原生 DLSS FG/MFG 或 XeFG 并用。[叠层与阶段](docs/USER_GUIDE.md#zh-multipass) |
+| **逐层分配工作分辨率** | 例如 **Upscaled Pass 1（100%）→ Pass 2（67%）**，比较第二层降低尺寸后的细节与开销。同一 Render 阶段的双 Pass 也可各用不同尺寸；不改变游戏 DLSS SR 设置。[工作分辨率](docs/USER_GUIDE.md#zh-resolution) |
+| **三套官方方案＋三个自定义槽＋共享方案库** | 从轻量、均衡、极致开始，将精心调好的一套或多套配置存入共享方案库；换游戏时导入后即可一键应用复用，省去逐项重调，也能导出分享。[方案管理](docs/USER_GUIDE.md#zh-presets) |
+| **看清开销，再做取舍** | F11 常驻监视器显示帧率、NR GPU 和逐层信息；F8 切换精简／详细与趋势。手动 GPU A/B 比较一层尺寸调整前后的成本，帮助找到昂贵的层；画质仍由你在游戏中比较。[监视器与 GPU 对比](docs/USER_GUIDE.md#zh-diagnostics) |
 
-增加层数会增加 GPU 工作量，建议从单层开始，在同一场景比较画面与开销。
-参数、继承和实际组合示例见[玩家指南](docs/USER_GUIDE.md#zh-start)。
+增加层数会增加 GPU 工作量，建议从单层开始。普通 Present 会处理游戏 HUD，可在兼容场景中配合可选／中性深度运动用于无 DLSS 的游戏；两层不同尺寸要求确认 FG 关闭。原生 Pre-FG 两层异尺寸暂不支持；Upscaled → Present 仍是默认关闭的受限实验，其他混合链和 Vulkan 边界见[完整兼容表](docs/USER_GUIDE.md#zh-paths)。
 
-![NR 结果编辑器](docs/images/ui/results-zh.webp)
+界面支持 **15 种语言、七套主题**，可跟随 ReShade 语言；详细操作与参数见[玩家指南](docs/USER_GUIDE.md#zh-start)。
 
-*早前开发界面示意；最新布局以文字说明为准。*
+![画质：模型、工作分辨率与处理位置](docs/images/ui/quality-zh.webp)
+
+![叠层：独立模型、工作分辨率与外观结果](docs/images/ui/multipass-zh.webp)
+
+![方案库与 F11 运行监视器](docs/images/ui/presets-zh.webp)
+
+*v0.2.0 生产 UI 离屏示例；监视器状态及数值为合成数据。*
+
+### 游戏实机画面对比
+
+这里精选展示审核后的同场景 NR OFF／ON 对比：左 OFF、右 ON 的静态预览可直接查看，并链接至拖动对比页面。
+
+[截图处理与本地预览](docs/GAME_COMPARISONS.md#简体中文)
+
+<!-- game-compare:zh:start -->
+当前尚未收录审核素材，Pages 尚未上线。
+<!-- game-compare:zh:end -->
 
 ### 下载、安装与使用
 
@@ -51,17 +74,43 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 合法取得的兼容 NVIDIA **`nvngx_dlssnr.dll`**，以及该 Runtime 支持的显卡和驱动。
 安装包不附带 ReShade、NVIDIA Runtime、模型或厂商 SDK；界面、翻译和着色器已编入插件。
 
-1. 从 [Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases) 下载
-   `NR-Nexus-v<version>-<commit>-windows-x64.zip` 及 `.zip.sha256` 并核对校验值。
-   GitHub 的 **Source code** 压缩包是源码。
-2. 关闭游戏，备份已有插件和设置，将本插件旧副本移出生效的 Add-on 搜索目录，避免旧 Lecram 构建与 Nexus 同时加载。
-3. 将 **`renodx-dlss5.addon64`** 放在游戏 EXE 旁或 ReShade 配置的 `AddonPath`，保留许可文件。
-   将兼容的 `nvngx_dlssnr.dll` 放在插件旁；该位置没有时会再查游戏 EXE 目录。
-4. 打开 ReShade，选择 **NR Nexus**，开启 **Neural Rendering**。从单层开始选择处理位置与模型，
-   查看 NR 状态并在同一场景比较 Off／On。首次设置见[开始使用](docs/USER_GUIDE.md#zh-start)。
+推荐新手用第三方工具 **RHI** 准备 ReShade 和 Runtime，再单独安装 Nexus；RHI 由其上游维护。[详细安装／手动安装](docs/USER_GUIDE.md#zh-install)与 [RHI 官方教程](https://github.com/RankFTW/RHI/blob/main/docs/DETAILED_GUIDE.md)可供查阅。完整 Add-on ReShade 与注入工具可能触发反作弊，请仅在允许相关修改的单机环境使用。
+
+1. 下载并打开 [RHI 最新版](https://github.com/RankFTW/RHI/releases/latest)，等待扫描游戏。未找到时点击搜索框旁 **+**，选择实际游戏 EXE，再点 **Add Game**；也可拖入 EXE。
+2. 选择游戏，在 **Game Overrides → ReShade Channel** 使用 **Stable**（完整 Add-on 支持），然后安装 **ReShade**。不要选 **No Addons**。
+3. 在 **DLSS / Streamline → Neural Rendering** 列选择合适的版本，例如当前社区 **`310.9.16 (20/30/40/50)`**，点 **Deploy DLL** 部署 NR Runtime。RHI 2.8.8 还会尝试部署最新 SR DLL（`nvngx_dlss.dll`），并备份已有文件；希望保留原 SR 版本、或找不到此栏时，按指南使用手动安装。
+4. 点游戏标题区或右键菜单中的 **Browse** 打开游戏目录，核对实际 EXE（可能在 `Binaries/Win64` 等子目录）。关闭游戏，备份现有插件及设置。
+5. 下载上方 **v0.2.0 ZIP**，将 **`renodx-dlss5.addon64`** 解压到 ReShade 实际加载的 Add-on 目录，通常是 EXE 旁；若 `ReShade.ini` 配置了 `AddonPath`，按该路径部署。保留许可文件。Runtime 可放插件旁或 EXE 旁，插件旁的 DLL 优先。
+6. 启动游戏，按 ReShade 已设置的菜单键（通常为 **Home**），在 **Add-ons → NR Nexus** 确认已加载版本，接着按下方快速上手体验。未出现插件时见[安装排查](docs/USER_GUIDE.md#zh-status)。
+
+**避免重复 NR 插件：** RHI 的 **Install Neural Rendering** 会安装 ShortFuse、DLSS5 Tool 等独立 NR 工具，与上面的 **Deploy DLL** 不同。使用 Nexus 时不要额外安装这些工具；已有安装应先按各自流程卸载，并将旧 Lecram／Nexus 副本移出生效的 Add-on 目录。RHI 可备份、更新或恢复它管理的文件；检查 `AddonPath` 与自动更新设置，避免旧副本重新生效。
 
 **升级：** 关闭游戏、备份，按新版说明替换插件。**卸载：** 关闭游戏，移除插件或恢复旧版。
 保留无关的 DLSS／FG 文件、ReShade 预设、配置和存档。
+
+#### 常用快捷键
+
+| 按键（默认绑定） | 用途 |
+| --- | --- |
+| **Home**（通常） | 打开／关闭 ReShade 菜单，在 Add-ons 中进入 NR Nexus。 |
+| **F5** | 保存 NR 关／开对比截图；跨阶段链请用 F6 比较最终画面。 |
+| **F6** | 开关 Neural Rendering，在同一场景比较画面。 |
+| **F8** | 循环监视器的精简、详细、精简＋趋势、详细＋趋势四种显示模式。 |
+| **F9**（默认关闭） | 启用后轮换轻量、均衡、极致三套官方方案。 |
+| **F10**（默认关闭） | 启用后轮换已保存且可用的自定义方案，跳过空槽或不可用槽。 |
+| **F11** | 显示／隐藏运行监视器，游玩时查看帧率与 NR 开销。 |
+
+所有按键均可修改：菜单键在 **ReShade 设置**中调整，其余在 **NR Nexus → 高级 → 快捷键与截图**中调整；F9／F10 还需分别开启方案轮换。可能与游戏或其他工具重键，请按需更改；[详细说明](docs/USER_GUIDE.md#zh-capture)。
+
+### 5 分钟快速上手
+
+选一个固定场景，先体验方案，再一次改一项。以下按默认按键说明；改过绑定时使用你自己的按键。
+
+1. **开启 NR。** 打开 **NR Nexus → 画质**，开启 **Neural Rendering**，回到游戏看状态和画面；用 **F6** 比较关／开。全新兼容配置默认采用**均衡**，已有设置会保留。没有变化时先看[状态与排查](docs/USER_GUIDE.md#zh-status)。
+2. **试三个官方方案。** 画质页顶部六槽中，前三个是官方起点：**轻量**为 Render／B／单层 75%，在游戏放大前处理；**均衡**为 Present／B／单层 67%，处理最终游戏画面；**极致**为 Present／A → B／双层 100%，叠加两种模型，通常更费 GPU。左键切换，在同一场景比较，灰色方案先查看原因；轻量需要兼容的 DLSS SR／DLAA。官方槽也会记住个人修改，想重试原配方时右键选**恢复官方默认**。
+3. **调整自己在意的部分。** 回到均衡，在画质页比较**模型 A／B**（需要识别为 **310.9.16.0** 且包含相应模型的 Runtime）；在**介入点（处理位置）**选择超分前 Render、超分后 Upscaled 或最终画面 Present，前两者需要兼容 DLSS SR／DLAA。先试把**工作比例 67% 改为 50%**，比较细节与成本。**风格**改变模型生成的观感；开启**调整 NR 的外观**后可调亮暗、颜色和细节。想体验叠层，可切到极致，打开**叠层**并点击第 1／2 层分别查看模型和外观；每层依次处理前层结果，继承与独立编辑见[两层实例](docs/USER_GUIDE.md#zh-two-pass-example)。
+4. **保存个人方案。** 后三个槽是本游戏的自定义槽。左键空槽，选**将当前设置保存为此方案**；之后编辑该选中方案会自动保存。已有内容的槽左键应用，右键可重命名或清空。想跨游戏复用一套或多套精调配置，用**管理方案 → 方案库**保存；换游戏后选中库内方案，点**预览所选方案**，检查差异后点**确认并应用方案**即可。[方案操作](docs/USER_GUIDE.md#zh-presets)
+5. **观察性能。** 按 **F11** 显示监视器，用 **F8** 切换视图或趋势，比较切换方案前后的 NR GPU 开销与流畅度。层数越多、工作尺寸越大通常越费 GPU；挑选自己能接受的画质与成本。更细的逐层成本比较见[GPU A/B](docs/USER_GUIDE.md#zh-gpu-ab)，快捷键用途见上表。
 
 ### 兼容性与已知限制
 
@@ -70,7 +119,7 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 | 使用情况 | 选择时需要了解 |
 | --- | --- |
 | **DX12／DX11 Bridge** | 提供 Render／Upscaled 及兼容的 Present 路径；逐层阶段与工作分辨率的可选组合见[叠层指南](docs/USER_GUIDE.md#zh-multipass)。 |
-| **Vulkan** | 使用 DLSS 输出处理；Present 会回退到该位置，不支持混合阶段链或独立工作分辨率。 |
+| **Vulkan** | 仅 DLSS 输出的 Upscaled 完整尺寸路径；Present 会回退到该位置，不支持混合阶段链或独立工作分辨率。 |
 | **DLSS Ray Reconstruction** | 选择 Render 时，NR 在 Upscaled 位置处理 RR 输出。 |
 | **Present** | 处理的画面包含游戏 HUD；菜单和地图也可能受到 NR 影响。 |
 | **A/B 模型** | B 需要精确识别的 **310.9.16.0** Runtime；不兼容运行时上的已保存 B 选择会回退 A，原选择保留。 |
@@ -131,7 +180,7 @@ Runtime DLL、模型和游戏资源另行获取。
 ### 版本与发布
 
 [version.h](version.h) 定义插件版本，Git Commit 标识源码。`dev.N` 和可选的 `rc.N` 为预发布版本；
-公开下载见 [Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)，当前版本范围见本页开头。
+当前稳定版为 **v0.2.0**；较早正式版与预发布的功能变化统一查阅 [Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)。
 [CI](.github/workflows/ci.yml) 构建源码，版本 Tag 触发[发布工作流](.github/workflows/release.yml)。
 日常提交和 Actions artifacts 是开发构建。打包流程随插件附带 README、玩家指南、配图和许可文件。
 
@@ -141,7 +190,7 @@ NR Nexus 基于 [RenoDX](https://github.com/clshortfuse/renodx)、
 Lecram [V8.5 RC10 公开插件源码](https://github.com/Yukikaze20170315/RenoDX-DLSS5-Generic/tree/v8.5dev)
 及其贡献者的工作开发。
 [导入源码提交](https://github.com/williamstosh/RenoDX-DLSS5-Generic/commit/9bb6c0fec57ecb28c77938f3feb8155433396d93)
-及[历史 fork](https://github.com/williamstosh/RenoDX-DLSS5-Generic)保留为来源依据。
+及[历史 fork](https://github.com/williamstosh/RenoDX-DLSS5-Generic)保留为来源依据。Nexus 在此基础上继续开发逐层模型／外观／结果、跨阶段链、独立工作分辨率、方案管理与监视器等功能。
 
 感谢 [GITC-Uplift](https://github.com/ghostinthecamera/GITC-Uplift) 作者
 **Hussain Abdullah**，其公开的 DLSS NR 模型选择研究为 NR Nexus 的双模型实现提供了技术参考。
@@ -151,10 +200,6 @@ Lecram [V8.5 RC10 公开插件源码](https://github.com/Yukikaze20170315/RenoDX
 原始 [MIT 许可](LICENSE)、版权及[第三方声明](THIRD_PARTY_NOTICES.md)保留原文；
 MIT 许可不改变第三方 SDK、Runtime 或模型的许可条件。
 
-文档组织还参考了 [OptiScaler](https://github.com/optiscaler/OptiScaler)、
-[Magpie Experimental](https://github.com/SAOG0721/Magpie) 和
-[Veyra](https://github.com/Likely7/Veyra-NRVideo)。
-
 ## English
 
 NR Nexus brings NVIDIA DLSS Neural Rendering (DLSSNR) image enhancement to compatible games through
@@ -162,14 +207,25 @@ NR Nexus brings NVIDIA DLSS Neural Rendering (DLSSNR) image enhancement to compa
 Build a sequential chain of up to four NR passes, with an independent model, look and result editor for each layer.
 The add-on performs no denoising.
 
-**[Download a published version](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)**:
-Stable **v0.2.0** includes the profiles, monitor and themes described here. The earlier **v0.2.0-dev.8** pre-release remains in the version history.
+**[Download v0.2.0 (Windows x64 ZIP)](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip)** · **[View latest stable release](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/latest)**
 
-| Version | Available features |
+This page covers **v0.2.0 stable**. Use the [SHA-256 file](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip.sha256) and [Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.0) to check your download. GitHub's **Source code** ZIP is source, not the add-on installation package.
+
+<a id="en-gpu"></a>
+### GPU Compatibility
+
+Choose an NR runtime for your GPU before installing Nexus. This series-level overview still depends on the particular runtime, driver, game and graphics API.
+
+| GPU series | Runtime choice |
 | --- | --- |
-| **0.2.0 stable** | Adds independent per-pass working resolution, an F11 monitor that remembers this game's display choice, F8 four-mode cycling, shared FPS and per-pass GPU diagnostics, manual GPU A/B comparison, adaptive layouts and consistent placement controls. |
-| **0.2.0-dev.8 public pre-release** | Includes per-pass stages, the DX12/DX11 Bridge Render → game DLSS SR/DLAA → Upscaled chain, the profile library and six slots per game, and assisted input. |
-| **0.1.0 earlier stable** | Includes up to four passes, dual models, independent per-pass look/result editing and four themes. Per-pass stages, the profile library/six slots, assisted input and the 0.2.0 additions above are absent. |
+| **GeForce RTX 50** | Native NVIDIA runtime, within [NVIDIA's official hardware support](https://www.nvidia.com/en-us/geforce/news/dlss-5-3d-guided-neural-rendering/). |
+| **GeForce RTX 40/30/20** | Try a community compatibility runtime, preferably on DX11/DX12. |
+| **AMD/Intel** | No project-confirmed replacement for the NVIDIA NR DLL. |
+
+[RHI](https://github.com/RankFTW/RHI) lists **`310.9.16 (20/30/40/50)`** in its [runtime manifest](https://github.com/RankFTW/RHI/blob/main/dlss_manifest.json) (checked November 1, 2026). This is a community compatibility build, separate from NVIDIA official support; check its provenance and scope with each upstream version.
+[openNR](https://github.com/clshortfuse/openNR) supplies compatibility code for RTX 20/30/40. It is a **source build tool** using a user-supplied NVIDIA DLL and distributes no NVIDIA DLLs. The [RTX 30 optimization project](https://github.com/lmxxf/DLSS5-RTX-3080-laptop) targets only **Preset 2/Small**, which does not establish full A/B, multi-pass, FG or Vulkan support; its integration packages are not Nexus installation packages.
+
+In principle, a community runtime that preserves the NGX interfaces and behavior Nexus needs can use the existing add-on without changes. Check the actual models, stages and combinations. Architecture code and series labels do not establish validation for every GPU and game. This project has [limited runtime and automated validation](docs/USER_GUIDE.md#en-paths), rather than a complete RTX 20/30/40/50 matrix; openNR also makes no CUDA/Vulkan backend compatibility claim.
 
 ### What makes Nexus different
 
@@ -177,22 +233,34 @@ These features are included in 0.2.0. See the guide for compatibility conditions
 
 | Feature | What you can use it for |
 | --- | --- |
-| **Up to four sequential passes, each with its own model, look and results** | Feed each layer's output into the next. Adjust style, local tone, structure, character masks and skin, then shape brightness, colour, detail, halos and temporal stability. Additional layers can use independent settings or inherit Pass 1. |
-| **Dual models A/B** | Choose A (Legacy) or B (Small FP8) with the compatible 310.9.16.0 runtime; try combinations such as AA, AB, BA and BB. |
-| **Independent working resolution** | Allocate NR working sizes per layer to balance detail and GPU cost, while keeping the game's DLSS SR resolution unchanged. See [Quality](docs/USER_GUIDE.md#en-quality) and [Multi-Pass](docs/USER_GUIDE.md#en-multipass) for supported combinations and controls. |
-| **Processing location and NR/FG coordination** | Choose Render, Upscaled or Present to process before upscaling, after upscaling or on the final game image. Coordinate NR with native DLSS FG/MFG or XeFG; see [Multi-Pass](docs/USER_GUIDE.md#en-multipass) for combination rules. |
-| **Six slots per game and a shared profile library** | Start with three official profiles and keep three custom ones for different games and scenes. Search, import, export and share profiles through the library. See [Profiles](docs/USER_GUIDE.md#en-presets). |
-| **F11 persistent performance HUD** | F11 toggles the monitor; F8 cycles Compact, Details, Compact + Trends and Details + Trends. Optional 10/30/60-second trends retain visible segments across configuration changes. |
-| **Per-pass GPU diagnostics and A/B comparison** | Inspect each layer's model, working/output dimensions and GPU time. Compare costs before and after changing one layer's working size to identify expensive passes. See [Diagnostics](docs/USER_GUIDE.md#en-diagnostics). |
-| **15 interface languages and assisted input** | Follow ReShade's language automatically or choose one manually. If inline IME input fails, use the native Windows Unicode editor for profile names and feedback text. |
-| **Seven interface themes** | Choose Cyber Neon, Nexus Dark, Fluent Light, Midnight OLED, Neon Violet, Tactical Amber or Aurora Glass. Ivory Studio and Crimson Noir remain design candidates. |
+| **Up to four passes, with separate look and result controls** | Build on one NR adjustment with another, such as a Natural base plus a Cinematic second layer. Tune model styling, characters/skin, brightness, colour, detail and halos per pass, sharing Pass 1 settings or editing independently. [Two-pass example](docs/USER_GUIDE.md#en-two-pass-example) |
+| **Dual models A/B, chosen per pass** | With a compatible runtime identified as **310.9.16.0**, compare A (Legacy) and B (Small FP8) in AA, AB, BA or BB combinations to find preferred detail and styling, beyond a single-model toggle. [Models and quality](docs/USER_GUIDE.md#en-quality) |
+| **Before upscaling, after upscaling, or on the final game image** | Render, Upscaled and Present choose where enhancement happens. Supported DX11/DX12 chains can use **Render (B) → game DLSS SR → Upscaled (A)** to combine both stages, alongside native DLSS FG/MFG or XeFG. [Passes and stages](docs/USER_GUIDE.md#en-multipass) |
+| **Allocate working resolution per pass** | Try **Upscaled Pass 1 (100%) → Pass 2 (67%)** to compare the second layer's detail and cost at a smaller size. Two passes within Render can also use separate sizes, without changing game DLSS SR settings. [Working resolution](docs/USER_GUIDE.md#en-resolution) |
+| **Three official profiles, three custom slots and a shared library** | Start with Lite, Balanced or Max, then save one or several carefully tuned configurations to the shared library. Import them in another game and apply with one click to reuse your work instead of tuning every setting again; export them to share as well. [Profiles](docs/USER_GUIDE.md#en-presets) |
+| **See the cost before choosing** | The F11 monitor shows FPS, NR GPU cost and pass information; F8 cycles compact/detailed views and trends. Manual GPU A/B compares a single pass's cost before and after a size change to identify expensive layers. Compare image quality in gameplay. [Monitor and GPU comparison](docs/USER_GUIDE.md#en-diagnostics) |
 
-More passes add GPU work. Start with one pass and compare appearance and cost in the same scene.
-See the [User Guide](docs/USER_GUIDE.md#en-start) for settings, inheritance and practical examples.
+More passes add GPU work; start with one. Ordinary Present includes the game HUD and can work without game DLSS on compatible paths using optional/neutral depth and motion. Different-sized Present pairs require confirmed FG off. Native Pre-FG different-sized pairs remain unsupported; Upscaled → Present is a restricted experiment, off by default. See the [full matrix](docs/USER_GUIDE.md#en-paths) for other mixed-stage and Vulkan limits.
 
-![NR result editor](docs/images/ui/results.webp)
+The interface offers **15 languages and seven themes**, with automatic ReShade language selection. See the [User Guide](docs/USER_GUIDE.md#en-start) for controls and parameters.
 
-*Earlier development interface example; follow the text for the latest layout.*
+![Quality: model, working resolution and processing location](docs/images/ui/quality.webp)
+
+![Multi-Pass: independent model, working resolution, look and result](docs/images/ui/multipass.webp)
+
+![Profile library and F11 runtime monitor](docs/images/ui/presets.webp)
+
+*Offscreen examples of the v0.2.0 production UI; monitor status and values are synthetic.*
+
+### In-game Comparisons
+
+Selected, reviewed NR OFF/ON pairs appear here as static previews (OFF left, ON right), linked to an interactive slider.
+
+[Screenshot processing and local preview](docs/GAME_COMPARISONS.md#english)
+
+<!-- game-compare:en:start -->
+No reviewed scenes have been added yet, and Pages is not live.
+<!-- game-compare:en:end -->
 
 ### Download, install and use
 
@@ -201,19 +269,44 @@ See the [User Guide](docs/USER_GUIDE.md#en-start) for settings, inheritance and 
 and a GPU and driver supported by that runtime. The package excludes ReShade, NVIDIA runtimes, models and
 vendor SDK distributions. The interface, translations and shaders are embedded in the add-on.
 
-1. Download `NR-Nexus-v<version>-<commit>-windows-x64.zip` and its `.zip.sha256` from
-   [Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases), and verify the checksum.
-   GitHub's **Source code** archives contain the source.
-2. Close the game, back up the existing add-on and settings, and move older copies out of active add-on search
-   folders to avoid loading an old Lecram build alongside Nexus.
-3. Put **`renodx-dlss5.addon64`** beside the game EXE or in ReShade's configured `AddonPath`, keeping the licenses.
-   Put the compatible `nvngx_dlssnr.dll` beside the add-on; if absent there, the game EXE directory is checked next.
-4. Open ReShade, select **NR Nexus** and enable **Neural Rendering**. Start with one pass, choose its location
-   and model, check NR status and compare Off/On in the same scene. See [Getting oriented](docs/USER_GUIDE.md#en-start).
+For a first installation, use the third-party **RHI** tool to prepare ReShade and the runtime, then install Nexus separately. RHI is maintained by its upstream project. See [detailed/manual installation](docs/USER_GUIDE.md#en-install) or the [official RHI guide](https://github.com/RankFTW/RHI/blob/main/docs/DETAILED_GUIDE.md). Full add-on ReShade and injection tools can trigger anti-cheat; use them only in single-player environments that allow these modifications.
+
+1. Download and open the [latest RHI](https://github.com/RankFTW/RHI/releases/latest), and let it scan your games. If yours is missing, click **+** next to search, select the actual game EXE and click **Add Game**, or drag the EXE onto RHI.
+2. Select the game, use **Game Overrides → ReShade Channel → Stable** (full add-on support), then install **ReShade**. Do not choose **No Addons**.
+3. Under **DLSS / Streamline → Neural Rendering**, choose a suitable version, such as the current community **`310.9.16 (20/30/40/50)`**, and click **Deploy DLL** to deploy the NR runtime. RHI 2.8.8 also attempts to deploy the latest SR DLL (`nvngx_dlss.dll`), backing up an existing file. To keep the original SR version, or if the column is missing, follow manual installation in the guide.
+4. Use **Browse** in the game header or right-click menu to open the game folder. Confirm the actual EXE location, which may be a subfolder such as `Binaries/Win64`. Close the game and back up existing add-ons/settings.
+5. Download the **v0.2.0 ZIP** above. Extract **`renodx-dlss5.addon64`** into ReShade's actual add-on directory, normally beside the EXE; follow `AddonPath` if configured in `ReShade.ini`. Keep the licenses. The runtime can sit beside the add-on or the EXE; the add-on-side DLL takes priority.
+6. Start the game, use ReShade's configured menu key (usually **Home**) and confirm the loaded version under **Add-ons → NR Nexus**, then follow Quick Start below. If the add-on is missing, see [installation troubleshooting](docs/USER_GUIDE.md#en-status).
+
+**Avoid duplicate NR add-ons:** RHI's **Install Neural Rendering** installs separate tools such as ShortFuse or DLSS5 Tool; it is different from **Deploy DLL** above. Do not install those alongside Nexus. Uninstall existing methods through their own procedures and move older Lecram/Nexus copies out of active add-on directories. RHI can back up, update or restore files it manages; check `AddonPath` and automatic-update settings so old copies do not become active again.
 
 **Upgrade:** close the game, back up and replace the add-on according to the new release's notes.
 **Uninstall:** close the game and remove the add-on or restore the previous version.
 Keep unrelated DLSS/FG files, ReShade presets, configuration and saves.
+
+#### Quick Controls
+
+| Default key | Use |
+| --- | --- |
+| **Home** (usually) | Open/close ReShade; find NR Nexus under Add-ons. |
+| **F5** | Save NR off/on comparison screenshots; use F6 to compare the final image with mixed-stage chains. |
+| **F6** | Toggle Neural Rendering to compare the picture in the same scene. |
+| **F8** | Cycle the monitor through Compact, Details, Compact + Trends and Details + Trends. |
+| **F9** (off by default) | Once enabled, cycle through the Lite, Balanced and Max official profiles. |
+| **F10** (off by default) | Once enabled, cycle through saved, available custom profiles, skipping empty or unavailable slots. |
+| **F11** | Show/hide the runtime monitor to watch FPS and NR cost while playing. |
+
+All keys can be changed: adjust the menu key in **ReShade settings**, and the others under **NR Nexus → Advanced → Hotkeys & screenshots**; enable each profile-cycling action there to use F9/F10. Rebind as needed if they conflict with the game or other tools. See [detailed controls](docs/USER_GUIDE.md#en-capture).
+
+### Quick Start
+
+Spend five minutes in one fixed scene: try profiles, then change one setting at a time. These steps use default keys; use your own bindings if changed.
+
+1. **Enable NR.** Open **NR Nexus → Quality**, enable **Neural Rendering**, then return to gameplay to check status and appearance. Compare off/on with **F6**. A compatible fresh configuration starts with **Balanced**; existing settings remain. If nothing changes, check [status and troubleshooting](docs/USER_GUIDE.md#en-status).
+2. **Try the three official profiles.** The first three of the six slots at the top of Quality are official starting points: **Lite** uses Render/B/one pass at 75%, before game upscaling; **Balanced** uses Present/B/one pass at 67% on the final game frame; **Max** uses Present/A → B/two passes at 100%, combining two models and usually costing more GPU time. Left-click to switch and compare the same scene. Read the reason for greyed-out profiles; Lite needs compatible DLSS SR/DLAA. Official slots also retain personal edits; right-click **Restore official defaults** to try the original recipe again.
+3. **Tune what matters to you.** Return to Balanced. In Quality, compare **model A/B** with a runtime identified as **310.9.16.0** that contains the corresponding models. Use **Hook point** for Render before upscaling, Upscaled after upscaling or Present on the final image; the first two need compatible DLSS SR/DLAA. Try changing **working scale from 67% to 50%**, comparing detail and cost. **Style** changes the generated look; enable **Adjust NR's look** to tune light, colour and detail. To explore layering, select Max, open **Multi-Pass** and click Pass 1/2 to inspect each model and look. Each pass processes the previous result; see the [two-pass example](docs/USER_GUIDE.md#en-two-pass-example) for inheritance and independent editing.
+4. **Save a personal profile.** The last three slots are custom profiles for this game. Left-click an empty slot and choose **Save current settings to this slot**; later edits to the selected profile save automatically. Left-click a populated slot to apply it; right-click to rename or clear it. Save one or several tuned configurations through **Manage profiles → Profile library** for reuse across games. In another game, select a library profile, click **Preview selected preset**, review the differences and click **Confirm and apply preset**. [Profile controls](docs/USER_GUIDE.md#en-presets)
+5. **Watch performance.** Press **F11** for the monitor and **F8** to change views or trends. Compare NR GPU cost and smoothness before and after switching profiles. More passes and larger working sizes usually cost more GPU time; choose your preferred balance. See [GPU A/B](docs/USER_GUIDE.md#en-gpu-ab) for closer per-pass comparisons, and the key table above for quick controls.
 
 ### Compatibility and known limits
 
@@ -223,7 +316,7 @@ There is no universal minimum GPU/driver list for this project.
 | Setup | What to know when choosing |
 | --- | --- |
 | **DX12/DX11 Bridge** | Offers Render/Upscaled and compatible Present paths. See [Multi-Pass](docs/USER_GUIDE.md#en-multipass) for per-pass stage and working-resolution combinations. |
-| **Vulkan** | Processes DLSS output; Present falls back to this location. Mixed-stage chains and independent working resolution are unavailable. |
+| **Vulkan** | Only the full-size Upscaled path on DLSS output. Present falls back to it; mixed-stage chains and independent working resolution are unavailable. |
 | **DLSS Ray Reconstruction** | When Render is selected, NR processes the RR output at Upscaled. |
 | **Present** | Includes the game's HUD; NR can also affect menus and maps. |
 | **Models A/B** | B requires the specifically recognized **310.9.16.0** runtime. An incompatible saved B choice falls back to A while retaining the saved choice. |
@@ -290,8 +383,8 @@ DLLs, models and game assets are obtained separately.
 ### Versions and releases
 
 [version.h](version.h) defines the add-on version; Git commits identify the source.
-`dev.N` and optional `rc.N` identify pre-releases. Published downloads are on
-[Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases); the opening table lists current versions.
+`dev.N` and optional `rc.N` identify pre-releases. The current stable version is **v0.2.0**;
+see [Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases) for earlier stable and pre-release feature changes.
 [CI](.github/workflows/ci.yml) builds the source, and version tags trigger the
 [release workflow](.github/workflows/release.yml). Daily commits and Actions artifacts are development builds.
 The packaging workflow includes the README, User Guide, images and licenses alongside the add-on.
@@ -303,7 +396,7 @@ NR Nexus builds on [RenoDX](https://github.com/clshortfuse/renodx), Lecram's
 and their contributors. The
 [imported source commit](https://github.com/williamstosh/RenoDX-DLSS5-Generic/commit/9bb6c0fec57ecb28c77938f3feb8155433396d93)
 and [historical fork](https://github.com/williamstosh/RenoDX-DLSS5-Generic)
-remain available for provenance.
+remain available for provenance. Nexus continues development on this foundation with per-pass models/look/results, cross-stage chains, independent working resolution, profiles and the monitor.
 
 Thanks to **Hussain Abdullah**, author of
 [GITC-Uplift](https://github.com/ghostinthecamera/GITC-Uplift), whose published
@@ -314,9 +407,5 @@ This is an unofficial independent project, without endorsement from NVIDIA,
 RenoDX's authors or Lecram. The original [MIT license](LICENSE), copyright and
 [third-party notices](THIRD_PARTY_NOTICES.md) are preserved. The MIT license
 does not relicense third-party SDKs, runtimes or models.
-
-Documentation organization also draws on [OptiScaler](https://github.com/optiscaler/OptiScaler),
-[Magpie Experimental](https://github.com/SAOG0721/Magpie) and
-[Veyra](https://github.com/Likely7/Veyra-NRVideo).
 
 ---

@@ -4,35 +4,47 @@
 
 ## 简体中文
 
-先用一层找到喜欢的外观，再增加层数、独立编辑每层结果，保存为自己的方案。安装步骤见 [README](../README.md#下载安装与使用)。
-
-### 版本与功能状态
-
-| 使用的版本 | 可用范围 |
-| --- | --- |
-| **0.1.0 早期正式版** | 最多四层 NR、逐层独立模型／外观／结果编辑、NR 与 FG 协同、诊断、15 种语言和四套主题。 |
-| **0.2.0-dev.8 已发布预发布版** | 增加逐层处理阶段、六个快速方案、方案库及辅助输入。 |
-| **0.2.0 正式版** | 增加逐层独立工作分辨率、F11 运行监视器、逐层 GPU 诊断与手动 GPU A/B 对比，以及新的菜单操作和布局。 |
-
-本指南对应 **0.2.0**。**实验性**表示有特殊条件的试用路径，**暂不支持**表示不可用组合。旧版功能范围见上表。下载见 [Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)。
+本指南对应已发布的 **v0.2.0**：从安装、选方案和比较画面开始，再按需组合最多四层 NR、独立尺寸和结果编辑。**实验性**表示有特殊条件且默认关闭的试用路径，**暂不支持**表示不可用组合。下载及版本说明见 [v0.2.0](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.0)。
 
 配图沿用已审核的早前开发界面。0.2.0 的状态栏、分辨率区及方案入口已有调整，以文字步骤为准；图中状态和数字是界面示例。
 
 <a id="zh-contents"></a>
 ### 目录
 
-- [快速上手与常用场景](#zh-start)
+- [安装、升级与卸载](#zh-install) · [快速上手与常用场景](#zh-start)
 - [画质](#zh-quality) · [叠层与两层实例](#zh-multipass) · [方案管理](#zh-presets) · [诊断与监视器](#zh-diagnostics) · [高级页](#zh-advanced)
 - [参数参考](#zh-parameters)
 - [常见问题与恢复默认](#zh-status)
 - [高级诊断与特殊兼容性](#zh-compatibility)
 - [English contents](#contents) · [返回 README](../README.md)
 
+<a id="zh-install"></a>
+### 安装、升级与卸载
+
+需要 Windows x64、[兼容的 NVIDIA RTX GPU／驱动](../README.md#zh-gpu)、支持完整 Add-on／API 18 的 ReShade，以及独立准备的 NVIDIA NR Runtime。**NR Nexus** 是 `renodx-dlss5.addon64`，**Runtime** 是 `nvngx_dlssnr.dll`，两者都要有；插件包不含厂商 Runtime、模型或 SDK。仅用于允许修改的单机环境，完整 Add-on、注入与 DLL 替换可能触发反作弊，勿用于受保护的联机游戏。
+
+#### 用 RHI 准备 ReShade 和 Runtime
+
+1. 关闭游戏，备份现有插件、ReShade 配置和将替换的 DLL。下载 [v0.2.0 Windows x64 ZIP](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip) 与对应 [SHA-256 文件](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip.sha256) 并校验；从 [RHI 最新版](https://github.com/RankFTW/RHI/releases/latest) 下载 RHI。
+2. 在 RHI 选中游戏；未找到时点 **+（Manually add a game）**，选择实际游戏 `.exe` 后点 **Add Game**，或把 `.exe` 拖入窗口。选游戏进程使用的程序，不选启动器；例如实际程序可能在 `Binaries/Win64`。
+3. 在 **Game Overrides → ReShade Channel → Stable** 选择支持完整 Add-on 的渠道，在 **Components → ReShade** 安装；**No Addons 不能加载本插件**。已有 ReShade 时先核对其 Add-on 支持及 API 版本，避免重复安装。
+4. 在 **DLSS / Streamline → Neural Rendering** 列选 **310.9.16 (20/30/40/50)**，点 **Deploy DLL** 单独部署 NR Runtime，无需其他 NR Add-on。**RHI 2.8.8 还会尝试在游戏安装根目录部署最新 `nvngx_dlss.dll`（SR），已有文件先备份为 `.original`；希望保持 SR 版本时使用手动安装。**如果游戏原有 DLSS 但缺此栏，先用 **Settings → Tools & Maintenance → Full refresh**；无 DLSS 或刷新后仍无此栏，使用下方手动安装。
+5. 解压 NR Nexus 的 `renodx-dlss5.addon64` 到 ReShade **实际加载的 Add-on 目录**，默认在游戏 EXE 旁；自定义 `AddonPath` 时按该路径放置，并保留许可文件。RHI 游戏标题旁或右键菜单的 **Browse** 打开 game folder，未必是实际 EXE 目录：核对 RHI 选中的 EXE 和 `ReShade.log`，同时确认 Runtime 的实际位置。插件先找自身目录的 DLL，再找游戏 EXE 目录；集中 Add-on 目录里的旧 DLL 会优先。
+6. 启动游戏，按 ReShade 的覆盖层键（默认 **Home**），在 Add-ons 中确认 **NR Nexus** 已加载；打开插件的**版本与关于／诊断**，确认 Runtime 版本、NR 路径和状态，再按[快速上手](#zh-start)比较。
+
+这里不使用 **Install Neural Rendering**：该按钮安装 ShortFuse、DLSS5 Tool、Bridge 或 Feeder 等其他独立 NR 插件，不能代替 NR Nexus。也不要将 RTX 30 的 OptiScaler／Magpie 整包作为本插件安装步骤。RHI 已有备份、恢复和自动更新功能；安装后检查实际文件位置、重复 Add-on 与自动更新设置，避免其他工具替换当前选择。详情见 [RHI 官方指南](https://github.com/RankFTW/RHI/blob/main/docs/DETAILED_GUIDE.md)。
+
+#### 手动安装与后续维护
+
+- **手动安装：** 从 [ReShade 官网](https://reshade.me/) 安装支持完整 Add-on／API 18 的版本，选择实际游戏 EXE 及其图形 API；再将 `renodx-dlss5.addon64` 放入实际 Add-on 目录。另行合法取得兼容的 `nvngx_dlssnr.dll`，放在插件旁或实际 EXE 旁；RHI 清单提供的 [310.9.16 Runtime ZIP](https://github.com/RankFTW/rhi-repo/releases/download/dlssnr-310.9.16/nvngx_dlssnr_310.9.16.zip) 与 NR Nexus 插件 ZIP 是不同文件。遵守 Runtime／模型各自许可；项目 MIT 许可不改变这些条件。
+- **升级：** 关闭游戏并备份当前插件和设置，校验新包后只替换目标 `renodx-dlss5.addon64`，保留配置及所需许可。检查 EXE 旁、自定义 `AddonPath` 及其他工具管理目录，避免同时加载重复或其他独立 NR 插件。重启后核对实际插件／Runtime 版本。
+- **卸载／恢复：** 关闭游戏，仅移除本次安装的 NR Nexus Add-on；独立的方案库与每游戏方案需自行备份或保留，见[存储位置](#zh-profile-details)。只有本次添加且无其他组件使用时才移除 Runtime；被替换文件用备份恢复，RHI 管理的文件优先通过对应恢复／卸载功能处理。需要回退时同时恢复匹配的插件与配置，不删除其他模组的文件。
+
 <a id="zh-start"></a>
 ### 快速上手
 
 1. 打开 ReShade 覆盖层，选择 **NR Nexus → 画质**，开启 **Neural Rendering**。默认 **F6** 可比较 NR 关／开。
-2. 初次手动配置用 **1 层、Auto 模型、Upscaled（超分后）**，先保留外观和高级兼容性默认值。Render／Upscaled 需要游戏开启兼容的 DLSS SR 或 DLAA。
+2. 全新且兼容的空配置会尝试采用**均衡 Balanced：Present、B、1 层、67%**；已有配置保留。先查看选中的方案和实际参数，直接比较画面。需要手动排查时，再保存当前方案并改用 **1 层、Auto 模型、Upscaled（超分后）**，保留外观和高级兼容默认值；这条排查路径需要游戏开启兼容的 DLSS SR 或 DLAA。
 3. 回到正常游玩画面，查看顶部状态；若提示等待、缺少运行时或资源，点击状态进入**诊断**，按提示处理。
 4. 比较同一场景的静止和移动画面。想改变生成风格，调整**模型风格**；想控制生成后的亮暗、颜色和细节，开启**调整 NR 的外观**。
 5. 将喜欢的配置存入**自定义方案**；按 **F11** 边玩边看 NR GPU 开销。
@@ -56,11 +68,11 @@
 <a id="zh-quality"></a>
 #### 画质：模型、位置与外观
 
-用 **Neural Rendering／F6** 比较关／开。**Auto** 是默认模型；兼容的 **310.9.16.0** 运行时支持 **A（Legacy）／B（Small FP8）**，可比较两者外观和成本。
+用 **Neural Rendering／F6** 比较关／开。**Auto** 是未应用方案时的基础模型默认值；兼容的 **310.9.16.0** 运行时支持 **A（Legacy）／B（Small FP8）**，可比较两者外观和成本。
 
-0.2.0 保留顶部 F6 开关与六个快速方案，画质页分为三个常开区：**核心画质**按模型、强度、工作分辨率／比例与上采样排列，并显示第 1 层当前尺寸证据；**处理与兼容性**包含处理位置（Hook Point），Present 下显示深度／运动与 HUD 选项，低频 HDR 与 FG 选项折叠；**外观与结果**常显模型风格等常用控件，结果的四个高级分组继续按需展开。
+0.2.0 保留顶部 F6 开关与六个快速方案，画质页分为三个常开区：**核心画质**按模型、强度、工作分辨率／比例与上采样排列，并显示第 1 层当前尺寸证据；**处理与兼容性**包含**介入点（Hook point，即处理位置）**，Present 下显示深度／运动与 HUD 选项，低频 HDR 与 FG 选项折叠；**外观与结果**常显模型风格等常用控件，结果的四个高级分组继续按需展开。
 
-位置从 **Upscaled** 开始：它在游戏 DLSS 输出后处理。**Render** 在 DLSS 放大前处理，可比较较小输入的成本；**Present** 处理游戏完成后、ReShade 效果前的画面。Ray Reconstruction 开启时，Render 使用兼容的 Upscaled 路径。Present 默认保留 HUD，仍受影响时可比较 UI 修正或改用 Upscaled。
+按用途选择位置：**Upscaled** 在游戏 DLSS 输出后处理，适合先比较 NR 外观。**Render** 在 DLSS 放大前处理，可比较较小输入的成本；**Present** 处理游戏完成后、ReShade 效果前的画面。Ray Reconstruction 开启时，Render 使用兼容的 Upscaled 路径。Present 默认保留 HUD，仍受影响时可比较 UI 修正或改用 Upscaled。
 
 **风格、局部色调、模型结构、人物／皮肤**决定模型生成的外观；**调整 NR 的外观**塑造它生成的结果，两组控件可配合使用。各项默认值见[参数参考](#zh-parameters)。
 
@@ -78,7 +90,7 @@
 <a id="zh-two-pass-example"></a>
 ##### 实例：自然底层＋电影感第二层
 
-1. 固定处理位置和尺寸，在叠层页将层数设为 **2**。
+1. 先保存当前方案。开启游戏兼容的 DLSS SR／DLAA，将画质页位置设为 **Upscaled**，基础尺寸设为 **100%**，在叠层页将层数设为 **2**；第 2 层阶段选“与上一层相同”、尺寸继承基础。
 2. 选择**第 1 层**，模型选 **A**，风格选**自然**。开启本层**调整 NR 的外观**，按喜好调整高光。
 3. 选择**第 2 层**，模型选 **B**，关闭**继承第 1 层外观**和**继承第 1 层结果设置**。
 4. 为第 2 层选**电影感**，开启本层**调整 NR 的外观**，再调细节或光晕抑制。两层现在各有自己的生成风格和输出编辑。
@@ -89,9 +101,14 @@ A/B 示例需要 310.9.16.0，其他兼容运行时也可使用同模型两层�
 
 ##### 逐层处理位置
 
-dev.8 起，第 2–4 层可选**与上一层相同／Render／Upscaled／Present**。支持的 DX11／DX12 链可用：**Render A → 游戏 DLSS SR → Upscaled B**。
+想在超分前后分别处理，可在支持的 DX11 Bridge／DX12 路径尝试 **Render A → 游戏 DLSS SR／DLAA → Upscaled B**：
 
-阶段按 Render → Upscaled → Present 顺序排列。需要连带调整后续层时先显示整链预览，可确认或取消。可用组合见[兼容性表](#zh-paths)。
+1. 开启游戏兼容的 DLSS SR／DLAA，将画质页处理位置设为 **Render**，叠层数设为 **2**。
+2. 第 1 层选 A；第 2 层阶段选 **Upscaled**、模型选 B，按需分别设置外观与结果。
+3. 若变更会连带调整其他层，检查整链预览后确认；取消保留原链，应用后可使用提供的撤销。
+4. 回到游戏，确认诊断中的实际阶段、尺寸和运行状态，再用 F6 比较。该受支持链可与原生 DLSS FG／MFG 或 XeFG 协同，仍需满足当前资源和路径条件。
+
+第 2–4 层可选**与上一层相同／Render／Upscaled／Present**。阶段只能向后排列；顺序合法仍须满足[兼容性表](#zh-paths)，不能据此任意组合三阶段。
 
 <a id="zh-resolution"></a>
 ##### 独立工作分辨率
@@ -110,7 +127,7 @@ DX11／DX12 支持跨 Render／Upscaled 阶段独立尺寸，以及同一 Render
 <a id="zh-presets"></a>
 #### 方案管理：保存、切换与分享
 
-dev.8 起提供每游戏六个 **Profile／Slot（快速方案／槽位）**及共享**方案库**，0.2.0 更新操作界面。槽位用于随手切换，方案库用于保存更多文件、备份和分享。
+画质页提供每游戏六个 **Profile／Slot（快速方案／槽位）**：三个官方槽和三个自定义槽，以及共享**方案库**。槽位按游戏保存，用于随手切换；方案库在本机的不同游戏间共享，可保存一套或多套精调配置，换游戏后导入并一键应用复用，也能备份和分享。
 
 | 想做什么 | 操作 |
 | --- | --- |
@@ -126,11 +143,11 @@ dev.8 起提供每游戏六个 **Profile／Slot（快速方案／槽位）**及�
 
 **保存／导出：** 在方案库点“保存方案”，输入名称；默认范围“画质＋叠层”。点“保存方案到方案库”写入本地，或“复制分享文本”。另存时展开“导出文件”，选路径后再点“导出方案文件”；覆盖须确认。槽位直接导出使用其已保存内容，包括官方槽的个人修改。
 
-**导入／应用：** 点“导入方案”，选 JSON 文件或粘贴分享文本，读取并检查差异后“确认并应用方案”。也可先存入自定义槽，再选择该槽应用；覆盖已有内容及导入完整备份需确认。
+**导入／应用：** 换游戏后在方案库选中已保存配置，点“预览所选方案”，检查差异后点“确认并应用方案”。外部方案用“导入方案”选择 JSON 文件或粘贴分享文本；也可先存入自定义槽，再选择该槽应用。覆盖已有内容及导入完整备份需确认。
 
 ![保存方案](images/ui/presets-zh.webp)
 
-*填写名称后保存、导出文件或复制分享文本。*
+*方案保存与 F11 监视器的生产 UI 离屏示例。填写名称后可保存、导出文件或复制分享文本；监视器数值为合成数据。*
 
 槽位编辑自动保存，独立库文件需主动保存。窗口可拖缩，X 或窗口有焦点且未编辑文字时按 Esc 关闭；会话草稿保留，关闭不会自动保存或应用导入。
 
@@ -177,7 +194,7 @@ F6 立即提示开关操作，随后状态更新为正在检查、正常运行�
 <a id="zh-advanced"></a>
 #### 高级页：界面、按键与截图
 
-在这里选 **15 种语言**和七套主题：**Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED、Neon Violet、Tactical Amber、Aurora Glass**，修改按键和截图设置。主题只影响插件界面；Ivory Studio 与 Crimson Noir 仍保留为设计候选。
+在这里选 **15 种语言**和七套主题：**Cyber Neon、Nexus Dark、Fluent Light、Midnight OLED、Neon Violet、Tactical Amber、Aurora Glass**，修改按键和截图设置。主题只影响插件界面。
 
 设置分为**快捷键与截图、运行时监视器、界面与通知、游戏修正与兼容性、开发与维护**。常驻显示与监视器定位在运行时监视器中；提示定位与预览在界面与通知中。
 
@@ -187,12 +204,14 @@ F6 立即提示开关操作，随后状态更新为正在检查、正常运行�
 
 默认 **F5** 截取 NR 关／开对比，通常存入 ReShade 基础目录 **DLSS5 Screenshots**。跨阶段链暂不支持同帧最终画面对比，使用 F6 比较或模型缓冲捕获。完整选项见[截图参考](#zh-capture)。
 
+已有明确 NR OFF／ON 截图时，可用独立的[实机画面对比工具](GAME_COMPARISONS.md#简体中文)生成带标签的静态图与本地拖动预览。此工具不改变游戏或截图功能，候选须人工审核后才可公开。
+
 普通调色保留高级兼容默认值；有具体 HDR、深度、运动或 Present 问题时再查[高级兼容性](#zh-compatibility)。
 
 <a id="zh-parameters"></a>
 ### 参数参考
 
-默认值针对全新配置，已有配置可能保留旧值。模型风格改变生成过程并重置历史；结果编辑实时塑造生成的变化。
+下表为单项默认值；首次采用 Balanced 时将模型、位置与比例覆盖为 **B／Present／67%**，其他方案和已有配置也可覆盖单项默认。模型风格改变生成过程并重置历史；结果编辑实时塑造生成的变化。
 
 #### NR 强度与模型
 
@@ -298,7 +317,7 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 
 | 第 2–4 层控件 | 默认 | 继承内容 |
 | --- | --- | --- |
-| 阶段（dev.8 起） | **与上一层相同** | 上一层请求的阶段；与模型、外观和结果独立。 |
+| 阶段 | **与上一层相同** | 上一层请求的阶段；与模型、外观和结果独立。 |
 | 工作分辨率 | **继承基础分辨率**；独立比例 **100%** | 继承基础值（非上一层）／Follow input／固定比例；固定比例 **33–100%**，不受 Stage、模型、外观或结果继承控制。 |
 | NR 模型：继承主模型／A／B | **继承主模型** | 主模型选择，包括自动解析与回退；与另外两种继承独立。 |
 | 继承第 1 层外观（Same as pass 1） | **开** | 仅模型风格参数：风格、局部色调、模型结构、人物／皮肤、人物遮罩、UI 修正。不继承模型选择、模型强度、HDR 传递、Color 或结果。独立皮肤仍是全链设置。 |
@@ -310,7 +329,7 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 
 | 设置 | 默认／选项 | 作用范围 |
 | --- | --- | --- |
-| 界面主题 | 全新安装 **Cyber Neon**；另有 Nexus Dark／Fluent Light／Midnight OLED | 只改变 NR Nexus 界面颜色，按游戏保存，不改变游戏调色或 NR 画质。已有配置缺少主题项时保留 Nexus Dark。 |
+| 界面主题 | 全新安装 **Cyber Neon**；另有 Nexus Dark／Fluent Light／Midnight OLED／Neon Violet／Tactical Amber／Aurora Glass | 只改变 NR Nexus 界面颜色，按游戏保存，不改变游戏调色或 NR 画质。已有配置缺少主题项时保留 Nexus Dark。 |
 | 恢复默认主题 | Cyber Neon | 仅恢复主题；高级页恢复与全量恢复也将主题恢复为 Cyber Neon，画质／叠层页恢复不改主题。 |
 | 语言 | **Auto** 或 15 种语言 | 英、德、法、西、意、葡萄牙语（巴西）、俄、保加利亚、斯洛文尼亚、土耳其、泰、日、韩、简中、繁中。Auto 跟随 ReShade 的语言，后者未手动选择时跟随 Windows；未匹配的语言回退英文。选择名称保留英文便于找回。ReShade 为自身语言加载字体；插件检测到缺字会保持英文并在 `ReShade.log` 警告，需同时在 ReShade 选择对应语言，并检查自定义字体覆盖。 |
 | 通知 | **开** | 控制游戏内启用／失败／健康提示；关闭仍可看覆盖层状态和诊断。 |
@@ -343,9 +362,11 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 
 | 问题 | 操作 |
 | --- | --- |
+| Add-ons 中没有 NR Nexus | 按[安装步骤](#zh-install)确认 ReShade 支持完整 Add-on／API 18，再核对实际 EXE、`AddonPath` 和 `ReShade.log`；移出生效目录内的旧版或重复 NR Add-on。 |
+| 开启后看不出变化 | 先用 F6 在同一游玩场景比较，检查状态是否正在运行、模型强度或已开启的结果调整强度是否为 0；Render／Upscaled 还需兼容 DLSS SR／DLAA。先按[快速上手](#zh-start)排查单层设置，再恢复自己的组合。 |
 | NR 关闭 | 开启 Neural Rendering 或按 F6。 |
 | 启动／等待 DLSS | 回到游玩画面稍候，Render／Upscaled 需兼容 DLSS SR／DLAA；持续等待看诊断原因。 |
-| 缺运行时／不支持 GPU | 按 README 检查 DLL 位置、运行时和硬件要求。 |
+| 缺运行时／不支持 GPU | 按[安装步骤](#zh-install)检查 DLL 搜索位置、Runtime 和[显卡兼容性](../README.md#zh-gpu)。 |
 | 部分运行／跳过／失败 | 展开原因，处理后用“重置 NR Feature 并清除失败锁存”重建运行状态。 |
 | B 不可选 | 检查是否加载 310.9.16.0；其他兼容版本用 Auto／A。 |
 | 结果滑块灰色 | 开启结果调整，额外层关闭结果继承，或查看不可用原因。 |
@@ -377,17 +398,17 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 
 | 组合 | 当前范围 |
 | --- | --- |
-| DX11／DX12 Render → Upscaled | dev.8 支持逐层模型／外观／结果，可与原生 DLSS FG／XeFG 并用；需兼容 DLSS SR／DLAA，跨阶段交接有额外同步成本。 |
+| DX11／DX12 Render → Upscaled | 支持逐层模型／外观／结果，可与原生 DLSS FG／MFG 或 XeFG 并用；需兼容 DLSS SR／DLAA，跨阶段交接有额外同步成本。 |
 | 独立尺寸 | 0.2.0 支持跨 Render／Upscaled，以及同一 Render 或 Upscaled 的两层；同阶段三层以上实际尺寸一致。 |
 | 普通 Present 两层不同尺寸 | 0.2.0 需确认 FG 关闭，排除 Pre-FG、混合 Present 和未知／开启的 FG；DX11 增加同步成本。 |
 | 原生 Pre-FG 两层不同尺寸 | **暂不支持**，使用同尺寸或已支持的 Render／Upscaled 链。 |
-| Upscaled → Present | **实验性**，默认关闭，仅受限 DX12 两层且 FG 关闭；常规使用优先上方组合。 |
+| Upscaled → Present | **实验性**，默认关闭；仅原生 DX12、DLSS SR／DLAA、两层 Upscaled → Present，关闭 RR 与 FG。还需当前帧来源、提交和队列证明；排除 Pre-FG、XeFG 和自动 FG 回退。常规使用优先上方组合。 |
 | Upscaled → Pre-FG、Render → Present、三阶段链 | **暂不支持**，DX11 跨 Present 混合链也不支持。 |
 | Ray Reconstruction | Render 自动使用兼容的 Upscaled 路径。 |
 | Vulkan | 仅旧 Upscaled 完整输出尺寸路径，Present、混合阶段与独立尺寸暂不支持。 |
 
 <a id="zh-native-prefg-resolution"></a>
-原生 Pre-FG 两层不同尺寸的研发实验当前不可用于玩家配置，保留默认关闭；它与已支持的 Render → Upscaled 配合 FG 是不同组合。
+原生 Pre-FG 两层不同尺寸保持 **BLOCKED／NO-GO**，不可用于玩家配置，保留默认关闭；它与已支持的 Render → Upscaled 配合 FG 是不同组合。
 
 双模型、两层不同尺寸和混合阶段已有定向 GPU／自动化覆盖，巫师3 DX12 HDR 的 Render → Upscaled 有短时 A/B 组合实测。0.2.0 新布局／监视器已做离屏界面检查，真实游戏输入、长期稳定性和画质需按游戏确认。
 
@@ -474,35 +495,47 @@ ROI、单次 HDR、120 次 HDR Present 和 P0 捕获生成额外数据，可能�
 
 ## English
 
-Start with one pass, add passes when useful, edit each result independently and save a favourite setup. For installation, see the [README](../README.md#download-install-and-use).
-
-### Versions and feature status
-
-| Version | Available features |
-| --- | --- |
-| **0.1.0 earlier stable** | Up to four NR passes, independent per-pass models/looks/result edits, NR with FG, diagnostics, 15 languages and four themes. |
-| **0.2.0-dev.8 published pre-release** | Adds per-pass stages, six quick profiles, the profile library and assisted input. |
-| **0.2.0 stable** | Adds independent per-pass working resolution, the F11 monitor, F8 mode cycling, per-pass GPU diagnostics, manual GPU A/B and updated menu controls/layout. |
-
-This guide covers **0.2.0**. **Experimental** marks trial paths with special conditions; **Not supported yet** marks unavailable combinations. See the table above for older versions. Download from [Releases](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases).
+This guide covers the released **v0.2.0**. Start with installation, profiles and picture comparisons, then combine up to four NR passes, independent sizes and result edits as needed. **Experimental** marks trial paths with special conditions that are off by default; **Not supported yet** marks unavailable combinations. Downloads and release details: [v0.2.0](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.0).
 
 Images retain reviewed earlier development interfaces. 0.2.0 changes the status bar, resolution area and profile entry points; follow the written steps. States and numbers shown are interface examples.
 
 <a id="contents"></a>
 ### Contents
 
-- [Quick start and common goals](#en-start)
+- [Install, upgrade and uninstall](#en-install) · [Quick start and common goals](#en-start)
 - [Quality](#en-quality) · [Multi-Pass and two-pass example](#en-multipass) · [Profiles](#en-presets) · [Diagnostics and monitor](#en-diagnostics) · [Advanced page](#en-advanced)
 - [Parameter reference](#en-parameters)
 - [Troubleshooting and reset](#en-status)
 - [Advanced diagnostics and special compatibility](#en-compatibility)
 - [中文目录](#zh-contents) · [Back to README](../README.md)
 
+<a id="en-install"></a>
+### Install, upgrade and uninstall
+
+You need Windows x64, a [compatible NVIDIA RTX GPU/driver](../README.md#en-gpu), ReShade with full Add-on/API 18 support and a separately supplied NVIDIA NR runtime. **NR Nexus** is `renodx-dlss5.addon64`; the **runtime** is `nvngx_dlssnr.dll`. Both are needed; the add-on package contains no vendor runtime, models or SDK. Use only in single-player environments that permit modifications. Full Add-on support, injection and DLL replacement can trigger anti-cheat; avoid protected online games.
+
+#### Prepare ReShade and the runtime with RHI
+
+1. Close the game and back up existing add-ons, ReShade configuration and DLLs you will replace. Download the [v0.2.0 Windows x64 ZIP](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip) and matching [SHA-256 file](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip.sha256), then verify the archive. Download [the latest RHI](https://github.com/RankFTW/RHI/releases/latest).
+2. Select the game in RHI. If missing, click **+ (Manually add a game)**, select the actual game `.exe` and click **Add Game**, or drag the `.exe` onto the window. Select the executable used by the game process rather than its launcher; it may be under `Binaries/Win64`.
+3. Select **Game Overrides → ReShade Channel → Stable** for full Add-on support, then install under **Components → ReShade**. **No Addons cannot load NR Nexus.** For existing ReShade installations, check Add-on support and the API version before installing again.
+4. In the **DLSS / Streamline → Neural Rendering** column, choose **310.9.16 (20/30/40/50)** and click **Deploy DLL** to deploy the NR runtime separately, without another NR Add-on. **RHI 2.8.8 also attempts to deploy the newest `nvngx_dlss.dll` (SR) in the game installation root, backing up an existing file as `.original`. Use manual installation to keep your SR version.** If the game already has DLSS but this column is missing, use **Settings → Tools & Maintenance → Full refresh**. Without game DLSS, or if the column remains missing, follow manual installation below.
+5. Extract NR Nexus's `renodx-dlss5.addon64` into the Add-on directory **actually loaded by ReShade**, normally beside the game EXE; use the configured `AddonPath` when customized. Retain license files. **Browse** beside the game title or in its context menu opens the game folder, which may differ from the EXE directory. Check RHI's selected EXE, `ReShade.log` and the deployed runtime's actual location. NR Nexus searches beside its own Add-on first, then beside the game EXE; an older DLL in a central Add-on directory takes priority.
+6. Start the game, open ReShade with its overlay key (default **Home**) and confirm **NR Nexus** is loaded under Add-ons. Check **Version & about/Diagnostics** for the runtime version, NR route and status, then follow [Quick start](#en-start).
+
+Do not use **Install Neural Rendering** for this procedure: it installs separate NR add-ons such as ShortFuse, DLSS5 Tool, Bridge or Feeder, which do not replace NR Nexus. Do not apply an RTX 30 OptiScaler/Magpie bundle as NR Nexus installation instructions. RHI already provides backups, restoration and automatic updates; check actual file locations, duplicate add-ons and update settings so another tool does not replace your selection. See the [official RHI guide](https://github.com/RankFTW/RHI/blob/main/docs/DETAILED_GUIDE.md).
+
+#### Manual installation and maintenance
+
+- **Manual installation:** Install ReShade with full Add-on/API 18 support from [the official site](https://reshade.me/), selecting the actual game EXE and its graphics API. Put `renodx-dlss5.addon64` in the actual Add-on directory. Legally obtain a compatible `nvngx_dlssnr.dll` separately and place it beside the Add-on or actual game EXE. The [310.9.16 runtime ZIP](https://github.com/RankFTW/rhi-repo/releases/download/dlssnr-310.9.16/nvngx_dlssnr_310.9.16.zip) listed by RHI is separate from the NR Nexus ZIP. Follow the runtime/model licenses; this project's MIT license does not change their terms.
+- **Upgrade:** Close the game and back up the current Add-on and settings. Verify the new archive, then replace only the intended `renodx-dlss5.addon64`, retaining configuration and required licenses. Check beside the EXE, in custom `AddonPath` locations and in other tools' managed folders for duplicate or separate NR add-ons. Restart and verify the loaded Add-on/runtime versions.
+- **Uninstall/restore:** Close the game and remove only the NR Nexus Add-on you installed. Back up or retain the independent library and per-game profiles; see [storage locations](#en-profile-details). Remove the runtime only if you added it and no other component needs it. Restore replaced files from backup; use the corresponding restore/uninstall controls for RHI-managed files. For rollback, restore matching Add-on and configuration backups, leaving other mods' files intact.
+
 <a id="en-start"></a>
 ### Quick start
 
 1. Open ReShade, select **NR Nexus → Quality** and enable **Neural Rendering**. **F6** toggles NR for comparison.
-2. For a first manual setup, use **one pass, Auto and Upscaled**, keeping look and advanced compatibility defaults. Render/Upscaled require compatible game DLSS SR or DLAA.
+2. A compatible fresh empty configuration attempts to start with **Balanced: Present, B, one pass at 67%**; existing settings are retained. Check the selected profile and actual parameters, then compare the picture. For manual troubleshooting, save your current setup and use **one pass, Auto and Upscaled**, keeping look and advanced compatibility defaults. This troubleshooting route requires compatible game DLSS SR or DLAA.
 3. Return to gameplay and read the top status. If waiting, runtime or resource issues appear, click through to **Diagnostics** and follow the reason.
 4. Compare the same scene stationary and moving. **Model styling** changes generation; **Adjust NR's look** controls its resulting light, colour and detail.
 5. Save favourite settings to a **custom profile**; use **F11** for watching NR GPU cost while playing.
@@ -526,11 +559,11 @@ There are four main tabs: **Quality, Multi-Pass, Diagnostics and Advanced**. **M
 <a id="en-quality"></a>
 #### Quality: model, location and look
 
-Compare off/on with **Neural Rendering/F6**. **Auto** is the default model. Compatible runtime **310.9.16.0** supports **A (Legacy)/B (Small FP8)** for comparing appearance and cost.
+Compare off/on with **Neural Rendering/F6**. **Auto** is the base model default before applying a profile. Compatible runtime **310.9.16.0** supports **A (Legacy)/B (Small FP8)** for comparing appearance and cost.
 
-Version 0.2.0 keeps the F6 toggle and six quick profiles at the top, followed by three always-visible sections. **Core quality** orders model, strength, working resolution/scale and upsampling, with current Pass 1 size evidence. **Processing & compatibility** contains the Hook Point, depth/motion and HUD options for Present, and collapsed low-frequency HDR and FG options. **Appearance & result** keeps common model styling controls visible, with the four advanced result groups available to expand as needed.
+Version 0.2.0 keeps the F6 toggle and six quick profiles at the top, followed by three always-visible sections. **Core quality** orders model, strength, working resolution/scale and upsampling, with current Pass 1 size evidence. **Processing & compatibility** contains **Hook point** (processing location), depth/motion and HUD options for Present, and collapsed low-frequency HDR and FG options. **Appearance & result** keeps common model styling controls visible, with the four advanced result groups available to expand as needed.
 
-Start at **Upscaled**, after game DLSS output. **Render** runs before DLSS upscaling to compare smaller inputs; **Present** processes the finished game frame before ReShade effects. With Ray Reconstruction, Render uses the compatible Upscaled route. Present defaults to Keep the HUD; compare UI correction or Upscaled if HUD elements still change.
+Choose a location for your goal: **Upscaled**, after game DLSS output, is useful for initial look comparisons. **Render** runs before DLSS upscaling to compare smaller inputs; **Present** processes the finished game frame before ReShade effects. With Ray Reconstruction, Render uses the compatible Upscaled route. Present defaults to Keep the HUD; compare UI correction or Upscaled if HUD elements still change.
 
 **Style, Local tone, Model structure and Character/skin** shape generation; **Adjust NR's look** shapes its result. Use both together. See [parameter reference](#en-parameters) for defaults.
 
@@ -548,7 +581,7 @@ The Multi-Pass page separates the **Execution chain** overview from a prominent 
 <a id="en-two-pass-example"></a>
 ##### Example: Natural base plus Cinematic second pass
 
-1. Hold location and size constant; set pass count to **2**.
+1. Save your current setup. Enable compatible game DLSS SR/DLAA, set Quality to **Upscaled** at **100%**, then use **two passes**. Set Pass 2 to **Same as previous** stage and inherit base resolution.
 2. Select **Pass 1**, model **A**, **Natural**. Enable its **Adjust NR's look** and tune Highlights.
 3. Select **Pass 2**, model **B**; disable **Same as pass 1** look and **inherit Pass 1 result settings**.
 4. Choose **Cinematic**, enable this pass's **Adjust NR's look**, then tune detail or halo suppression. Both passes now have their own generated style and output edits.
@@ -559,9 +592,14 @@ A/B requires 310.9.16.0; other compatible runtimes can use two passes of one mod
 
 ##### Per-pass location
 
-Since dev.8, Passes 2–4 offer **Same as previous/Render/Upscaled/Present**. Supported DX11/DX12 chains can use **Render A → Game DLSS SR → Upscaled B**.
+To process before and after upscaling, try **Render A → game DLSS SR/DLAA → Upscaled B** on supported DX11 Bridge/DX12 paths:
 
-Stages follow Render → Upscaled → Present. Development source previews related later-pass changes for confirmation or cancellation. See [compatible combinations](#en-paths).
+1. Enable compatible game DLSS SR/DLAA, set Quality's location to **Render** and use **two passes**.
+2. Choose A for Pass 1, then **Upscaled** stage and model B for Pass 2. Set their looks and results as desired.
+3. If other passes must change with your selection, review the full-chain preview before confirming. Cancel keeps the old chain; use the offered Undo after applying if needed.
+4. Return to gameplay and confirm actual stages, sizes and status in Diagnostics before comparing with F6. This supported chain can work with native DLSS FG/MFG or XeFG, subject to current resources and routing.
+
+Passes 2–4 offer **Same as previous/Render/Upscaled/Present**. Stages can only move forward; an ordered chain must still meet the [compatibility table](#en-paths), so it does not permit arbitrary three-stage combinations.
 
 <a id="en-resolution"></a>
 ##### Independent working resolution
@@ -580,7 +618,7 @@ DX11/DX12 support separate sizes across Render/Upscaled and two different-sized 
 <a id="en-presets"></a>
 #### Profiles: save, switch and share
 
-Since dev.8, six per-game **Profile Slots** and a shared **profile library** are available; 0.2.0 updates their controls. Slots provide quick switching; the library holds more files, backups and shared setups.
+Quality provides six per-game **Profile Slots**: three official and three custom, plus a shared **profile library**. Slots are saved per game for quick switching. The library is shared across games on this PC: save one or several carefully tuned configurations, then import and apply with one click in another game. It also supports backups and sharing.
 
 | Goal | Action |
 | --- | --- |
@@ -596,11 +634,11 @@ Official starting points are **Lite: Render, B, one pass at 75%; Balanced: Prese
 
 **Save/export:** Select Save profile and enter a name; the default scope is Quality + Multi-Pass. Save profile to library writes locally; Copy share text copies it. For another file, expand Export file, choose a path and select Export profile file. Replacement requires confirmation. Direct Slot export uses its saved content, including official-Slot personal changes.
 
-**Import/apply:** Select Import profile, choose JSON or paste share text, read and review differences, then confirm Apply. Alternatively store in a custom Slot and select it later. Confirm replacements and full-backup scope.
+**Import/apply:** In another game, select a saved library configuration, click Preview selected preset, review the differences and click Confirm and apply preset. For external profiles, use Import profile to choose JSON or paste share text. Alternatively store in a custom Slot and select it later. Confirm replacements and full-backup scope.
 
 ![Save profile](images/ui/presets.webp)
 
-*Enter a name, then save, export or copy share text.*
+*Offscreen production UI examples of profile saving and the F11 monitor. Enter a name to save, export or copy share text; monitor values are synthetic.*
 
 Slot edits autosave; independent library files need explicit saving. Drag/resize the window; X or Esc while focused and not editing closes it. Session drafts remain; closing does not save or apply an import.
 
@@ -613,7 +651,8 @@ Read NR status, reasons, dimensions, GPU cost and reporting here. Address status
 
 ##### F11 persistent performance HUD
 
-- **F11** toggles it; rebind under **Advanced → Hotkeys & screenshots**. **F8** cycles Compact, Details, Compact + Trends and Details + Trends; it can also be rebound or unbound. Conflicts are reported without suppressing game or Steam input.
+- **F11** toggles it; rebind under **Advanced → Hotkeys & screenshots**. The monitor title shows the actual binding. It starts hidden on first use, then remembers this game's latest visibility choice across launches. **Advanced → Runtime monitor** controls whether it remains visible after closing the main menu.
+- **F8** cycles Compact, Details, Compact + Trends and Details + Trends; it can also be rebound or unbound. Conflicts are reported without suppressing game or Steam input.
 - It accepts no gameplay mouse/keyboard input. Press **Home** to open ReShade, then move, resize or lock position/size. Dragging saves a custom position.
 - **Compact/Details** show NR state, GPU cost, FPS and FG status; Details adds pass costs and issues. Changing the view or trends fits content once. Manual resizing retains your size preference; **Fit to content** recalculates it on demand. The pass chain shows stage, configured model and actual size. Either view can show optional **Trends** for the last **10/30/60 seconds**; select FPS, frame interval (ms), NR GPU or individual pass GPU curves.
 - Changing hook point, pass count, model or working ratio starts a new trend segment while retaining earlier valid history. Gaps remain empty and old GPU samples are never presented as current for the new configuration.
@@ -646,7 +685,7 @@ Local saving, uploading to displayed temporary hosts, including public summary/l
 <a id="en-advanced"></a>
 #### Advanced: interface, keys and capture
 
-Choose **15 languages** and seven themes—**Cyber Neon, Nexus Dark, Fluent Light, Midnight OLED, Neon Violet, Tactical Amber and Aurora Glass**—as well as keys and capture settings here. Themes affect the add-on interface only; Ivory Studio and Crimson Noir remain design candidates.
+Choose **15 languages** and seven themes—**Cyber Neon, Nexus Dark, Fluent Light, Midnight OLED, Neon Violet, Tactical Amber and Aurora Glass**—as well as keys and capture settings here. Themes affect the add-on interface only.
 
 Settings are grouped into **Hotkeys & screenshots, Runtime monitor, Interface & notifications, Game fixes & compatibility, and Development & maintenance**. Monitor visibility and placement are under Runtime monitor; notification placement and preview are under Interface & notifications.
 
@@ -656,12 +695,14 @@ Settings are grouped into **Hotkeys & screenshots, Runtime monitor, Interface & 
 
 **F5** captures NR off/on, normally under **DLSS5 Screenshots** in ReShade's base directory. Mixed-stage chains do not yet support same-frame final-image comparisons; use F6 or model buffers. See [capture reference](#en-capture).
 
+With explicitly identified NR OFF/ON screenshots, the separate [in-game comparison tool](GAME_COMPARISONS.md#english) creates a labeled static image and a local interactive preview. It does not change the game or capture feature. Candidates require human review before publication.
+
 Keep compatibility defaults for normal picture tuning. For specific HDR, depth, motion or Present issues, read [advanced compatibility](#en-compatibility).
 
 <a id="en-parameters"></a>
 ### Parameter reference
 
-Defaults describe fresh configurations; existing ones may retain old values. Model styling changes generation and resets history; result edits shape generated changes in real time.
+The tables list individual setting defaults. Initial Balanced setup overrides model, location and scale with **B/Present/67%**; other profiles and existing settings may also override individual defaults. Model styling changes generation and resets history; result edits shape generated changes in real time.
 
 #### NR strength and models
 
@@ -767,7 +808,7 @@ Turning result edits off keeps values; **Detail stability and shared upsampling 
 
 | Passes 2–4 control | Default | What is inherited |
 | --- | --- | --- |
-| Stage (since dev.8) | **Same as previous** | The preceding pass's requested stage; independent of model, styling and results. |
+| Stage | **Same as previous** | The preceding pass's requested stage; independent of model, styling and results. |
 | Working resolution | **Inherit base resolution**; local scale **100%** | Base values (not the preceding pass) / Follow input / fixed scale **33–100%**. Independent of Stage, model, styling and result inheritance. |
 | NR model: Inherit Main Model / A / B | **Inherit Main Model** | The main model selection, including Auto resolution and fallback. Independent of the other inheritance switches. |
 | Same as pass 1 | **On** | Model steering only: Style, Local tone, Model structure, Character / skin, Character mask, UI correction. It does not inherit model choice, model strength, HDR transfer, Color or result settings. Independent skin remains a chain-wide setting. |
@@ -779,7 +820,7 @@ Passes 2–4 retain model strength (1, 0–2), HDR transfer (1, 0–1) and Color
 
 | Setting | Default / options | Scope |
 | --- | --- | --- |
-| Interface theme | Fresh installation: **Cyber Neon**; Nexus Dark / Fluent Light / Midnight OLED also available | Changes NR Nexus interface colours only, saved for this game. Does not grade the game image or change NR quality. Existing configurations without a theme retain Nexus Dark. |
+| Interface theme | Fresh installation: **Cyber Neon**; also Nexus Dark / Fluent Light / Midnight OLED / Neon Violet / Tactical Amber / Aurora Glass | Changes NR Nexus interface colours only, saved for this game. Does not grade the game image or change NR quality. Existing configurations without a theme retain Nexus Dark. |
 | Restore default theme | Cyber Neon | Restores only the theme. Advanced and full resets also restore Cyber Neon; Quality and Multi-Pass page resets keep the theme. |
 | Language | **Auto**, or one of 15 languages | English, German, French, Spanish, Italian, Portuguese (Brazil), Russian, Bulgarian, Slovenian, Turkish, Thai, Japanese, Korean, Chinese (Simplified), Chinese (Traditional). Auto follows ReShade's language, which follows Windows unless selected there; an unmatched language falls back to English. Choices remain readable in English. ReShade loads fonts for its own language; if the add-on detects missing glyphs, it stays in English and warns in `ReShade.log`. Select the corresponding language in ReShade too, and check any custom font override. |
 | Notifications | **On** | Controls gameplay activation/failure/health notices. Turning it off retains the overlay status and Diagnostics. |
@@ -803,7 +844,7 @@ Passes 2–4 retain model strength (1, 0–2), HDR transfer (1, 0–1) and Color
 | JPEG size limit | **10 MB**, **0–50 MB** | Only shown for JPEG output. Zero disables the limit; check export status for oversized images. |
 | Take a screenshot now | Action + status | Same capture request as the screenshot key; wait for completion/status. |
 
-Development source adds **F11** for monitor visibility and **F8** for mode cycling. F9/F10 are independent and off by default. Resolve conflicts with games, ReShade, Steam and other add-ons.
+Use **F11** for monitor visibility and **F8** for mode cycling. F9/F10 are independent and off by default. Resolve conflicts with games, ReShade, Steam and other add-ons.
 
 Final presentation captures the same frame before/after Present NR without ReShade effects/overlay, then restores location; **mixed-stage chains do not yet support it**. Model buffers show the last evaluated pass before result edits, game tone mapping and UI, useful for model inspection. Compare motion by moving in gameplay.
 
@@ -812,9 +853,11 @@ Final presentation captures the same frame before/after Present NR without ReSha
 
 | Problem | Action |
 | --- | --- |
+| NR Nexus missing from Add-ons | Follow [installation](#en-install) to confirm full Add-on/API 18 support, then check the actual EXE, `AddonPath` and `ReShade.log`. Move old or duplicate NR Add-ons out of active directories. |
+| No visible change after enabling | Compare the same gameplay scene with F6. Check that NR is running and model strength and any enabled result-adjustment strength are not zero; Render/Upscaled also need compatible DLSS SR/DLAA. Follow [Quick start](#en-start) to check a single pass before restoring your combination. |
 | NR off | Enable Neural Rendering or press F6. |
 | Starting/waiting for DLSS | Return to gameplay briefly. Render/Upscaled need compatible DLSS SR/DLAA; read persistent reasons. |
-| Missing runtime/unsupported GPU | Check DLL placement, runtime and hardware requirements in README. |
+| Missing runtime/unsupported GPU | Check DLL search locations and runtime in [installation](#en-install), then [GPU compatibility](../README.md#en-gpu). |
 | Partly active/skipping/failure | Expand the reason; after fixing it, Reset NR feature and clear failure latch rebuilds runtime state. |
 | B unavailable | Check for loaded 310.9.16.0; use Auto/A with other compatible versions. |
 | Grey result sliders | Enable result edits, disable extra-pass result inheritance or read the unavailable reason. |
@@ -846,17 +889,17 @@ Use this for specific issues. Record old values and compare one change at a time
 
 | Combination | Current scope |
 | --- | --- |
-| DX11/DX12 Render → Upscaled | dev.8 supports per-pass model/look/results with native DLSS FG/XeFG; requires compatible DLSS SR/DLAA. Stage hand-offs add synchronisation cost. |
+| DX11/DX12 Render → Upscaled | Supports per-pass model/look/results with native DLSS FG/MFG or XeFG; requires compatible DLSS SR/DLAA. Stage hand-offs add synchronisation cost. |
 | Independent sizes | 0.2.0 supports across Render/Upscaled and two passes within Render or Upscaled; three or more in one stage need equal actual sizes. |
 | Ordinary Present different-sized pair | 0.2.0 requires confirmed FG off; excludes Pre-FG, mixed Present and unknown/enabled FG. DX11 adds synchronisation cost. |
 | Native Pre-FG different-sized pair | **Not supported yet.** Use equal sizes or supported Render/Upscaled chains. |
-| Upscaled → Present | **Experimental**, off by default, limited DX12 pair with FG off; prefer supported combinations for normal use. |
+| Upscaled → Present | **Experimental**, off by default: native DX12 with DLSS SR/DLAA, exactly two Upscaled → Present passes, RR and FG off. Requires current-frame source, submission and queue proof; excludes Pre-FG, XeFG and automatic FG fallback. Prefer supported combinations for normal use. |
 | Upscaled → Pre-FG, Render → Present, three-stage chain | **Not supported yet.** DX11 mixed Present chains are unavailable too. |
 | Ray Reconstruction | Render automatically uses compatible Upscaled routing. |
 | Vulkan | Legacy Upscaled at full output size only. Present, mixed stages and independent sizes are unavailable. |
 
 <a id="en-native-prefg-resolution"></a>
-The native Pre-FG different-size research experiment is currently unavailable for player setups; keep it off. This is separate from supported Render → Upscaled with FG.
+Native Pre-FG different-sized pairs remain **BLOCKED / NO-GO**, unavailable for player setups; keep the experiment off. This is separate from supported Render → Upscaled with FG.
 
 Dual models, different-sized pairs and mixed stages have targeted GPU/automated coverage; Witcher 3 DX12 HDR has short Render → Upscaled A/B-combination gameplay checks. 0.2.0 layout/monitor have offscreen interface checks; game input, long-term stability and quality need checking per game.
 
