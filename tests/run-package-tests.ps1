@@ -154,6 +154,9 @@ try {
             (Join-Path $taskRoot $taskSourceDocument), [Text.UTF8Encoding]::new($false, $true))
         $taskPackedDocuments[$taskMapping[$taskSourceDocument]] = Read-ZipText $taskMapping[$taskSourceDocument]
     }
+    # The comparison guide stays online; validate its source anchors before packaging links to it.
+    $taskSourceDocuments['docs/GAME_COMPARISONS.md'] = [IO.File]::ReadAllText(
+        (Join-Path $taskRoot 'docs/GAME_COMPARISONS.md'), [Text.UTF8Encoding]::new($false, $true))
     foreach ($taskSourceDocument in @('README.md', 'docs/USER_GUIDE.md')) {
         $taskSourceText = $taskSourceDocuments[$taskSourceDocument]
         $taskPackedText = $taskPackedDocuments[$taskMapping[$taskSourceDocument]]
