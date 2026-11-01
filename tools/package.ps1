@@ -79,7 +79,8 @@ foreach ($taskDocument in $taskDocuments.Keys) {
     if ([string]::IsNullOrWhiteSpace($taskDocumentInputs[$taskDocument])) { throw "Empty package input: $taskDocument" }
 }
 $taskImageNames = @('quality', 'multipass', 'results', 'diagnostics', 'advanced', 'themes', 'presets',
-    'quality-zh', 'multipass-zh', 'results-zh', 'diagnostics-zh', 'advanced-zh', 'themes-zh', 'presets-zh')
+    'quality-zh', 'multipass-zh', 'results-zh', 'diagnostics-zh', 'advanced-zh', 'themes-zh', 'presets-zh',
+    'overview', 'overview-zh')
 $taskLocalPaths = [ordered]@{
     'LICENSE' = 'LICENSE'; 'THIRD_PARTY_NOTICES.md' = 'THIRD_PARTY_NOTICES.md'
     'README.md' = 'README.md'; 'docs/USER_GUIDE.md' = 'USER_GUIDE.md'

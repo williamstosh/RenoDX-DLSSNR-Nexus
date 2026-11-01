@@ -103,7 +103,16 @@ def hdr_intent(image):
     return result, rounded
 
 
-def prepare_pair(off_path, on_path, quality):
+def prepare_pair(off_path, on_path, quality=95, *, gainmap_scale=1, gainmap_quality=100,
+                 gainmap_channels=3, gainmap_gamma=1):
+    if not isinstance(quality, int) or not 1 <= quality <= 100:
+        raise ValueError("HDR quality must be 1–100.")
+    if not isinstance(gainmap_scale, int) or not 1 <= gainmap_scale <= 128:
+        raise ValueError("gainmap_scale must be an integer from 1 to 128.")
+    if not isinstance(gainmap_quality, int) or not 1 <= gainmap_quality <= 100:
+        raise ValueError("gainmap_quality must be 1–100.")
+    if gainmap_channels not in (1, 3) or not math.isfinite(gainmap_gamma) or gainmap_gamma <= 0:
+        raise ValueError("gainmap_channels must be 1 or 3; gainmap_gamma must be finite and positive.")
     if not codecs.JPEGXR.available or not codecs.ULTRAHDR.available:
         raise ValueError("Installed imagecodecs lacks JPEG XR or Ultra HDR codec support.")
     off, off_info = decode_jxr(off_path)
@@ -122,8 +131,8 @@ def prepare_pair(off_path, on_path, quality):
     on_hdr, on_rounded = hdr_intent(on)
     off_info["rec2020_rounding_clamped_channels"] = off_rounded
     on_info["rec2020_rounding_clamped_channels"] = on_rounded
-    options = {"quality": quality, "gainmap_quality": 100, "gainmap_scale": 1, "gainmap_channels": 3,
-               "gainmap_gamma": 1, "shared_target_peak_nits": target,
+    options = {"quality": quality, "gainmap_quality": gainmap_quality, "gainmap_scale": gainmap_scale,
+               "gainmap_channels": gainmap_channels, "gainmap_gamma": gainmap_gamma, "shared_target_peak_nits": target,
                "source": "Windows linear scRGB / Rec.709 D65 / 1.0 = 80 nits (explicit --hdr declaration)",
                "hdr_intent": "linear Rec.2020 D65 / 1.0 = 203 nits",
                "rec709_to_rec2020_matrix": TO_2020.tolist(), "hdr_rgb_scale": SCRGB_WHITE / UHDR_WHITE,
@@ -146,7 +155,8 @@ def encode(hdr, sdr, options):
     return codecs.ultrahdr_encode(
         np.ascontiguousarray(hdr), level=options["quality"], sdr=np.ascontiguousarray(sdr),
         gamut=codecs.ULTRAHDR.CG.BT_2100, nits=options["shared_target_peak_nits"],
-        scale=1, multichannel=True, gainmap_gamma=1, gainmap_level=100)
+        scale=options["gainmap_scale"], multichannel=options["gainmap_channels"] == 3,
+        gainmap_gamma=options["gainmap_gamma"], gainmap_level=options["gainmap_quality"])
 
 
 def inspect(data):
@@ -159,7 +169,10 @@ def inspect(data):
                 raise ValueError("Unexpected EXIF in generated HDR JPEG.")
     with Image.open(io.BytesIO(base)) as image:
         dimensions = list(image.size)
-    return {"dimensions": dimensions, "base_bytes": len(base), "gainmap_bytes": len(gainmap),
+    with Image.open(io.BytesIO(gainmap)) as image:
+        gainmap_dimensions = list(image.size)
+    return {"dimensions": dimensions, "gainmap_dimensions": gainmap_dimensions,
+            "base_bytes": len(base), "gainmap_bytes": len(gainmap),
             "gainmap_metadata": metadata}
 
 
@@ -177,7 +190,7 @@ def roundtrip_metrics(data, reference):
             "units": "linear Rec.2020, 1.0 = 203 nits; lossy JPEG/gainmap, not pixel-identical"}
 
 
-def write_pair(directory, bundle, overlay, sdr_preview):
+def write_pair(directory, bundle, overlay=None, sdr_preview=None):
     options = bundle["options"]
     results = {}
     for side in ("off", "on"):
@@ -185,6 +198,8 @@ def write_pair(directory, bundle, overlay, sdr_preview):
         results[side] = inspect(data)
         results[side]["roundtrip"] = roundtrip_metrics(data, bundle[side + "_hdr"])
         (directory / (side + ".jpg")).write_bytes(data)
+    if overlay is None:
+        return results
     # Compose the original linear HDR planes, then the same visual annotation in light.
     split = bundle["off"].shape[1] // 2
     combined = bundle["off"].copy()

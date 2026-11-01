@@ -68,6 +68,8 @@
 <a id="zh-quality"></a>
 #### 画质：模型、位置与外观
 
+![画质页完整界面](images/ui/quality-zh.webp)
+
 用 **Neural Rendering／F6** 比较关／开。**Auto** 是未应用方案时的基础模型默认值；兼容的 **310.9.16.0** 运行时支持 **A（Legacy）／B（Small FP8）**，可比较两者外观和成本。
 
 0.2.0 保留顶部 F6 开关与六个快速方案，画质页分为三个常开区：**核心画质**按模型、强度、工作分辨率／比例与上采样排列，并显示第 1 层当前尺寸证据；**处理与兼容性**包含**介入点（Hook point，即处理位置）**，Present 下显示深度／运动与 HUD 选项，低频 HDR 与 FG 选项折叠；**外观与结果**常显模型风格等常用控件，结果的四个高级分组继续按需展开。
@@ -78,6 +80,8 @@
 
 <a id="zh-multipass"></a>
 #### 叠层：组合最多四层
+
+![叠层页完整界面](images/ui/multipass-zh.webp)
 
 叠层数 **1–4** 包含第 1 层，后一层处理前一层的结果：
 
@@ -559,6 +563,8 @@ There are four main tabs: **Quality, Multi-Pass, Diagnostics and Advanced**. **M
 <a id="en-quality"></a>
 #### Quality: model, location and look
 
+![Full Quality page](images/ui/quality.webp)
+
 Compare off/on with **Neural Rendering/F6**. **Auto** is the base model default before applying a profile. Compatible runtime **310.9.16.0** supports **A (Legacy)/B (Small FP8)** for comparing appearance and cost.
 
 Version 0.2.0 keeps the F6 toggle and six quick profiles at the top, followed by three always-visible sections. **Core quality** orders model, strength, working resolution/scale and upsampling, with current Pass 1 size evidence. **Processing & compatibility** contains **Hook point** (processing location), depth/motion and HUD options for Present, and collapsed low-frequency HDR and FG options. **Appearance & result** keeps common model styling controls visible, with the four advanced result groups available to expand as needed.
@@ -569,6 +575,8 @@ Choose a location for your goal: **Upscaled**, after game DLSS output, is useful
 
 <a id="en-multipass"></a>
 #### Multi-Pass: combine up to four passes
+
+![Full Multi-Pass page](images/ui/multipass.webp)
 
 The **1–4** pass count includes Pass 1; each result feeds the next:
 

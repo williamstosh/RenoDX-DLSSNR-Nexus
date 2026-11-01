@@ -46,7 +46,6 @@ header,main,footer{width:min(1600px,calc(100% - 48px));margin:auto}header{displa
       "scene": "诺维格瑞 · 教主广场",
       "off": "assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/off.jpg",
       "on": "assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/on.jpg",
-      "preview": "assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/preview.webp",
       "width": 3840,
       "height": 2160,
       "status": "approved",
@@ -60,9 +59,9 @@ header,main,footer{width:min(1600px,calc(100% - 48px));margin:auto}header{displa
       ],
       "synthetic": false,
       "dynamic_range": "ultra-hdr",
-      "sdr_off": "assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/off-sdr.webp",
-      "sdr_on": "assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/on-sdr.webp",
-      "hdr_preview": "assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/preview-hdr.jpg"
+      "game_en": "The Witcher 3",
+      "scene_en": "Novigrad · Hierarch Square",
+      "readme": "assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/revisions/6a1f84b87f324fc7/readme.webp"
     },
     {
       "id": "3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5",
@@ -70,7 +69,6 @@ header,main,footer{width:min(1600px,calc(100% - 48px));margin:auto}header{displa
       "scene": "威伦 · 驼背泥沼",
       "off": "assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/off.jpg",
       "on": "assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/on.jpg",
-      "preview": "assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/preview.webp",
       "width": 3840,
       "height": 2160,
       "status": "approved",
@@ -84,9 +82,9 @@ header,main,footer{width:min(1600px,calc(100% - 48px));margin:auto}header{displa
       ],
       "synthetic": false,
       "dynamic_range": "ultra-hdr",
-      "sdr_off": "assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/off-sdr.webp",
-      "sdr_on": "assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/on-sdr.webp",
-      "hdr_preview": "assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/preview-hdr.jpg"
+      "game_en": "The Witcher 3",
+      "scene_en": "Velen · Crookback Bog",
+      "readme": "assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/revisions/2de9114747d55d47/readme.webp"
     }
   ]
 }
@@ -104,6 +102,8 @@ header,main,footer{width:min(1600px,calc(100% - 48px));margin:auto}header{displa
   let language = 'zh', current, displayMode = 'hdr', ready = false, loadState = '', invalid = false, generation = 0;
   const hdrEnvironment = window.matchMedia('(dynamic-range: high)');
   const isHdr = item => item.dynamic_range === 'ultra-hdr';
+  const hasSdr = item => isHdr(item) && item.sdr_off && item.sdr_on;
+  const displayName = (item, field) => language === 'en' ? text(item[field + '_en']) || item[field] : item[field];
   const source = side => current[isHdr(current) && displayMode === 'sdr' ? 'sdr_' + side : side];
   const candidate = document.body.dataset.candidate === 'true';
   // Reject URL syntax and encoded traversal before assigning any catalog path.
@@ -123,8 +123,9 @@ header,main,footer{width:min(1600px,calc(100% - 48px));margin:auto}header{displa
       if (!visible || typeof item.id !== 'string' || !item.id || ids.has(item.id) ||
           typeof item.game !== 'string' || typeof item.scene !== 'string' ||
           !safePath(item.off) || !safePath(item.on) ||
-          ['sdr_off','sdr_on','hdr_preview','preview'].some(key => key in item && !safePath(item[key])) ||
-          (isHdr(item) && (!safePath(item.sdr_off) || !safePath(item.sdr_on))) ||
+          ['sdr_off','sdr_on','hdr_preview','preview','readme'].some(key => key in item && !safePath(item[key])) ||
+          (Boolean(item.sdr_off) !== Boolean(item.sdr_on)) ||
+          ['game_en','scene_en'].some(key => key in item && typeof item[key] !== 'string') ||
           !Number.isSafeInteger(item.width) || !Number.isSafeInteger(item.height) || item.width <= 0 || item.height <= 0) return false;
       ids.add(item.id);
       return true;
@@ -164,7 +165,20 @@ header,main,footer{width:min(1600px,calc(100% - 48px));margin:auto}header{displa
     $('review-banner').hidden = !banners.length; $('review-banner').textContent = banners.join(' ');
     $('metadata').replaceChildren();
     if (!current) return;
+    for (const node of $('game').options) {
+      const item = scenes.find(scene => scene.game === node.value);
+      node.textContent = displayName(item, 'game');
+    }
+    for (const node of $('scene').options) {
+      const item = scenes.find(scene => scene.id === node.value);
+      node.textContent = displayName(item, 'scene');
+    }
     $('hdr-controls').hidden = !isHdr(current);
+    $('display-mode').hidden = !hasSdr(current);
+    document.querySelector('label[for=display-mode]').hidden = !hasSdr(current);
+    if (isHdr(current) && !hasSdr(current)) $('hdr-help').textContent = language === 'zh'
+      ? 'Ultra HDR JPEG 内置 SDR 底图。不支持 HDR 的浏览器或显示环境会自动显示底图，无需另下载 SDR 文件。'
+      : 'Ultra HDR JPEG includes an SDR base. Browsers or display environments without HDR support show that base automatically, without a separate SDR file.';
     $('display-mode').value = displayMode;
     $('hdr-environment').textContent = t[hdrEnvironment.matches ? 'hdrEnvironmentHigh' : 'hdrEnvironmentStandard'];
     $('open-hdr-preview').hidden = !isHdr(current) || !current.hdr_preview;
@@ -172,6 +186,7 @@ header,main,footer{width:min(1600px,calc(100% - 48px));margin:auto}header{displa
     else $('open-hdr-preview').removeAttribute('href');
     const fields = {resolution:current.width + ' × ' + current.height};
     fields.output = t[isHdr(current) ? 'hdrOutput' : 'sdrOutput'];
+    if (isHdr(current) && !hasSdr(current)) fields.output = language === 'zh' ? 'Ultra HDR JPEG（内置 SDR 底图）' : 'Ultra HDR JPEG (embedded SDR base)';
     if (isHdr(current)) fields.displaySource = t[displayMode === 'hdr' ? 'hdrSource' : 'sdrOutput'];
     const metadata = current.metadata && typeof current.metadata === 'object' ? current.metadata : {};
     for (const key of ['api','gpu','plugin_version','runtime','pass','model','working_resolution']) {
@@ -184,7 +199,7 @@ header,main,footer{width:min(1600px,calc(100% - 48px));margin:auto}header{displa
     for (const side of ['off','on']) {
       const label = text(current.labels && current.labels[side]) || 'DLSS 5 ' + side.toUpperCase();
       $(side + '-label').textContent = label;
-      $(side + '-image').alt = current.game + ' / ' + current.scene + ' — ' + label;
+      $(side + '-image').alt = displayName(current, 'game') + ' / ' + displayName(current, 'scene') + ' — ' + label;
     }
   }
   async function selectScene(item, updateHash = true) {
@@ -232,7 +247,7 @@ header,main,footer{width:min(1600px,calc(100% - 48px));margin:auto}header{displa
   }
   $('language').addEventListener('click', () => {language = language === 'zh' ? 'en' : 'zh'; renderText();});
   $('display-mode').addEventListener('change', () => {
-    if (!current || !isHdr(current)) return;
+    if (!current || !hasSdr(current)) return;
     displayMode = $('display-mode').value === 'sdr' ? 'sdr' : 'hdr';
     loadImages();
   });

@@ -7,7 +7,6 @@
       "scene": "诺维格瑞 · 教主广场",
       "off": "assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/off.jpg",
       "on": "assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/on.jpg",
-      "preview": "assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/preview.webp",
       "width": 3840,
       "height": 2160,
       "status": "approved",
@@ -21,9 +20,9 @@
       ],
       "synthetic": false,
       "dynamic_range": "ultra-hdr",
-      "sdr_off": "assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/off-sdr.webp",
-      "sdr_on": "assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/on-sdr.webp",
-      "hdr_preview": "assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/preview-hdr.jpg"
+      "game_en": "The Witcher 3",
+      "scene_en": "Novigrad · Hierarch Square",
+      "readme": "assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/revisions/6a1f84b87f324fc7/readme.webp"
     },
     {
       "id": "3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5",
@@ -31,7 +30,6 @@
       "scene": "威伦 · 驼背泥沼",
       "off": "assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/off.jpg",
       "on": "assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/on.jpg",
-      "preview": "assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/preview.webp",
       "width": 3840,
       "height": 2160,
       "status": "approved",
@@ -45,9 +43,9 @@
       ],
       "synthetic": false,
       "dynamic_range": "ultra-hdr",
-      "sdr_off": "assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/off-sdr.webp",
-      "sdr_on": "assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/on-sdr.webp",
-      "hdr_preview": "assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/preview-hdr.jpg"
+      "game_en": "The Witcher 3",
+      "scene_en": "Velen · Crookback Bog",
+      "readme": "assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/revisions/2de9114747d55d47/readme.webp"
     }
   ]
 }

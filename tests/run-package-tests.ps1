@@ -52,7 +52,7 @@ function Assert-DocumentLinks([string]$Name, [string]$Text, [hashtable]$Document
         $file = [IO.Path]::GetFileName($imageTarget)
         $chinese = $image.Index -gt $chineseStart -and $image.Index -lt $englishStart
         # Comparison watermarks are language-neutral; both sections must reuse the same asset.
-        if ($imageTarget -cmatch '^(?:https://github\.com/williamstosh/RenoDX-DLSSNR-Nexus/blob/[a-f0-9]{40}/)?docs/compare/assets/[a-z0-9/-]+/preview\.(?:webp|png)$') {
+        if ($imageTarget -cmatch '^(?:https://github\.com/williamstosh/RenoDX-DLSSNR-Nexus/blob/[a-f0-9]{40}/)?docs/compare/assets/[a-z0-9/-]+/(?:preview|readme)\.(?:webp|png)$') {
             if ($chinese) { $chineseImages += $imageTarget } else { $englishImages += $imageTarget }
             continue
         }
@@ -111,7 +111,8 @@ try {
         'licenses/nlohmann-json/NOTICE.txt', 'licenses/Streamline/license.txt', 'licenses/Streamline/NOTICE.txt',
         'licenses/NVIDIA-DLSS/LICENSE.txt')
     $taskImageNames = @('quality', 'multipass', 'results', 'diagnostics', 'advanced', 'themes', 'presets',
-        'quality-zh', 'multipass-zh', 'results-zh', 'diagnostics-zh', 'advanced-zh', 'themes-zh', 'presets-zh')
+        'quality-zh', 'multipass-zh', 'results-zh', 'diagnostics-zh', 'advanced-zh', 'themes-zh', 'presets-zh',
+        'overview', 'overview-zh')
     $taskExpected += @($taskImageNames | ForEach-Object { "images/ui/$_.webp" })
     Assert-Test ($taskNames.Count -eq $taskExpected.Count -and
         -not (Compare-Object $taskExpected $taskNames -CaseSensitive)) 'Complete ZIP whitelist mismatch.'

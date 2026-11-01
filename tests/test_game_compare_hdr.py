@@ -55,9 +55,9 @@ class HdrComparisons(unittest.TestCase):
 
     def test_hdr_roundtrip_common_peak_preview_and_idempotency(self):
         before = {p.name: gc.digest(p.read_bytes()) for p in (self.off, self.on)}
-        candidate = self.generate("--synthetic", "--note", "Synthetic fixture only")
+        candidate = self.generate("--synthetic", "--note", "Synthetic fixture only", "--hdr-profile", "archival", "--hdr-preview", "--sdr-fallback")
         report = gc.verify_candidate(candidate)
-        self.assertEqual(candidate, self.generate("--synthetic", "--note", "Synthetic fixture only"))
+        self.assertEqual(candidate, self.generate("--synthetic", "--note", "Synthetic fixture only", "--hdr-profile", "archival", "--hdr-preview", "--sdr-fallback"))
         self.assertEqual(len(gc.read_json(self.output / "candidates.json")["scenes"]), 1)
         self.assertEqual(report["scene"]["dynamic_range"], "ultra-hdr")
         self.assertEqual(report["sources"]["off"]["format"], "JPEG XR")
@@ -146,7 +146,7 @@ class HdrComparisons(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "finite"):
                 hdr.decode_jxr(self.off)
 
-    def test_approval_plan_includes_all_hdr_and_fallback_files(self):
+    def test_approval_plan_only_public_pair_and_readme(self):
         candidate = self.generate("--note", "Captures are 8 seconds apart")
         public = self.root / "public"
         public.mkdir()
@@ -157,8 +157,10 @@ class HdrComparisons(unittest.TestCase):
         with patch.object(gc, "PUBLIC", public), patch.object(gc, "ROOT", self.root), contextlib.redirect_stdout(io.StringIO()) as stdout:
             gc.approve(args)
             self.assertFalse((public / "assets").exists())
-            for name in ("off.jpg", "on.jpg", "off-sdr.webp", "on-sdr.webp", "preview.webp", "preview-hdr.jpg"):
+            for name in ("off.jpg", "on.jpg", "readme.webp"):
                 self.assertIn(name, stdout.getvalue())
+            for name in ("off-sdr.webp", "on-sdr.webp", "preview.webp", "preview-hdr.jpg"):
+                self.assertNotIn(name, stdout.getvalue())
             args.apply = args.reviewed = args.publish_authorized = True
             gc.approve(args)
             gc.approve(args)
@@ -168,6 +170,38 @@ class HdrComparisons(unittest.TestCase):
                 self.assertTrue((public / catalog["scenes"][0][key]).is_file())
             self.assertFalse(list(public.rglob("report.json")))
             self.assertFalse(list(public.rglob("*.jxr")))
+            entry = catalog["scenes"][0]
+            pair_before = {side: (public / entry[side]).read_bytes() for side in ("off", "on")}
+            with Image.open(public / entry["on"]) as primary:
+                self.assertIn(primary.format, ("JPEG", "MPO"))
+                expected = primary.convert("RGB")
+            opt = gc.parser().parse_args(["optimize", "--scene", entry["id"], "--preserve-hdr-pair", "--output", str(self.root / "tmp/optimized")])
+            optimized = gc.optimize(opt)
+            expected_path = self.root / "expected.webp"
+            gc.save_image(expected, expected_path, 90)
+            with Image.open(expected_path) as a, Image.open(optimized / "readme.webp") as b:
+                np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+            self.assertEqual(pair_before, {side: (public / entry[side]).read_bytes() for side in ("off", "on")})
+
+    def test_balanced_options_embedded_base_and_overrides(self):
+        candidate = self.generate()
+        report = gc.verify_candidate(candidate)
+        self.assertEqual(report["parameters"]["hdr"]["gainmap_scale"], 2)
+        self.assertEqual(report["parameters"]["hdr"]["gainmap_quality"], 95)
+        self.assertNotIn("hdr_preview", report["scene"])
+        self.assertNotIn("sdr_off", report["scene"])
+        self.assertEqual(report["hdr_outputs"]["off"]["gainmap_dimensions"], [128, 72])
+        data = (candidate / "off.jpg").read_bytes()
+        base, _, _ = codecs.ultrahdr_decode_jpeg(data)
+        # Ordinary JPEG decoders read the exact embedded SDR base, without gain-map reconstruction.
+        with Image.open(io.BytesIO(data)) as ordinary, Image.open(io.BytesIO(base)) as embedded:
+            np.testing.assert_array_equal(np.asarray(ordinary), np.asarray(embedded))
+        second = self.generate("--gainmap-scale", "4", "--gainmap-quality", "90", "--quality", "92")
+        options = gc.verify_candidate(second)["parameters"]["hdr"]
+        self.assertEqual((options["quality"], options["gainmap_scale"], options["gainmap_quality"]), (92, 4, 90))
+        self.assertEqual(gc.verify_candidate(second)["hdr_outputs"]["on"]["gainmap_dimensions"], [64, 36])
+        with self.assertRaisesRegex(ValueError, "finite and positive"):
+            self.generate("--gainmap-gamma", "nan")
 
 
 if __name__ == "__main__":

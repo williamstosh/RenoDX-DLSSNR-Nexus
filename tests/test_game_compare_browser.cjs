@@ -7,6 +7,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
+const {execFileSync} = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 
 async function main() {
@@ -27,7 +28,7 @@ async function main() {
   const directory = await fs.mkdtemp(path.join(root,'tmp/compare-browser-'));
   let browser;
   try {
-    const launch = {headless:true};
+    const launch = {headless:true,args:['--force-color-profile=srgb','--force-hdr=srgb']};
     if (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH) launch.executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
     browser = await playwright.chromium.launch(launch);
     const context = await browser.newContext({viewport:{width:1280,height:900},hasTouch:true});
@@ -135,6 +136,10 @@ async function main() {
     await page.locator('#game').selectOption('Game A'); await ready();
     assert.equal(await page.locator('#scene option').count(),1);
     assert.equal(await page.evaluate(()=>decodeURIComponent(location.hash)),'#scene='+base.id);
+    await page.goBack(); await ready();
+    assert.equal(await page.locator('#scene').inputValue(),second.id,'History back restores the original deep link');
+    await page.goForward(); await ready();
+    assert.equal(await page.locator('#scene').inputValue(),base.id,'History forward restores scene selection');
     const bounds = ()=>page.locator('.layer').evaluateAll(nodes=>nodes.map(node=>{const r=node.getBoundingClientRect(),s=node.parentElement.getBoundingClientRect();return [r.x-s.x,r.y-s.y,r.width,r.height];}));
     const before = await bounds(); assert.deepEqual(before[0],before[1]);
     await page.locator('#all-on').click(); await split(0);
@@ -252,6 +257,34 @@ async function main() {
     await page.waitForFunction(()=>document.getElementById('stage').getAttribute('aria-busy')==='false');
     assert(await page.locator('#split').isDisabled(),'Invalid SDR dimensions must not reveal a mismatched pair');
     await page.locator('#display-mode').selectOption('hdr'); await ready();
+    const embedded = {...hdr,game:'中文游戏',scene:'中文场景',game_en:'English Game',scene_en:'English Scene'};
+    delete embedded.sdr_off; delete embedded.sdr_on; delete embedded.hdr_preview;
+    await open([embedded,base]); await ready();
+    assert.equal(await page.locator('#display-mode').isVisible(),false,'No separate SDR mode is offered without fallback assets');
+    assert((await page.locator('#hdr-help').textContent()).includes('内置 SDR 底图'));
+    await page.locator('#language').click();
+    assert.equal(await page.locator('#game option:checked').textContent(),'English Game');
+    assert.equal(await page.locator('#scene option:checked').textContent(),'English Scene');
+    assert((await page.locator('#off-image').getAttribute('alt')).includes('English Game / English Scene'));
+    assert((await page.locator('#hdr-help').textContent()).includes('without a separate SDR file'));
+    await page.locator('#game').selectOption(base.game); await ready();
+    assert.equal(await page.locator('#scene option:checked').textContent(),base.scene,'Legacy labels fall back without English fields');
+    // Compare real Ultra HDR against its extracted primary JPEG under forced SDR Chromium.
+    const python = process.env.GAME_COMPARE_PYTHON || path.join(root,'.local/game-compare-venv/Scripts/python.exe');
+    const fixtureScript = [
+      'import sys; from pathlib import Path; import numpy as np; import imagecodecs as c',
+      'sys.path.insert(0,str(Path(sys.argv[1])/"tools")); import game_compare_hdr as h',
+      'rgb=np.ones((144,256,4),np.float32); rgb[...,:3]=np.linspace(.05,10,256)[None,:,None]',
+      'intent,_=h.hdr_intent(rgb)',
+      'data=h.encode(intent,h.tonemap_sdr(rgb),dict(quality=95,gainmap_scale=2,gainmap_quality=95,gainmap_channels=3,gainmap_gamma=1,shared_target_peak_nits=800))',
+      'out=Path(sys.argv[2]); (out/"embedded.jpg").write_bytes(data); (out/"base.jpg").write_bytes(c.ultrahdr_decode_jpeg(data)[0])'
+    ].join('\n');
+    execFileSync(python,['-B','-c',fixtureScript,root,directory],{stdio:'pipe'});
+    await page.setViewportSize({width:1280,height:900});
+    await page.setContent('<body style="margin:0"><img id="embedded" src="'+pathToFileURL(path.join(directory,'embedded.jpg')).href+'"><img id="base" src="'+pathToFileURL(path.join(directory,'base.jpg')).href+'"></body>');
+    await page.locator('img').evaluateAll(nodes=>Promise.all(nodes.map(node=>node.decode())));
+    assert.deepEqual(await page.locator('#embedded').screenshot(),await page.locator('#base').screenshot(),'Ultra HDR automatically falls back to the same primary JPEG in forced SDR');
+    console.log('PASS: real synthetic gain-map JPEG vs extracted base, forced SDR browser pixel equality; no physical HDR validation');
     console.log('PASS: synthetic JPEG/SVG HDR routing, default source, bilingual conditional hints, HDR/SDR mode and full-image links, safe paths, race recovery, fixed desktop/mobile clip geometry; no physical HDR validation');
     const hostile = '<img src=x onerror="globalThis.injected=true">';
     await open([{...base,game:hostile,scene:hostile,metadata:{gpu:hostile},warnings:[hostile]}]); await ready();
