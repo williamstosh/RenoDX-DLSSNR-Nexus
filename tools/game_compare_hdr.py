@@ -143,7 +143,7 @@ def prepare_pair(off_path, on_path, quality=95, *, gainmap_scale=1, gainmap_qual
                "jpegxr_version": codecs.jpegxr_version(), "ultrahdr_version": codecs.ultrahdr_version(),
                "module_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     notes = ["Ultra HDR JPEG: HDR display requires a compatible browser, OS HDR setting and display; otherwise the embedded SDR base is shown.",
-             "SDR/README previews are tone-mapped with the same fixed curve; they are not HDR screenshots."]
+             "SDR previews are tone-mapped with the same fixed curve; they are not HDR screenshots."]
     if off_rounded or on_rounded:
         notes.append(f"Rec.2020 rounding residuals within {ROUNDING_TOLERANCE:g} were clamped to zero: OFF {off_rounded}, ON {on_rounded} channels.")
     return {"off": off, "on": on, "off_hdr": off_hdr, "on_hdr": on_hdr,
@@ -188,6 +188,42 @@ def roundtrip_metrics(data, reference):
             "reference_max_channel_nits": float(reference[..., :3].max()) * UHDR_WHITE,
             "sample_count_channels": int(error.size),
             "units": "linear Rec.2020, 1.0 = 203 nits; lossy JPEG/gainmap, not pixel-identical"}
+
+
+def readme_options(target_nits, quality=90):
+    if not isinstance(quality, int) or not 1 <= quality <= 100:
+        raise ValueError("README quality must be 1–100.")
+    if not math.isfinite(target_nits) or not UHDR_WHITE <= target_nits <= 10000:
+        raise ValueError("README target peak must be 203–10000 nits.")
+    return {"quality": quality, "gainmap_quality": quality, "gainmap_scale": 1,
+            "gainmap_gamma": 1, "gainmap_channels": 3,
+            "shared_target_peak_nits": target_nits, "full_resolution": True,
+            "imagecodecs_version": codecs.__version__, "ultrahdr_version": codecs.ultrahdr_version(),
+            "module_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+
+
+def readme_from_jpeg(data, quality=90):
+    """Reuse the approved HDR reconstruction and embedded SDR base without retone."""
+    source = inspect(data)
+    # libultrahdr ultrahdr_api.h specifies hdr_capacity_max in linear scale.
+    target = float(source["gainmap_metadata"]["hdr_capacity_max"]) * UHDR_WHITE
+    options = readme_options(target, quality)
+    base, _, _ = codecs.ultrahdr_decode_jpeg(data)
+    with Image.open(io.BytesIO(base)) as image:
+        sdr = np.asarray(image.convert("RGBA"))
+    reference = codecs.ultrahdr_decode(data)
+    return reference, sdr, {**options, "source": "complete ON JPEG float HDR decode + embedded SDR base; no retone",
+                            "source_sha256": hashlib.sha256(data).hexdigest(),
+                            "lossy_reencode": True, "source_hdr_inspect": source}
+
+
+def write_readme(path, reference, sdr, options):
+    data = path.read_bytes() if path.exists() else encode(reference, sdr, options)
+    result = inspect(data)
+    result["roundtrip"] = roundtrip_metrics(data, reference)
+    if not path.exists():
+        path.write_bytes(data)
+    return result
 
 
 def write_pair(directory, bundle, overlay=None, sdr_preview=None):

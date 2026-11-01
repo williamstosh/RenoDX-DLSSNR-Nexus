@@ -58,6 +58,14 @@ class Comparisons(unittest.TestCase):
     def approve_args(self, candidate, *extra):
         return gc.parser().parse_args(["approve", "--candidate", str(candidate), *extra])
 
+    def test_readme_hdr_requires_hdr_and_quality_is_bounded(self):
+        with self.assertRaisesRegex(gc.CompareError, "--readme-hdr requires --hdr"):
+            self.generate("--readme-hdr")
+        for command in (["generate", "--off", str(self.off), "--on", str(self.on)], ["optimize", "--scene", "test"]):
+            for value in ("0", "101", "90.5"):
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    gc.parser().parse_args([*command, "--readme-quality", value])
+
     def public_fixture(self):
         public = self.root / "public"
         public.mkdir()

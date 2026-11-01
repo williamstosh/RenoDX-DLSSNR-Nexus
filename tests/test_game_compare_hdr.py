@@ -203,6 +203,87 @@ class HdrComparisons(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "finite and positive"):
             self.generate("--gainmap-gamma", "nan")
 
+    def test_full_resolution_hdr_readme_from_original_without_pair_changes(self):
+        self.original = np.ones((144, 1664, 4), np.float32)
+        self.original[..., :3] = np.linspace(.05, 10, 1664)[None, :, None]
+        self.other = self.original.copy()
+        self.other[48:80, 100:140, :3] *= .98
+        self.save_sources()
+        baseline = self.generate()
+        candidate = self.generate("--readme-hdr")
+        self.assertEqual(candidate, self.generate("--readme-hdr"))
+        report = gc.verify_candidate(candidate)
+        self.assertEqual(report["scene"]["readme"], "readme.jpg")
+        options = report["parameters"]["readme"]
+        self.assertEqual(options["source_sha256"], gc.digest(self.on.read_bytes()))
+        self.assertFalse(options["lossy_reencode"])
+        self.assertTrue(options["full_resolution"])
+        self.assertEqual((options["quality"], options["gainmap_quality"], options["gainmap_scale"],
+                          options["gainmap_gamma"], options["gainmap_channels"]), (90, 90, 1, 1, 3))
+        self.assertEqual(options["shared_target_peak_nits"], 800)
+        for side in ("off", "on"):
+            self.assertEqual((baseline / (side + ".jpg")).read_bytes(), (candidate / (side + ".jpg")).read_bytes())
+        output = report["hdr_outputs"]["readme"]
+        self.assertEqual(output["dimensions"], [1664, 144])
+        self.assertEqual(output["gainmap_dimensions"], [1664, 144])
+        self.assertLess(output["roundtrip"]["linear_rgb_mean_absolute_error"], .06)
+        data = (candidate / "readme.jpg").read_bytes()
+        with Image.open(io.BytesIO(data)) as ordinary:
+            self.assertEqual(ordinary.size, (1664, 144))
+            self.assertFalse(ordinary.getexif())
+            self.assertEqual(ordinary.convert("RGB").size, (1664, 144))
+        changed = self.generate("--readme-hdr", "--readme-quality", "85")
+        self.assertNotEqual(changed, candidate)
+        self.assertEqual(gc.verify_candidate(changed)["parameters"]["readme"]["gainmap_quality"], 85)
+
+    def test_hdr_readme_approval_and_optimize_preserve_pair_and_backup(self):
+        candidate = self.generate("--readme-hdr")
+        public = self.root / "public"
+        public.mkdir()
+        template = (gc.PUBLIC / "index.html").read_text(encoding="utf-8")
+        (public / "index.html").write_text(gc.render_page(template, []), encoding="utf-8")
+        gc.write_json(public / "catalog.json", {"schema": 1, "scenes": []})
+        with patch.object(gc, "PUBLIC", public), patch.object(gc, "ROOT", self.root), contextlib.redirect_stdout(io.StringIO()) as stdout:
+            approve = gc.parser().parse_args(["approve", "--candidate", str(candidate)])
+            gc.approve(approve)
+            self.assertIn("readme.jpg", stdout.getvalue())
+            self.assertNotIn("readme.webp", stdout.getvalue())
+            approve.apply = approve.reviewed = approve.publish_authorized = approve.ack_warnings = True
+            gc.approve(approve)
+            entry = gc.approved_catalog()["scenes"][0]
+            before = {side: (public / entry[side]).read_bytes() for side in ("off", "on")}
+            opt = gc.parser().parse_args(["optimize", "--scene", entry["id"], "--readme-hdr",
+                                         "--delete-old-assets", "--output", str(self.root / "tmp/optimized")])
+            optimized = gc.optimize(opt)
+            self.assertEqual(optimized, gc.optimize(opt))
+            report = gc.read_json(optimized / "report.json")
+            options = report["parameters"]["readme"]
+            self.assertTrue(options["lossy_reencode"])
+            self.assertEqual(options["source_sha256"], gc.digest(before["on"]))
+            self.assertAlmostEqual(options["shared_target_peak_nits"], 800, places=3)
+            self.assertEqual(report["hdr_outputs"]["readme"]["gainmap_dimensions"], [256, 144])
+            self.assertLess(report["hdr_outputs"]["readme"]["roundtrip"]["linear_rgb_mean_absolute_error"], .06)
+            with patch.object(hdr, "tonemap_sdr", side_effect=AssertionError("No retone allowed")):
+                reference, base, _ = hdr.readme_from_jpeg(before["on"])
+            with Image.open(io.BytesIO(before["on"])) as source:
+                np.testing.assert_array_equal(base, np.asarray(source.convert("RGBA")))
+            np.testing.assert_array_equal(reference, codecs.ultrahdr_decode(before["on"]))
+            opt.apply = True
+            with self.assertRaisesRegex(gc.CompareError, "human review"):
+                gc.optimize(opt)
+            opt.reviewed = opt.publish_authorized = True
+            (self.root / "README.md").write_text("docs/compare/" + entry["readme"], encoding="utf-8")
+            with self.assertRaisesRegex(gc.CompareError, "README still references"):
+                gc.optimize(opt)
+            (self.root / "README.md").write_text("Updated image links", encoding="utf-8")
+            gc.optimize(opt)
+            updated = gc.approved_catalog()["scenes"][0]
+            self.assertEqual(updated["id"], entry["id"])
+            self.assertTrue(updated["readme"].endswith("/readme.jpg"))
+            self.assertEqual(before, {side: (public / updated[side]).read_bytes() for side in ("off", "on")})
+            self.assertFalse((public / entry["readme"]).exists())
+            self.assertEqual(next((optimized / "backup").rglob("readme.jpg")).read_bytes(), (candidate / "readme.jpg").read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()

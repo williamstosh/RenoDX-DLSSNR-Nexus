@@ -64,11 +64,14 @@ HDR 默认公开三张图：off.jpg、on.jpg 和完整 ON 的 readme.webp（SDR�
 | --- | --- |
 | `off.jpg`、`on.jpg` | 全分辨率 Ultra HDR JPEG，内置 SDR 底图，默认交互源 |
 | `readme.webp` | 完整 ON 的 SDR 缩略图，最多 1600 像素宽、质量 90，供 README 使用 |
+| `readme.jpg` | 仅 `--readme-hdr` 替代 WebP：完整 ON、全分辨率 Ultra HDR，无分割／标签／水印 |
 | `off-sdr.webp`、`on-sdr.webp` | 仅 --sdr-fallback 生成的本地无损 SDR 备用图 |
 | `preview-hdr.jpg` | 仅 --hdr-preview 生成的本地 HDR 拼接图 |
 | `preview.webp` | 本地带标签的 SDR 分割预览 |
 
-Ultra HDR JPEG 内置 SDR 底图，不支持 HDR 的环境自动回退，无需独立 SDR 文件。页面对保留 sdr_off／sdr_on 的旧清单和显式 fallback 候选继续提供 HDR／SDR 切换；新三图记录直接显示 JPEG。普通 JPEG 解码和强制 SDR 浏览器测试覆盖底图一致性。实际 HDR 需要浏览器、操作系统 HDR 设置和显示器共同支持，尚未进行物理 HDR 验收；dynamic-range: high 仅作环境提示。README 使用完整 ON 的 SDR 缩略图，HDR 内容通过交互页面与全图审核。
+Ultra HDR JPEG 内置 SDR 底图，不支持 HDR 的环境自动回退，无需独立 SDR 文件。页面对保留 sdr_off／sdr_on 的旧清单和显式 fallback 候选继续提供 HDR／SDR 切换；新三图记录直接显示 JPEG。普通 JPEG 解码和强制 SDR 浏览器测试覆盖底图一致性。实际 HDR 需要浏览器、操作系统 HDR 设置和显示器共同支持，尚未进行物理 HDR 验收；dynamic-range: high 仅作环境提示。README 默认使用完整 ON 的 SDR 缩略图，也可显式选择下述 Ultra HDR JPEG 试验。
+
+`generate --hdr --readme-hdr` 从同一原始 JXR 的 ON HDR 数据及 SDR 底图直接编码 `readme.jpg`，不经过 ON JPEG 再编码。保留完整图像和增益图分辨率，无叠加标记；底图与增益图默认质量均为 90，增益图倍率 1、gamma 1、三通道，目标峰值沿用 OFF／ON 共享值。`--readme-quality 1..100` 同时调整 README 底图与增益图质量（默认 90，也适用于普通 WebP），不改变对照全图参数。未选择 `--readme-hdr` 时仍输出原 SDR WebP；此标志在 generate 中要求 `--hdr`。报告记录来源哈希、质量／倍率／完整分辨率／目标峰值、增益图检查和 HDR 浮点回解误差，不复制源 EXIF。README 的实际 HDR 呈现仍待物理显示器审核。
 
 两图共享以下处理：scRGB 80 nit 参考白换算、Rec.709→Rec.2020 线性色域转换、Ultra HDR 203 nit 参考白、由两图最大通道共同确定的目标峰值、固定曝光 1／白点 11.2 的 Hable SDR 曲线及编码质量。不会分别按各图峰值调曝光或归一化。扩展 scRGB 负通道通过色域转换尽量保留；Rec.2020 中绝对值不超过 1e-5 的负数值残差归零并记录，超出该范围则拒绝，不擅自裁掉色域。SDR 底图的色域／亮度压缩不冒充 HDR 原图。
 
@@ -101,7 +104,9 @@ python tools/game-compare.py optimize --scene SCENE_ID --preserve-hdr-pair `
 
 运行 python tools/game-compare.py optimize --scene <已有scene-id> --preserve-hdr-pair --game-en <英文游戏名> --scene-en <英文场景名> --delete-old-assets。默认仅生成本地 readme.webp、单份 report.json 和 add／update／delete 字节计划。原 OFF／ON JPEG 路径和字节复用，从 ON JPEG 内嵌 SDR base 生成缩略图，置于该 scene 的 revisions/<内容标识>/ 子目录；scene ID、审核状态和原输入身份保持不变。可选 game_en／scene_en 缺省时回退原名称，网页和 README 均支持。
 
-先 dry-run 并审核缩略图及计划，由 README 维护者更新旧图片引用，再在同次命令加 --apply --reviewed --publish-authorized 执行。--delete-old-assets 仅选择本场景不再被清单引用的旧派生图；省略则保留旧文件。README 仍引用旧图时阻止删除。删除前逐文件备份至本地候选 backup/ 并校验哈希，核对所有新引用后精确删除。其他场景及原候选／报告保留；不复制或重编码 JPEG，不重写 Git 历史。
+可选 `optimize --scene SCENE_ID --readme-hdr --readme-quality 90` 改为生成全分辨率 `readme.jpg`，编码参数与上方 README HDR 相同。从已批准 ON JPEG 浮点解码 HDR，并读取其内嵌 SDR 底图，不再次色调映射；目标峰值为原增益图元数据的线性 `hdr_capacity_max × 203 nit`，不是 log2。此路径有一次额外有损重编码，报告明确记录来源 JPEG 哈希及代际损失；原 OFF／ON 字节不变。若原 JXR 可用，优先从原图 generate，一次编码后审核 README 图片。新旧 README 格式共用现有计划、审核、授权、备份及删除流程；保留旧 WebP 可随时回退。
+
+先 dry-run 并审核 README 图片及计划，由 README 维护者更新旧图片引用，再在同次命令加 --apply --reviewed --publish-authorized 执行。--delete-old-assets 仅选择本场景不再被清单引用的旧派生图；省略则保留旧文件。README 仍引用旧图时阻止删除。删除前逐文件备份至本地候选 backup/ 并校验哈希，核对所有新引用后精确删除。其他场景及原候选／报告保留；不复制或重编码原 OFF／ON JPEG，不重写 Git 历史。
 
 确需替换全图编码时，先从原输入生成新候选，再以 approve --candidate <新候选> --replace-scene <已有scene-id> --original-candidate <原候选> 查看 revision 计划。工具核对原输入哈希及当前公开图片；apply 仍需审核和公开授权，旧文件默认保留。
 
@@ -118,7 +123,7 @@ python tools/game-compare.py readme --scene "<清单中的场景ID>" `
   --pages-url "https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/"
 ```
 
-命令先核验线上页面和场景，再生成本地 readme-candidate.md。审核后加 --apply --publish-authorized 才修改标记区。中英共用 readme.webp，缺少完整 ON 缩略图时拒绝并提示先运行 optimize，不回退半幅 preview。仅图片链接到对应 #scene=，不另附重复文字链接。英文显示名缺省时回退原名称，其他 README 内容保留。Git／main 合并／部署分别授权。
+命令先核验线上页面和场景，再生成本地 readme-candidate.md。审核后加 --apply --publish-authorized 才修改标记区。中英共用清单指定的 readme.webp 或 readme.jpg，缺少完整 ON 图片时拒绝并提示先运行 optimize，不回退半幅 preview。仅图片链接到对应 #scene=，不另附重复文字链接。英文显示名缺省时回退原名称，其他 README 内容保留。Git／main 合并／部署分别授权。
 
 ### 验证
 
@@ -150,7 +155,9 @@ Install optional codecs with `python -m pip install -r tools/game-compare-hdr-re
 
 New HDR candidates publish only off.jpg/on.jpg (full-resolution Ultra HDR JPEG with embedded SDR bases) and readme.webp (complete ON SDR thumbnail, no split or watermark, maximum width 1600, WebP quality 90). The labeled SDR split preview stays local. --hdr-preview optionally generates a local HDR split; --sdr-fallback optionally generates local lossless SDR alternatives. Neither is copied publicly by default. HDR annotations are composed in linear light before encoding a new gain map.
 
-Ultra HDR JPEG includes an SDR base that browsers without HDR support show automatically, without separate SDR downloads. Legacy catalogs with sdr_off/sdr_on and explicit local fallback candidates retain manual HDR/SDR switching; new three-image records use JPEG directly. Ordinary JPEG decoding and forced-SDR browser tests verify base-image consistency. Physical HDR presentation requires compatible browser, OS settings and display; physical HDR acceptance remains outstanding. The dynamic-range: high hint reports environment capability only. README uses the complete ON SDR thumbnail; review HDR through the viewer/full-image links.
+Ultra HDR JPEG includes an SDR base that browsers without HDR support show automatically, without separate SDR downloads. Legacy catalogs with sdr_off/sdr_on and explicit local fallback candidates retain manual HDR/SDR switching; new three-image records use JPEG directly. Ordinary JPEG decoding and forced-SDR browser tests verify base-image consistency. Physical HDR presentation requires compatible browser, OS settings and display; physical HDR acceptance remains outstanding. The dynamic-range: high hint reports environment capability only. README defaults to the complete ON SDR thumbnail; the following optional Ultra HDR JPEG export is available for experiments.
+
+`generate --hdr --readme-hdr` replaces the WebP with `readme.jpg`, encoded directly from the original ON JXR HDR data and SDR base, without an intermediate ON JPEG decode. It keeps the complete image and gain map at full resolution, without splits, labels or watermarks. Base and gain-map quality default to 90, gain-map scale to 1, gamma to 1, and channels to three; the target peak remains the shared OFF/ON value. `--readme-quality 1..100` changes both README qualities (default 90; also applies to SDR WebP), independently of comparison-image settings. Without `--readme-hdr`, SDR WebP remains the default; generate requires `--hdr` with this flag. Reports record the source hash, quality/scale/full resolution/target peak, gain-map inspection and HDR floating-point roundtrip error. Source EXIF is excluded. Physical HDR presentation in README remains unverified.
 
 Both sides use the same scRGB 80-nit reference conversion, linear Rec.709-to-Rec.2020 matrix, Ultra HDR 203-nit reference, shared peak computed from the maximum channel across both sources, fixed Hable SDR exposure 1/white 11.2 and encoder settings. There is no independent exposure normalization. Extended scRGB colors are preserved through the wider gamut; tiny negative Rec.2020 residuals within 1e-5 are zeroed and counted, while larger out-of-gamut values fail. SDR tone/gamut compression is not presented as the original HDR.
 
@@ -177,6 +184,8 @@ python tools/game-compare.py optimize --scene SCENE_ID --preserve-hdr-pair `
 
 Run python tools/game-compare.py optimize --scene <existing-id> --preserve-hdr-pair --game-en <English-game> --scene-en <English-scene> --delete-old-assets. Default behavior only prepares a local readme.webp, one report.json and an add/update/delete byte plan with retained JPEG hashes. Both JPEGs retain their exact paths and bytes without copying or re-encoding. The thumbnail comes from the primary SDR image of ON JPEG, including Pillow MPO containers, under the scene revisions/<content-id>/ directory. Scene ID, approved status and original input identity remain unchanged; English fields are optional.
 
+Optional `optimize --scene SCENE_ID --readme-hdr --readme-quality 90` generates full-resolution `readme.jpg` with the same README HDR settings above. It uses the approved ON JPEG floating-point HDR decode and embedded SDR base without retone. Target peak is the original gain-map metadata's linear `hdr_capacity_max × 203 nits`, not log2. This adds one lossy encoding generation, explicitly recorded with the source JPEG hash; original OFF/ON bytes stay unchanged. When original JXR files are available, prefer generate from those inputs for a single encode, then review the README image. Both formats use the existing plan, review, authorization, backup and deletion flow; retaining old WebP files allows rollback.
+
 Review the dry-run thumbnail and plan, have the README maintainer update old image links, then apply once with --apply --reviewed --publish-authorized. --delete-old-assets explicitly selects derivatives no longer referenced by any scene; omit it to retain files. Remaining README references block deletion. Selected old files are backed up under the local candidate backup/ directory and hash-checked before public changes. New references are verified before exact deletion. Other scenes, original candidates/reports and inputs remain. No Git operation, history rewriting or deployment is performed.
 
 For a reviewed full-image re-encode, generate from the same original inputs, then plan approve --candidate <new-candidate> --replace-scene <existing-id> --original-candidate <original-candidate>. Input hashes and current public assets are checked; new images use a revision directory while the original deep-link ID stays stable. Applying requires review and publication authorization; old files remain by default.
@@ -185,6 +194,6 @@ For a reviewed full-image re-encode, generate from the same original inputs, the
 
 The [comparison gallery](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/) is live, published through **Deploy from a branch → main → /docs**. After review and public-copy authorization, merge selected assets into `main` through the project workflow; Pages updates automatically. `docs/index.html` and `.nojekyll` provide the entry point with relative resource paths. No new Actions workflow is required. Branch publishing exposes tracked content under `/docs`; ignored internal material and candidates stay outside the published tree.
 
-Once selected scenes are live, run readme --scene <approved-id> --pages-url <repository-Pages-compare-URL>. It verifies live IDs and prepares artifacts/game-comparisons/readme-candidate.md; add --apply --publish-authorized after review. Select up to three scenes. Both languages share readme.webp, with only the image linked and no redundant text link. Legacy records missing a complete ON thumbnail are rejected with instructions to run optimize; split previews are never used as fallback. English names fall back to original names. Other README content is preserved. Git operations, main merges and deployment require separate authorization.
+Once selected scenes are live, run readme --scene <approved-id> --pages-url <repository-Pages-compare-URL>. It verifies live IDs and prepares artifacts/game-comparisons/readme-candidate.md; add --apply --publish-authorized after review. Select up to three scenes. Both languages share the catalog-selected readme.webp or readme.jpg, with only the image linked and no redundant text link. Legacy records missing a complete ON image are rejected with instructions to run optimize; split previews are never used as fallback. English names fall back to original names. Other README content is preserved. Git operations, main merges and deployment require separate authorization.
 
 Run the verification commands above. Image tests need Pillow; HDR tests and the browser gain-map fixture also need the optional HDR codecs. Browser tests use Playwright/Chromium and the existing local Python virtual environment, or GAME_COMPARE_PYTHON. Set PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH to an existing Chromium/Edge/Chrome executable. These are test dependencies, not viewer dependencies. Fixtures are synthetic; browser/touch emulation does not validate physical HDR or mobile hardware. The viewer supports pointer/touch dragging, keyboard arrows/Home/End, full OFF/ON, reset/double-click, large/fullscreen views, scene history and Chinese/English. The owner makes the final visual decision.
