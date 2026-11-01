@@ -43,6 +43,8 @@ Quick 使用 Cyber Neon／简体中文，包含四页真实“展开全部／折
 
 ## 产物与故障
 
+README 的紧凑组合图可运行 `python tools/compose-readme-ui.py`，从已经审核的中英文文档单页生成候选，不重新捕获或改变生产控件。候选位于 `artifacts/ui-snapshots/readme-collage/`；报告记录源图哈希、裁剪区域、位置和压缩参数。逐张检查文本、完整控件组及语言后，再将 `overview-zh.webp`／`overview.webp` 复制到 `docs/images/ui/`。指南继续引用原始单页；组合图不替代完整菜单或实机验收。
+
 仅完整成功且源码输入未变化的候选可进入 latest。失败保留 `.work-*`／`.pending-*` 和 `last-failure.json`；旧 latest 不受影响，部分渲染的总览标记 partial 并列出失败项。
 
 默认 Standard 成功后，登记的编译中间文件由现有测试 helper 清理；已退出且成功的本次预览工作目录在成品、日志和输入身份保存后按拥有权清单精确清理，原始 JSON／RGBA／可执行文件不进入长期成品。轮换只清理本系统拥有、未被修改的旧 Standard 成品；额外文件、哈希变化、重解析点、清理拒绝均保留并报告。Full／Acceptance 保留工作证据；Acceptance 不自动清理。失败证据或受保护的旧版本需按原项目归档规范人工选择，不自动扫描历史。

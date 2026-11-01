@@ -4,7 +4,7 @@
 
 [简体中文](#简体中文) · [English](#english)
 
-[**玩家指南 / User Guide**](docs/USER_GUIDE.md) · [**显卡兼容性 / GPU Compatibility**](#zh-gpu) · [**问题反馈 / GitHub Issues**](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/issues)
+[下载最新正式版 / Download latest stable](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/latest)
 
 ## 简体中文
 
@@ -13,26 +13,24 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 将最多四层 NR 串成顺序处理链，为每层独立选择模型、调整外观和编辑结果，组合你想要的画面。
 插件不执行降噪。
 
-**[下载 v0.2.0（Windows x64 ZIP）](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip)** · **[查看最新正式版](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/latest)**
+<a id="zh-index"></a>
 
-本页介绍 **v0.2.0 正式版**。[SHA-256 校验文件](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip.sha256)与 [Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.0) 可用于核对下载；GitHub 的 **Source code** ZIP 是源码，不是插件安装包。
+**快速索引：** [实机画面](#zh-comparisons) · [核心特色](#zh-features) · [菜单界面](#zh-interface) · [下载、安装与使用](#zh-install) · [兼容性](#zh-compatibility) · [问题反馈](#zh-feedback) · [玩家指南](docs/USER_GUIDE.md#zh-start) · [开发者构建](#zh-build) · [来源与许可](#zh-sources)
 
-<a id="zh-gpu"></a>
-### 显卡兼容性
+<a id="zh-comparisons"></a>
+### 游戏实机画面对比
 
-先按显卡选择 NR Runtime，再安装 Nexus。以下为系列级速查，兼容性仍取决于具体 Runtime、驱动、游戏及图形 API。
+点击图片进入同场景 OFF／ON 滑块对比；也可 Ctrl／Cmd+点击在新标签页打开。更多场景见[实机对比图库](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/)。
 
-| 显卡系列 | Runtime 选择 |
-| --- | --- |
-| **GeForce RTX 50** | 原生 NVIDIA Runtime，属于 [NVIDIA 官方硬件支持范围](https://www.nvidia.com/en-us/geforce/news/dlss-5-3d-guided-neural-rendering/)。 |
-| **GeForce RTX 40／30／20** | 可尝试社区兼容 Runtime，优先 DX11／DX12。 |
-| **AMD／Intel** | 暂无本项目确认可替换 NVIDIA NR DLL 的方案。 |
+<!-- game-compare:zh:start -->
 
-[RHI](https://github.com/RankFTW/RHI) 的 [Runtime 清单](https://github.com/RankFTW/RHI/blob/main/dlss_manifest.json)提供 **`310.9.16 (20/30/40/50)`**（2026-11-01 核对）。这是社区兼容版本，不能等同于 NVIDIA 官方支持；其具体来源与支持范围应随上游版本核对。
-[openNR](https://github.com/clshortfuse/openNR) 为 RTX 20／30／40 提供兼容代码，是使用自备 NVIDIA DLL 的**源码构建工具**，不分发 NVIDIA DLL；[RTX 30 优化项目](https://github.com/lmxxf/DLSS5-RTX-3080-laptop)目前仅针对 **Preset 2／Small**，不能据此推断完整 A/B、多 Pass、FG 或 Vulkan 支持，其整合包也并非 Nexus 安装包。
+巫师3 — 诺维格瑞 · 教主广场
 
-只要社区 Runtime 保持 Nexus 所需的 NGX 接口和行为兼容，原则上可沿用现有插件主体；实际仍须确认模型、处理位置和功能组合。上游架构代码与系列标签不是全型号、全游戏验证。本项目已有[限定范围的运行与自动化验证](docs/USER_GUIDE.md#zh-paths)，尚未完成 RTX 20／30／40／50 全系列兼容矩阵；openNR 也未声明其 CUDA／Vulkan 后端兼容。
+[![巫师3 — 诺维格瑞 · 教主广场 — 左右拖动查看对比](docs/compare/assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/revisions/6a1f84b87f324fc7/readme.webp)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-35e7d20e1c%2Fbecc86134f6282d0)
 
+<!-- game-compare:zh:end -->
+
+<a id="zh-features"></a>
 ### 核心特色
 
 以下功能均包含在 0.2.0 中；特殊组合的兼容性条件见指南。
@@ -46,41 +44,20 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 | **三套官方方案＋三个自定义槽＋共享方案库** | 从轻量、均衡、极致开始，将精心调好的一套或多套配置存入共享方案库；换游戏时导入后即可一键应用复用，省去逐项重调，也能导出分享。[方案管理](docs/USER_GUIDE.md#zh-presets) |
 | **看清开销，再做取舍** | F11 常驻监视器显示帧率、NR GPU 和逐层信息；F8 切换精简／详细与趋势。手动 GPU A/B 比较一层尺寸调整前后的成本，帮助找到昂贵的层；画质仍由你在游戏中比较。[监视器与 GPU 对比](docs/USER_GUIDE.md#zh-diagnostics) |
 
-增加层数会增加 GPU 工作量，建议从单层开始。普通 Present 会处理游戏 HUD，可在兼容场景中配合可选／中性深度运动用于无 DLSS 的游戏；两层不同尺寸要求确认 FG 关闭。原生 Pre-FG 两层异尺寸暂不支持；Upscaled → Present 仍是默认关闭的受限实验，其他混合链和 Vulkan 边界见[完整兼容表](docs/USER_GUIDE.md#zh-paths)。
+增加层数会增加 GPU 工作量，建议从单层开始；阶段与 FG 组合见[兼容性](#zh-compatibility)。
 
 界面支持 **15 种语言、七套主题**，可跟随 ReShade 语言；详细操作与参数见[玩家指南](docs/USER_GUIDE.md#zh-start)。
 
-![画质：模型、工作分辨率与处理位置](docs/images/ui/quality-zh.webp)
+<a id="zh-interface"></a>
 
-![叠层：独立模型、工作分辨率与外观结果](docs/images/ui/multipass-zh.webp)
-
-![方案库与 F11 运行监视器](docs/images/ui/presets-zh.webp)
+![NR Nexus 界面总览](docs/images/ui/overview-zh.webp)
 
 *v0.2.0 生产 UI 离屏示例；监视器状态及数值为合成数据。*
 
-### 游戏实机画面对比
-
-这里精选展示审核后的同场景 NR OFF／ON 对比：左 OFF、右 ON 的静态预览可直接查看，并链接至拖动对比页面。
-
-[截图处理与本地预览](docs/GAME_COMPARISONS.md#简体中文)
-
-<!-- game-compare:zh:start -->
-
-巫师3 — 诺维格瑞 · 教主广场
-
-[![巫师3 — 诺维格瑞 · 教主广场](docs/compare/assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/preview.webp)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-35e7d20e1c%2Fbecc86134f6282d0)
-
-[左右拖动查看对比](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-35e7d20e1c%2Fbecc86134f6282d0)
-
-巫师3 — 威伦 · 驼背泥沼
-
-[![巫师3 — 威伦 · 驼背泥沼](docs/compare/assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/preview.webp)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-4d71462ab3%2F9d0c90e0d157a5f5)
-
-[左右拖动查看对比](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-4d71462ab3%2F9d0c90e0d157a5f5)
-
-<!-- game-compare:zh:end -->
-
+<a id="zh-install"></a>
 ### 下载、安装与使用
+
+当前正式版 **v0.2.0**：[Windows x64 插件 ZIP](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip) · [SHA-256](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip.sha256) · [Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.0)。GitHub 的 **Source code** ZIP 是源码，不是安装包。
 
 **需要：** Windows x64、兼容 **ReShade API 18** 的[完整 Add-on 支持版 ReShade](https://reshade.me/)、
 合法取得的兼容 NVIDIA **`nvngx_dlssnr.dll`**，以及该 Runtime 支持的显卡和驱动。
@@ -114,7 +91,7 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 
 所有按键均可修改：菜单键在 **ReShade 设置**中调整，其余在 **NR Nexus → 高级 → 快捷键与截图**中调整；F9／F10 还需分别开启方案轮换。可能与游戏或其他工具重键，请按需更改；[详细说明](docs/USER_GUIDE.md#zh-capture)。
 
-### 5 分钟快速上手
+#### 5 分钟快速上手
 
 选一个固定场景，先体验方案，再一次改一项。以下按默认按键说明；改过绑定时使用你自己的按键。
 
@@ -124,9 +101,26 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 4. **保存个人方案。** 后三个槽是本游戏的自定义槽。左键空槽，选**将当前设置保存为此方案**；之后编辑该选中方案会自动保存。已有内容的槽左键应用，右键可重命名或清空。想跨游戏复用一套或多套精调配置，用**管理方案 → 方案库**保存；换游戏后选中库内方案，点**预览所选方案**，检查差异后点**确认并应用方案**即可。[方案操作](docs/USER_GUIDE.md#zh-presets)
 5. **观察性能。** 按 **F11** 显示监视器，用 **F8** 切换视图或趋势，比较切换方案前后的 NR GPU 开销与流畅度。层数越多、工作尺寸越大通常越费 GPU；挑选自己能接受的画质与成本。更细的逐层成本比较见[GPU A/B](docs/USER_GUIDE.md#zh-gpu-ab)，快捷键用途见上表。
 
+<a id="zh-compatibility"></a>
 ### 兼容性与已知限制
 
-兼容性取决于游戏、图形 API、NR Runtime、显卡与驱动。本项目尚无通用的最低显卡／驱动清单。
+<a id="zh-gpu"></a>
+#### 显卡与 Runtime 兼容性
+
+先按显卡选择 NR Runtime，再安装 Nexus。以下为系列级速查，兼容性仍取决于具体 Runtime、驱动、游戏及图形 API。
+
+| 显卡系列 | Runtime 选择 |
+| --- | --- |
+| **GeForce RTX 50** | 原生 NVIDIA Runtime，属于 [NVIDIA 官方硬件支持范围](https://www.nvidia.com/en-us/geforce/news/dlss-5-3d-guided-neural-rendering/)。 |
+| **GeForce RTX 40／30／20** | 可尝试社区兼容 Runtime，优先 DX11／DX12。 |
+| **AMD／Intel** | 暂无本项目确认可替换 NVIDIA NR DLL 的方案。 |
+
+[RHI](https://github.com/RankFTW/RHI) 的 [Runtime 清单](https://github.com/RankFTW/RHI/blob/main/dlss_manifest.json)提供 **`310.9.16 (20/30/40/50)`**（2026-11-01 核对）。这是社区兼容版本，不能等同于 NVIDIA 官方支持；其具体来源与支持范围应随上游版本核对。
+[openNR](https://github.com/clshortfuse/openNR) 为 RTX 20／30／40 提供兼容代码，是使用自备 NVIDIA DLL 的**源码构建工具**，不分发 NVIDIA DLL；[RTX 30 优化项目](https://github.com/lmxxf/DLSS5-RTX-3080-laptop)目前仅针对 **Preset 2／Small**，不能据此推断完整 A/B、多 Pass、FG 或 Vulkan 支持，其整合包也并非 Nexus 安装包。
+
+只要社区 Runtime 保持 Nexus 所需的 NGX 接口和行为兼容，原则上可沿用现有插件主体；实际仍须确认模型、处理位置和功能组合。上游架构代码与系列标签不是全型号、全游戏验证。本项目已有[限定范围的运行与自动化验证](docs/USER_GUIDE.md#zh-paths)，尚未完成 RTX 20／30／40／50 全系列兼容矩阵；openNR 也未声明其 CUDA／Vulkan 后端兼容。
+
+#### 图形 API 与功能组合
 
 | 使用情况 | 选择时需要了解 |
 | --- | --- |
@@ -140,9 +134,12 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 - 独立工作分辨率仅支持部分 DX11／DX12 组合；同阶段三层以上仍需相同工作尺寸。设置前参阅[叠层指南](docs/USER_GUIDE.md#zh-multipass)。
 - 语言显示依赖 ReShade 已加载的字体；缺字处理见[高级设置](docs/USER_GUIDE.md#zh-advanced)。
 
+- 可选／中性深度运动可用于兼容的无 DLSS 游戏；两层不同尺寸需确认 FG 关闭。原生 Pre-FG 两层异尺寸暂不支持，Upscaled → Present 默认关闭，属于受限实验。见[完整兼容表](docs/USER_GUIDE.md#zh-paths)。
+
 各版本变化见 [Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)。
 
-### 问题反馈与隐私
+<a id="zh-feedback"></a>
+### 问题反馈
 
 [反馈问题](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/issues)时，请提供游戏／API、显卡／驱动、
 插件与 Runtime 版本、处理位置、模型／层数、FG 配置、SDR/HDR 模式及复现步骤。
@@ -154,7 +151,8 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 **准备 GitHub Issue** 打开浏览器草稿，由你检查并提交；附带摘要或报告链接分别征求同意。
 详见[诊断与报告](docs/USER_GUIDE.md#zh-diagnostics)。
 
-### 构建
+<a id="zh-build"></a>
+### 开发者构建
 
 开发者需准备 Windows x64、Git、PowerShell 7、Visual Studio 2022 C++ 工具
 （**含 CMake**）、**MSVC 14.44** 和 **Windows SDK 10.0.26100.0**。
@@ -189,13 +187,14 @@ Runtime DLL、模型和游戏资源另行获取。
 
 <a id="自动构建与发布"></a>
 
-### 版本与发布
+#### 版本与发布
 
 [version.h](version.h) 定义插件版本，Git Commit 标识源码。`dev.N` 和可选的 `rc.N` 为预发布版本；
 当前稳定版为 **v0.2.0**；较早正式版与预发布的功能变化统一查阅 [Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases)。
 [CI](.github/workflows/ci.yml) 构建源码，版本 Tag 触发[发布工作流](.github/workflows/release.yml)。
 日常提交和 Actions artifacts 是开发构建。打包流程随插件附带 README、玩家指南、配图和许可文件。
 
+<a id="zh-sources"></a>
 ### 来源、致谢与许可证
 
 NR Nexus 基于 [RenoDX](https://github.com/clshortfuse/renodx)、
@@ -219,26 +218,24 @@ NR Nexus brings NVIDIA DLSS Neural Rendering (DLSSNR) image enhancement to compa
 Build a sequential chain of up to four NR passes, with an independent model, look and result editor for each layer.
 The add-on performs no denoising.
 
-**[Download v0.2.0 (Windows x64 ZIP)](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip)** · **[View latest stable release](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/latest)**
+<a id="en-index"></a>
 
-This page covers **v0.2.0 stable**. Use the [SHA-256 file](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip.sha256) and [Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.0) to check your download. GitHub's **Source code** ZIP is source, not the add-on installation package.
+**Quick index:** [In-game images](#en-comparisons) · [Features](#en-features) · [Interface](#en-interface) · [Download, install and use](#en-install) · [Compatibility](#en-compatibility) · [Feedback](#en-feedback) · [User Guide](docs/USER_GUIDE.md#en-start) · [Developer build](#en-build) · [Origins and license](#en-sources)
 
-<a id="en-gpu"></a>
-### GPU Compatibility
+<a id="en-comparisons"></a>
+### In-game Comparisons
 
-Choose an NR runtime for your GPU before installing Nexus. This series-level overview still depends on the particular runtime, driver, game and graphics API.
+Click the image to open the same-scene OFF/ON slider. Ctrl/Cmd-click opens it in a new tab. Browse more scenes in the [comparison gallery](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/).
 
-| GPU series | Runtime choice |
-| --- | --- |
-| **GeForce RTX 50** | Native NVIDIA runtime, within [NVIDIA's official hardware support](https://www.nvidia.com/en-us/geforce/news/dlss-5-3d-guided-neural-rendering/). |
-| **GeForce RTX 40/30/20** | Try a community compatibility runtime, preferably on DX11/DX12. |
-| **AMD/Intel** | No project-confirmed replacement for the NVIDIA NR DLL. |
+<!-- game-compare:en:start -->
 
-[RHI](https://github.com/RankFTW/RHI) lists **`310.9.16 (20/30/40/50)`** in its [runtime manifest](https://github.com/RankFTW/RHI/blob/main/dlss_manifest.json) (checked November 1, 2026). This is a community compatibility build, separate from NVIDIA official support; check its provenance and scope with each upstream version.
-[openNR](https://github.com/clshortfuse/openNR) supplies compatibility code for RTX 20/30/40. It is a **source build tool** using a user-supplied NVIDIA DLL and distributes no NVIDIA DLLs. The [RTX 30 optimization project](https://github.com/lmxxf/DLSS5-RTX-3080-laptop) targets only **Preset 2/Small**, which does not establish full A/B, multi-pass, FG or Vulkan support; its integration packages are not Nexus installation packages.
+The Witcher 3 — Novigrad · Hierarch Square
 
-In principle, a community runtime that preserves the NGX interfaces and behavior Nexus needs can use the existing add-on without changes. Check the actual models, stages and combinations. Architecture code and series labels do not establish validation for every GPU and game. This project has [limited runtime and automated validation](docs/USER_GUIDE.md#en-paths), rather than a complete RTX 20/30/40/50 matrix; openNR also makes no CUDA/Vulkan backend compatibility claim.
+[![The Witcher 3 — Novigrad · Hierarch Square — Interactive Comparison](docs/compare/assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/revisions/6a1f84b87f324fc7/readme.webp)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-35e7d20e1c%2Fbecc86134f6282d0)
 
+<!-- game-compare:en:end -->
+
+<a id="en-features"></a>
 ### What makes Nexus different
 
 These features are included in 0.2.0. See the guide for compatibility conditions on specific combinations.
@@ -252,41 +249,22 @@ These features are included in 0.2.0. See the guide for compatibility conditions
 | **Three official profiles, three custom slots and a shared library** | Start with Lite, Balanced or Max, then save one or several carefully tuned configurations to the shared library. Import them in another game and apply with one click to reuse your work instead of tuning every setting again; export them to share as well. [Profiles](docs/USER_GUIDE.md#en-presets) |
 | **See the cost before choosing** | The F11 monitor shows FPS, NR GPU cost and pass information; F8 cycles compact/detailed views and trends. Manual GPU A/B compares a single pass's cost before and after a size change to identify expensive layers. Compare image quality in gameplay. [Monitor and GPU comparison](docs/USER_GUIDE.md#en-diagnostics) |
 
-More passes add GPU work; start with one. Ordinary Present includes the game HUD and can work without game DLSS on compatible paths using optional/neutral depth and motion. Different-sized Present pairs require confirmed FG off. Native Pre-FG different-sized pairs remain unsupported; Upscaled → Present is a restricted experiment, off by default. See the [full matrix](docs/USER_GUIDE.md#en-paths) for other mixed-stage and Vulkan limits.
+More passes add GPU work; start with one. See [Compatibility](#en-compatibility) for stage and FG combinations.
 
 The interface offers **15 languages and seven themes**, with automatic ReShade language selection. See the [User Guide](docs/USER_GUIDE.md#en-start) for controls and parameters.
 
-![Quality: model, working resolution and processing location](docs/images/ui/quality.webp)
+<a id="en-interface"></a>
 
-![Multi-Pass: independent model, working resolution, look and result](docs/images/ui/multipass.webp)
-
-![Profile library and F11 runtime monitor](docs/images/ui/presets.webp)
+![NR Nexus interface overview](docs/images/ui/overview.webp)
 
 *Offscreen examples of the v0.2.0 production UI; monitor status and values are synthetic.*
 
-### In-game Comparisons
-
-Selected, reviewed NR OFF/ON pairs appear here as static previews (OFF left, ON right), linked to an interactive slider.
-
-[Screenshot processing and local preview](docs/GAME_COMPARISONS.md#english)
-
-<!-- game-compare:en:start -->
-
-巫师3 — 诺维格瑞 · 教主广场
-
-[![巫师3 — 诺维格瑞 · 教主广场](docs/compare/assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/preview.webp)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-35e7d20e1c%2Fbecc86134f6282d0)
-
-[Interactive Comparison](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-35e7d20e1c%2Fbecc86134f6282d0)
-
-巫师3 — 威伦 · 驼背泥沼
-
-[![巫师3 — 威伦 · 驼背泥沼](docs/compare/assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/preview.webp)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-4d71462ab3%2F9d0c90e0d157a5f5)
-
-[Interactive Comparison](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-4d71462ab3%2F9d0c90e0d157a5f5)
-
-<!-- game-compare:en:end -->
-
+<a id="en-install"></a>
 ### Download, install and use
+
+**[Download v0.2.0 (Windows x64 ZIP)](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip)** · **[View latest stable release](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/latest)**
+
+This page covers **v0.2.0 stable**. Use the [SHA-256 file](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip.sha256) and [Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.0) to check your download. GitHub's **Source code** ZIP is source, not the add-on installation package.
 
 **Requirements:** Windows x64; [ReShade with full add-on support](https://reshade.me/), compatible with
 **ReShade API 18**; a legally obtained compatible NVIDIA **`nvngx_dlssnr.dll`**;
@@ -322,7 +300,7 @@ Keep unrelated DLSS/FG files, ReShade presets, configuration and saves.
 
 All keys can be changed: adjust the menu key in **ReShade settings**, and the others under **NR Nexus → Advanced → Hotkeys & screenshots**; enable each profile-cycling action there to use F9/F10. Rebind as needed if they conflict with the game or other tools. See [detailed controls](docs/USER_GUIDE.md#en-capture).
 
-### Quick Start
+#### Quick Start
 
 Spend five minutes in one fixed scene: try profiles, then change one setting at a time. These steps use default keys; use your own bindings if changed.
 
@@ -332,10 +310,26 @@ Spend five minutes in one fixed scene: try profiles, then change one setting at 
 4. **Save a personal profile.** The last three slots are custom profiles for this game. Left-click an empty slot and choose **Save current settings to this slot**; later edits to the selected profile save automatically. Left-click a populated slot to apply it; right-click to rename or clear it. Save one or several tuned configurations through **Manage profiles → Profile library** for reuse across games. In another game, select a library profile, click **Preview selected preset**, review the differences and click **Confirm and apply preset**. [Profile controls](docs/USER_GUIDE.md#en-presets)
 5. **Watch performance.** Press **F11** for the monitor and **F8** to change views or trends. Compare NR GPU cost and smoothness before and after switching profiles. More passes and larger working sizes usually cost more GPU time; choose your preferred balance. See [GPU A/B](docs/USER_GUIDE.md#en-gpu-ab) for closer per-pass comparisons, and the key table above for quick controls.
 
+<a id="en-compatibility"></a>
 ### Compatibility and known limits
 
-Compatibility depends on the game, graphics API, NR runtime, GPU and driver.
-There is no universal minimum GPU/driver list for this project.
+<a id="en-gpu"></a>
+#### GPU and runtime compatibility
+
+Choose an NR runtime for your GPU before installing Nexus. This series-level overview still depends on the particular runtime, driver, game and graphics API.
+
+| GPU series | Runtime choice |
+| --- | --- |
+| **GeForce RTX 50** | Native NVIDIA runtime, within [NVIDIA's official hardware support](https://www.nvidia.com/en-us/geforce/news/dlss-5-3d-guided-neural-rendering/). |
+| **GeForce RTX 40/30/20** | Try a community compatibility runtime, preferably on DX11/DX12. |
+| **AMD/Intel** | No project-confirmed replacement for the NVIDIA NR DLL. |
+
+[RHI](https://github.com/RankFTW/RHI) lists **`310.9.16 (20/30/40/50)`** in its [runtime manifest](https://github.com/RankFTW/RHI/blob/main/dlss_manifest.json) (checked November 1, 2026). This is a community compatibility build, separate from NVIDIA official support; check its provenance and scope with each upstream version.
+[openNR](https://github.com/clshortfuse/openNR) supplies compatibility code for RTX 20/30/40. It is a **source build tool** using a user-supplied NVIDIA DLL and distributes no NVIDIA DLLs. The [RTX 30 optimization project](https://github.com/lmxxf/DLSS5-RTX-3080-laptop) targets only **Preset 2/Small**, which does not establish full A/B, multi-pass, FG or Vulkan support; its integration packages are not Nexus installation packages.
+
+In principle, a community runtime that preserves the NGX interfaces and behavior Nexus needs can use the existing add-on without changes. Check the actual models, stages and combinations. Architecture code and series labels do not establish validation for every GPU and game. This project has [limited runtime and automated validation](docs/USER_GUIDE.md#en-paths), rather than a complete RTX 20/30/40/50 matrix; openNR also makes no CUDA/Vulkan backend compatibility claim.
+
+#### Graphics APIs and feature combinations
 
 | Setup | What to know when choosing |
 | --- | --- |
@@ -350,9 +344,12 @@ There is no universal minimum GPU/driver list for this project.
   require matching working sizes; consult [Multi-Pass](docs/USER_GUIDE.md#en-multipass) before configuring them.
 - Language display depends on ReShade's loaded font; see [Advanced](docs/USER_GUIDE.md#en-advanced) for missing glyphs.
 
+- Optional/neutral depth and motion can support compatible games without DLSS. Two differently sized passes require FG off. Native Pre-FG with two differently sized passes is unsupported; Upscaled → Present is a limited experiment, disabled by default. See the [full compatibility table](docs/USER_GUIDE.md#en-paths).
+
 See [Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases) for version-specific changes.
 
-### Feedback and privacy
+<a id="en-feedback"></a>
+### Feedback
 
 [Report a problem](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/issues) with the game/API, GPU/driver,
 add-on and runtime versions, processing location, models/pass count, FG setup, SDR/HDR mode and reproduction steps.
@@ -365,7 +362,8 @@ before sharing. Diagnostic packages are optional, and local saving does not uplo
 **Prepare GitHub Issue** opens a browser draft for you to review and submit. Including a summary or report link
 requires separate consent. See [Diagnostics and reports](docs/USER_GUIDE.md#en-diagnostics).
 
-### Building
+<a id="en-build"></a>
+### Developer build
 
 For developers: use Windows x64, Git, PowerShell 7, Visual Studio 2022's C++
 tools **including CMake**, **MSVC 14.44**, and **Windows SDK 10.0.26100.0**.
@@ -404,7 +402,7 @@ DLLs, models and game assets are obtained separately.
 
 <a id="automated-builds-and-releases"></a>
 
-### Versions and releases
+#### Versions and releases
 
 [version.h](version.h) defines the add-on version; Git commits identify the source.
 `dev.N` and optional `rc.N` identify pre-releases. The current stable version is **v0.2.0**;
@@ -413,6 +411,7 @@ see [Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases
 [release workflow](.github/workflows/release.yml). Daily commits and Actions artifacts are development builds.
 The packaging workflow includes the README, User Guide, images and licenses alongside the add-on.
 
+<a id="en-sources"></a>
 ### Origins, thanks and license
 
 NR Nexus builds on [RenoDX](https://github.com/clshortfuse/renodx), Lecram's
@@ -431,5 +430,3 @@ This is an unofficial independent project, without endorsement from NVIDIA,
 RenoDX's authors or Lecram. The original [MIT license](LICENSE), copyright and
 [third-party notices](THIRD_PARTY_NOTICES.md) are preserved. The MIT license
 does not relicense third-party SDKs, runtimes or models.
-
----

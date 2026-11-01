@@ -103,6 +103,86 @@ class Comparisons(unittest.TestCase):
         with self.assertRaisesRegex(gc.CompareError, "Different dimensions"):
             self.generate("--match-size")
 
+    def test_readme_is_complete_on_thumbnail_and_sizes_are_recorded(self):
+        self.image.resize((1920, 1080)).save(self.off)
+        other = Image.new("RGB", (1920, 1080), (45, 80, 115))
+        other.save(self.on)
+        candidate = self.generate("--game-en", "English Game", "--scene-en", "English Scene")
+        report = gc.verify_candidate(candidate)
+        self.assertEqual(report["scene"]["game_en"], "English Game")
+        self.assertEqual(report["parameters"]["readme"], {"source": "complete ON SDR", "max_width": 1600, "quality": 90})
+        with Image.open(candidate / "readme.webp") as image:
+            self.assertEqual(image.size, (1600, 900))
+            self.assertLess(max(abs(a - b) for a, b in zip(image.getpixel((0, 0)), (45, 80, 115))), 4)
+            self.assertEqual(image.getpixel((0, 0)), image.getpixel((1599, 899)), "No split, labels or watermark in complete ON thumbnail")
+        self.assertEqual(report["sizes"]["local_total_bytes"], sum(p.stat().st_size for p in candidate.iterdir()))
+        self.assertEqual(report["sizes"]["expected_public_asset_bytes"], sum(report["outputs"][report["scene"][k]]["bytes"] for k in gc.public_asset_keys(report["scene"])))
+
+    def test_preserve_hdr_pair_plan_apply_backup_and_selected_scene_only(self):
+        public = gc.PUBLIC
+        scene_id = "game/scene/0123456789abcdef"
+        assets = public / "assets" / scene_id
+        assets.mkdir(parents=True)
+        self.image.save(assets / "off.jpg")
+        Image.open(self.on).save(assets / "on.jpg")
+        for name in ("preview.webp", "off-sdr.webp", "on-sdr.webp", "preview-hdr.jpg"):
+            (assets / name).write_bytes(b"legacy derivative " + name.encode())
+        entry = {"id": scene_id, "game": "Game", "scene": "Scene", "status": "approved", "dynamic_range": "ultra-hdr",
+                 "width": 640, "height": 360, "synthetic": False}
+        for key, name in (("off", "off.jpg"), ("on", "on.jpg"), ("preview", "preview.webp"), ("sdr_off", "off-sdr.webp"), ("sdr_on", "on-sdr.webp"), ("hdr_preview", "preview-hdr.jpg")):
+            entry[key] = "assets/" + scene_id + "/" + name
+        other = {**entry, "id": "game/other/fedcba9876543210", "scene": "Other"}
+        # This second scene shares a derivative: selected-scene cleanup must retain that file.
+        gc.write_json(public / "catalog.json", {"schema": 1, "scenes": [entry, other]})
+        args = gc.parser().parse_args(["optimize", "--scene", scene_id, "--output", str(self.root / "tmp/output"), "--game-en", "Game EN", "--delete-old-assets"])
+        before = {p.relative_to(public).as_posix(): p.read_bytes() for p in public.rglob("*") if p.is_file()}
+        with patch.object(gc, "ROOT", self.root), contextlib.redirect_stdout(io.StringIO()):
+            candidate = gc.optimize(args)
+            self.assertEqual(before, {p.relative_to(public).as_posix(): p.read_bytes() for p in public.rglob("*") if p.is_file()})
+            with self.assertRaisesRegex(gc.CompareError, "explicit human"):
+                args.apply = True
+                gc.optimize(args)
+            args.reviewed = args.publish_authorized = True
+            gc.optimize(args)
+        updated = gc.approved_catalog()["scenes"]
+        self.assertEqual(updated[1], other)
+        self.assertEqual(updated[0]["id"], scene_id)
+        self.assertEqual(updated[0]["off"], entry["off"])
+        self.assertEqual(updated[0]["on"], entry["on"])
+        self.assertEqual(updated[0]["game_en"], "Game EN")
+        self.assertNotIn("preview", updated[0])
+        self.assertEqual((public / entry["off"]).read_bytes(), before[entry["off"]])
+        self.assertEqual((public / entry["on"]).read_bytes(), before[entry["on"]])
+        self.assertFalse(list(candidate.rglob("backup/*/*")), "Shared derivatives cannot be deleted or backed up as deletions")
+        self.assertTrue((public / updated[0]["readme"]).is_file())
+
+    def test_optimize_deletion_requires_readme_update_and_verified_backup(self):
+        public = gc.PUBLIC
+        scene_id = "game/scene/0123456789abcdef"
+        assets = public / "assets" / scene_id
+        assets.mkdir(parents=True)
+        self.image.save(assets / "off.jpg")
+        Image.open(self.on).save(assets / "on.jpg")
+        legacy = assets / "preview.webp"
+        legacy.write_bytes(b"old preview bytes")
+        prefix = "assets/" + scene_id + "/"
+        entry = {"id": scene_id, "game": "Game", "scene": "Scene", "status": "approved", "dynamic_range": "ultra-hdr", "width": 640, "height": 360,
+                 "off": prefix + "off.jpg", "on": prefix + "on.jpg", "preview": prefix + "preview.webp"}
+        gc.write_json(public / "catalog.json", {"schema": 1, "scenes": [entry]})
+        args = gc.parser().parse_args(["optimize", "--scene", scene_id, "--output", str(self.root / "tmp/output"), "--delete-old-assets", "--apply", "--reviewed", "--publish-authorized"])
+        readme = self.root / "README.md"
+        readme.write_text("![old](docs/compare/" + entry["preview"] + ")", encoding="utf-8")
+        with patch.object(gc, "ROOT", self.root), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(gc.CompareError, "README still references"):
+                gc.optimize(args)
+            self.assertTrue(legacy.exists())
+            self.assertEqual(gc.approved_catalog()["scenes"], [entry])
+            readme.write_text("New image links are maintained separately.", encoding="utf-8")
+            candidate = gc.optimize(args)
+        self.assertFalse(legacy.exists())
+        self.assertEqual([p.read_bytes() for p in (candidate / "backup").rglob("preview.webp")], [b"old preview bytes"])
+        self.assertEqual(gc.read_json(candidate / "report.json")["plan"]["bytes"]["delete"], len(b"old preview bytes"))
+
     def test_corrupt_missing_and_wrong_mode(self):
         self.on.write_bytes(b"broken")
         with self.assertRaisesRegex(gc.CompareError, "cannot decode"):
@@ -231,6 +311,29 @@ class Comparisons(unittest.TestCase):
             gc.generate(args)
         self.assertEqual(gc.approved_catalog()["scenes"], [])
 
+    def test_replacement_preserves_identity_and_blocks_live_readme_deletion(self):
+        original = self.generate()
+        with contextlib.redirect_stdout(io.StringIO()):
+            gc.approve(self.approve_args(original, "--apply", "--reviewed", "--publish-authorized"))
+        old = gc.approved_catalog()["scenes"][0]
+        replacement = self.generate("--quality", "95")
+        readme = self.root / "README.md"
+        readme.write_text("![old](" + (gc.PUBLIC / old["readme"]).relative_to(self.root).as_posix() + ")", encoding="utf-8")
+        args = self.approve_args(replacement, "--replace-scene", old["id"], "--original-candidate", str(original),
+                                 "--delete-old-assets", "--apply", "--reviewed", "--publish-authorized")
+        with patch.object(gc, "ROOT", self.root), patch.object(gc, "DEFAULT_OUTPUT", self.root / "tmp/backups"), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(gc.CompareError, "README still references"):
+                gc.approve(args)
+            self.assertEqual(gc.approved_catalog()["scenes"][0], old)
+            readme.write_text("Image links updated for replacement.", encoding="utf-8")
+            gc.approve(args)
+        updated = gc.approved_catalog()["scenes"][0]
+        self.assertEqual(updated["id"], old["id"])
+        self.assertIn("/revisions/", updated["on"])
+        self.assertTrue((gc.PUBLIC / updated["on"]).is_file())
+        self.assertFalse((gc.PUBLIC / old["on"]).exists())
+        self.assertTrue(list((self.root / "tmp/backups/replacement-backups").rglob("on.webp")))
+
     def test_names_and_html_embedding(self):
         for name in ("CON", "nul", "LPT1", "中文 场景", "x/y", "X y"):
             self.assertRegex(gc.slug(name), r"^[a-z0-9-]+$")
@@ -243,7 +346,7 @@ class Comparisons(unittest.TestCase):
     def test_readme_requires_live_approved_scene_and_preserves_other_text(self):
         public = self.public_fixture()
         entry = {"id": "game/scene/0123456789abcdef", "game": "Game", "scene": "Scene",
-                 "status": "approved", "preview": "assets/game/scene/0123456789abcdef/preview.webp"}
+                 "status": "approved", "readme": "assets/game/scene/0123456789abcdef/readme.webp", "game_en": "English Game", "scene_en": "English Scene"}
         gc.write_json(public / "catalog.json", {"schema": 1, "scenes": [entry]})
         text = "Existing text\n<!-- game-compare:zh:start -->old<!-- game-compare:zh:end -->\n"
         text += "<!-- game-compare:en:start -->old<!-- game-compare:en:end -->\nOther text\n"
@@ -264,10 +367,17 @@ class Comparisons(unittest.TestCase):
         updated = (self.root / "README.md").read_text(encoding="utf-8")
         self.assertTrue(updated.startswith("Existing text\n"))
         self.assertTrue(updated.endswith("Other text\n"))
-        self.assertEqual(updated.count("preview.webp"), 2)
+        self.assertEqual(updated.count("readme.webp"), 2)
+        self.assertEqual(updated.count("](" + args.pages_url + "#scene="), 2, "Only the image is linked per language")
+        self.assertIn("English Game", updated)
         self.assertIn("#scene=game%2Fscene%2F0123456789abcdef", updated)
         self.assertIn("左右拖动查看对比", updated)
         self.assertIn("Interactive Comparison", updated)
+        del entry["readme"]
+        entry["preview"] = "assets/game/scene/0123456789abcdef/preview.webp"
+        gc.write_json(public / "catalog.json", {"schema": 1, "scenes": [entry]})
+        with patch.object(gc, "PUBLIC", public), self.assertRaisesRegex(gc.CompareError, "run optimize first"):
+            gc.readme(args)
 
 
 if __name__ == "__main__":
