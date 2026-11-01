@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="referrer" content="no-referrer">
+<title>NR Nexus · 画面对比</title>
+<style>
+:root{color-scheme:dark;--bg:#08111b;--panel:#0d1b2a;--line:#234452;--cyan:#4de5ee;--text:#dce5ec;--muted:#9aafbf;--split:50%;font:14px/1.55 "Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--text)}
+*{box-sizing:border-box}body{margin:0}button,select,a{touch-action:manipulation}button,select{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:8px 12px}button,a,select,input{accent-color:var(--cyan)}button,a{cursor:pointer}button:hover,a:hover{color:var(--cyan)}button:disabled{opacity:.45;cursor:default}a{color:var(--text);text-underline-offset:4px}:focus-visible{outline:2px solid var(--cyan);outline-offset:4px}[hidden]{display:none!important}
+header,main,footer{width:min(1600px,calc(100% - 48px));margin:auto}header{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:22px 0;border-bottom:1px solid var(--line)}.brand{font-size:21px;letter-spacing:.06em;font-weight:650;text-decoration:none}.brand span{color:var(--cyan)}nav{display:flex;align-items:center;gap:20px;font-size:13px}main{padding:26px 0 0}h1{font-size:22px;font-weight:550;margin:0 0 5px}.intro{margin:0;color:var(--muted);font-size:13px}.heading{margin-bottom:22px}.selectors{display:flex;align-items:end;gap:18px;margin-bottom:16px}.selectors label{display:grid;gap:5px;color:var(--muted);font-size:12px}.selectors select{min-width:200px;max-width:360px;width:100%;font-size:14px}.count{color:var(--muted);font-size:12px;margin-left:auto}.notice{padding:12px 16px;border:1px solid #99743c;background:#282317;color:#ffe0a5;margin:0 0 16px}.empty{min-height:45vh;display:grid;place-content:center;text-align:center;border:1px solid var(--line);padding:32px}.empty h2{font-size:20px;font-weight:500;margin:0 0 8px}.empty p{max-width:55ch;color:var(--muted);margin:0}
+.viewer{background:#050b12;border:1px solid var(--line);padding:12px}.viewer.expanded{position:fixed;inset:0;z-index:10;overflow:auto}.viewer:fullscreen{overflow:auto;width:100%;height:100%;padding:20px}.stage{position:relative;width:100%;aspect-ratio:16/9;overflow:hidden;touch-action:none;user-select:none;cursor:ew-resize;container-type:inline-size;background:#050b12}.viewer.expanded .stage,.viewer:fullscreen .stage{width:min(100%,calc((100dvh - 180px)*var(--ratio,1.77778)));margin:auto}.layer{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;pointer-events:none}.on-layer{clip-path:inset(0 0 0 var(--split))}.divider{position:absolute;left:var(--split);top:0;bottom:0;width:1px;background:var(--cyan);box-shadow:0 0 10px #4de5ee60;pointer-events:none}.grip{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);display:grid;place-items:center;width:38px;height:42px;background:rgba(8,17,27,.76);border:1px solid var(--cyan);border-radius:5px;color:var(--cyan);font-size:19px}.watermark{position:absolute;background:rgba(8,17,27,.76);color:var(--cyan);font-size:clamp(10px,1.15cqw,22px);padding:.3em .65em;pointer-events:none;max-width:45%;overflow-wrap:anywhere}.off-label{left:.729167%;top:1.296296%}.on-label{right:.729167%;top:1.296296%}.signature{right:.729167%;bottom:1.296296%;color:#dce5ec}.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 0 0}.toolbar button{font-size:12px;padding:6px 10px}.slider-wrap{display:flex;align-items:center;gap:12px;flex:1;min-width:200px}.slider-wrap label{color:var(--muted);font-size:12px}input[type=range]{width:100%;min-width:70px;height:26px;cursor:ew-resize;margin:0}.balance{color:var(--cyan);white-space:nowrap;font-size:12px;font-variant-numeric:tabular-nums}.hint{color:var(--muted);font-size:12px;margin:10px 0 0}.image-links{display:flex;flex-wrap:wrap;gap:20px;font-size:12px;margin:18px 0}.details{border-top:1px solid var(--line);padding-top:14px}.details summary{cursor:pointer;font-size:13px;color:var(--muted)}dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 20px;font-size:12px}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}#warnings{color:#ffe0a5;font-size:12px;padding-left:20px}footer{padding:24px 0;color:var(--muted);font-size:12px}.load-status{font-size:13px;color:#ffe0a5;margin:8px 0}.stage.loading .layer{visibility:hidden}
+@media(max-width:640px){header,main,footer{width:calc(100% - 24px)}header{padding:15px 0;gap:8px}nav{gap:12px;font-size:12px}.brand{font-size:17px}main{padding-top:18px}.selectors{flex-wrap:wrap;gap:10px}.selectors label{flex:1;min-width:125px}.selectors select{min-width:0;max-width:100%}.count{width:100%;margin:0}.viewer{padding:6px}.slider-wrap{flex-basis:100%}h1{font-size:20px}.grip{width:26px;height:34px}.toolbar{gap:6px}.image-links{gap:12px}.viewer:fullscreen{padding:8px}}
+</style>
+</head>
+<body>
+<header><a class="brand" href="https://github.com/williamstosh/RenoDX-DLSSNR-Nexus#readme">NR <span>Nexus</span></a><nav><a href="https://github.com/williamstosh/RenoDX-DLSSNR-Nexus#readme" data-i18n="readme">GitHub 说明</a><button id="language" type="button" aria-label="Switch to English">English</button></nav></header>
+<main>
+<div class="heading"><h1 data-i18n="title">画面对比</h1><p class="intro" data-i18n="intro">左侧 OFF，右侧 ON。拖动分界线，查看同一位置的画面细节。</p></div>
+<p id="review-banner" class="notice" role="status" hidden></p>
+<section id="empty" class="empty"><h2 data-i18n="emptyTitle">暂无已审核场景</h2><p data-i18n="emptyText">图库尚未收录已审核的画面对比。可返回 GitHub 查看项目说明。</p></section>
+<section id="gallery" hidden>
+<div class="selectors"><label><span data-i18n="game">游戏</span><select id="game" disabled></select></label><label><span data-i18n="scene">场景</span><select id="scene" disabled></select></label><span id="count" class="count"></span></div>
+<div id="viewer" class="viewer">
+<div id="hdr-controls" hidden><div class="toolbar"><label for="display-mode" data-i18n="displayMode">显示模式</label><select id="display-mode"><option value="hdr">Ultra HDR</option><option value="sdr">SDR</option></select></div><p id="hdr-help" class="hint" data-i18n="hdrHelp"></p><p id="hdr-environment" class="hint"></p></div>
+<div id="stage" class="stage loading" aria-busy="true">
+<img id="off-image" class="layer" alt="" draggable="false"><img id="on-image" class="layer on-layer" alt="" draggable="false">
+<span id="off-label" class="watermark off-label">DLSS 5 OFF</span><span id="on-label" class="watermark on-label">DLSS 5 ON</span><span class="watermark signature">NR Nexus</span><div class="divider" aria-hidden="true"><span class="grip">‹ ›</span></div>
+</div>
+<p id="load-status" class="load-status" role="status"></p>
+<div class="toolbar"><div class="slider-wrap"><label for="split" data-i18n="split">分界</label><input id="split" type="range" min="0" max="100" step="1" value="50" aria-describedby="help" disabled><output id="balance" class="balance" for="split">50% / 50%</output></div><button id="all-off" type="button" disabled data-i18n="allOff">完全 OFF</button><button id="reset" type="button" disabled data-i18n="reset">重置 50%</button><button id="all-on" type="button" disabled data-i18n="allOn">完全 ON</button><button id="expand" type="button" data-i18n="expand">大图</button><button id="fullscreen" type="button" data-i18n="fullscreen">全屏</button></div>
+<p id="help" class="hint" data-i18n="help">拖动或触摸画面；聚焦滑杆后使用方向键、Home / End。双击画面重置，Esc 退出大图。</p>
+</div>
+<div class="image-links"><a id="open-off" target="_blank" rel="noopener noreferrer" data-i18n="openOff">打开 OFF 处理后全图（无水印）</a><a id="open-on" target="_blank" rel="noopener noreferrer" data-i18n="openOn">打开 ON 处理后全图（无水印）</a><a id="open-hdr-preview" target="_blank" rel="noopener noreferrer" data-i18n="hdrPreview" hidden>打开 Ultra HDR 静态预览</a></div>
+<details class="details"><summary data-i18n="details">场景信息</summary><dl id="metadata"></dl><ul id="warnings" hidden></ul></details>
+</section>
+</main>
+<footer data-i18n="footer">NR Nexus · DLSS Neural Rendering Add-on for RenoDX</footer>
+<script id="catalog-data" type="application/json">{"schema":1,"scenes":[]}</script>
+<script>
+(() => {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const copy = {
+    zh: {readme:'GitHub 说明',title:'画面对比',intro:'左侧 OFF，右侧 ON。拖动分界线，查看同一位置的画面细节。',emptyTitle:'暂无已审核场景',emptyText:'图库尚未收录已审核的画面对比。可返回 GitHub 查看项目说明。',game:'游戏',scene:'场景',split:'分界',allOff:'完全 OFF',allOn:'完全 ON',reset:'重置 50%',expand:'大图',collapse:'收起大图',fullscreen:'全屏',exitFullscreen:'退出全屏',help:'拖动或触摸画面；聚焦滑杆后使用方向键、Home / End。双击画面重置，Esc 退出大图。',openOff:'打开 OFF 处理后全图（无水印）',openOn:'打开 ON 处理后全图（无水印）',details:'场景信息',footer:'NR Nexus · DLSS Neural Rendering Add-on for RenoDX',candidate:'待审核：此场景尚未公开收录。',synthetic:'合成测试：此图仅用于验证对比工具，并非游戏画质证据。',loading:'正在加载对比图片…',loadError:'图片无法加载或尺寸不一致，请检查本地图片文件。',invalid:'图库数据无效，请重新生成页面。',resolution:'处理后尺寸',api:'图形 API',gpu:'显卡',plugin_version:'插件版本',runtime:'运行时',pass:'Pass',model:'模型',working_resolution:'工作分辨率',count:'个场景'},
+    en: {readme:'GitHub README',title:'Image comparison',intro:'OFF on the left, ON on the right. Drag the divider to inspect the same image details.',emptyTitle:'No approved scenes yet',emptyText:'No reviewed comparisons have been added to this gallery. Visit GitHub to learn about the project.',game:'Game',scene:'Scene',split:'Split',allOff:'Full OFF',allOn:'Full ON',reset:'Reset 50%',expand:'Large view',collapse:'Close large view',fullscreen:'Fullscreen',exitFullscreen:'Exit fullscreen',help:'Drag or touch the image; focus the slider for arrow keys and Home / End. Double-click to reset. Esc closes large view.',openOff:'Open full processed OFF image (no watermark)',openOn:'Open full processed ON image (no watermark)',details:'Scene information',footer:'NR Nexus · DLSS Neural Rendering Add-on for RenoDX',candidate:'Pending review: this scene has not been added to the public gallery.',synthetic:'Synthetic test: this image tests the comparison tool; it is not evidence of game image quality.',loading:'Loading comparison images…',loadError:'Images could not load or their dimensions differ. Check the local image files.',invalid:'Invalid gallery data. Generate the page again.',resolution:'Processed dimensions',api:'Graphics API',gpu:'GPU',plugin_version:'Plugin version',runtime:'Runtime',pass:'Pass',model:'Model',working_resolution:'Working resolution',count:'scenes'}
+  };
+  Object.assign(copy.zh, {displayMode:'显示模式',hdrHelp:'Ultra HDR：兼容 HDR 的浏览器、系统和屏幕才会呈现 HDR，否则显示 SDR 底图。选择 SDR 可查看转换后的 SDR 图。',hdrEnvironmentHigh:'环境提示：浏览器报告支持高动态范围；这不确认当前图片已实际显示为 HDR。',hdrEnvironmentStandard:'环境提示：浏览器未报告支持高动态范围；这不确认当前图片的实际显示状态。',hdrPreview:'打开 Ultra HDR 静态预览',output:'转换输出',displaySource:'当前图片源',hdrOutput:'Ultra HDR JPEG + SDR 备用图',sdrOutput:'SDR',hdrSource:'Ultra HDR JPEG（实际显示取决于环境）'});
+  Object.assign(copy.en, {displayMode:'Display mode',hdrHelp:'Ultra HDR: HDR presentation requires a compatible browser, operating system and display; otherwise the SDR base image is shown. Select SDR to view the converted SDR images.',hdrEnvironmentHigh:'Environment hint: the browser reports high dynamic range support; this does not confirm that the image is actually displayed in HDR.',hdrEnvironmentStandard:'Environment hint: the browser does not report high dynamic range support; this does not confirm how the image is actually displayed.',hdrPreview:'Open Ultra HDR static preview',output:'Conversion output',displaySource:'Current image source',hdrOutput:'Ultra HDR JPEG + SDR alternatives',sdrOutput:'SDR',hdrSource:'Ultra HDR JPEG (presentation depends on the environment)'});
+  let language = 'zh', current, displayMode = 'hdr', ready = false, loadState = '', invalid = false, generation = 0;
+  const hdrEnvironment = window.matchMedia('(dynamic-range: high)');
+  const isHdr = item => item.dynamic_range === 'ultra-hdr';
+  const source = side => current[isHdr(current) && displayMode === 'sdr' ? 'sdr_' + side : side];
+  const candidate = document.body.dataset.candidate === 'true';
+  // Reject URL syntax and encoded traversal before assigning any catalog path.
+  function safePath(value) {
+    return typeof value === 'string' && /^[\p{L}\p{N} _()./-]+$/u.test(value) &&
+      !value.startsWith('/') && value.split('/').every(part => part && part !== '.' && part !== '..');
+  }
+  const text = value => typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+  let scenes = [];
+  try {
+    const data = JSON.parse($('catalog-data').textContent);
+    if (data.schema !== 1 || !Array.isArray(data.scenes)) throw new Error('schema');
+    const ids = new Set();
+    scenes = data.scenes.filter(item => {
+      if (!item || typeof item !== 'object') return false;
+      const visible = item.status === 'approved' || (candidate && data.scenes.length === 1 && item.status === 'candidate');
+      if (!visible || typeof item.id !== 'string' || !item.id || ids.has(item.id) ||
+          typeof item.game !== 'string' || typeof item.scene !== 'string' ||
+          !safePath(item.off) || !safePath(item.on) ||
+          ['sdr_off','sdr_on','hdr_preview','preview'].some(key => key in item && !safePath(item[key])) ||
+          (isHdr(item) && (!safePath(item.sdr_off) || !safePath(item.sdr_on))) ||
+          !Number.isSafeInteger(item.width) || !Number.isSafeInteger(item.height) || item.width <= 0 || item.height <= 0) return false;
+      ids.add(item.id);
+      return true;
+    });
+  } catch { invalid = true; }
+  function option(select, value, label) {
+    const node = document.createElement('option');
+    node.value = value; node.textContent = label; select.append(node);
+  }
+  function setSplit(value) {
+    const split = Math.max(0, Math.min(100, Number(value)));
+    $('split').value = String(split);
+    $('stage').style.setProperty('--split', split + '%');
+    $('balance').textContent = split + '% / ' + (100 - split) + '%';
+    $('split').setAttribute('aria-valuetext', 'OFF ' + split + '%, ON ' + (100 - split) + '%');
+  }
+  function controls(enabled) {
+    ready = enabled;
+    for (const id of ['split','all-off','all-on','reset']) $(id).disabled = !enabled;
+  }
+  function renderText() {
+    const t = copy[language];
+    document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en';
+    document.title = 'NR Nexus · ' + t.title;
+    document.querySelectorAll('[data-i18n]').forEach(node => { node.textContent = t[node.dataset.i18n]; });
+    $('language').textContent = language === 'zh' ? 'English' : '中文';
+    $('language').setAttribute('aria-label', language === 'zh' ? 'Switch to English' : '切换到中文');
+    $('game').setAttribute('aria-label', t.game); $('scene').setAttribute('aria-label', t.scene);
+    $('expand').textContent = t[$('viewer').classList.contains('expanded') ? 'collapse' : 'expand'];
+    $('fullscreen').textContent = t[document.fullscreenElement ? 'exitFullscreen' : 'fullscreen'];
+    $('load-status').textContent = loadState ? t[loadState] : '';
+    if (invalid) $('empty').querySelector('p').textContent = t.invalid;
+    $('count').textContent = scenes.length + ' ' + t.count;
+    const banners = [];
+    if (candidate) banners.push(t.candidate);
+    if (current && current.synthetic === true) banners.push(t.synthetic);
+    $('review-banner').hidden = !banners.length; $('review-banner').textContent = banners.join(' ');
+    $('metadata').replaceChildren();
+    if (!current) return;
+    $('hdr-controls').hidden = !isHdr(current);
+    $('display-mode').value = displayMode;
+    $('hdr-environment').textContent = t[hdrEnvironment.matches ? 'hdrEnvironmentHigh' : 'hdrEnvironmentStandard'];
+    $('open-hdr-preview').hidden = !isHdr(current) || !current.hdr_preview;
+    if (isHdr(current) && current.hdr_preview) $('open-hdr-preview').setAttribute('href', current.hdr_preview);
+    else $('open-hdr-preview').removeAttribute('href');
+    const fields = {resolution:current.width + ' × ' + current.height};
+    fields.output = t[isHdr(current) ? 'hdrOutput' : 'sdrOutput'];
+    if (isHdr(current)) fields.displaySource = t[displayMode === 'hdr' ? 'hdrSource' : 'sdrOutput'];
+    const metadata = current.metadata && typeof current.metadata === 'object' ? current.metadata : {};
+    for (const key of ['api','gpu','plugin_version','runtime','pass','model','working_resolution']) {
+      if (text(metadata[key])) fields[key] = text(metadata[key]);
+    }
+    for (const [key,value] of Object.entries(fields)) {
+      const dt = document.createElement('dt'), dd = document.createElement('dd');
+      dt.textContent = t[key]; dd.textContent = value; $('metadata').append(dt,dd);
+    }
+    for (const side of ['off','on']) {
+      const label = text(current.labels && current.labels[side]) || 'DLSS 5 ' + side.toUpperCase();
+      $(side + '-label').textContent = label;
+      $(side + '-image').alt = current.game + ' / ' + current.scene + ' — ' + label;
+    }
+  }
+  async function selectScene(item, updateHash = true) {
+    current = item; displayMode = 'hdr';
+    $('game').value = item.game; $('scene').replaceChildren();
+    scenes.filter(scene => scene.game === item.game).forEach(scene => option($('scene'),scene.id,scene.scene));
+    $('scene').value = item.id;
+    $('stage').style.aspectRatio = item.width + ' / ' + item.height;
+    $('viewer').style.setProperty('--ratio', item.width / item.height);
+    setSplit(50);
+    $('warnings').replaceChildren();
+    for (const warning of Array.isArray(item.warnings) ? item.warnings : []) {
+      if (!text(warning)) continue;
+      const li = document.createElement('li'); li.textContent = text(warning); $('warnings').append(li);
+    }
+    $('warnings').hidden = !$('warnings').childElementCount;
+    if (updateHash) location.hash = 'scene=' + encodeURIComponent(item.id);
+    await loadImages();
+  }
+  async function loadImages() {
+    const item = current, token = ++generation;
+    $('stage').classList.add('loading'); $('stage').setAttribute('aria-busy','true');
+    controls(false); loadState = 'loading';
+    const paths = ['off','on'].map(source);
+    for (const [index,side] of ['off','on'].entries()) $('open-' + side).setAttribute('href', paths[index]);
+    renderText();
+    // Decode both images before revealing either; stale scene loads cannot replace the selection.
+    try {
+      const images = await Promise.all(paths.map(async path => {
+        const image = new Image(); image.src = path; await image.decode();
+        if (image.naturalWidth !== item.width || image.naturalHeight !== item.height) throw new Error('dimensions');
+        return image;
+      }));
+      if (token !== generation) return;
+      $('off-image').src = images[0].src; $('on-image').src = images[1].src;
+      $('stage').classList.remove('loading'); controls(true); loadState = '';
+    } catch { if (token !== generation) return; loadState = 'loadError'; }
+    $('stage').setAttribute('aria-busy','false'); renderText();
+  }
+  function fromHash() {
+    try {
+      const id = new URLSearchParams(location.hash.slice(1)).get('scene');
+      return scenes.find(scene => scene.id === id);
+    } catch { return undefined; }
+  }
+  $('language').addEventListener('click', () => {language = language === 'zh' ? 'en' : 'zh'; renderText();});
+  $('display-mode').addEventListener('change', () => {
+    if (!current || !isHdr(current)) return;
+    displayMode = $('display-mode').value === 'sdr' ? 'sdr' : 'hdr';
+    loadImages();
+  });
+  hdrEnvironment.addEventListener('change', renderText);
+  $('split').addEventListener('input', event => setSplit(event.target.value));
+  $('all-off').addEventListener('click', () => setSplit(100));
+  $('all-on').addEventListener('click', () => setSplit(0));
+  $('reset').addEventListener('click', () => setSplit(50));
+  const stage = $('stage');
+  function pointerSplit(event) {
+    const rect = stage.getBoundingClientRect();
+    setSplit(Math.round((event.clientX - rect.left) / rect.width * 100));
+  }
+  let pointer = null;
+  stage.addEventListener('pointerdown', event => {
+    if (!ready || !event.isPrimary || event.button !== 0) return;
+    pointer = event.pointerId; stage.setPointerCapture(pointer); pointerSplit(event);
+  });
+  stage.addEventListener('pointermove', event => {if (ready && pointer === event.pointerId) pointerSplit(event);});
+  for (const type of ['pointerup','pointercancel','lostpointercapture']) stage.addEventListener(type, () => {pointer = null;});
+  stage.addEventListener('dblclick', () => {if (ready) setSplit(50);});
+  $('game').addEventListener('change', () => selectScene(scenes.find(scene => scene.game === $('game').value)));
+  $('scene').addEventListener('change', () => selectScene(scenes.find(scene => scene.id === $('scene').value)));
+  window.addEventListener('hashchange', () => {const item = fromHash(); if (item && item !== current) selectScene(item,false);});
+  $('expand').addEventListener('click', () => {$('viewer').classList.toggle('expanded'); renderText();});
+  document.addEventListener('keydown', event => {if (event.key === 'Escape') {$('viewer').classList.remove('expanded'); renderText();}});
+  $('fullscreen').hidden = !document.fullscreenEnabled;
+  $('fullscreen').addEventListener('click', async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await $('viewer').requestFullscreen();
+    } catch { $('viewer').classList.add('expanded'); renderText(); }
+  });
+  document.addEventListener('fullscreenchange', renderText);
+  if (scenes.length) {
+    $('empty').hidden = true; $('gallery').hidden = false;
+    for (const game of new Set(scenes.map(scene => scene.game))) option($('game'),game,game);
+    $('game').disabled = false; $('scene').disabled = false;
+    selectScene(fromHash() || scenes[0]);
+  }
+  setSplit(50); renderText();
+})();
+</script>
+</body>
+</html>
