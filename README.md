@@ -20,13 +20,17 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 <a id="zh-comparisons"></a>
 ### 游戏实机画面对比
 
-点击图片进入同场景 OFF／ON 滑块对比；也可 Ctrl／Cmd+点击在新标签页打开。更多场景见[实机对比图库](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/)。
+点击图片进入同场景 OFF／ON 滑块对比，并查看 Ultra HDR 图片（需兼容的浏览器、系统 HDR 设置和显示器）。也可 Ctrl／Cmd+点击在新标签页打开。更多场景见[实机对比图库](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/)。
 
 <!-- game-compare:zh:start -->
 
 巫师3 — 诺维格瑞 · 教主广场
 
 [![巫师3 — 诺维格瑞 · 教主广场 — 左右拖动查看对比](docs/compare/assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/revisions/6a1f84b87f324fc7/readme.webp)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-35e7d20e1c%2Fbecc86134f6282d0)
+
+巫师3 — 威伦 · 驼背泥沼
+
+[![巫师3 — 威伦 · 驼背泥沼 — 左右拖动查看对比](docs/compare/assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/revisions/2de9114747d55d47/readme.webp)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-4d71462ab3%2F9d0c90e0d157a5f5)
 
 <!-- game-compare:zh:end -->
 
@@ -52,7 +56,7 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 
 ![NR Nexus 界面总览](docs/images/ui/overview-zh.webp)
 
-*v0.2.0 生产 UI 离屏示例；监视器状态及数值为合成数据。*
+*左上：模型与工作分辨率；左下：F11 运行监视器；右侧：叠层与独立外观／结果编辑。v0.2.0 生产 UI 离屏示例，监视器数值为合成数据。*
 
 <a id="zh-install"></a>
 ### 下载、安装与使用
@@ -225,13 +229,17 @@ The add-on performs no denoising.
 <a id="en-comparisons"></a>
 ### In-game Comparisons
 
-Click the image to open the same-scene OFF/ON slider. Ctrl/Cmd-click opens it in a new tab. Browse more scenes in the [comparison gallery](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/).
+Click an image to compare the same scene with the OFF/ON slider and view Ultra HDR images (requires a compatible browser, system HDR settings and display). Ctrl/Cmd-click opens it in a new tab. Browse more scenes in the [comparison gallery](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/).
 
 <!-- game-compare:en:start -->
 
 The Witcher 3 — Novigrad · Hierarch Square
 
 [![The Witcher 3 — Novigrad · Hierarch Square — Interactive Comparison](docs/compare/assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/revisions/6a1f84b87f324fc7/readme.webp)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-35e7d20e1c%2Fbecc86134f6282d0)
+
+The Witcher 3 — Velen · Crookback Bog
+
+[![The Witcher 3 — Velen · Crookback Bog — Interactive Comparison](docs/compare/assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/revisions/2de9114747d55d47/readme.webp)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-4d71462ab3%2F9d0c90e0d157a5f5)
 
 <!-- game-compare:en:end -->
 
@@ -257,7 +265,7 @@ The interface offers **15 languages and seven themes**, with automatic ReShade l
 
 ![NR Nexus interface overview](docs/images/ui/overview.webp)
 
-*Offscreen examples of the v0.2.0 production UI; monitor status and values are synthetic.*
+*Top left: model and working resolution; bottom left: F11 runtime monitor; right: Multi-Pass with independent look/result editing. Offscreen excerpts of the v0.2.0 production UI; monitor values are synthetic.*
 
 <a id="en-install"></a>
 ### Download, install and use
