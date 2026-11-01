@@ -45,6 +45,16 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 
 *早前开发界面示意；最新布局以文字说明为准。*
 
+### 游戏实机画面对比
+
+这里精选展示审核后的同场景 NR OFF／ON 对比：左 OFF、右 ON 的静态预览可直接查看，并链接至拖动对比页面。
+
+[截图处理与本地预览](docs/GAME_COMPARISONS.md#简体中文)
+
+<!-- game-compare:zh:start -->
+当前尚未收录审核素材，Pages 尚未上线。
+<!-- game-compare:zh:end -->
+
 ### 下载、安装与使用
 
 **需要：** Windows x64、兼容 **ReShade API 18** 的[完整 Add-on 支持版 ReShade](https://reshade.me/)、
@@ -193,6 +203,16 @@ See the [User Guide](docs/USER_GUIDE.md#en-start) for settings, inheritance and 
 ![NR result editor](docs/images/ui/results.webp)
 
 *Earlier development interface example; follow the text for the latest layout.*
+
+### In-game Comparisons
+
+Selected, reviewed NR OFF/ON pairs appear here as static previews (OFF left, ON right), linked to an interactive slider.
+
+[Screenshot processing and local preview](docs/GAME_COMPARISONS.md#english)
+
+<!-- game-compare:en:start -->
+No reviewed scenes have been added yet, and Pages is not live.
+<!-- game-compare:en:end -->
 
 ### Download, install and use
 

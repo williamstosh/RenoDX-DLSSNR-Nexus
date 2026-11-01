@@ -186,6 +186,7 @@ F6 立即提示开关操作，随后状态更新为正在检查、正常运行�
 *配图展示基础主题示意；当前可用主题以界面中的主题选择器为准。*
 
 默认 **F5** 截取 NR 关／开对比，通常存入 ReShade 基础目录 **DLSS5 Screenshots**。跨阶段链暂不支持同帧最终画面对比，使用 F6 比较或模型缓冲捕获。完整选项见[截图参考](#zh-capture)。
+已有明确 NR OFF／ON 截图时，可用独立的[实机画面对比工具](GAME_COMPARISONS.md#简体中文)生成带标签的静态图与本地拖动预览。此工具不改变游戏或截图功能，候选须人工审核后才可公开。
 
 普通调色保留高级兼容默认值；有具体 HDR、深度、运动或 Present 问题时再查[高级兼容性](#zh-compatibility)。
 
@@ -655,6 +656,7 @@ Settings are grouped into **Hotkeys & screenshots, Runtime monitor, Interface & 
 *The image shows the base theme examples; use the in-app theme selector for the current theme list.*
 
 **F5** captures NR off/on, normally under **DLSS5 Screenshots** in ReShade's base directory. Mixed-stage chains do not yet support same-frame final-image comparisons; use F6 or model buffers. See [capture reference](#en-capture).
+With explicitly identified NR OFF/ON screenshots, the separate [in-game comparison tool](GAME_COMPARISONS.md#english) creates a labeled static image and a local interactive preview. It does not change the game or capture feature. Candidates require human review before publication.
 
 Keep compatibility defaults for normal picture tuning. For specific HDR, depth, motion or Present issues, read [advanced compatibility](#en-compatibility).
 
