@@ -54,6 +54,8 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 
 <a id="zh-interface"></a>
 
+### 菜单界面
+
 ![NR Nexus 界面总览](docs/images/ui/overview-zh.webp)
 
 *左上：模型与工作分辨率；左下：F11 运行监视器；右侧：叠层与独立外观／结果编辑。v0.2.0 生产 UI 离屏示例，监视器数值为合成数据。*
@@ -262,6 +264,8 @@ More passes add GPU work; start with one. See [Compatibility](#en-compatibility)
 The interface offers **15 languages and seven themes**, with automatic ReShade language selection. See the [User Guide](docs/USER_GUIDE.md#en-start) for controls and parameters.
 
 <a id="en-interface"></a>
+
+### Interface
 
 ![NR Nexus interface overview](docs/images/ui/overview.webp)
 
