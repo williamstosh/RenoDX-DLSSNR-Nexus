@@ -256,6 +256,8 @@ def file_manifest(directory):
 
 
 def generate(args):
+    if args.readme_hdr and not args.hdr:
+        raise CompareError("--readme-hdr requires --hdr.")
     off_path, on_path = Path(args.off).resolve(), Path(args.on).resolve()
     if off_path == on_path:
         raise CompareError("OFF and ON are the same file.")
@@ -315,7 +317,7 @@ def generate(args):
     font = find_font(args.font)
     template = (PUBLIC / "index.html").read_text(encoding="utf-8")
     parameters = {"style_version": STYLE_VERSION, "format": args.format, "comparison_quality": args.quality,
-                  "preview_quality": 95, "readme": {"source": "complete ON SDR", "max_width": 1600, "quality": 90},
+                  "preview_quality": 95, "readme": {"source": "complete ON SDR", "max_width": 1600, "quality": args.readme_quality},
                   "game_en": clean_text(args.game_en) if args.game_en else None,
                   "scene_en": clean_text(args.scene_en) if args.scene_en else None,
                   "hdr_preview": args.hdr_preview, "sdr_fallback": args.sdr_fallback,
@@ -328,6 +330,10 @@ def generate(args):
     if hdr_bundle:
         parameters.update({"hdr": hdr_bundle["options"], "hdr_profile": args.hdr_profile, "comparison_quality": args.quality or 95,
                            "color": "common scRGB to Ultra HDR Rec.2020, with fixed Hable SDR fallback"})
+        if args.readme_hdr:
+            parameters["readme"] = {**hdr.readme_options(hdr_bundle["options"]["shared_target_peak_nits"], args.readme_quality),
+                                    "source": "complete ON original JXR HDR intent + fixed SDR base; no overlays",
+                                    "source_sha256": on_info["sha256"], "lossy_reencode": False}
     identity = digest(json_text({"off": off_info["sha256"], "on": on_info["sha256"], "game": game, "scene": scene, "parameters": parameters}).encode())
     root = local_output(Path(args.output))
     relative = Path(slug(game)) / slug(scene) / identity[:16]
@@ -335,7 +341,7 @@ def generate(args):
     entry = {"id": relative.as_posix(), "game": game, "scene": scene, "off": "off." + args.format,
              "on": "on." + args.format, "preview": "preview." + args.format, "width": off.width, "height": off.height,
              "status": "candidate", "labels": labels, "metadata": metadata, "warnings": notes, "synthetic": args.synthetic}
-    entry["readme"] = "readme.webp"
+    entry["readme"] = "readme.jpg" if args.readme_hdr else "readme.webp"
     for field in ("game_en", "scene_en"):
         if parameters[field]:
             entry[field] = parameters[field]
@@ -364,10 +370,14 @@ def generate(args):
                 save_image(off, work / entry["off"], args.quality)
                 save_image(on, work / entry["on"], args.quality)
             save_image(preview, work / entry["preview"], 95)
-            thumbnail = on.copy()
-            if thumbnail.width > 1600:
-                thumbnail = thumbnail.resize((1600, round(thumbnail.height * 1600 / thumbnail.width)), Image.Resampling.LANCZOS)
-            save_image(thumbnail, work / entry["readme"], 90)
+            if args.readme_hdr:
+                hdr_outputs["readme"] = hdr.write_readme(work / entry["readme"], hdr_bundle["on_hdr"],
+                                                         hdr_bundle["on_sdr"], parameters["readme"])
+            else:
+                thumbnail = on.copy()
+                if thumbnail.width > 1600:
+                    thumbnail = thumbnail.resize((1600, round(thumbnail.height * 1600 / thumbnail.width)), Image.Resampling.LANCZOS)
+                save_image(thumbnail, work / entry["readme"], args.readme_quality)
             (work / "index.html").write_text(render_page(template, [entry], True), encoding="utf-8")
             report = {"schema": 1, "status": "candidate", "identity": identity, "scene": entry,
                       "sources": {"off": off_info, "on": on_info}, "oriented_source_sizes": original_sizes,
@@ -412,9 +422,11 @@ def verify_candidate(candidate):
     public_asset_keys(entry)
     for key in scene_asset_keys(entry):
         valid_names = (hdr_names[key],) if entry.get("dynamic_range") == "ultra-hdr" else (key + ".webp", key + ".png")
+        if key == "readme" and entry.get("dynamic_range") == "ultra-hdr":
+            valid_names = ("readme.webp", "readme.jpg")
         if entry[key] not in valid_names:
             raise CompareError("Unsafe candidate asset name.")
-        is_hdr = entry.get("dynamic_range") == "ultra-hdr" and key in ("off", "on", "hdr_preview")
+        is_hdr = entry.get("dynamic_range") == "ultra-hdr" and (key in ("off", "on", "hdr_preview") or entry[key] == "readme.jpg")
         if is_hdr:
             import game_compare_hdr as hdr
             data = hdr.inspect((candidate / entry[key]).read_bytes())
@@ -423,7 +435,7 @@ def verify_candidate(candidate):
         with Image.open(candidate / entry[key]) as image:
             image.load()
             expected_size = [entry["width"], entry["height"]]
-            if key == "readme":
+            if key == "readme" and not is_hdr:
                 width = min(1600, entry["width"])
                 expected_size = [width, round(entry["height"] * width / entry["width"])]
             if list(image.size) != expected_size or image.getexif() or (not is_hdr and image.info.get("xmp")):
@@ -589,11 +601,15 @@ def optimize(args):
             raise CompareError(f"The existing ON JPEG primary image does not match the approved scene: format={source.format}, dimensions={source.size}.")
         source.seek(0)
         thumbnail = source.convert("RGB")
-    if thumbnail.width > 1600:
+    if not args.readme_hdr and thumbnail.width > 1600:
         thumbnail = thumbnail.resize((1600, round(thumbnail.height * 1600 / thumbnail.width)), Image.Resampling.LANCZOS)
     parameters = {"mode": "preserve-existing-hdr-pair", "readme_source": "ON JPEG embedded SDR base",
-                  "max_width": 1600, "quality": 90, "pillow_version": PIL.__version__,
+                  "max_width": 1600, "quality": args.readme_quality, "pillow_version": PIL.__version__,
                   "tool_sha256": digest(Path(__file__).read_bytes())}
+    if args.readme_hdr:
+        import game_compare_hdr as hdr
+        readme_hdr, readme_sdr, options = hdr.readme_from_jpeg(pair["on"].read_bytes(), args.readme_quality)
+        parameters.update({"readme_source": options["source"], "max_width": None, "readme": options})
     entry = {key: value for key, value in old.items() if key not in ("preview", "readme", "sdr_off", "sdr_on", "hdr_preview", "public_assets")}
     for field in ("game_en", "scene_en"):
         if value := getattr(args, field):
@@ -601,13 +617,15 @@ def optimize(args):
     identity = digest(json_text({"scene": entry, "pair_sha256": pair_hashes, "parameters": parameters}).encode())
     candidate = local_output(Path(args.output)) / "optimizations" / old["id"] / identity[:16]
     candidate.mkdir(parents=True, exist_ok=True)
-    thumbnail_file = candidate / "readme.webp"
+    thumbnail_file = candidate / ("readme.jpg" if args.readme_hdr else "readme.webp")
     if not thumbnail_file.exists() and (candidate / "report.json").exists():
         raise CompareError("Optimization candidate thumbnail is missing; old report retained.")
-    if not thumbnail_file.exists():
-        save_image(thumbnail, thumbnail_file, 90)
+    if args.readme_hdr:
+        hdr_output = hdr.write_readme(thumbnail_file, readme_hdr, readme_sdr, options)
+    elif not thumbnail_file.exists():
+        save_image(thumbnail, thumbnail_file, args.readme_quality)
     thumbnail_hash = digest(thumbnail_file.read_bytes())
-    revision = "assets/" + old["id"] + "/revisions/" + identity[:16] + "/readme.webp"
+    revision = "assets/" + old["id"] + "/revisions/" + identity[:16] + "/" + thumbnail_file.name
     entry["readme"] = revision
     target = public_asset_path(revision)
     if target.exists() and digest(target.read_bytes()) != thumbnail_hash:
@@ -638,7 +656,9 @@ def optimize(args):
     report_path = candidate / "report.json"
     report = {"schema": 1, "status": "optimization-candidate", "identity": identity, "scene": entry,
               "parameters": parameters, "pair_sha256": pair_hashes,
-              "outputs": {"readme.webp": {"sha256": thumbnail_hash, "bytes": thumbnail_file.stat().st_size}}, "plan": plan}
+              "outputs": {thumbnail_file.name: {"sha256": thumbnail_hash, "bytes": thumbnail_file.stat().st_size}}, "plan": plan}
+    if args.readme_hdr:
+        report["hdr_outputs"] = {"readme": hdr_output}
     if report_path.exists():
         previous = read_json(report_path)
         if previous["outputs"] != report["outputs"] or previous["identity"] != identity:
@@ -790,6 +810,10 @@ def parser():
     opt.add_argument("--apply", action="store_true")
     opt.add_argument("--reviewed", action="store_true")
     opt.add_argument("--publish-authorized", action="store_true")
+    for command in (gen, opt):
+        command.add_argument("--readme-hdr", action="store_true", help="Full-resolution complete ON Ultra HDR readme.jpg; generate requires --hdr. Default remains SDR WebP.")
+        command.add_argument("--readme-quality", type=int, choices=range(1, 101), default=90, metavar="1..100",
+                             help="README quality (default 90); HDR applies to base and gainmap, scale 1, gamma 1, three channels.")
     md = sub.add_parser("readme", help="Prepare bilingual README entries only after selected scenes are live.")
     md.add_argument("--scene", action="append", required=True, help="Approved scene ID; repeat for up to three scenes.")
     md.add_argument("--pages-url", required=True)
