@@ -92,7 +92,7 @@ python tools/game-compare.py approve --candidate "<候选目录>"
 
 ### Pages 与 README
 
-本轮未启用 Pages、推送或部署。后续明确授权后，将**已批准的选定文件**按项目流程审查并合入 `main`。在 GitHub **Settings → Pages → Build and deployment** 选 **Deploy from a branch → main → /docs → Save**。目录已有 `index.html` 入口与 `.nojekyll`，页面资源均使用相对路径，无需新增 Actions。选择 `/docs` 会公开该目录内的全部文件，应保留内部资料忽略规则；候选位于该目录之外。
+[在线对比图库](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/)已上线，使用 **Deploy from a branch → main → /docs** 发布。将后续**审核通过且获准公开的素材**按项目流程审查并合入 `main` 后，Pages 自动更新。目录已有 `index.html` 入口与 `.nojekyll`，资源使用相对路径，无需新增 Actions。分支发布会公开 `/docs` 内的已跟踪文件；内部资料保持忽略，候选留在该目录之外。
 
 在 Pages 实际上线并包含对应场景后，可生成最多三组 README 候选：
 
@@ -101,7 +101,7 @@ python tools/game-compare.py readme --scene "<清单中的场景ID>" `
   --pages-url "https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/"
 ```
 
-此地址是未来配置示例，不表示现已上线。命令先核验线上页面和场景，再生成本地 `artifacts/game-comparisons/readme-candidate.md`；审核后加 `--apply --publish-authorized` 才修改 README 标记区。中文和英文共用同一预览图，图片与文字都链接到对应 `#scene=`，不复制冗余图片。不覆盖 README 其余内容。Git 提交／推送、main 合并和公开部署始终另外授权。
+命令先核验线上页面和场景，再生成本地 `artifacts/game-comparisons/readme-candidate.md`；审核后加 `--apply --publish-authorized` 才修改 README 标记区。中文和英文共用同一预览图，图片与文字都链接到对应 `#scene=`，不复制冗余图片。不覆盖 README 其余内容。Git 提交／推送、main 合并和公开部署按各自授权执行。
 
 ### 验证
 
@@ -151,8 +151,8 @@ After review, `python tools/game-compare.py approve --candidate "<directory>"` p
 
 `catalog.json` is authoritative; embedding it into the one HTML template supports offline `file://` use. Only approved entries appear publicly; no per-scene HTML editing is needed.
 
-Pages remains disabled in this delivery. After separately authorized review and merging approved content into `main`, choose GitHub **Settings → Pages → Deploy from a branch → main → /docs → Save**. `docs/index.html` and `.nojekyll` are included. No new Actions workflow is required. Branch publishing exposes all tracked content under `/docs`; ignored internal material and candidates must stay out.
+The [comparison gallery](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/) is live, published through **Deploy from a branch → main → /docs**. After review and public-copy authorization, merge selected assets into `main` through the project workflow; Pages updates automatically. `docs/index.html` and `.nojekyll` provide the entry point with relative resource paths. No new Actions workflow is required. Branch publishing exposes tracked content under `/docs`; ignored internal material and candidates stay outside the published tree.
 
-Once Pages is reachable with the selected scenes, run `python tools/game-compare.py readme --scene "<approved-id>" --pages-url "https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/"`. This is a future configuration example, not a live-site claim. The command checks the live scene and prepares `artifacts/game-comparisons/readme-candidate.md`; add `--apply --publish-authorized` only after review. Select up to three scenes. Both language sections share the same preview images, linked to the scene viewer. Other README content stays intact. Commits, pushes, main merges and deployment each need their own authorization.
+Once the selected scenes are live, run `python tools/game-compare.py readme --scene "<approved-id>" --pages-url "https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/"`. The command checks the live scene and prepares `artifacts/game-comparisons/readme-candidate.md`; add `--apply --publish-authorized` only after review. Select up to three scenes. Both language sections share the same preview images, linked to the scene viewer. Other README content stays intact. Commits, pushes, main merges and deployment follow their respective authorizations.
 
 Run the two verification commands above. Image tests need only Pillow. Browser tests additionally need Playwright/Chromium: install the test library with `npm install --prefix .local/game-compare-browser --no-audit --no-fund playwright`, and set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to an existing Chromium/Chrome executable, or use a Playwright browser installation. These are test-only dependencies. Fixtures are clearly synthetic; touch emulation is not mobile hardware acceptance. The viewer supports pointer/touch dragging, keyboard arrows/Home/End, full OFF/ON, reset/double-click, large/full-image views, scene selection and Chinese/English. The owner makes the final visual decision.

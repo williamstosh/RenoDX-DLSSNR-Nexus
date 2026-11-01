@@ -48,8 +48,14 @@ function Assert-DocumentLinks([string]$Name, [string]$Text, [hashtable]$Document
     $englishImages = @()
     $chineseImages = @()
     foreach ($image in [regex]::Matches($Text, '!\[[^\]]*\]\(([^\s)]+)\)')) {
-        $file = [IO.Path]::GetFileName($image.Groups[1].Value)
+        $imageTarget = $image.Groups[1].Value
+        $file = [IO.Path]::GetFileName($imageTarget)
         $chinese = $image.Index -gt $chineseStart -and $image.Index -lt $englishStart
+        # Comparison watermarks are language-neutral; both sections must reuse the same asset.
+        if ($imageTarget -cmatch '^(?:https://github\.com/williamstosh/RenoDX-DLSSNR-Nexus/blob/[a-f0-9]{40}/)?docs/compare/assets/[a-z0-9/-]+/preview\.(?:webp|png)$') {
+            if ($chinese) { $chineseImages += $imageTarget } else { $englishImages += $imageTarget }
+            continue
+        }
         Assert-Test (($file -cmatch '-zh\.webp$') -eq $chinese) "Image language mismatch in ${Name}: $file"
         if ($chinese) { $chineseImages += $file -creplace '-zh\.webp$', '.webp' }
         else { $englishImages += $file }
