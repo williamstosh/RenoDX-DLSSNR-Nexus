@@ -65,7 +65,19 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 [截图处理与本地预览](docs/GAME_COMPARISONS.md#简体中文)
 
 <!-- game-compare:zh:start -->
-当前尚未收录审核素材，Pages 尚未上线。
+
+巫师3 — 诺维格瑞 · 教主广场
+
+[![巫师3 — 诺维格瑞 · 教主广场](docs/compare/assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/preview.webp)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-35e7d20e1c%2Fbecc86134f6282d0)
+
+[左右拖动查看对比](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-35e7d20e1c%2Fbecc86134f6282d0)
+
+巫师3 — 威伦 · 驼背泥沼
+
+[![巫师3 — 威伦 · 驼背泥沼](docs/compare/assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/preview.webp)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-4d71462ab3%2F9d0c90e0d157a5f5)
+
+[左右拖动查看对比](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-4d71462ab3%2F9d0c90e0d157a5f5)
+
 <!-- game-compare:zh:end -->
 
 ### 下载、安装与使用
@@ -259,7 +271,19 @@ Selected, reviewed NR OFF/ON pairs appear here as static previews (OFF left, ON 
 [Screenshot processing and local preview](docs/GAME_COMPARISONS.md#english)
 
 <!-- game-compare:en:start -->
-No reviewed scenes have been added yet, and Pages is not live.
+
+巫师3 — 诺维格瑞 · 教主广场
+
+[![巫师3 — 诺维格瑞 · 教主广场](docs/compare/assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/preview.webp)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-35e7d20e1c%2Fbecc86134f6282d0)
+
+[Interactive Comparison](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-35e7d20e1c%2Fbecc86134f6282d0)
+
+巫师3 — 威伦 · 驼背泥沼
+
+[![巫师3 — 威伦 · 驼背泥沼](docs/compare/assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/preview.webp)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-4d71462ab3%2F9d0c90e0d157a5f5)
+
+[Interactive Comparison](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-4d71462ab3%2F9d0c90e0d157a5f5)
+
 <!-- game-compare:en:end -->
 
 ### Download, install and use
