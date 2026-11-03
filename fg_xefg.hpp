@@ -205,6 +205,12 @@ struct Context {
   uint64_t interval_displayed = 0;
   uint64_t interval_submitted = 0;
   uint64_t interval_status_samples = 0;
+  // Protected by state.mutex; bind role counts to a completed Present rather
+  // than inferring executed work from its available input resources.
+  uint64_t service_stats_serial = 0;
+  uint32_t service_hudless_processes = 0;
+  uint32_t service_backbuffer_processes = 0;
+  bool service_composed = false;
   std::atomic_uint64_t interval_nr_frames{0};
   std::atomic_uint64_t interval_nr_processes{0};
   std::atomic_uint64_t interval_nr_evaluates{0};
@@ -304,6 +310,11 @@ inline void RecordServiceStats(uintptr_t context_value, uint32_t process_calls,
                                bool composed) noexcept {
   auto* context = reinterpret_cast<Context*>(context_value);
   if (context == nullptr) return;
+  std::unique_lock lock(state.mutex);
+  ++context->service_stats_serial;
+  context->service_hudless_processes = hudless_processes;
+  context->service_backbuffer_processes = backbuffer_processes;
+  context->service_composed = composed;
   context->interval_nr_frames.fetch_add(1, std::memory_order_relaxed);
   context->interval_nr_processes.fetch_add(process_calls, std::memory_order_relaxed);
   context->interval_nr_evaluates.fetch_add(evaluates, std::memory_order_relaxed);
@@ -484,6 +495,7 @@ struct PresentFrame {
   bool service_owned = false;
   bool service_eligible = false;
   bool continuing_submission = false;
+  uint64_t service_stats_serial = 0;
   Result service_result = Result::NOT_SERVED;
 };
 
@@ -498,6 +510,7 @@ inline PresentFrame BeginPresent(IDXGISwapChain* swapchain, UINT flags) {
     for (const auto& [handle, context] : state.contexts) {
       if (context->proxy_identity != identity) continue;
       present.context = context;
+      present.service_stats_serial = context->service_stats_serial;
       present.service_owned = service_requested && context->enabled;
       const bool has_present_id = context->fresh_id;
       repeated = has_present_id && context->last_id_known && context->last_id == context->present_id;
@@ -674,7 +687,38 @@ inline void EndPresent(PresentFrame* present) {
     const auto input_ui = context.interval_input_ui.exchange(0, std::memory_order_relaxed);
     const auto tagged_presents = context.interval_tagged_presents;
     const auto untagged_presents = context.interval_untagged_presents;
-    char message[768];
+    // `last` describes this completed Present, while nr_service remains an
+    // interval total. Declined or failed frames never inherit an earlier route.
+    const char* last_nr_route = "not_processed";
+    const char* last_nr_route_reason = "not_served";
+    if (!present->service_owned) {
+      last_nr_route_reason = (present->input.fg_enabled ? "nr_off" : "fg_off");
+    } else if (present->service_result == Result::FAILED) {
+      last_nr_route_reason = "failed";
+    } else if (present->service_result == Result::SUBMITTED) {
+      last_nr_route_reason = "service_stats_unavailable";
+      // Multiple overlapping recordings cannot be attributed to this Present.
+      if (context.service_stats_serial == present->service_stats_serial + 1) {
+        if (context.service_hudless_processes != 0 && context.service_backbuffer_processes != 0) {
+          last_nr_route = "dual_chain";
+          last_nr_route_reason = (present->input.ui_composition ? "ui_composition"
+              : (present->input.ui_mode != kUiModeAuto ? "ui_mode" : "manual_dual"));
+        } else if (context.service_hudless_processes == 0 && context.service_backbuffer_processes != 0) {
+          last_nr_route = "single_backbuffer";
+          if (present->input.ui_composition && (present->input.ui_mode == 1 || present->input.ui_mode == 2)) {
+            last_nr_route_reason = "ui_mode";
+          } else if (context.omit_optional_hudless && !present->input.ui_composition) {
+            last_nr_route_reason = "single_color_default";
+          } else {
+            last_nr_route_reason = "hudless_unavailable";
+          }
+        } else if (context.service_hudless_processes != 0 && context.service_composed) {
+          last_nr_route = "single_hudless_composed";
+          last_nr_route_reason = "ui_composition";
+        }
+      }
+    }
+    char message[1536];
     std::snprintf(message, sizeof(message),
         "DLSS5 FG interval context=%llx seconds=%.3f application_presents=%llu tagged_presents=%llu "
         "untagged_presents=%llu nr_submitted=%llu "
@@ -682,6 +726,7 @@ inline void EndPresent(PresentFrame* present) {
         "ui_mode=%u ui_composition=%u nr_colors=%u sdk_fg_enabled=%u fresh_present_id=%u "
         "nr_service[frames=%llu process=%llu evals=%llu hudless=%llu backbuffer=%llu two_color=%llu composed=%llu]; "
         "hudless_contract[blocked=%llu sdk_calls=%llu sdk_success=%llu input=%llu ui=%llu]; "
+        "last_nr_route=%s last_nr_route_reason=%s; "
         "public_SDK_status_not_visual_acceptance",
         static_cast<unsigned long long>(present->input.context), seconds,
         static_cast<unsigned long long>(context.interval_presents),
@@ -698,7 +743,8 @@ inline void EndPresent(PresentFrame* present) {
         static_cast<unsigned long long>(nr_backbuffer), static_cast<unsigned long long>(nr_two_color),
         static_cast<unsigned long long>(nr_composed), static_cast<unsigned long long>(hudless_blocked),
         static_cast<unsigned long long>(hudless_sdk_calls), static_cast<unsigned long long>(hudless_sdk_success),
-        static_cast<unsigned long long>(input_hudless), static_cast<unsigned long long>(input_ui));
+        static_cast<unsigned long long>(input_hudless), static_cast<unsigned long long>(input_ui),
+        last_nr_route, last_nr_route_reason);
     context.interval_start = now;
     context.interval_presents = context.interval_tagged_presents = context.interval_untagged_presents = 0;
     context.interval_displayed = context.interval_submitted = context.interval_status_samples = 0;

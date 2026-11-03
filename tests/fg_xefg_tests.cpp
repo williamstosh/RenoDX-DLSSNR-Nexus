@@ -6,10 +6,18 @@
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 #include <include/reshade.hpp>
 #include <fg_xefg.hpp>
 #include <fg_native_options.hpp>
+
+std::string interval_diagnostic;
+extern "C" __declspec(dllexport) void ReShadeLogMessage(void*, int, const char* message) {
+  if (std::strstr(message, "DLSS5 FG interval ") != nullptr) {
+    interval_diagnostic = message;
+  }
+}
 
 namespace {
 using Microsoft::WRL::ComPtr;
@@ -292,9 +300,84 @@ struct Session {
     Check(SUCCEEDED(adapter::ProxyHooks<0>::Present(proxy.Get(), 0, flags)), "proxy present forwarding");
   }
 };
+
+void TestRouteDiagnostics(Gpu* gpu) {
+  Session session(gpu);
+  auto hudless = gpu->Texture();
+  auto depth = gpu->Texture();
+  auto motion = gpu->Texture();
+  uint32_t id = 1200;
+  const auto verify = [&](const char* route, const char* reason, fg::Result outcome,
+                          uint32_t hudless_calls, uint32_t backbuffer_calls, bool composed = false,
+                          bool record_stats = true, bool tag_hudless = true, bool repeated = false) {
+    service_outcome = outcome;
+    session.Guides(++id, depth.Get(), motion.Get());
+    if (tag_hudless) {
+      session.Tag(id, HUDLESS, hudless.Get());
+    }
+    gpu->Submit();
+    Check(Hooks::PresentId(session.handle, id) == 0, "route diagnostic Present ID");
+    if (repeated) {
+      session.context->last_id_known = true;
+      session.context->last_id = id;
+    }
+    auto present = adapter::BeginPresent(session.proxy.Get(), 0);
+    if (record_stats && present.service_eligible) {
+      adapter::RecordServiceStats(present.input.diagnostic_context, hudless_calls + backbuffer_calls,
+          hudless_calls + backbuffer_calls, hudless_calls, backbuffer_calls,
+          hudless_calls != 0 && backbuffer_calls != 0, composed);
+    }
+    session.context->interval_start = std::chrono::steady_clock::now() - std::chrono::seconds(6);
+    interval_diagnostic.clear();
+    adapter::EndPresent(&present);
+    Check(interval_diagnostic.find(std::string("last_nr_route=") + route + " ") != std::string::npos,
+          "last route must match successful role counts, not available inputs or earlier frames");
+    Check(interval_diagnostic.find(std::string("last_nr_route_reason=") + reason + ";") != std::string::npos,
+          "last route reason must match the serviced frame contract");
+    Check(interval_diagnostic.find("nr_service[frames=") != std::string::npos
+              && interval_diagnostic.find("public_SDK_status_not_visual_acceptance") != std::string::npos,
+          "route fields preserve legacy counters and the log suffix without truncation");
+  };
+  session.context->omit_optional_hudless = true;
+  session.context->ui_composition = false;
+  verify("single_backbuffer", "single_color_default", fg::Result::SUBMITTED, 0, 1);
+  session.context->ui_composition = true;
+  verify("dual_chain", "ui_composition", fg::Result::SUBMITTED, 1, 1);
+  session.context->omit_optional_hudless = false;
+  session.context->ui_composition = false;
+  verify("dual_chain", "manual_dual", fg::Result::SUBMITTED, 1, 1);
+  session.context->init.ui_mode = 4;
+  verify("dual_chain", "ui_mode", fg::Result::SUBMITTED, 1, 1);
+  session.context->ui_composition = true;
+  for (const int32_t mode : {1, 2}) {
+    session.context->init.ui_mode = mode;
+    verify("single_backbuffer", "ui_mode", fg::Result::SUBMITTED, 0, 1);
+    Check(service_calls.back().hudless == nullptr, "NONE/UItexture diagnostics must follow SDK consumers");
+  }
+  session.context->init.ui_mode = 3;
+  verify("single_hudless_composed", "ui_composition", fg::Result::SUBMITTED, 1, 0, true);
+  session.context->init.ui_mode = 0;
+  session.context->ui_composition = false;
+  verify("single_backbuffer", "hudless_unavailable", fg::Result::SUBMITTED, 0, 1, false, true, false);
+  verify("not_processed", "service_stats_unavailable", fg::Result::SUBMITTED, 0, 0, false, false);
+  verify("not_processed", "failed", fg::Result::FAILED, 1, 1);
+  verify("not_processed", "not_served", fg::Result::PREPARED, 1, 1);
+  verify("not_processed", "not_served", fg::Result::NOT_SERVED, 0, 0);
+  verify("not_processed", "not_served", fg::Result::SUBMITTED, 0, 0, false, false, true, true);
+  policy = false;
+  verify("not_processed", "nr_off", fg::Result::SUBMITTED, 0, 0);
+  policy = true;
+  session.context->enabled = false;
+  verify("not_processed", "fg_off", fg::Result::SUBMITTED, 0, 0);
+  service_outcome = fg::Result::SUBMITTED;
+  gpu->Submit();
+  submission::ResetAll();
+  std::cout << "PASS last Present route/reason diagnostics: successful roles, SDK consumers, Off, skipped and failed\n";
+}
 }  // namespace
 int main() {
   try {
+    reshade::internal::get_reshade_module_handle(GetModuleHandleW(nullptr));
     TestDiagnosticBudgets();
     std::cout << "PASS bounded XeFG contract diagnostics\n";
     fg::native_options::internal::state.real = &FakeOptions;
@@ -324,6 +407,7 @@ int main() {
     adapter::proxies[0].real[1] = reinterpret_cast<void*>(&FakePresent1);
     xefg::Configure(&Service, &Prepare, nullptr, &Requested);
     Gpu gpu;
+    TestRouteDiagnostics(&gpu);
     xefg::Configure(&Service, &Prepare, nullptr, &Requested, false, false);
     Check(!adapter::sdk_detours_enabled.load(), "XeFG SDK detour diagnostic switch did not latch");
     xefg::Configure(&Service, &Prepare, nullptr, &Requested);

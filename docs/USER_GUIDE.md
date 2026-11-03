@@ -429,7 +429,9 @@ v0.2.1 默认开启**画质 → 处理与兼容性 → Present → FG 高级设�
 
 升级时会一次性将旧配置的此项切到开启，其他画质参数保持原值。若单颜色模式在某游戏出现新增的 HUD 或帧生成兼容问题，关闭此项并**重启游戏**，恢复可用 HUDLess 与 Backbuffer 的原双链处理；之后的手动选择会保存。仅切换 NR 开关无需重启。
 
-启用 UI Composition 或使用其他 UI Mode 时沿用既有兼容路由，不强制省略 HUDLess。AUTO 的双链让 XeFG 接收两路均经过 NR 的场景颜色，UI 合成仍由 XeFG 完成。若优先使用单层性能，可在游戏或 OptiScaler 的 XeFG 设置中关闭 UI Composition，并重启游戏；插件依据 SDK 实际启用状态选择路由。此设置不改变 Render／Upscaled 或原生 DLSS FG 的策略。单层 Backbuffer 仍处理 HUD，并非单次 NR 后重组 UI 的功能。
+启用 UI Composition 或使用其他 UI Mode 时沿用既有兼容路由，不强制省略 HUDLess。OptiScaler 开启 UI Composition 且 XeFG 实际消费 HUDLess 时会使用双链，让两路场景颜色都经过 NR；UI 合成仍由 XeFG 完成。插件不自动修改 `OptiScaler.ini`，路由依据 SDK 实际启用状态。若优先使用单层性能，可自行在游戏或 OptiScaler 的 XeFG 设置中关闭 UI Composition，并重启游戏。此设置不改变 Render／Upscaled 或原生 DLSS FG 的策略。单层 Backbuffer 仍处理 HUD，并非单次 NR 后重组 UI 的功能。
+
+**确认实际路径：** 游戏目录的 `ReShade.log` 中，`DLSS5 FG interval` 日志的 `last_nr_route` 表示该条记录最后一帧实际处理：`single_backbuffer` 为单层，`dual_chain` 为双链。`last_nr_route_reason=ui_composition` 表示 UI Composition 需要该兼容路径，`manual_dual` 表示手动保留双链，`ui_mode` 表示当前 UI Mode 路由；`single_color_default` 表示默认单层策略生效。`not_processed` 表示该帧未处理，应结合原因查看；`single_hudless_composed` 是既有 HUDLess 处理后合成路径。`nr_service` 中的 HUDLess／Backbuffer 和模型调用数则是整个日志区间的累计值，链数与 Pass 数分别计量。
 
 <a id="zh-gpu-details"></a>
 #### 深入查看 GPU 成本
@@ -933,7 +935,9 @@ v0.2.1 enables **Quality → Processing & compatibility → Present → FG advan
 
 The upgrade switches this option on once for existing configurations, retaining other quality settings. If single-color processing introduces a HUD or frame-generation compatibility issue in a game, disable it and **restart the game** to restore the previous dual-chain processing of available HUD-less and backbuffer inputs. Your later manual selection is saved. Toggling NR itself needs no restart.
 
-UI Composition and other UI Modes retain their existing compatibility routes without forced HUD-less omission. In AUTO, the dual chain supplies two NR-processed scene colors to XeFG, which still performs UI composition. To prioritize single-backbuffer performance, disable UI Composition in the game or OptiScaler XeFG settings and restart the game; routing follows the state actually enabled in the SDK. Render/Upscaled and native DLSS FG policies are unchanged. Single-backbuffer NR still processes the HUD; it does not reconstruct UI after a single NR evaluation.
+UI Composition and other UI Modes retain their existing compatibility routes without forced HUD-less omission. Enabling UI Composition in OptiScaler uses the dual chain when XeFG actually consumes HUD-less input, supplying two NR-processed scene colors; XeFG still performs UI composition. The add-on does not automatically edit `OptiScaler.ini`, and routing follows the state actually enabled in the SDK. To prioritize single-backbuffer performance, you can disable UI Composition in the game or OptiScaler XeFG settings and restart the game. Render/Upscaled and native DLSS FG policies are unchanged. Single-backbuffer NR still processes the HUD; it does not reconstruct UI after a single NR evaluation.
+
+**Check the actual route:** In the game directory’s `ReShade.log`, `last_nr_route` in a `DLSS5 FG interval` entry describes the last frame actually processed: `single_backbuffer` means one color chain; `dual_chain` means two. `last_nr_route_reason=ui_composition` identifies the UI Composition compatibility route, `manual_dual` a manual dual-chain selection, `ui_mode` the current UI Mode route, and `single_color_default` the default single-color policy. `not_processed` means that frame was not processed; check its reason. `single_hudless_composed` is the existing HUD-less processing and composition route. The HUD-less/backbuffer and model-call counters under `nr_service` total the whole log interval; color-chain and Pass counts are separate.
 
 <a id="en-gpu-details"></a>
 #### Deeper GPU cost readings
