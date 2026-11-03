@@ -67,9 +67,14 @@ int main() { return ProbeFormats(); }
 #include <dlssnr.hpp>
 // Reuse the established host types and checks, without executing its matrix.
 #define main UnusedXeFgMotionHostMain
+#define FG_XEFG_TEST_CUSTOM_LOGGER
 #include "fg_xefg_tests.cpp"
+#undef FG_XEFG_TEST_CUSTOM_LOGGER
 #undef main
 extern "C" __declspec(dllexport) void ReShadeLogMessage(void*, int, const char* message) {
+  if (std::strstr(message, "DLSS5 FG interval ") != nullptr) {
+    interval_diagnostic = message;
+  }
   std::cout << message << '\n';
 }
 extern "C" __declspec(dllexport) bool ReShadeGetBasePath(char*, size_t* size) {

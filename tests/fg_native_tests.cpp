@@ -12,12 +12,17 @@
 
 // Reuse the WARP/list/submission host, without running the adapter matrix.
 #define main UnusedXeFgTestMain
+#define FG_XEFG_TEST_CUSTOM_LOGGER
 #include "fg_xefg_tests.cpp"
+#undef FG_XEFG_TEST_CUSTOM_LOGGER
 #undef main
 
 static std::vector<std::pair<int, std::string>> captured_logs;
 
 extern "C" __declspec(dllexport) void ReShadeLogMessage(void*, int level, const char* message) {
+  if (std::strstr(message, "DLSS5 FG interval ") != nullptr) {
+    interval_diagnostic = message;
+  }
   captured_logs.emplace_back(level, message);
   std::cout << message << '\n';
 }

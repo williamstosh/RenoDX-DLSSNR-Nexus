@@ -13,11 +13,13 @@
 #include <fg_native_options.hpp>
 
 std::string interval_diagnostic;
+#ifndef FG_XEFG_TEST_CUSTOM_LOGGER
 extern "C" __declspec(dllexport) void ReShadeLogMessage(void*, int, const char* message) {
   if (std::strstr(message, "DLSS5 FG interval ") != nullptr) {
     interval_diagnostic = message;
   }
 }
+#endif
 
 namespace {
 using Microsoft::WRL::ComPtr;
