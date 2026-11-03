@@ -12,6 +12,12 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kFr[] = {
+    {"Present passes request different working resolutions: Pass 1 = %.0f%%, Pass 2 = %.0f%%. Use matching resolutions.", "Les passes Present demandent des résolutions de travail différentes : passe 1 = %.0f%%, passe 2 = %.0f%%. Utilisez des résolutions identiques."},
+    {"Choose this option to review letting other passes inherit the base resolution.", "Choisissez cette option pour examiner l’héritage de la résolution de base par les autres passes."},
+    {"Use matching working resolutions?", "Utiliser des résolutions de travail identiques ?"},
+    {"Let other passes inherit base resolution", "Faire hériter les autres passes de la résolution de base"},
+    {"Working resolutions updated.", "Résolutions de travail mises à jour."},
+    {"Redo", "Rétablir"},
     {"XeFG single-color processing", "Traitement XeFG à une couleur"},
     {"XeFG AUTO without UI Composition: process only the backbuffer (1/2 Pass = 1/2 model calls). Off keeps the HUD-less color chain too. Other UI modes and UI Composition keep their existing routing. Restart the game after changing this option.", "XeFG AUTO sans UI Composition : traiter uniquement le backbuffer (1/2 Pass = 1/2 appels au modèle). Désactivé, traite aussi la chaîne sans HUD. Les autres modes UI et UI Composition conservent leur routage actuel. Redémarrez le jeu après modification."},
     {"Unbind monitor mode key", "Dissocier la touche du mode du moniteur"},

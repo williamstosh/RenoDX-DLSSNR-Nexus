@@ -1365,6 +1365,7 @@ int main() {
       return nodes;
     };
 #include "quality_editor_cases.hpp"
+#include "resolution_edit_ui_cases.hpp"
     for (unsigned count = 1; count <= 4; ++count) {
       runtime::stack_passes = count;
       frame();

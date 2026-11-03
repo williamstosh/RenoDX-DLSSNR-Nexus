@@ -120,13 +120,13 @@ A/B 示例需要 310.9.16.0，其他兼容运行时也可使用同模型两层�
 用较小尺寸运行某一层，再重建到输出尺寸，可在细节与成本间取舍，游戏 DLSS 分辨率保持不变。
 
 1. 在**画质**或**第 1 层**设基础分辨率：100／67／58／50%，或用 **33–100%** 滑条微调。
-2. 选择第 2–4 层，将**工作分辨率**从“继承基础分辨率”改为**固定比例**，设置本层比例；也可选**跟随输入**。
+2. 选择第 2–4 层，在**工作分辨率**中选择**固定比例**及所需比例；也可选**跟随输入**。Present 双层也可直接点击第 2 层的同尺寸比例按钮，一次设置固定模式和比例。
 3. 比如比较 **第 1 层 100% → 第 2 层 67%** 与两层 100%，保持其余模型、外观和结果相同。
 4. 查看尺寸区的预计／实际尺寸及诊断 GPU 开销，检查边缘、细节和移动画面。
 
-“继承基础”取画质页／第 1 层，**不是上一层比例**。“跟随输入”使用可用引导尺寸，缺少引导时用保存比例；上采样全链共享。
+“继承基础”取画质页／第 1 层，**不是上一层比例**。“跟随输入”使用可用引导尺寸，缺少引导时用保存比例；上采样全链共享。**v0.2.2** 中，要在 Present + FG 使用两层 67%，将基础比例设为 67%，第 2 层设为继承基础。若旧设置的第 2 层固定为 100%，选择基础比例或两层后，在确认框中点击“让其他层继承基础分辨率”，即可统一应用；取消不会更改设置，撤销／重做作用于整次操作。也可先手动将第 2 层设为继承基础，再更改基础比例；独立比例的保存值会保留。
 
-DX11／DX12 支持跨 Render／Upscaled 阶段独立尺寸，以及同一 Render 或 Upscaled 阶段的两层不同尺寸。普通 Present 两层不同尺寸还需插件确认 FG 已关闭，未知时会拒绝。同阶段三层以上要求实际工作尺寸一致。Pre-FG 两层不同尺寸与 Vulkan 独立尺寸**暂不支持**，详见[兼容性表](#zh-paths)。
+DX11／DX12 支持跨 Render／Upscaled 阶段独立尺寸，以及同一 Render 或 Upscaled 阶段的两层不同尺寸。普通 Present 两层实际尺寸相同时（例如均固定为 50%）可配合 FG；尺寸不同时需插件明确确认 FG 已关闭，未知或开启时会拒绝。同阶段三层以上要求实际工作尺寸一致。Pre-FG 两层不同尺寸与 Vulkan 独立尺寸**暂不支持**，详见[兼容性表](#zh-paths)。
 
 <a id="zh-presets"></a>
 #### 方案管理：保存、切换与分享
@@ -381,7 +381,7 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 | 方案保存失败 | 解决权限／存储错误后重试，保存成功前不会继续切换；冲突时停止并发编辑，正常退出重载。 |
 | 中文乱码／方框 | 乱码用辅助输入；方框同时检查 ReShade 语言及自定义字体。 |
 | 截图繁忙／失败 | 等完成，检查状态、路径和日志；跨阶段链用 F6 或模型缓冲。 |
-| XeFG 高亮瞬闪 | 已知问题，可比较关闭 XeFG 的表现并附复现步骤反馈。 |
+| XeFG 高亮瞬闪 | 归类为 XeFG 侧问题，不列为 NR Nexus 插件缺陷；可比较关闭 XeFG 的表现，并向 XeFG 提供方反馈复现步骤。 |
 
 <a id="zh-reset"></a>
 #### 恢复安全默认值
@@ -626,13 +626,13 @@ Passes 2–4 offer **Same as previous/Render/Upscaled/Present**. Stages can only
 Run a pass at a smaller size and reconstruct to output to trade detail against cost, keeping game DLSS resolution unchanged.
 
 1. In **Quality** or **Pass 1**, set the base to 100/67/58/50%, or fine-tune with **33–100%**.
-2. Select Pass 2–4 and change **Working resolution** from Inherit base resolution to **Fixed scale**, then set its scale; **Follow input** is also available.
+2. Select Pass 2–4 and choose **Fixed scale** and the desired scale under **Working resolution**; **Follow input** is also available. A Present pair also lets you click a matching scale button on Pass 2 to set fixed mode and scale together.
 3. Compare **Pass 1 100% → Pass 2 67%** with both at 100%, holding models, looks and results constant.
 4. Read estimated/actual size and diagnostic GPU cost; inspect edges, detail and motion.
 
-Inherit base uses Quality/Pass 1, **not the previous pass's scale**. Follow input uses available guides, falling back to saved scale without them. Upsampling is shared.
+Inherit base uses Quality/Pass 1, **not the previous pass's scale**. Follow input uses available guides, falling back to saved scale without them. Upsampling is shared. In **v0.2.2**, for two Present + FG passes at 67%, set the base scale to 67% and Pass 2 to inherit the base. If an older setup has Pass 2 fixed at 100%, after choosing the base scale or two passes, click **Let other passes inherit base resolution** in the confirmation dialog to apply the changes together. Cancel leaves settings unchanged; Undo/Redo reverses or reapplies the whole action. Alternatively, first set Pass 2 to inherit the base and then change the base scale; the saved independent scale is retained.
 
-DX11/DX12 support separate sizes across Render/Upscaled and two different-sized passes within Render or Upscaled. Ordinary Present pairs require confirmed FG off; unknown state is rejected. Three or more in one stage require equal actual sizes. Pre-FG pairs with different sizes and Vulkan independent sizes are **not supported yet**; see [compatibility](#en-paths).
+DX11/DX12 support separate sizes across Render/Upscaled and two different-sized passes within Render or Upscaled. Ordinary Present pairs with matching actual sizes (for example, both fixed at 50%) can be used with FG; different sizes require an explicit confirmed FG Off declaration, and unknown or enabled FG is rejected. Three or more in one stage require equal actual sizes. Pre-FG pairs with different sizes and Vulkan independent sizes are **not supported yet**; see [compatibility](#en-paths).
 
 <a id="en-presets"></a>
 #### Profiles: save, switch and share
@@ -887,7 +887,7 @@ Final presentation captures the same frame before/after Present NR without ReSha
 | Profile save failure | Resolve permissions/storage and retry; switching waits for saving. Stop concurrent editing and exit/reload for conflicts. |
 | Garbled Chinese/boxes | Use assisted input for garbling; check ReShade language/custom font for boxes. |
 | Capture busy/failed | Wait, then read status, path and log; mixed-stage chains use F6 or buffers. |
-| XeFG highlight flicker | Known issue; compare XeFG off and report reproduction steps. |
+| XeFG highlight flicker | Classified as a XeFG-side issue, not an NR Nexus add-on defect. Compare with XeFG off and report reproduction steps to the XeFG provider. |
 
 <a id="en-reset"></a>
 #### Restoring safe defaults

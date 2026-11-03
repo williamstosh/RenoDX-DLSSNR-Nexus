@@ -12,6 +12,12 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kTr[] = {
+    {"Present passes request different working resolutions: Pass 1 = %.0f%%, Pass 2 = %.0f%%. Use matching resolutions.", "Present geçişleri farklı çalışma çözünürlükleri istiyor: Geçiş 1 = %.0f%%, Geçiş 2 = %.0f%%. Aynı çözünürlükleri kullanın."},
+    {"Choose this option to review letting other passes inherit the base resolution.", "Diğer geçişlerin temel çözünürlüğü devralmasını gözden geçirmek için bu seçeneği seçin."},
+    {"Use matching working resolutions?", "Aynı çalışma çözünürlükleri kullanılsın mı?"},
+    {"Let other passes inherit base resolution", "Diğer geçişler temel çözünürlüğü devralsın"},
+    {"Working resolutions updated.", "Çalışma çözünürlükleri güncellendi."},
+    {"Redo", "Yinele"},
     {"XeFG single-color processing", "XeFG tek renk işleme"},
     {"XeFG AUTO without UI Composition: process only the backbuffer (1/2 Pass = 1/2 model calls). Off keeps the HUD-less color chain too. Other UI modes and UI Composition keep their existing routing. Restart the game after changing this option.", "UI Composition kapalı XeFG AUTO: yalnızca backbuffer işlenir (1/2 Pass = 1/2 model çağrısı). Kapalıyken HUD içermeyen renk zinciri de işlenir. Diğer UI modları ve UI Composition mevcut yönlendirmeyi korur. Değişiklikten sonra oyunu yeniden başlatın."},
     {"Unbind monitor mode key", "İzleyici modu tuş atamasını kaldır"},

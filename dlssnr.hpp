@@ -22493,17 +22493,87 @@ inline capability::Result QueryConfigurationCapability(const presets::Json& valu
   return result;
 }
 
+inline bool PresentResolutionMismatch(const presets::Json& values, const capability::Result& result) {
+  const auto reason = result.configuration.reason;
+  if (reason != capability::Reason::FG_OFF_REQUIRED && reason != capability::Reason::FG_OWNS_INPUT) return false;
+  std::optional<RuntimeLock> lock;
+  if (!runtime_lock::State::HeldByThisThread()) lock.emplace(runtime_mutex);
+  const auto number = [&](const char* key, double current) {
+    const auto found = values.find(key);
+    if (found == values.end()) return current;
+    if (found->is_boolean()) return found->get<bool>() ? 1.0 : 0.0;
+    return (found->is_number() ? found->get<double>() : current);
+  };
+  if (experimental_native_prefg_resolution.load() || result.group_count != 1
+      || number("NRHookPoint", hook_point.load()) != kHookPresent
+      || number("NRPasses", stack_passes.load()) != 2.0
+      || number("NRFollowInputRes", nr_follow_input_res.load()) != 0.0
+      || number("NRPass2ResolutionMode", pass_resolution_mode[0].load()) != 2.0) return false;
+  // Query's reference rectangles are observations, not proof of current GPU
+  // execution. Only compare fixed-scale requests here; Follow input needs a
+  // current Guide and must not use Query's saved-scale fallback as evidence.
+  return result.working_sizes[0].width != 0 && result.working_sizes[1].width != 0
+      && result.working_sizes[0] != result.working_sizes[1];
+}
+
+inline std::string FormatConfigurationCapabilityError(const presets::Json& values, const capability::Result& result) {
+  const char* reason = (result.configuration.reason == capability::Reason::PLAN_REJECTED
+      || (result.CanSubmit() && result.plan_reason != stage_plan::Reason::NONE)
+      ? stage_plan::ReasonText(result.plan_reason) : capability::ReasonText(result.configuration.reason));
+  std::string message = ui::Tr(reason);
+  if (PresentResolutionMismatch(values, result)) {
+    const float main = values.value("NRResolutionScale", nr_resolution_scale.load());
+    const float second = values.value("NRPass2ResolutionScale", pass_resolution_scale[0].load());
+    char conflict[1024];
+    std::snprintf(conflict, sizeof(conflict), ui::Tr("Present passes request different working resolutions: Pass 1 = %.0f%%, Pass 2 = %.0f%%. Use matching resolutions."),
+        main * 100.f, second * 100.f);
+    message = std::string(conflict) + "\n" + message;
+  }
+  return message;
+}
+
 inline bool ValidateConfigurationCapability(const presets::Json& values, std::string* error) {
   const auto result = QueryConfigurationCapability(values);
   if (result.CanSubmit() && result.plan_reason != stage_plan::Reason::RR_AFTER
       && result.plan_reason != stage_plan::Reason::PRESENT_AFTER) return true;
-  if (error != nullptr) {
-    *error = ui::Tr(result.configuration.reason == capability::Reason::PLAN_REJECTED
-        || (result.CanSubmit() && result.plan_reason != stage_plan::Reason::NONE)
-        ? stage_plan::ReasonText(result.plan_reason) : capability::ReasonText(result.configuration.reason));
-  }
+  if (error != nullptr) *error = FormatConfigurationCapabilityError(values, result);
   return false;
 }
+
+inline presets::Json ProposedResolutionInheritance(const presets::Json& requested) {
+  if (!requested.is_object() || requested.empty()) return presets::Json::object();
+  for (const auto& [key, value] : requested.items()) {
+    if (key != "NRPasses" && key != "NRFollowInputRes" && key != "NRResolutionScale") return presets::Json::object();
+    if (key == "NRFollowInputRes") {
+      if (!value.is_boolean()) return presets::Json::object();
+    } else {
+      const auto* rule = presets::FindRule(key);
+      if (!value.is_number()) return presets::Json::object();
+      const double number = value.get<double>();
+      if (rule == nullptr || !std::isfinite(number) || number < rule->minimum || number > rule->maximum
+          || (key == "NRPasses" && std::floor(number) != number)) return presets::Json::object();
+    }
+  }
+  std::optional<RuntimeLock> lock;
+  if (!runtime_lock::State::HeldByThisThread()) lock.emplace(runtime_mutex);
+  if (!PresentResolutionMismatch(requested, QueryConfigurationCapability(requested))) return presets::Json::object();
+  auto repaired = requested;
+  repaired["NRPass2ResolutionMode"] = 0u;
+  if (!ValidateConfigurationCapability(repaired, nullptr)) return presets::Json::object();
+  return repaired;
+}
+
+inline bool CanRequestConfigurationEdit(const presets::Json& requested, std::string* reason = nullptr) {
+  if (ValidateConfigurationCapability(requested, reason)) return true;
+  if (ProposedResolutionInheritance(requested).empty()) return false;
+  if (reason != nullptr) {
+    *reason += "\n";
+    *reason += ui::Tr("Choose this option to review letting other passes inherit the base resolution.");
+  }
+  return true;
+}
+
+inline presets::Json resolution_edit_request = presets::Json::object();
 
 inline bool IsCapabilitySetting(std::string_view key) {
   return key == "NRHookPoint" || key == "NRPasses" || key == "NRPreset" || key == "NRFollowInputRes"
@@ -23203,6 +23273,12 @@ inline void DrawSectionLookResult(const ui::PanelText& text, uint32_t pass = 0, 
 // index (0 native, 1 follow render resolution, 2 scaled), which the frozen
 // log line below names.
 inline void CommitResolutionMode(int mode, bool follow, float scale) {
+  const presets::Json requested{{"NRFollowInputRes", follow}, {"NRResolutionScale", scale}};
+  RuntimeLock lock(runtime_mutex);
+  if (!ValidateConfigurationCapability(requested, nullptr)) {
+    if (!ProposedResolutionInheritance(requested).empty()) resolution_edit_request = requested;
+    return;
+  }
   {
     std::unique_lock config_lock(present_restore_configuration.mutex);
     nr_follow_input_res = follow;
@@ -23553,12 +23629,12 @@ inline void DrawResolutionControls(const ui::PanelText& text) {
     }
     labels[i] = std::string(text.Tr(ui::text::kResolutionLabels[i])) + kIds[i];
     items[i] = labels[i].c_str();
-    disabled[i] = !ValidateConfigurationCapability({{"NRFollowInputRes", candidate.follow},
+    disabled[i] = !CanRequestConfigurationEdit({{"NRFollowInputRes", candidate.follow},
         {"NRResolutionScale", candidate.follow ? scale : candidate.scale}}, &reasons[i]);
     if (static_cast<int>(i) == preset) {
       disabled[i] = false;
     }
-    tips[i] = (disabled[i] ? reasons[i].c_str() : ui::text::kResolutionTips[i]);
+    tips[i] = (!reasons[i].empty() ? reasons[i].c_str() : ui::text::kResolutionTips[i]);
   }
   ui::RowLabel(ui::text::kResolution, ui::text::kResolutionTip);
   const int clicked = ui::Segmented("##resolution", items.data(), static_cast<int>(items.size()), preset,
@@ -23590,10 +23666,16 @@ inline void DrawResolutionControls(const ui::PanelText& text) {
       ImGui::SliderFloat(ui::ControlLabel("Resolution scale").c_str(), &ui_res_pct, 33.f, 100.f, "%.0f%%");
     }
     ImGui::EndDisabled();
-    if (!following && ui_res_pct != original_pct
-        && CanChooseSetting(kSetResolutionScale, std::clamp(ui_res_pct, 33.f, 100.f) / 100.f)) {
-      kSetResolutionScale.Store(std::clamp(ui_res_pct, 33.f, 100.f) / 100.f);
-      kSetResolutionScale.Persist();
+    if (!following && ui_res_pct != original_pct) {
+      const float choice = std::clamp(ui_res_pct, 33.f, 100.f) / 100.f;
+      const presets::Json requested{{"NRResolutionScale", choice}};
+      RuntimeLock lock(runtime_mutex);
+      if (ValidateConfigurationCapability(requested, nullptr)) {
+        kSetResolutionScale.Store(choice);
+        kSetResolutionScale.Persist();
+      } else if (!ProposedResolutionInheritance(requested).empty()) {
+        resolution_edit_request = requested;
+      }
     }
     if (text.modern) {
       ResolutionResetButton("resolution_scale_reset");
@@ -23646,8 +23728,9 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
   for (uint32_t pass = 0; pass < kMaxNrPasses; ++pass) {
     std::snprintf(pass_tip_text[pass], sizeof(pass_tip_text[pass]), text.Tr(ui::text::kPassCountTip), pass + 1);
     pass_tips[pass] = pass_tip_text[pass];
-    pass_disabled[pass] = !CanChooseSetting(kSetStackPasses, static_cast<float>(pass + 1), &pass_reasons[pass]);
-    if (pass_disabled[pass]) {
+    pass_disabled[pass] = (pass + 1 != stack_passes.load())
+        && !CanRequestConfigurationEdit({{"NRPasses", pass + 1}}, &pass_reasons[pass]);
+    if (!pass_reasons[pass].empty()) {
       pass_tips[pass] = pass_reasons[pass].c_str();
     }
   }
@@ -23669,16 +23752,21 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
   }
   if (passes_changed) {
     const float choice = static_cast<float>(std::clamp(ui_passes + 1, 1, static_cast<int>(kMaxNrPasses)));
-    if (CanChooseSetting(kSetStackPasses, choice)) {
-      kSetStackPasses.Commit(choice);
+    const presets::Json requested{{"NRPasses", static_cast<uint32_t>(choice)}};
+    RuntimeLock lock(runtime_mutex);
+    if (ValidateConfigurationCapability(requested, nullptr)) {
+      kSetStackPasses.Store(choice);
+      kSetStackPasses.Persist();
+      RecreateFeaturesLocked();
+    } else if (!ProposedResolutionInheritance(requested).empty()) {
+      resolution_edit_request = requested;
     }
   }
   const auto stage_plan = RequestedStagePlan();
   const auto queried = QueryConfigurationCapability();
   if (!queried.CanSubmit()) {
     ImGui::TextWrapped("%s: %s", text.Tr("Current limitation"),
-        text.Tr(queried.configuration.reason == capability::Reason::PLAN_REJECTED
-            ? stage_plan::ReasonText(queried.plan_reason) : capability::ReasonText(queried.configuration.reason)));
+        FormatConfigurationCapabilityError(presets::Json::object(), queried).c_str());
   }
   if (!stage_plan.valid) {
     ImGui::TextWrapped("%s: %s", text.Tr(ui::text::kStageBlocked),
@@ -23867,25 +23955,35 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
       const char* resolution_choices[] = {ui::text::kResolutionInherit, ui::text::kResolutionFollow, ui::text::kResolutionFixed};
       ChoiceSetting(text, kSetPassResolutionMode[pass - 1], ui::text::kWorkingResolution,
                     resolution_choices, ui::text::kPassResolutionTip);
-      if (pass_resolution_mode[pass - 1].load() == 2) {
+      int selected = -1;
+      const bool inherited_present_pair = pass == 1 && pass_resolution_mode[0].load() == 0
+          && stack_passes.load() == 2 && editor_plan.valid && !editor_plan.mixed
+          && editor_plan.effective[0] == stage_plan::Stage::PRESENT;
+      if (pass_resolution_mode[pass - 1].load() == 2 || inherited_present_pair) {
         constexpr const char* kFixedLabels[] = {"100%", "67%", "58%", "50%"};
         constexpr float kFixedValues[] = {1.f, .67f, .58f, .50f};
-        int selected = -1;
         bool blocked[4]{};
         std::string reasons[4];
         const char* tips[4];
         for (int i = 0; i < 4; ++i) {
-          if (std::abs(pass_resolution_scale[pass - 1].load() - kFixedValues[i]) < 0.0001f) {
+          if (pass_resolution_mode[pass - 1].load() == 2
+              && std::abs(pass_resolution_scale[pass - 1].load() - kFixedValues[i]) < 0.0001f) {
             selected = i;
           }
-          blocked[i] = !CanChooseSetting(kSetPassResolutionScale[pass - 1], kFixedValues[i], &reasons[i]);
+          const presets::Json candidate{{kSetPassResolutionMode[pass - 1].key, 2u},
+              {kSetPassResolutionScale[pass - 1].key, kFixedValues[i]}};
+          blocked[i] = !ValidateConfigurationCapability(candidate, &reasons[i]);
+          if (selected == i) blocked[i] = false;
           tips[i] = (blocked[i] ? reasons[i].c_str() : kFixedLabels[i]);
         }
         ImGui::SetNextItemWidth(-1.f);
         const int clicked = ui::Segmented("##pass_resolution_presets", kFixedLabels, 4, selected, nullptr, tips, blocked);
-        if (clicked >= 0) {
-          kSetPassResolutionScale[pass - 1].Commit(kFixedValues[clicked]);
+        if (clicked >= 0 && clicked != selected) {
+          resolution_edit_request = {{kSetPassResolutionMode[pass - 1].key, 2u},
+              {kSetPassResolutionScale[pass - 1].key, kFixedValues[clicked]}};
         }
+      }
+      if (pass_resolution_mode[pass - 1].load() == 2) {
         const float original_percentage = pass_resolution_scale[pass - 1].load() * 100.f;
         float percentage = original_percentage;
         if (text.modern) {
@@ -25549,6 +25647,7 @@ inline void DrawDiagnostics(const NrVerdict& verdict) {
 #include "report_flow.hpp"
 #include "preset_runtime.hpp"
 #include "stage_edit.hpp"
+#include "resolution_edit.hpp"
 
 inline ui::MonitorState ui_runtime_monitor_state;
 inline bool ui_monitor_geometry_dirty = false;
@@ -26019,6 +26118,17 @@ inline void DrawPanelBody(reshade::api::effect_runtime* runtime) {
   if (!stage_edit::pending && !stage_edit::error.empty()) {
     ImGui::TextWrapped("%s", ui::Tr(stage_edit::error.c_str()));
   }
+  if (!resolution_edit::pending && (!resolution_edit::undo.empty() || !resolution_edit::redo.empty())) {
+    ImGui::TextUnformatted(ui::Tr("Working resolutions updated."));
+    if (!resolution_edit::undo.empty()) {
+      if (ui::ActionButton(ui::Tr("Undo"), "undo_resolution_change")) resolution_edit::Undo();
+    } else if (ui::ActionButton(ui::Tr("Redo"), "redo_resolution_change")) {
+      resolution_edit::Redo();
+    }
+  }
+  if (!resolution_edit::pending && !resolution_edit::error.empty()) {
+    ImGui::TextWrapped("%s", resolution_edit::error.c_str());
+  }
   if (ui_classic_layout.load()) {
     DrawClassicLayout(runtime, card);
   } else {
@@ -26113,6 +26223,7 @@ inline void OnOverlay(reshade::api::effect_runtime* runtime) {
       ImGui::PushTextWrapPos(0.f);
       DrawPanelBody(runtime);
       stage_edit::Draw();
+      resolution_edit::Draw();
       ImGui::PopTextWrapPos();
     }
     ImGui::EndChild();

@@ -32,6 +32,10 @@ int main() {
     return 7;
   }
   const char* report_strings[] = {
+      "Present passes request different working resolutions: Pass 1 = %.0f%%, Pass 2 = %.0f%%. Use matching resolutions.",
+      "Choose this option to review letting other passes inherit the base resolution.",
+      "Use matching working resolutions?", "Let other passes inherit base resolution",
+      "Working resolutions updated.", "Redo",
       "Unbind monitor mode key",
       "F8 cycles monitor modes by default. Games, Steam or other overlays may use the same key. Change or unbind it if needed; host input is not blocked.",
       "Restore all official profiles",

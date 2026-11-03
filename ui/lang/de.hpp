@@ -12,6 +12,12 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kDe[] = {
+    {"Present passes request different working resolutions: Pass 1 = %.0f%%, Pass 2 = %.0f%%. Use matching resolutions.", "Present-Durchläufe fordern unterschiedliche Arbeitsauflösungen an: Durchlauf 1 = %.0f%%, Durchlauf 2 = %.0f%%. Verwenden Sie gleiche Auflösungen."},
+    {"Choose this option to review letting other passes inherit the base resolution.", "Wählen Sie diese Option, um die Übernahme der Basisauflösung durch andere Durchläufe zu prüfen."},
+    {"Use matching working resolutions?", "Gleiche Arbeitsauflösungen verwenden?"},
+    {"Let other passes inherit base resolution", "Andere Durchläufe übernehmen die Basisauflösung"},
+    {"Working resolutions updated.", "Arbeitsauflösungen aktualisiert."},
+    {"Redo", "Wiederholen"},
     {"XeFG single-color processing", "XeFG Einzelbildfarbe verarbeiten"},
     {"XeFG AUTO without UI Composition: process only the backbuffer (1/2 Pass = 1/2 model calls). Off keeps the HUD-less color chain too. Other UI modes and UI Composition keep their existing routing. Restart the game after changing this option.", "XeFG AUTO ohne UI Composition: nur den Backbuffer verarbeiten (1/2 Pass = 1/2 Modellaufrufe). Aus verarbeitet auch die HUD-lose Farbkette. Andere UI-Modi und UI Composition behalten ihre bisherige Verarbeitung. Nach einer Änderung das Spiel neu starten."},
     {"Unbind monitor mode key", "Taste für Monitormodus lösen"},

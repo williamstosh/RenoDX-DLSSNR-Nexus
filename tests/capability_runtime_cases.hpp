@@ -60,6 +60,7 @@ const auto reject_unchanged = [&](const Json& settings) {
 
 #include "stage_edit_runtime_cases.hpp"
 #include "stage_gpu_runtime_cases.hpp"
+#include "present_resolution_edit_cases.hpp"
 
 {
   runtime::PresentStream internal_present;

@@ -12,6 +12,12 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kSl[] = {
+    {"Present passes request different working resolutions: Pass 1 = %.0f%%, Pass 2 = %.0f%%. Use matching resolutions.", "Prehoda Present zahtevata različni delovni ločljivosti: prehod 1 = %.0f%%, prehod 2 = %.0f%%. Uporabite enaki ločljivosti."},
+    {"Choose this option to review letting other passes inherit the base resolution.", "Izberite to možnost za pregled dedovanja osnovne ločljivosti pri drugih prehodih."},
+    {"Use matching working resolutions?", "Uporabim enaki delovni ločljivosti?"},
+    {"Let other passes inherit base resolution", "Drugi prehodi naj dedujejo osnovno ločljivost"},
+    {"Working resolutions updated.", "Delovne ločljivosti so posodobljene."},
+    {"Redo", "Uveljavi znova"},
     {"XeFG single-color processing", "XeFG obdelava ene barve"},
     {"XeFG AUTO without UI Composition: process only the backbuffer (1/2 Pass = 1/2 model calls). Off keeps the HUD-less color chain too. Other UI modes and UI Composition keep their existing routing. Restart the game after changing this option.", "XeFG AUTO brez UI Composition: obdela le backbuffer (1/2 Pass = 1/2 klica modela). Izklop obdela tudi verigo brez HUD. Drugi načini UI in UI Composition ohranijo obstoječo pot. Po spremembi znova zaženite igro."},
     {"Unbind monitor mode key", "Odstrani tipko za način nadzornika"},

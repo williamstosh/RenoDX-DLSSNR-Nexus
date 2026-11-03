@@ -197,6 +197,14 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
                          .action = "present-stage-resolution", .language = 1});
     scenarios.push_back({.id = "present-stage-resolution-zh", .page = 1,
                          .action = "present-stage-resolution", .language = 14});
+    scenarios.push_back({.id = "present-resolution-confirm", .page = 0,
+                         .action = "present-resolution-confirm", .language = 1});
+    scenarios.push_back({.id = "present-resolution-confirm-zh", .page = 0,
+                         .action = "present-resolution-confirm", .language = 14});
+    scenarios.push_back({.id = "present-passes-confirm", .page = 1,
+                         .action = "present-passes-confirm", .language = 1});
+    scenarios.push_back({.id = "present-passes-confirm-zh", .page = 1,
+                         .action = "present-passes-confirm", .language = 14});
     scenarios.push_back({.id = "gpu-pass-diagnostics", .page = 2,
                          .action = "gpu-pass-diagnostics", .language = 1});
     scenarios.push_back({.id = "gpu-pass-diagnostics-zh", .page = 2,
@@ -364,6 +372,10 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     runtime::stage_edit::error.clear();
     runtime::stage_edit::notice.clear();
     runtime::stage_edit::undo.clear();
+    runtime::resolution_edit::Cancel();
+    runtime::resolution_edit::undo.clear();
+    runtime::resolution_edit::redo.clear();
+    runtime::resolution_edit_request = renodx::addons::dlss5::presets::Json::object();
     synthetic_monitor_state = {};
     runtime::ui_runtime_monitor_state.open = false;
     if (!ImGui::GetCurrentContext()->OpenPopupStack.empty()) ImGui::ClosePopupToLevel(0, true);
@@ -413,6 +425,27 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       runtime::pass_preset[pass] = 0;
       runtime::pass_resolution_mode[pass] = 0;
       runtime::pass_resolution_scale[pass] = 1.f;
+    }
+    const bool resolution_confirmation = scenario.action == "present-resolution-confirm"
+        || scenario.action == "present-passes-confirm";
+    if (resolution_confirmation) {
+      runtime::d3d12_present_seen = true;
+      runtime::native_fg_declaration = runtime::NativeFgDeclaration::kOn;
+      runtime::native_fg_public_off = false;
+      runtime::native_fg_owns = true;
+      runtime::auto_fg_fallback_active = false;
+      runtime::experimental_native_prefg_resolution = false;
+      runtime::experimental_present_chain = false;
+      runtime::direct_runtime_requirements.dual_models = true;
+      runtime::hook_point = runtime::kHookPresent;
+      runtime::stack_passes = (scenario.page == 0 ? 2u : 1u);
+      runtime::nr_follow_input_res = false;
+      runtime::nr_resolution_scale = (scenario.page == 0 ? 1.f : .67f);
+      runtime::pass_stage[0] = 3;
+      runtime::pass_resolution_mode[0] = 2;
+      runtime::pass_resolution_scale[0] = 1.f;
+      runtime::stage_telemetry[2].width = 1920;
+      runtime::stage_telemetry[2].height = 1080;
     }
     if (round_seven) {
       runtime::hook_point = runtime::kHookRender;
@@ -718,6 +751,19 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       check(scroller, "fixed viewport must expose the production vertical scroller");
     }
     std::string interaction = (scenario.action == "doc-default" ? "production default folds" : "real expand_all/collapse_all button");
+    if (resolution_confirmation) {
+      const auto unchanged = profile::Snapshot();
+      const auto epoch = runtime::profile_commit_epoch.load();
+      click(find(scenario.page == 0 ? "nr_resolution_quality" : "2"));
+      settle();
+      check(runtime::resolution_edit::pending && runtime::resolution_edit::confirmation_required,
+            "real resolution / pass-count click opens one inheritance confirmation");
+      check(profile::Snapshot() == unchanged && runtime::profile_commit_epoch.load() == epoch,
+            "opening resolution confirmation leaves the complete configuration unchanged");
+      check(!find("confirm_resolution_change").disabled && !find("cancel_resolution_change").disabled,
+            "resolution confirmation exposes enabled explicit repair and cancel actions");
+      interaction = "real blocked-candidate click and cancellable complete-configuration preview; synthetic FG On, no GPU execution";
+    }
     if (round_seven) {
       const auto configuration = profile::Snapshot();
       const auto epoch = runtime::profile_commit_epoch.load();
@@ -1410,6 +1456,14 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     if (scenario.action == "custom-slot-create") {
       click(find("cancel_create_slot"));
       check(!profile::state.slots[3].populated, "creation snapshot must not populate the slot");
+    } else if (resolution_confirmation) {
+      const auto unchanged = profile::Snapshot();
+      click(find("cancel_resolution_change"));
+      check(!runtime::resolution_edit::pending && profile::Snapshot() == unchanged,
+            "real resolution Cancel leaves every setting unchanged");
+      runtime::native_fg_owns = false;
+      runtime::native_fg_declaration = runtime::NativeFgDeclaration::kOff;
+      runtime::native_fg_public_off = true;
     } else if (scenario.action == "restore-all-confirmation") {
       click(find("cancel_page_reset"));
     } else if (scenario.action == "issue-report-description") {

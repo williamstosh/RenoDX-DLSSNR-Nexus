@@ -12,6 +12,12 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kZhHans[] = {
+    {"Present passes request different working resolutions: Pass 1 = %.0f%%, Pass 2 = %.0f%%. Use matching resolutions.", "Present 各层请求的工作分辨率比例不同：第 1 层 = %.0f%%，第 2 层 = %.0f%%。请使用一致的分辨率。"},
+    {"Choose this option to review letting other passes inherit the base resolution.", "选择此项，查看让其他层继承基础分辨率的设置。"},
+    {"Use matching working resolutions?", "使用一致的工作分辨率？"},
+    {"Let other passes inherit base resolution", "让其他层继承基础分辨率"},
+    {"Working resolutions updated.", "工作分辨率已更新。"},
+    {"Redo", "重做"},
     {"XeFG single-color processing", "XeFG 单颜色处理"},
     {"XeFG AUTO without UI Composition: process only the backbuffer (1/2 Pass = 1/2 model calls). Off keeps the HUD-less color chain too. Other UI modes and UI Composition keep their existing routing. Restart the game after changing this option.", "XeFG AUTO 且 UI Composition 关闭时，仅处理 Backbuffer（1/2 Pass = 1/2 次模型调用）。关闭此项可同时处理无 HUD 颜色链。其他 UI 模式及 UI Composition 沿用既有路由。更改后请重启游戏。"},
     {"Unbind monitor mode key", "取消监视器模式按键绑定"},

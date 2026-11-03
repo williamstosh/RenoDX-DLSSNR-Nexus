@@ -12,6 +12,12 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kTh[] = {
+    {"Present passes request different working resolutions: Pass 1 = %.0f%%, Pass 2 = %.0f%%. Use matching resolutions.", "พาส Present ขอความละเอียดทำงานต่างกัน: พาส 1 = %.0f%%, พาส 2 = %.0f%% โปรดใช้ความละเอียดให้ตรงกัน"},
+    {"Choose this option to review letting other passes inherit the base resolution.", "เลือกตัวเลือกนี้เพื่อตรวจสอบการให้พาสอื่นสืบทอดความละเอียดพื้นฐาน"},
+    {"Use matching working resolutions?", "ใช้ความละเอียดทำงานให้ตรงกันหรือไม่?"},
+    {"Let other passes inherit base resolution", "ให้พาสอื่นสืบทอดความละเอียดพื้นฐาน"},
+    {"Working resolutions updated.", "อัปเดตความละเอียดทำงานแล้ว"},
+    {"Redo", "ทำซ้ำ"},
     {"XeFG single-color processing", "การประมวลผลสีเดียวของ XeFG"},
     {"XeFG AUTO without UI Composition: process only the backbuffer (1/2 Pass = 1/2 model calls). Off keeps the HUD-less color chain too. Other UI modes and UI Composition keep their existing routing. Restart the game after changing this option.", "XeFG AUTO ที่ปิด UI Composition: ประมวลผลเฉพาะ backbuffer (1/2 Pass = เรียกโมเดล 1/2 ครั้ง) เมื่อปิดตัวเลือกนี้จะประมวลผลสายสีที่ไม่มี HUD ด้วย โหมด UI อื่นและ UI Composition ใช้เส้นทางเดิม โปรดเริ่มเกมใหม่หลังเปลี่ยนตัวเลือก"},
     {"Unbind monitor mode key", "ยกเลิกการผูกปุ่มโหมดตัวตรวจสอบ"},

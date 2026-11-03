@@ -135,7 +135,6 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 | **Present** | 处理的画面包含游戏 HUD；菜单和地图也可能受到 NR 影响。 |
 | **A/B 模型** | B 需要精确识别的 **310.9.16.0** Runtime；不兼容运行时上的已保存 B 选择会回退 A，原选择保留。 |
 
-- **XeFG 高亮瞬闪尚未解决。** 遇到该现象时可关闭 NR 对比，排查见[诊断指南](docs/USER_GUIDE.md#zh-diagnostics)。
 - 独立工作分辨率仅支持部分 DX11／DX12 组合；同阶段三层以上仍需相同工作尺寸。设置前参阅[叠层指南](docs/USER_GUIDE.md#zh-multipass)。
 - 语言显示依赖 ReShade 已加载的字体；缺字处理见[高级设置](docs/USER_GUIDE.md#zh-advanced)。
 
@@ -349,7 +348,6 @@ In principle, a community runtime that preserves the NGX interfaces and behavior
 | **Present** | Includes the game's HUD; NR can also affect menus and maps. |
 | **Models A/B** | B requires the specifically recognized **310.9.16.0** runtime. An incompatible saved B choice falls back to A while retaining the saved choice. |
 
-- **XeFG highlight flicker remains unresolved.** Compare with NR off if it occurs; see [Diagnostics](docs/USER_GUIDE.md#en-diagnostics).
 - Independent working resolution supports selected DX11/DX12 combinations. Three or more passes in one stage still
   require matching working sizes; consult [Multi-Pass](docs/USER_GUIDE.md#en-multipass) before configuring them.
 - Language display depends on ReShade's loaded font; see [Advanced](docs/USER_GUIDE.md#en-advanced) for missing glyphs.

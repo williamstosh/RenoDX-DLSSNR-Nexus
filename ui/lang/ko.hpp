@@ -12,6 +12,12 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kKo[] = {
+    {"Present passes request different working resolutions: Pass 1 = %.0f%%, Pass 2 = %.0f%%. Use matching resolutions.", "Present 패스가 서로 다른 작업 해상도를 요청합니다: 패스 1 = %.0f%%, 패스 2 = %.0f%%. 같은 해상도를 사용하세요."},
+    {"Choose this option to review letting other passes inherit the base resolution.", "다른 패스가 기본 해상도를 상속하도록 설정할지 검토합니다."},
+    {"Use matching working resolutions?", "작업 해상도를 같게 하시겠습니까?"},
+    {"Let other passes inherit base resolution", "다른 패스가 기본 해상도를 상속하도록 설정"},
+    {"Working resolutions updated.", "작업 해상도를 업데이트했습니다."},
+    {"Redo", "다시 실행"},
     {"XeFG single-color processing", "XeFG 단일 색상 처리"},
     {"XeFG AUTO without UI Composition: process only the backbuffer (1/2 Pass = 1/2 model calls). Off keeps the HUD-less color chain too. Other UI modes and UI Composition keep their existing routing. Restart the game after changing this option.", "UI Composition이 꺼진 XeFG AUTO에서 Backbuffer만 처리합니다(1/2 Pass = 모델 호출 1/2회). 끄면 HUD 없는 색상 체인도 처리합니다. 다른 UI 모드와 UI Composition은 기존 경로를 유지합니다. 변경 후 게임을 다시 시작하세요."},
     {"Unbind monitor mode key", "모니터 모드 키 할당 해제"},
