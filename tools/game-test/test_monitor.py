@@ -60,6 +60,7 @@ class MonitorTests(unittest.TestCase):
             window_alive=mock.Mock(return_value=True),
             process_metrics=mock.Mock(return_value=dict(created=123, cpu_seconds=0)),
             terminate=mock.Mock(side_effect=self.stop_owned),
+            grant_foreground_permission=mock.Mock(return_value=dict(granted=True, error=None)),
             u=types.SimpleNamespace(IsHungAppWindow=mock.Mock(return_value=False)),
         )
         with mock.patch.dict(sys.modules, desktop=self.desktop):

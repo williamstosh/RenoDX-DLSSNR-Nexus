@@ -14,6 +14,8 @@ param(
     [switch]$SrOnly,
     [switch]$CleanEnvironment,
     [switch]$BlockOptionalHudless,
+    [ValidateRange(-1,1)][int]$XeFGUiComposition = -1,
+    [switch]$DisableXeFGSdkDetours,
     [switch]$ShowGameHud,
     [switch]$IsolateOverlayKey,
     [string]$NrRuntimePath,
@@ -34,6 +36,12 @@ if ($ManualImeSession -and ($Scenario -ne 'menu' -or $CaptureHoldSeconds -eq 0 -
     throw '-ManualImeSession requires menu, a nonzero hold and -RestoreInstallation; installation-only is not supported.'
 }
 if ($AddonAbsentControl -and $InstallOnly) { throw 'An absent-add-on control cannot be retained without a test' }
+if ($DisableXeFGSdkDetours -and -not $StartNrDisabled) {
+    throw '-DisableXeFGSdkDetours requires -StartNrDisabled for the startup-only isolation probe'
+}
+if ($XeFGUiComposition -ge 0 -and (-not $RestoreInstallation -or $InstallOnly)) {
+    throw 'UI Composition tests require a protected session and -RestoreInstallation'
+}
 if (($TelemetrySeconds -ge 0 -or $SrOnly -or $NrRuntimePath -or $NrPreset -ge 0 -or $NrPass2Preset -ge 0 -or $NrPasses -gt 0 -or
         $NrHookPoint -ge 0 -or $NrPass2Stage -ge 0 -or $NrPass3Stage -ge 0 -or $NrPass4Stage -ge 0) -and
     (-not $RestoreInstallation -or $InstallOnly)) {
@@ -42,11 +50,35 @@ if (($TelemetrySeconds -ge 0 -or $SrOnly -or $NrRuntimePath -or $NrPreset -ge 0 
 function Set-FgPresentSection([string]$Text, [bool]$BlockHudless) {
     if ($Text -notmatch '(?m)^NRHookPoint=') { throw 'NRHookPoint is missing' }
     $Text = [regex]::Replace($Text, '(?m)^NRHookPoint=[^\r\n]*', 'NRHookPoint=2')
+    # Explicit test choices must survive the production one-time migration.
+    if ($Text -match '(?m)^NRPresentBlockHudlessConfigVersion=') {
+        $Text = [regex]::Replace($Text, '(?m)^NRPresentBlockHudlessConfigVersion=[^\r\n]*', 'NRPresentBlockHudlessConfigVersion=1')
+    } else {
+        $Text = $Text.TrimEnd() + "`r`nNRPresentBlockHudlessConfigVersion=1`r`n"
+    }
     $taskPolicy = 'NRPresentBlockHudless=' + [int]$BlockHudless
     if ($Text -match '(?m)^NRPresentBlockHudless=') {
         return [regex]::Replace($Text, '(?m)^NRPresentBlockHudless=[^\r\n]*', $taskPolicy)
     }
     return $Text.TrimEnd() + "`r`n$taskPolicy`r`n`r`n"
+}
+function Set-XeFgUiComposition([string]$Text, [bool]$Enabled) {
+    $sections = [regex]::Matches($Text, '(?ms)^\[XeFG\]\r?\n(?:(?!^\[).)*')
+    if ($sections.Count -ne 1) { throw 'Expected one XeFG configuration section' }
+    $section = $sections[0]
+    if ([regex]::Matches($section.Value, '(?m)^UIComposition\s*=').Count -ne 1) {
+        throw 'Expected one explicit XeFG UIComposition setting'
+    }
+    $value = ('UIComposition = ' + $Enabled.ToString().ToLowerInvariant())
+    $updated = [regex]::Replace($section.Value, '(?m)^UIComposition\s*=[^\r\n]*', $value)
+    return $Text.Substring(0,$section.Index) + $updated + $Text.Substring($section.Index+$section.Length)
+}
+function Set-XeFgDetourSetting([string]$Text, [bool]$Enabled) {
+    $taskPolicy = 'NRXeFGSdkDetours=' + [int]$Enabled
+    if ($Text -match '(?m)^NRXeFGSdkDetours=') {
+        return [regex]::Replace($Text, '(?m)^NRXeFGSdkDetours=[^\r\n]*', $taskPolicy)
+    }
+    return $Text.TrimEnd() + [Environment]::NewLine + $taskPolicy + [Environment]::NewLine + [Environment]::NewLine
 }
 $taskRoot = Split-Path -Parent $PSScriptRoot
 $OutputRoot = [IO.Path]::GetFullPath($OutputRoot)
@@ -77,8 +109,10 @@ if ($NrRuntimePath) {
     }
     $taskBackupFiles += Join-Path $taskGame 'nvngx_dlssnr.dll'
 }
-if ($CleanEnvironment) {
+if ($CleanEnvironment -or $XeFGUiComposition -ge 0) {
     $taskBackupFiles += Join-Path $taskGame 'OptiScaler.ini'
+}
+if ($CleanEnvironment) {
     $taskBackupFiles += Join-Path $taskGame 'ReShadePreset.ini'
 }
 if ($SdrGameOutput -or $ShowGameHud -or $SrOnly) {
@@ -130,6 +164,8 @@ $taskReceipt = [ordered]@{
     requested_sr_only=[bool]$SrOnly
     clean_environment=[bool]$CleanEnvironment
     block_optional_hudless=[bool]$BlockOptionalHudless
+    requested_xefg_ui_composition=$XeFGUiComposition
+    disable_xefg_sdk_detours=[bool]$DisableXeFGSdkDetours
     temporary_game_hud_visible=[bool]$ShowGameHud
     temporary_overlay_key=$(if ($IsolateOverlayKey) { 'F7' } else { $null })
     install_only=[bool]$InstallOnly
@@ -180,6 +216,13 @@ try {
             throw 'Installed NR runtime hash mismatch'
         }
     }
+    if ($XeFGUiComposition -ge 0) {
+        $taskOptiPath = Join-Path $taskGame 'OptiScaler.ini'
+        [IO.File]::WriteAllText($taskOptiPath,
+            (Set-XeFgUiComposition ([IO.File]::ReadAllText($taskOptiPath)) ($XeFGUiComposition -eq 1)),
+            [Text.UTF8Encoding]::new($false))
+        $taskReceipt.test_xefg_config_sha256 = (Get-FileHash -LiteralPath $taskOptiPath).Hash
+    }
     $taskConfigText = [IO.File]::ReadAllText($taskConfig)
     if ($IsolateOverlayKey) {
         # Home also toggles the game's HUD in some profiles. Only the backed-up
@@ -195,6 +238,7 @@ try {
     if (-not $taskSection.Success) { throw 'RenoDX configuration section is missing' }
     $taskSectionText = $taskSection.Value
     $taskSectionText = Set-FgPresentSection $taskSectionText ([bool]$BlockOptionalHudless)
+    $taskSectionText = Set-XeFgDetourSetting $taskSectionText (-not [bool]$DisableXeFGSdkDetours)
     $taskModelSettings = @{}
     if ($TelemetrySeconds -ge 0) { $taskModelSettings.NRTelemetrySeconds = $TelemetrySeconds }
     if ($NrPreset -ge 0) { $taskModelSettings.NRPreset = $NrPreset }
@@ -314,6 +358,7 @@ try {
             if ($taskRetainedSections.Count -ne 1) { throw 'Expected one RenoDX section after restoration' }
             $taskRetainedSection = $taskRetainedSections[0]
             $taskRetainedBody = Set-FgPresentSection $taskRetainedSection.Value ([bool]$BlockOptionalHudless)
+            $taskRetainedBody = Set-XeFgDetourSetting $taskRetainedBody (-not [bool]$DisableXeFGSdkDetours)
             $taskRetainedText = $taskRetainedText.Substring(0,$taskRetainedSection.Index) + $taskRetainedBody + $taskRetainedText.Substring($taskRetainedSection.Index+$taskRetainedSection.Length)
             [IO.File]::WriteAllText($taskConfig, $taskRetainedText, [Text.UTF8Encoding]::new($false))
             $taskReceipt.retained_files = @($taskDll,$taskConfig).ForEach({[ordered]@{path=$_;sha256=(Get-FileHash -LiteralPath $_).Hash}})

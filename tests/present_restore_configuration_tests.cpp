@@ -284,6 +284,9 @@ int main(int argc, char** argv) {
         throw std::runtime_error("unknown case: " + test_case);
       }
     }
+    // Existing restore-policy cases model a configuration whose independent
+    // XeFG default migration has already completed. Fresh cases exercise it.
+    if (!addon.empty()) addon += "NRPresentBlockHudlessConfigVersion=1\r\n";
     if (test_case != "new-reload") {
       std::ofstream fixture(ini_path, std::ios::binary | std::ios::trunc);
       fixture << "[GENERAL]\r\nPresetPath=other.ini\r\n[OTHER.ADDON]\r\nPersistent=17\r\n";
@@ -1332,6 +1335,46 @@ int main(int argc, char** argv) {
       }
       Check(runtime::debug_bypass_sdr_restore.load() && runtime::debug_bypass_hdr_pedestal.load(),
             "v8 explicit bypass choices remain loaded");
+    }
+    if (test_case == "scope1") {
+      const auto set = [&](const char* key, const char* value) {
+        Check(WritePrivateProfileStringA("RenoDX.DLSS5", key, value, ini_path.c_str()) != FALSE,
+              "write XeFG migration fixture");
+      };
+      constexpr const char* key = "NRPresentBlockHudless";
+      constexpr const char* marker = "NRPresentBlockHudlessConfigVersion";
+      set(key, "0");
+      set(marker, nullptr);
+      failed_key = key;
+      runtime::LoadConfiguration();
+      Check(!runtime::present_block_hudless.load() && Read(marker) == "<absent>",
+            "failed XeFG default write leaves old choice and no migration stamp");
+      failed_key = marker;
+      runtime::LoadConfiguration();
+      Check(Read(marker) == "<absent>", "failed XeFG stamp remains retryable");
+      failed_key.clear();
+      runtime::LoadConfiguration();
+      Check(runtime::present_block_hudless.load() && Read(key) == "1" && Read(marker) == "1",
+            "old explicit false migrates once to single-color default");
+      Check(Read("NRPresentSdrRestorePolicy") == "0" && Read("NRPresentHdrPedestalPolicy") == "2",
+            "XeFG migration preserves unrelated diagnostic policies");
+      runtime::kSetPresentBlockHudless.Commit(false);
+      runtime::LoadConfiguration();
+      Check(!runtime::present_block_hudless.load() && Read(key) == "0",
+            "manual dual-color choice survives configuration reload");
+      set(marker, "99");
+      runtime::LoadConfiguration();
+      Check(!runtime::present_block_hudless.load() && Read(marker) == "99",
+            "future XeFG migration marker is preserved");
+      set(marker, "garbage");
+      runtime::LoadConfiguration();
+      Check(!runtime::present_block_hudless.load() && Read(marker) == "garbage",
+            "malformed XeFG marker is preserved");
+    }
+    if (test_case == "new" || test_case == "empty-section") {
+      Check(runtime::present_block_hudless.load() && Read("NRPresentBlockHudless") == "1"
+                && Read("NRPresentBlockHudlessConfigVersion") == "1",
+            "fresh configuration persists single-color default and migration marker");
     }
     char unrelated[64]{};
     GetPrivateProfileStringA("OTHER.ADDON", "Persistent", "", unrelated, sizeof(unrelated), ini_path.c_str());

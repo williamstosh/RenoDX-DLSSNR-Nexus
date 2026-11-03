@@ -33,6 +33,74 @@
     check(builds[index] == profile::slot_display_cache[index].rebuilds,
         "settled Home frames do not resolve, serialize or revalidate unchanged Slot payloads");
   }
+  {
+    const auto saved_hook = runtime::hook_point.load();
+    const auto saved_count = runtime::stack_passes.load();
+    const auto saved_stage = runtime::pass_stage[0].load();
+    const auto saved_mode = runtime::pass_resolution_mode[0].load();
+    const auto saved_source = runtime::last_source_plan;
+    const auto saved_rr = runtime::stage_source_rr.load();
+    const auto* game_source = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xCA9102});
+    runtime::PresentStream internal_present;
+    runtime::features.emplace(internal_present.Handle(), runtime::FeatureState{});
+    runtime::pass_stage[0] = 0u;
+    runtime::pass_resolution_mode[0] = 0u;
+    for (const unsigned count : {1u, 2u}) {
+      runtime::hook_point = runtime::kHookPresent;
+      runtime::stack_passes = count;
+      // Each game observation is followed by an internal SR-shaped Present
+      // plan. Repeated RR frames must not oscillate the Home controls.
+      for (const int source : {1, 1, 0, 0, 1, 0, -1}) {
+        {
+          renodx::addons::dlss5::RuntimeLock lock(runtime::runtime_mutex);
+          if (source < 0) {
+            runtime::ForgetSourceHandleLocked(game_source);
+          } else {
+            runtime::created_feature_ids[game_source] = (source == 1 ? runtime::kFeatureDlssd : runtime::kFeatureDlss);
+            runtime::EvaluationStagePlan(game_source);
+          }
+          runtime::EvaluationStagePlan(internal_present.Handle(), false);
+        }
+        frame();
+        const bool render_available = source == 0;
+        check(find(ui::StageDisplayName(renodx::addons::dlss5::stage_plan::Stage::RENDER)).disabled == !render_available,
+            "Home Render button follows game RR / SR / released evidence on every frame");
+        check(find("NR Lite").disabled == !render_available && !find("NR Balanced").disabled && !find("NR Max").disabled,
+            "Home Lite follows Render eligibility while Balanced and Max retain Present eligibility");
+        std::vector<Item> custom_buttons;
+        for (const auto& [id, item] : items) {
+          if (item.label == "##custom_slot") custom_buttons.push_back(item);
+        }
+        std::sort(custom_buttons.begin(), custom_buttons.end(), [](const auto& a, const auto& b) {
+          return a.rect.Min.x < b.rect.Min.x;
+        });
+        check(custom_buttons.size() == 3, "Home exposes all three custom Slot buttons");
+        if (custom_buttons.size() == 3) {
+          check(custom_buttons[0].disabled == !render_available && !custom_buttons[1].disabled && !custom_buttons[2].disabled,
+              "Custom Render / Present targets use the same per-frame source gate as official recipes");
+        }
+        compare();
+        for (int index = 0; index < 6; ++index) {
+          std::string reason;
+          check(profile::SlotDisplayAvailable(index, &reason) == (index % 3 != 0 || render_available),
+              "Every Slot has an explicit expected capability, independent of fresh/cache agreement");
+          check(profile::slot_display_cache[index].rebuilds == builds[index],
+              "Game source changes refresh eligibility without rebuilding unchanged Slot payloads");
+        }
+      }
+    }
+    {
+      renodx::addons::dlss5::RuntimeLock lock(runtime::runtime_mutex);
+      runtime::ForgetSourceHandleLocked(game_source);
+      runtime::ForgetSourceHandleLocked(internal_present.Handle());
+      runtime::last_source_plan = saved_source;
+      runtime::stage_source_rr = saved_rr;
+    }
+    runtime::hook_point = saved_hook;
+    runtime::stack_passes = saved_count;
+    runtime::pass_stage[0] = saved_stage;
+    runtime::pass_resolution_mode[0] = saved_mode;
+  }
   runtime::native_fg_declaration = runtime::NativeFgDeclaration::kOn;
   runtime::native_fg_public_off = false;
   runtime::native_fg_owns = true;

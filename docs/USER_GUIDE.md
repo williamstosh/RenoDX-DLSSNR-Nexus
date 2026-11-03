@@ -4,7 +4,7 @@
 
 ## 简体中文
 
-本指南对应已发布的 **v0.2.0**：从安装、选方案和比较画面开始，再按需组合最多四层 NR、独立尺寸和结果编辑。**实验性**表示有特殊条件且默认关闭的试用路径，**暂不支持**表示不可用组合。下载及版本说明见 [v0.2.0](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.0)。
+本指南对应 **v0.2.1**：从安装、选方案和比较画面开始，再按需组合最多四层 NR、独立尺寸和结果编辑。**实验性**表示有特殊条件且默认关闭的试用路径，**暂不支持**表示不可用组合。下载及版本说明见 [v0.2.1](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.1)。
 
 配图沿用已审核的早前开发界面。0.2.0 的状态栏、分辨率区及方案入口已有调整，以文字步骤为准；图中状态和数字是界面示例。
 
@@ -25,7 +25,7 @@
 
 #### 用 RHI 准备 ReShade 和 Runtime
 
-1. 关闭游戏，备份现有插件、ReShade 配置和将替换的 DLL。下载 [v0.2.0 Windows x64 ZIP](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip) 与对应 [SHA-256 文件](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip.sha256) 并校验；从 [RHI 最新版](https://github.com/RankFTW/RHI/releases/latest) 下载 RHI。
+1. 关闭游戏，备份现有插件、ReShade 配置和将替换的 DLL。在 [v0.2.1 版本页面](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.1)下载 Windows x64 ZIP 与对应的 `.zip.sha256` 并校验；从 [RHI 最新版](https://github.com/RankFTW/RHI/releases/latest) 下载 RHI。
 2. 在 RHI 选中游戏；未找到时点 **+（Manually add a game）**，选择实际游戏 `.exe` 后点 **Add Game**，或把 `.exe` 拖入窗口。选游戏进程使用的程序，不选启动器；例如实际程序可能在 `Binaries/Win64`。
 3. 在 **Game Overrides → ReShade Channel → Stable** 选择支持完整 Add-on 的渠道，在 **Components → ReShade** 安装；**No Addons 不能加载本插件**。已有 ReShade 时先核对其 Add-on 支持及 API 版本，避免重复安装。
 4. 在 **DLSS / Streamline → Neural Rendering** 列选 **310.9.16 (20/30/40/50)**，点 **Deploy DLL** 单独部署 NR Runtime，无需其他 NR Add-on。**RHI 2.8.8 还会尝试在游戏安装根目录部署最新 `nvngx_dlss.dll`（SR），已有文件先备份为 `.original`；希望保持 SR 版本时使用手动安装。**如果游戏原有 DLSS 但缺此栏，先用 **Settings → Tools & Maintenance → Full refresh**；无 DLSS 或刷新后仍无此栏，使用下方手动安装。
@@ -422,6 +422,15 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 
 兼容普通 Present 的 Optional／Never 也可用于未开启 DLSS 的场景，仍需运行时、API 和格式兼容。诊断可看实际路径与回退原因。帧生成需在游戏或 FG 工具配置。
 
+<a id="zh-xefg-colors"></a>
+#### XeFG：单层 Backbuffer 与双链选择
+
+v0.2.1 默认开启**画质 → 处理与兼容性 → Present → FG 高级设置 → XeFG 单颜色处理**。在 **XeFG + Present、UI Mode 为 AUTO、UI Composition 关闭**时，仅对包含 HUD 的 Backbuffer 执行 NR；1 Pass 执行一次模型调用，2 Pass 执行两次，模型、工作分辨率及所选 Pass 数不变。相比同时处理 HUDLess 和 Backbuffer 的双链，减少一条完整 NR 链的开销，实际 FPS 仍随游戏和设置变化。
+
+升级时会一次性将旧配置的此项切到开启，其他画质参数保持原值。若单颜色模式在某游戏出现新增的 HUD 或帧生成兼容问题，关闭此项并**重启游戏**，恢复可用 HUDLess 与 Backbuffer 的原双链处理；之后的手动选择会保存。仅切换 NR 开关无需重启。
+
+启用 UI Composition 或使用其他 UI Mode 时沿用既有兼容路由，不强制省略 HUDLess。AUTO 的双链让 XeFG 接收两路均经过 NR 的场景颜色，UI 合成仍由 XeFG 完成。若优先使用单层性能，可在游戏或 OptiScaler 的 XeFG 设置中关闭 UI Composition，并重启游戏；插件依据 SDK 实际启用状态选择路由。此设置不改变 Render／Upscaled 或原生 DLSS FG 的策略。单层 Backbuffer 仍处理 HUD，并非单次 NR 后重组 UI 的功能。
+
 <a id="zh-gpu-details"></a>
 #### 深入查看 GPU 成本
 
@@ -499,7 +508,7 @@ ROI、单次 HDR、120 次 HDR Present 和 P0 捕获生成额外数据，可能�
 
 ## English
 
-This guide covers the released **v0.2.0**. Start with installation, profiles and picture comparisons, then combine up to four NR passes, independent sizes and result edits as needed. **Experimental** marks trial paths with special conditions that are off by default; **Not supported yet** marks unavailable combinations. Downloads and release details: [v0.2.0](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.0).
+This guide covers **v0.2.1**. Start with installation, profiles and picture comparisons, then combine up to four NR passes, independent sizes and result edits as needed. **Experimental** marks trial paths with special conditions that are off by default; **Not supported yet** marks unavailable combinations. Downloads and release details: [v0.2.1](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.1).
 
 Images retain reviewed earlier development interfaces. 0.2.0 changes the status bar, resolution area and profile entry points; follow the written steps. States and numbers shown are interface examples.
 
@@ -520,7 +529,7 @@ You need Windows x64, a [compatible NVIDIA RTX GPU/driver](../README.md#en-gpu),
 
 #### Prepare ReShade and the runtime with RHI
 
-1. Close the game and back up existing add-ons, ReShade configuration and DLLs you will replace. Download the [v0.2.0 Windows x64 ZIP](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip) and matching [SHA-256 file](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/download/v0.2.0/NR-Nexus-v0.2.0-5e2016bb-windows-x64.zip.sha256), then verify the archive. Download [the latest RHI](https://github.com/RankFTW/RHI/releases/latest).
+1. Close the game and back up existing add-ons, ReShade configuration and DLLs you will replace. Download the Windows x64 ZIP and matching `.zip.sha256` from the [v0.2.1 release page](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.1), then verify the archive. Download [the latest RHI](https://github.com/RankFTW/RHI/releases/latest).
 2. Select the game in RHI. If missing, click **+ (Manually add a game)**, select the actual game `.exe` and click **Add Game**, or drag the `.exe` onto the window. Select the executable used by the game process rather than its launcher; it may be under `Binaries/Win64`.
 3. Select **Game Overrides → ReShade Channel → Stable** for full Add-on support, then install under **Components → ReShade**. **No Addons cannot load NR Nexus.** For existing ReShade installations, check Add-on support and the API version before installing again.
 4. In the **DLSS / Streamline → Neural Rendering** column, choose **310.9.16 (20/30/40/50)** and click **Deploy DLL** to deploy the NR runtime separately, without another NR Add-on. **RHI 2.8.8 also attempts to deploy the newest `nvngx_dlss.dll` (SR) in the game installation root, backing up an existing file as `.original`. Use manual installation to keep your SR version.** If the game already has DLSS but this column is missing, use **Settings → Tools & Maintenance → Full refresh**. Without game DLSS, or if the column remains missing, follow manual installation below.
@@ -916,6 +925,15 @@ Dual models, different-sized pairs and mixed stages have targeted GPU/automated 
 Ordinary Present **Optional** prefers real depth/motion and falls back to neutral data. **Required** skips without matching resources. **Never** uses neutral data when captured resources are unreliable. Neutral guides carry less motion information; compare movement before choosing. Legacy DLSS-G Pre-FG always uses FG resources.
 
 Compatible ordinary Present Optional/Never can also work without game DLSS, subject to runtime, API and format compatibility. Diagnostics shows actual route/fallback. Configure FG in the game or FG tool.
+
+<a id="en-xefg-colors"></a>
+#### XeFG: single backbuffer and dual-chain selection
+
+v0.2.1 enables **Quality → Processing & compatibility → Present → FG advanced settings → XeFG single-color processing** by default. With **XeFG + Present, AUTO UI Mode and UI Composition off**, NR processes only the backbuffer including its HUD: 1 Pass makes one model call and 2 Pass makes two. The model, working resolution and selected pass count stay unchanged. This avoids one full NR chain compared with processing both HUD-less and backbuffer colors; actual FPS depends on the game and settings.
+
+The upgrade switches this option on once for existing configurations, retaining other quality settings. If single-color processing introduces a HUD or frame-generation compatibility issue in a game, disable it and **restart the game** to restore the previous dual-chain processing of available HUD-less and backbuffer inputs. Your later manual selection is saved. Toggling NR itself needs no restart.
+
+UI Composition and other UI Modes retain their existing compatibility routes without forced HUD-less omission. In AUTO, the dual chain supplies two NR-processed scene colors to XeFG, which still performs UI composition. To prioritize single-backbuffer performance, disable UI Composition in the game or OptiScaler XeFG settings and restart the game; routing follows the state actually enabled in the SDK. Render/Upscaled and native DLSS FG policies are unchanged. Single-backbuffer NR still processes the HUD; it does not reconstruct UI after a single NR evaluation.
 
 <a id="en-gpu-details"></a>
 #### Deeper GPU cost readings

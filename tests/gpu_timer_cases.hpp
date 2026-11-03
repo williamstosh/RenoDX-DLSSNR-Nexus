@@ -87,14 +87,59 @@ int Run() {
     Check(!timers::stage_stats[0].valid && timers::stage_stats[0].state == State::INVALID_TIMESTAMPS,
           "start-only GPU recording retires safely without an invented span");
 
-    const auto record = [&] {
-      Check(timers::Begin(gpu.list.Get(), gpu.device.Get(), "postSR", 16, 16, 0, 2), "timer begin");
+    const auto record = [&](bool measure = true) {
+      Check(timers::Begin(gpu.list.Get(), gpu.device.Get(), "postSR", 16, 16, 0,
+                (measure ? 2u : 1u), measure), "timer begin");
       timers::SetPass(0, 0, 1, 16, 16, 16, 16);
       for (const auto slot : {timers::PassEncodeStart(0), timers::PassEncodeEnd(0),
                timers::PassEvalStart(0), timers::PassEvalEnd(0), timers::PassResolveEnd(0),
                timers::kSlotCopyBackEnd}) timers::Mark(gpu.list.Get(), slot);
       timers::End(gpu.list.Get());
     };
+    // Production can record the next frame before the lifecycle poll consumes
+    // the previous closed recording. A pending newer frame is not a result.
+    timers::stage_stats[1] = {};
+    record();
+    const auto delayed_sequence = timers::internal::segments[timers::internal::current.idx].sequence;
+    const auto delayed_published = timers::published_segments;
+    finish(1, true, false);
+    record();
+    Check(timers::stage_stats[1].state == State::PENDING
+              && timers::stage_stats[1].sequence > delayed_sequence,
+          "newer recording is pending before older completion is polled");
+    timers::Poll(true, false);
+    Check(timers::stage_stats[1].valid && timers::stage_stats[1].sequence == delayed_sequence
+              && timers::stats.valid && timers::stats.sequence == delayed_sequence
+              && timers::published_segments == delayed_published + 1,
+          "newer pending recording cannot suppress an older proven GPU measurement");
+    finish(0);
+    timers::execution_stats[1] = {};
+    record(false);
+    const auto completion_sequence = timers::internal::segments[timers::internal::current.idx].sequence;
+    finish(1, true, false);
+    record(false);
+    Check(timers::execution_stats[1].state == State::PENDING
+              && timers::execution_stats[1].sequence > completion_sequence,
+          "newer completion-only recording is pending before lifecycle poll");
+    timers::Poll(true, false);
+    Check(timers::execution_stats[1].valid
+              && timers::execution_stats[1].sequence == completion_sequence
+              && timers::execution_stats[1].total_us == 0
+              && timers::published_segments == delayed_published + 1,
+          "newer pending recording cannot suppress older completion proof or invent GPU time");
+    finish(0);
+    record(false);
+    const auto old_completion = timers::internal::segments[timers::internal::current.idx];
+    finish(1, true, false);
+    auto terminal = old_completion;
+    terminal.sequence = ++timers::internal::next_sequence;
+    timers::internal::Reject(terminal, State::DISCARDED);
+    record(false);
+    timers::Poll(true, false);
+    Check(!timers::execution_stats[1].valid
+              && timers::execution_stats[1].state == State::PENDING,
+          "new pending completion cannot resurrect a proof older than a terminal result");
+    finish(0);
     record();
     timers::Poll(true, false);
     Check(!timers::stats.valid && timers::stats.state == State::PENDING, "unsubmitted recording stays pending");
@@ -415,6 +460,19 @@ int Run() {
       return timers::internal::Publish(synthetic, false, gpu.queue.Get());
     };
     Check(publish(1), "synthetic timestamp publisher");
+    --synthetic.sequence;
+    Check(!timers::internal::Publish(synthetic, false, gpu.queue.Get()),
+          "older completion cannot replace a newer published result");
+    {
+      auto newer = synthetic;
+      newer.sequence = ++timers::internal::next_sequence;
+      timers::internal::Reject(newer, State::DISCARDED);
+      newer.sequence = ++timers::internal::next_sequence;
+      timers::internal::Reject(newer, State::PENDING);
+      Check(!timers::internal::Publish(synthetic, false, gpu.queue.Get()),
+            "new pending recording cannot erase the ordering of a newer terminal result");
+      Check(publish(1), "current result restores timestamp fixture after terminal ordering check");
+    }
     Check(timers::stats.total_us == 60 && timers::stats.passes[0].total_us == 40
               && timers::stats.passes[0].encode_us == 10 && timers::stats.passes[0].eval_us == 20
               && timers::stats.passes[0].resolve_us == 10 && timers::stats.passes[0].look_us == 5
@@ -440,6 +498,26 @@ int Run() {
     window.samples[0].measured_ns = timers::NowNs() - timers::internal::kSampleAgeNs - 1;
     Check(publish(1) && timers::stage_stats[1].samples == 1 && timers::stage_stats[1].total_us == 60,
           "expired contributions cannot be refreshed by a newer matching completion");
+    {
+      synthetic.color_role = 2;
+      synthetic.guide_serial = 123;
+      synthetic.pass_count = 1;
+      synthetic.sequence = ++timers::internal::next_sequence;
+      timers::internal::last_log_ns[2].store(0);
+      const auto logs_before = captured_logs.size();
+      Check(timers::internal::Publish(synthetic, true, gpu.queue.Get()), "role-labelled timestamp publisher");
+      bool role_log = false;
+      for (size_t log = logs_before; log < captured_logs.size(); ++log) {
+        const auto& text = captured_logs[log].second;
+        if (text.find("NR gpu FG frame:") == std::string::npos) continue;
+        role_log = text.find("role=hudless guide_serial=123") != std::string::npos
+            && text.find("total_us=60 model_us=20 pass1_model_us=20") != std::string::npos
+            && text.find("scope=one_color_chain_single_submission") != std::string::npos;
+      }
+      Check(role_log, "completed GPU diagnostic preserves recorded role, frame serial and per-pass units");
+      synthetic.color_role = 0;
+      synthetic.guide_serial = 0;
+    }
     synthetic.passes[0].model = 2;
     Check(publish(1) && timers::stage_stats[1].samples == 1 && timers::stage_stats[1].total_us == 60,
           "model identity change resets display averaging");

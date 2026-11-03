@@ -31,11 +31,11 @@ jobs:
         with:
           name: ${{ needs.build.outputs.artifact_name }}
           path: dist
-      - name: Publish verified assets with reviewed release notes
+      - name: Prepare verified draft assets for final acceptance
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_ARCHIVE: ${{ needs.build.outputs.archive_name }}
         run: |
-          ./tools/publish-release.ps1 -Tag $env:RELEASE_TAG -ArchivePath (Join-Path dist $env:RELEASE_ARCHIVE)
+          ./tools/publish-release.ps1 -Tag $env:RELEASE_TAG -ArchivePath (Join-Path dist $env:RELEASE_ARCHIVE) -DraftOnly

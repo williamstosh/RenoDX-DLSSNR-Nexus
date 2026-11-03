@@ -44,6 +44,7 @@ struct Stream {
   const NVSDK_NGX_Handle* native_handle = nullptr;
   bool continuing_submission = false;
   uint64_t last_model_frame[2] = {};
+  int64_t diagnostic_logged_ns = 0;
   bool has_frame = false;
   fg::Result result = fg::Result::NOT_SERVED;
   PresentStream roles[2];
@@ -304,7 +305,7 @@ inline void RecordNativeColorInputs(Stream* stream, Slot* slot, ID3D12GraphicsCo
 }
 
 inline bool PrepareSurfaces(Stream* stream, Slot* slot, const fg::FrameInput& input,
-                             bool coupled_ui = false) {
+                             bool coupled_ui = false, bool need_original_hudless = true) {
   const uint32_t width = input.color_width;
   const uint32_t height = input.color_height;
   if (input.hudless != nullptr && input.hudless != input.backbuffer) {
@@ -317,6 +318,7 @@ inline bool PrepareSurfaces(Stream* stream, Slot* slot, const fg::FrameInput& in
                             &slot->original_hudless, &slot->original_backbuffer};
   for (uint32_t i = 0; i < 4; ++i) {
     if (i == 3 && !stream->native) continue;
+    if (i == 2 && !need_original_hudless) continue;
     if (coupled_ui && (i == 1 || i == 2)) continue;
     auto* source = (i == 0 || i == 3 ? input.backbuffer : input.hudless);
     if (source == nullptr || ((i == 1 || i == 2) && source == input.backbuffer)) continue;
@@ -370,6 +372,7 @@ inline fg::Result Record(Stream* stream, Slot* slot, ID3D12GraphicsCommandList* 
   contract.motion_scale_x = (real_guides ? input.motion_scale_x : static_cast<float>(input.color_width));
   contract.motion_scale_y = (real_guides ? input.motion_scale_y : static_cast<float>(input.color_height));
   contract.create_flags = (real_guides ? input.init_flags : NVSDK_NGX_DLSS_Feature_Flags_DepthInverted);
+  contract.frame_reset = (input.reset ? 1 : 0);
   if (!real_guides) {
     auto& role = stream->roles[0];
     for (auto [surface, format] : {std::pair{&role.neutral_motion, DXGI_FORMAT_R16G16_FLOAT},
@@ -416,6 +419,19 @@ inline fg::Result Record(Stream* stream, Slot* slot, ID3D12GraphicsCommandList* 
   }
   gate_ever_opened.store(true, std::memory_order_relaxed);
   bool prepared = false;
+  const uint32_t diagnostic_interval = telemetry_seconds.load(std::memory_order_relaxed);
+  const int64_t diagnostic_now = (gpu_timers_enabled.load(std::memory_order_relaxed)
+      && diagnostic_interval != 0 ? SteadyNowNs() : 0);
+  const bool log_frame = diagnostic_now != 0
+      && diagnostic_now - stream->diagnostic_logged_ns >= static_cast<int64_t>(diagnostic_interval) * 1'000'000'000;
+  if (log_frame) {
+    stream->diagnostic_logged_ns = diagnostic_now;
+  }
+  // Both colors represent the same application frame. A second observation
+  // after HUDLess evaluated would advance the global epoch behind its history
+  // and reset that role again on the following frame. Model-only preparation
+  // below also carries a local Reset which must not become a game scene cut.
+  ObserveGameFrame(contract);
   for (const uint32_t i : {1u, 0u}) {
     if (i == 1 && (!has_hudless || coupled_ui)) continue;
     auto& role = stream->roles[i];
@@ -432,6 +448,7 @@ inline fg::Result Record(Stream* stream, Slot* slot, ID3D12GraphicsCommandList* 
     role.parameters.Set(NVSDK_NGX_Parameter_Jitter_Offset_X, input.jitter_x);
     role.parameters.Set(NVSDK_NGX_Parameter_Jitter_Offset_Y, input.jitter_y);
     PresentTarget target = base;
+    target.game_frame_observed = true;
     target.output_state = kRead;
     target.source_color = (borrow_color_inputs ? (i == 0 ? input.backbuffer : input.hudless) : nullptr);
     target.source_color_state = (i == 0 ? input.backbuffer_state : input.hudless_state);
@@ -447,6 +464,35 @@ inline fg::Result Record(Stream* stream, Slot* slot, ID3D12GraphicsCommandList* 
     const EvaluateInFlightScope attempt(true);
     const uint64_t previous_capture_serial = screenshot::PendingModelCaptureSerial(list);
     const bool accepted = ProcessInline(list, role.Handle(), &role.parameters, &touched, &target, &recording);
+    if (log_frame) {
+      std::ostringstream line;
+      line << "NR FG frame: route=" << (stream->native ? "native" : "xefg")
+           << " role=" << (i == 1 ? "hudless" : "backbuffer")
+           << " context=" << input.context << " epoch=" << input.epoch
+           << " application_frame=" << input.application_frame
+           << " present_id=" << input.present_id << " tagged_id=" << input.has_present_id
+           << " previous_model_frame=" << stream->last_model_frame[i]
+           << " guides=" << (real_guides ? "real" : "neutral")
+           << " guide_frame_basis=" << (stream->native ? "native_fg_input" : "present_id")
+           << " guide_serial=" << target.guide_serial << " constants=" << input.has_constants
+           << " guide_size=" << contract.input_width << 'x' << contract.input_height
+           << " color_size=" << input.color_width << 'x' << input.color_height
+           << " motion_base=" << contract.motion_x << ',' << contract.motion_y
+           << " depth_base=" << contract.depth_x << ',' << contract.depth_y
+           << " motion_scale=" << contract.motion_scale_x << ',' << contract.motion_scale_y
+           << " ngx_flags=" << contract.create_flags
+           << " jitter=" << input.jitter_x << ',' << input.jitter_y << " input_reset=" << input.reset
+           << " evaluate_mask=" << recording.model_evaluate_mask
+           << " reset_mask=" << recording.model_reset_mask << " pass_mask=" << recording.model_pass_mask
+           << " accepted=" << accepted << " output_ready=" << recording.output_ready
+           << " reset_reasons=";
+      for (uint32_t pass = 0; pass < kMaxNrPasses; ++pass) {
+        if ((recording.model_evaluate_mask & (1u << pass)) == 0) continue;
+        line << pass + 1 << ':' << HistoryResetReasonsText(recording.model_reset_reasons[pass]) << ';';
+      }
+      line << " counter_basis=recorded_model_calls_not_GPU_completion";
+      Log(reshade::log::level::info, line.str());
+    }
     prepared |= recording.prepared;
     const bool complete_pair = !base.native_prefg_resolution_pair
         || (NativePreFgResolutionPairAllowed(target)
@@ -552,6 +598,7 @@ inline fg::Result Record(Stream* stream, Slot* slot, ID3D12GraphicsCommandList* 
       FillPresentBlock(&role, input.hudless, motion, depth, contract,
                        input.color_width, input.color_height, 1.f, 1);
       PresentTarget target = base;
+      target.game_frame_observed = true;
       target.source_color = nullptr;
       target.output_state = kRead;
       target.workset_key = reinterpret_cast<const ID3D12Resource*>(&role);
@@ -578,6 +625,12 @@ inline fg::Result Service(const fg::FrameInput& input) noexcept {
   try {
     if (!Requested() || input.queue == nullptr || input.backbuffer == nullptr
         || input.color_width == 0 || input.color_height == 0 || !input.fg_enabled) return fg::Result::NOT_SERVED;
+    // AUTO composition may consume HUDLess too. If a mode change happened
+    // after an omitted tag, retain the original frame instead of enhancing
+    // only one of the SDK's color inputs.
+    if (input.ui_composition && (input.ui_mode == 0 || input.ui_mode >= 3) && input.hudless == nullptr) {
+      return fg::Result::NOT_SERVED;
+    }
     ID3D12CommandQueue* queue = input.queue;
     renodx::utils::directx::NativeFromReShadeProxy(&queue);
     if (!InstallQueueCompletionHooks(queue)) return fg::Result::NOT_SERVED;
@@ -650,11 +703,11 @@ inline fg::Result Service(const fg::FrameInput& input) noexcept {
     };
     const std::unique_ptr<Slot, decltype(cancel_recording)> cancellation(slot, cancel_recording);
     fg::FrameInput nr_input = input;
-    if (input.ui_composition && input.ui_mode >= 3 && nr_input.hudless == nullptr) {
-      slot->list->Close();
-      return stream.result;
-    }
-    if (!PrepareSurfaces(&stream, slot, nr_input)) {
+    const bool exact_ui = nr_input.hudless != nullptr && input.ui_composition && input.ui_mode == 3
+        && input.ui != nullptr
+        && input.color_x == 0 && input.color_y == 0
+        && input.ui->GetDesc().Width == input.color_width && input.ui->GetDesc().Height == input.color_height;
+    if (!PrepareSurfaces(&stream, slot, nr_input, false, exact_ui)) {
       slot->list->Close();
       stream.result = fg::Result::FAILED;
       return stream.result;
@@ -705,15 +758,37 @@ inline fg::Result Service(const fg::FrameInput& input) noexcept {
       nr_input.motion_scale_y *= -static_cast<float>(input.guide_height) * 0.5f;
     }
     bridge::OwnedParameters composition;
-    const bool exact_ui = nr_input.hudless != nullptr && input.ui_composition && input.ui_mode == 3
-        && input.ui != nullptr
-        && input.color_x == 0 && input.color_y == 0
-        && input.ui->GetDesc().Width == input.color_width && input.ui->GetDesc().Height == input.color_height;
     if (exact_ui) composition.Set(NVSDK_NGX_DLSSG_Parameter_UI, input.ui);
     bool output_ready = false;
     std::array<NrRecording, 2> recordings;
     const auto recorded = Record(&stream, slot, slot->list, nr_input, target,
                                  &output_ready, &recordings, exact_ui ? &composition : nullptr);
+    uint32_t process_calls = 0;
+    uint32_t evaluates = 0;
+    uint32_t hudless_processes = 0;
+    uint32_t backbuffer_processes = 0;
+    const auto count_recording = [&](uint32_t role, const NrRecording& recording) {
+      const bool attempted = recording.prepared || recording.model_invoked || recording.model_recorded
+          || recording.output_ready || recording.group_complete || recording.model_pass_mask != 0;
+      if (!attempted) return;
+      ++process_calls;
+      if (role == 1) {
+        ++hudless_processes;
+      } else {
+        ++backbuffer_processes;
+      }
+      uint32_t mask = recording.model_evaluate_mask;
+      while (mask != 0) {
+        evaluates += mask & 1u;
+        mask >>= 1u;
+      }
+    };
+    count_recording(1, recordings[1]);
+    count_recording(0, recordings[0]);
+    fg::xefg::internal::RecordServiceStats(nr_input.diagnostic_context, process_calls, evaluates,
+        hudless_processes, backbuffer_processes,
+        hudless_processes != 0 && backbuffer_processes != 0,
+        exact_ui && hudless_processes != 0 && backbuffer_processes == 0 && output_ready);
     if (!output_ready) {
       const bool closed = SUCCEEDED(slot->list->Close());
       if (recorded == fg::Result::PREPARED && closed) {
@@ -972,7 +1047,9 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
           const auto& record = recordings[role];
           line << " plane" << role << "=[prepared=" << record.prepared << " output_ready=" << record.output_ready
                << " model_invoked=" << record.model_invoked << " model_recorded=" << record.model_recorded
-               << " group_complete=" << record.group_complete << " model_pass_mask=" << record.model_pass_mask << ']';
+               << " group_complete=" << record.group_complete
+               << " model_evaluate_mask=" << record.model_evaluate_mask
+               << " model_pass_mask=" << record.model_pass_mask << ']';
         }
         line << " fg_handle=" << handle << " owner=" << owner
              << " frame_id_get_result=" << static_cast<uint32_t>(frame_result)
@@ -1342,7 +1419,8 @@ inline ID3D12Resource* RunNativePreFg(ID3D12GraphicsCommandList* list,
     const bool ui_recomposition = uir != native_fg_ui_recomposition.end() && uir->second;
     diagnostic.reason = "private_surfaces_unavailable";
     if (!fg_service::PrepareSurfaces(&stream, slot, input,
-            fg_service::NeedsNativeColorCoupling(input, parameters, ui_recomposition))) return nullptr;
+            fg_service::NeedsNativeColorCoupling(input, parameters, ui_recomposition),
+            ui_recomposition)) return nullptr;
     if (resolution_pair) {
       // Cover feature-only and partial warm-up recordings as well as a final
       // image. Discarding any such recording invalidates its GPU state ledger.

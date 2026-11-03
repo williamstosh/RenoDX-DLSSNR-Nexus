@@ -12,6 +12,8 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kPtBr[] = {
+    {"XeFG single-color processing", "Processamento XeFG de uma cor"},
+    {"XeFG AUTO without UI Composition: process only the backbuffer (1/2 Pass = 1/2 model calls). Off keeps the HUD-less color chain too. Other UI modes and UI Composition keep their existing routing. Restart the game after changing this option.", "XeFG AUTO sem UI Composition: processa apenas o backbuffer (1/2 Pass = 1/2 chamadas ao modelo). Desativado, processa também a cadeia sem HUD. Outros modos UI e UI Composition mantêm o roteamento atual. Reinicie o jogo após alterar esta opção."},
     {"Unbind monitor mode key", "Desvincular tecla do modo do monitor"},
     {"F8 cycles monitor modes by default. Games, Steam or other overlays may use the same key. Change or unbind it if needed; host input is not blocked.", "F8 alterna os modos do monitor por padrão. Jogos, Steam ou outras sobreposições podem usar a mesma tecla. Altere ou remova a atribuição se necessário; a entrada do aplicativo hospedeiro não é bloqueada."},
     {"Restore all official profiles", "Restaurar todos os perfis oficiais"},

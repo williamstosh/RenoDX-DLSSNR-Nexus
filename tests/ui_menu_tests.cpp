@@ -305,6 +305,9 @@ int main() {
     runtime::direct_load_state = runtime::DirectLoadState::Ready;
     runtime::native_fg_declaration = runtime::NativeFgDeclaration::kOff;
     runtime::native_fg_public_off = true;
+    const auto* menu_source = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xCA9103});
+    runtime::created_feature_ids[menu_source] = runtime::kFeatureDlss;
+    runtime::EvaluationStagePlan(menu_source);
     runtime::last_input_width = runtime::last_output_width = 3840;
     runtime::last_input_height = runtime::last_output_height = 2160;
     unsigned checks = 0;

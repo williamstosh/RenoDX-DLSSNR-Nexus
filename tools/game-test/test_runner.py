@@ -359,6 +359,27 @@ class ExitTests(unittest.TestCase):
                 self.assertEqual(runner.run_trials(cfg, self.out, 2), 1)
                 attempt.assert_called_once()
 
+    def test_foreground_denial_is_not_retried(self):
+        cfg = dict(executable='game.exe', scenario='smoke')
+        failure = dict(result='failed', guard='verified_original_hashes_and_released',
+                       error='Target cannot acquire foreground; no input sent')
+        with mock.patch.object(runner, 'process_inventory', return_value=[]), \
+                mock.patch.object(runner, 'run_attempt', return_value=failure) as attempt, \
+                mock.patch('builtins.print'):
+            self.assertEqual(runner.run_trials(cfg, self.out, 2), 1)
+        attempt.assert_called_once()
+
+    def test_session_foreground_handoff_writes_target_identity(self):
+        self.session.request_foreground_handoff()
+        handoff = json.loads((self.out / 'foreground-handoff.json').read_text(encoding='utf-8'))
+        self.assertEqual((handoff['hwnd'], handoff['pid'], handoff['timeout_seconds']), (456, 123, 90))
+        events = [json.loads(line) for line in (self.out / 'events.jsonl').read_text(encoding='utf-8').splitlines()]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]['kind'], 'foreground_handoff_required')
+        self.assertEqual((events[0]['hwnd'], events[0]['pid'], events[0]['timeout_seconds']), (456, 123, 90))
+        self.assertIn('time', handoff)
+        self.assertIn('time', events[0])
+
     def test_workspace_lock_rejects_second_runner_and_releases_on_error(self):
         with mock.patch.object(runner, 'ROOT', self.out):
             with self.assertRaisesRegex(ValueError, 'body'):

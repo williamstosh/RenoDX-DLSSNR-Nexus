@@ -1,7 +1,9 @@
 """Input regression checks for the static NR-Off flicker control."""
 import json
+import hashlib
 import subprocess
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -27,9 +29,90 @@ class ModelInstallationTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('Model tests require a protected session', result.stderr)
 
+    def test_block_optional_hudless_rejects_upscaled_hook(self):
+        arguments = ['fg_acceptance.py', '--candidate-manifest', 'candidate.json',
+            '--game-binary-directory', 'game', '--block-optional-hudless', '--nr-hook-point', '0']
+        with mock.patch.object(fg_acceptance.sys, 'argv', arguments), self.assertRaises(SystemExit) as error:
+            fg_acceptance.main()
+        self.assertEqual(error.exception.code, 2)
+
+    def test_xefg_detour_probe_requires_nr_off_control(self):
+        arguments = ['fg_acceptance.py', '--candidate-manifest', 'candidate.json',
+            '--game-binary-directory', 'game', '--disable-xefg-sdk-detours']
+        with mock.patch.object(fg_acceptance.sys, 'argv', arguments), self.assertRaises(SystemExit) as error:
+            fg_acceptance.main()
+        self.assertEqual(error.exception.code, 2)
+
+
+class FgIntervalTests(unittest.TestCase):
+    def test_interval_preserves_actual_service_and_evaluate_counters(self):
+        line = ('DLSS5 FG interval seconds=5.001 application_presents=120 nr_submitted=120 '
+            'status_samples=120 displayed_frames=480 ui_mode=0 ui_composition=0 nr_colors=1 '
+            'sdk_fg_enabled=1 fresh_present_id=1 nr_service[frames=120 process=120 evals=240 '
+            'hudless=0 backbuffer=120 two_color=0 composed=0]')
+        parsed = fg_acceptance.parse_fg_interval(line)
+        self.assertEqual(parsed['nr_service'], dict(frames=120, process=120, evals=240,
+            hudless=0, backbuffer=120, two_color=0, composed=0))
+        self.assertEqual(parsed['nr_service']['evals'], 240)
+
 
 def setUpModule():
     (fg_acceptance.ROOT / 'tmp').mkdir(exist_ok=True)
+
+
+class TelemetryTests(unittest.TestCase):
+    def test_window_evaluates_do_not_read_cumulative_stage_counter(self):
+        for evaluates in (0, 25):
+            with self.subTest(evaluates=evaluates):
+                line = (f'23:07:00:785 [40308] | INFO | NR Nexus: telemetry t=143.24s '
+                        f'win=1.01s presents=116 ticks=116 fps=115.13 '
+                        f'nr[evals={evaluates} cpu_us_avg=0.00] '
+                        f'nr_stage[Upscaled range=1+1 groups=475 evals=475 dimensions=3840x2160]')
+                self.assertEqual(fg_acceptance.parse_nr_telemetry(line),
+                    dict(window_seconds=1.01, presents=116, fps=115.13, evaluates=evaluates))
+
+
+class SdkIsolationTests(unittest.TestCase):
+    def verify_fixture(self, evaluates=0, extra_log='', config_value=0):
+        with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
+            root = Path(directory)
+            run, acceptance = root / 'run', root / 'acceptance'
+            (run / 'final-logs').mkdir(parents=True)
+            acceptance.mkdir()
+            config = root / 'ReShade.ini'
+            config.write_text('[RenoDX.DLSS5]\nNeuralUplift=1\n', encoding='utf-8')
+            protected = root / 'protected-ReShade.ini'
+            protected.write_text(f'[RenoDX.DLSS5]\nNeuralUplift=0\nNRXeFGSdkDetours={config_value}\n',
+                encoding='utf-8')
+            original_hash = hashlib.sha256(config.read_bytes()).hexdigest()
+            fg_acceptance.dump(acceptance / 'receipt.json', dict(restored=True,
+                original_files=[dict(path=str(config), sha256=original_hash)],
+                candidate_sha256='candidate', disable_xefg_sdk_detours=True, start_nr_disabled=True))
+            fg_acceptance.dump(run / 'protected-files.json', [dict(path=str(config),
+                backup_path=str(protected), sha256=hashlib.sha256(protected.read_bytes()).hexdigest())])
+            fg_acceptance.dump(run / 'result.json', dict(guard='verified_original_hashes_and_released',
+                safe_exit='menu_exit_and_detach_confirmed', result='passed'))
+            fg_acceptance.dump(run / 'loaded-modules.json',
+                dict(matching_paths=['candidate'], actual_sha256='candidate'))
+            fg_acceptance.dump(run / 'capture-ready.json', dict(time='2026-11-03T01:00:00+00:00'))
+            fg_acceptance.dump(run / 'scene-health.json', [dict(time='2026-11-03T01:01:00+00:00')])
+            fg_acceptance.dump(run / 'nr-toggle-captures.json', [])
+            local_time = fg_acceptance.datetime.fromisoformat('2026-11-03T01:00:05+00:00').astimezone()
+            (run / 'final-logs/ReShade.log').write_text(
+                local_time.strftime('%H:%M:%S') + f':001 | NR Nexus: telemetry t=5.0s win=1.0s '
+                f'presents=30 ticks=30 fps=30.00 nr[evals={evaluates} cpu_us_avg=0.00]\n' + extra_log,
+                encoding='utf-8')
+            return fg_acceptance.verify(run, acceptance, False, 2, nr_off_control=True)
+
+    def test_disabled_sdk_control_does_not_claim_fg_routing_or_visual_acceptance(self):
+        result = self.verify_fixture()
+        self.assertTrue(result['diagnostic_completed'])
+        self.assertIsNone(result['routing_passed'])
+
+    def test_disabled_sdk_control_rejects_evaluates_and_unexpected_hook_telemetry(self):
+        for arguments in (dict(evaluates=1), dict(extra_log='DLSS5 FG interval\n'), dict(config_value=1)):
+            with self.subTest(arguments=arguments), self.assertRaises(RuntimeError):
+                self.verify_fixture(**arguments)
 
 
 class HdrTargetTests(unittest.TestCase):
@@ -97,6 +180,16 @@ class HdrTargetTests(unittest.TestCase):
 
 
 class CaptureTests(unittest.TestCase):
+    def test_composition_override_requires_restore_before_launch(self):
+        arguments = ['fg_acceptance.py', '--candidate-manifest', 'absent.json',
+            '--game-binary-directory', 'absent-game', '--xefg-ui-composition', '0']
+        with mock.patch.object(fg_acceptance.sys, 'argv', arguments), \
+                mock.patch.object(fg_acceptance.subprocess, 'Popen') as launch, \
+                mock.patch('sys.stderr'):
+            with self.assertRaises(SystemExit):
+                fg_acceptance.main()
+        launch.assert_not_called()
+
     def test_restore_installation_cli_forwards_existing_wrapper_switch(self):
         with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
             root = Path(directory)
@@ -106,18 +199,31 @@ class CaptureTests(unittest.TestCase):
             manifest.write_text('{}', encoding='utf-8')
             game.mkdir()
             tool.touch()
-            child = mock.Mock(stdout=[], returncode=0)
+            child = mock.Mock(stdout=['FOREGROUND_HANDOFF={"pid":123,"hwnd":456}\n'], returncode=0)
             query = mock.Mock(stdout=json.dumps(dict(targets=[dict(active=True,
                 monitorFriendlyDeviceName='fixture monitor', highDynamicRangeUserEnabled=True)])))
             arguments = ['fg_acceptance.py', '--candidate-manifest', str(manifest),
                 '--game-binary-directory', str(game), '--target', str(target),
-                '--output-root', str(root / 'output'), '--hdr-tool', str(tool), '--restore-installation']
+                '--output-root', str(root / 'output'), '--hdr-tool', str(tool), '--restore-installation',
+                '--nr-hook-point', '0', '--nr-passes', '2', '--gpu-timers', '--telemetry-seconds', '2',
+                '--nr-off-control', '--disable-xefg-sdk-detours', '--xefg-ui-composition', '0']
+            print_output = mock.patch('builtins.print')
+            printed = print_output.start()
+            self.addCleanup(print_output.stop)
             with mock.patch.object(fg_acceptance.sys, 'argv', arguments), \
                     mock.patch.object(fg_acceptance.subprocess, 'run', return_value=query), \
                     mock.patch.object(fg_acceptance.subprocess, 'Popen', return_value=child) as launch:
                 self.assertEqual(fg_acceptance.main(), 1)  # No fake routing/acceptance claim.
+            printed.assert_any_call('FOREGROUND_HANDOFF={"pid":123,"hwnd":456}', flush=True)
             command = launch.call_args.args[0]
             self.assertIn('-RestoreInstallation', command)
+            self.assertEqual(command[command.index('-NrHookPoint') + 1], '0')
+            self.assertEqual(command[command.index('-NrPasses') + 1], '2')
+            self.assertEqual(command[command.index('-TelemetrySeconds') + 1], '2')
+            self.assertIn('-GpuTimers', command)
+            self.assertIn('-StartNrDisabled', command)
+            self.assertIn('-DisableXeFGSdkDetours', command)
+            self.assertEqual(command[command.index('-XeFGUiComposition') + 1], '0')
             self.assertEqual(command[command.index('-TargetPath') + 1], str(target.resolve()))
             self.assertEqual(command[command.index('-OutputRoot') + 1], str((root / 'output').resolve()))
             self.assertEqual(command[command.index('-Python') + 1], str(Path(fg_acceptance.sys.executable).resolve()))

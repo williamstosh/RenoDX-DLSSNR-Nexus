@@ -154,7 +154,7 @@ inline const std::vector<FieldRule>& FieldRules() {
       {.key = "NRPresentWhiteSource", .label = "Present white source", .group = "HDR", .minimum = 0, .maximum = 1, .category = FieldRule::COMPATIBILITY},
       {.key = "NRPresentPreFg", .label = "Pre-FG route", .group = "Hook", .minimum = 0, .maximum = 3, .category = FieldRule::COMPATIBILITY},
       {.key = "NRPresentPreFgContract", .label = "Pre-FG contract", .group = "Hook", .minimum = 0, .maximum = 1, .category = FieldRule::COMPATIBILITY},
-      {.key = "NRPresentBlockHudless", .label = "Block HUD-less input", .group = "Hook", .minimum = 0, .maximum = 1, .category = FieldRule::COMPATIBILITY},
+      {.key = "NRPresentBlockHudless", .label = "XeFG single-color processing", .group = "Hook", .minimum = 0, .maximum = 1, .category = FieldRule::COMPATIBILITY},
       {.key = "NRPresentMVecUnits", .label = "Present motion units", .group = "Depth and motion", .minimum = 0, .maximum = 2, .category = FieldRule::COMPATIBILITY},
       {.key = "NRAutoFgFallback", .label = "Automatic FG fallback", .group = "Hook", .minimum = 0, .maximum = 1, .category = FieldRule::COMPATIBILITY},
       {.key = "NRPresentHdrPedestalPolicy", .label = "Present HDR pedestal", .group = "HDR", .minimum = 0, .maximum = 2, .category = FieldRule::COMPATIBILITY},

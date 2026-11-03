@@ -14,7 +14,6 @@ inline const Setting kExtraSettings[] = {
     {"NRPresentWhiteSource", &present_white_source, defaults::kPresentWhiteSource, SettingEffect::kHistory},
     {"NRPresentPreFg", &present_pre_fg, defaults::kPresentPreFg, SettingEffect::kRecreate},
     {"NRPresentPreFgContract", &present_pre_fg_contract, defaults::kPresentPreFgContract, SettingEffect::kRecreate},
-    {"NRPresentBlockHudless", &present_block_hudless, false, SettingEffect::kHistory},
     {"NRPresentMVecUnits", &present_mvec_units, defaults::kPresentMvecUnits, SettingEffect::kHistory},
     {"NRAutoFgFallback", &auto_fg_fallback, defaults::kAutoFgFallback, SettingEffect::kRecreate},
     {"NRVkStateRestore", &vk::state_restore, defaults::kVkStateRestore, SettingEffect::kNone},
@@ -1008,7 +1007,8 @@ inline void DrawRows(const std::vector<Difference>& differences) {
       if (!row.capability_reason.empty()) {
         ui::ItemTooltip("%s", row.capability_reason.c_str());
       }
-      if (row.key == "EnableHooks" || row.key == "DX11Source" || row.key == "ForeignNr") {
+      if (row.key == "EnableHooks" || row.key == "DX11Source" || row.key == "ForeignNr"
+          || row.key == "NRPresentBlockHudless") {
         ImGui::TextWrapped("%s", ui::Tr("Requires game restart"));
       } else if (row.rule != nullptr && row.rule->category == presets::FieldRule::Category::COMPATIBILITY) {
         ImGui::TextColored(ui::CurrentTheme().warn, "%s", ui::Tr("Game-dependent setting"));

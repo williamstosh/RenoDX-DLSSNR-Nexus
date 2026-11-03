@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <limits>
 
-#include "../gpu_comparison.hpp"
+#include <gpu_comparison.hpp>
 
 // Include after the host's Check(bool, const char*) declaration.
 namespace gpu_comparison_cases {

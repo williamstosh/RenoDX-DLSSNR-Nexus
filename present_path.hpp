@@ -1819,12 +1819,19 @@ inline uint32_t ComposePresentPreFg(ID3D12GraphicsCommandList* command_list,
                                     DescriptorHeapSlot(cpu_start, base + 5, compose.descriptor_size));
 
   const uint64_t stats_offset = sizeof(uint32_t) * kPresentPreFgStatsWords * set;
-  Transition(command_list, compose.stats, D3D12_RESOURCE_STATE_COMMON,
-             D3D12_RESOURCE_STATE_COPY_DEST);
-  command_list->CopyBufferRegion(compose.stats, stats_offset, compose.zero, 0,
-                                 sizeof(uint32_t) * kPresentPreFgStatsWords);
-  Transition(command_list, compose.stats, D3D12_RESOURCE_STATE_COPY_DEST,
-             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  if (mode == 2) {
+    Transition(command_list, compose.stats, D3D12_RESOURCE_STATE_COMMON,
+               D3D12_RESOURCE_STATE_COPY_DEST);
+    command_list->CopyBufferRegion(compose.stats, stats_offset, compose.zero, 0,
+                                   sizeof(uint32_t) * kPresentPreFgStatsWords);
+    Transition(command_list, compose.stats, D3D12_RESOURCE_STATE_COPY_DEST,
+               D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  } else {
+    // Keep the unused UAV descriptor in a valid state even though the shader's
+    // runtime mode skips all statistics accesses.
+    Transition(command_list, compose.stats, D3D12_RESOURCE_STATE_COMMON,
+               D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  }
   ID3D12DescriptorHeap* heaps[] = {compose.heap};
   command_list->SetDescriptorHeaps(1, heaps);
   command_list->SetComputeRootSignature(codec_pipeline.root_signature);
@@ -1835,8 +1842,8 @@ inline uint32_t ComposePresentPreFg(ID3D12GraphicsCommandList* command_list,
   command_list->SetComputeRootDescriptorTable(
       1, DescriptorHeapSlot(gpu_start, base + 4, compose.descriptor_size));
   // The shader's ComposeConstants (9 of the codec signature's 28 dwords).
-  // Stage 0 counts, stage 1 composes against this frame's own count (see the
-  // shader: the frame a mask stops being a HUD, before the addon reads it).
+  // Difference-mask mode needs stage 0's current-frame count before stage 1;
+  // exact UI-alpha modes have no statistics dependency and run stage 1 once.
   struct {
     uint32_t width, height, mode, stats_offset, serial;
     float epsilon;
@@ -1847,28 +1854,35 @@ inline uint32_t ComposePresentPreFg(ID3D12GraphicsCommandList* command_list,
                                     * static_cast<float>(back_desc.Height)),
               residual ? 1u : 0u};
   static_assert(sizeof(constants) == 9 * sizeof(uint32_t));
-  for (const uint32_t pass : {0u, 1u}) {
+  const uint32_t pass_count = (mode == 2 ? 2u : 1u);
+  for (uint32_t pass_index = 0; pass_index < pass_count; ++pass_index) {
+    const uint32_t pass = (mode == 2 ? pass_index : 1u);
     constants.pass = pass;
     command_list->SetComputeRoot32BitConstants(2, 9, &constants, 0);
     command_list->Dispatch((static_cast<uint32_t>(back_desc.Width) + 15) / 16,
                            (back_desc.Height + 15) / 16, 1);
-    if (pass == 0) UavBarrier(command_list, compose.stats);
+    if (mode == 2 && pass == 0) UavBarrier(command_list, compose.stats);
   }
-  Transition(command_list, compose.stats, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-             D3D12_RESOURCE_STATE_COPY_SOURCE);
-  command_list->CopyBufferRegion(compose.readback, stats_offset, compose.stats, stats_offset,
-                                 sizeof(uint32_t) * kPresentPreFgStatsWords);
-  if (screenshot::PreFgCaptureMatches(present_prefg_target.service_serial)) {
-    screenshot::RecordPreFgComposeStatistics(device, command_list, compose.stats, stats_offset,
-        present_prefg_target.service_serial, serial, mode, back_desc.Width * back_desc.Height,
-        constants.hud_limit, constants.residual != 0);
-    screenshot::AppendPreFgMeta(present_prefg_target.service_serial,
-        "compose.hud_limit=" + std::to_string(constants.hud_limit)
-        + "\ncompose.residual=" + std::to_string(constants.residual)
-        + "\ncompose.epsilon=" + std::to_string(constants.epsilon) + "\n");
+  if (mode == 2) {
+    Transition(command_list, compose.stats, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+               D3D12_RESOURCE_STATE_COPY_SOURCE);
+    command_list->CopyBufferRegion(compose.readback, stats_offset, compose.stats, stats_offset,
+                                   sizeof(uint32_t) * kPresentPreFgStatsWords);
+    if (screenshot::PreFgCaptureMatches(present_prefg_target.service_serial)) {
+      screenshot::RecordPreFgComposeStatistics(device, command_list, compose.stats, stats_offset,
+          present_prefg_target.service_serial, serial, mode, back_desc.Width * back_desc.Height,
+          constants.hud_limit, constants.residual != 0);
+      screenshot::AppendPreFgMeta(present_prefg_target.service_serial,
+          "compose.hud_limit=" + std::to_string(constants.hud_limit)
+          + "\ncompose.residual=" + std::to_string(constants.residual)
+          + "\ncompose.epsilon=" + std::to_string(constants.epsilon) + "\n");
+    }
+    Transition(command_list, compose.stats, D3D12_RESOURCE_STATE_COPY_SOURCE,
+               D3D12_RESOURCE_STATE_COMMON);
+  } else {
+    Transition(command_list, compose.stats, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+               D3D12_RESOURCE_STATE_COMMON);
   }
-  Transition(command_list, compose.stats, D3D12_RESOURCE_STATE_COPY_SOURCE,
-             D3D12_RESOURCE_STATE_COMMON);
 
   if (mode == 2 && !compose.one_pass) {
     return compose.exceeded ? kPreFgTwoPassHudShare : kPreFgUnmeasured;

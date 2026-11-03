@@ -37,6 +37,66 @@ int RunLifecycleBoundaries() {
     const auto plan = native::EvaluationStagePlan(a);
     Check(plan.valid && plan.At(addon::stage_plan::Stage::UPSCALED).count == 1,
           "retained source starts on its requested single-stage plan");
+    {
+      native::PresentStream present_streams[2];
+      for (auto& stream : present_streams) {
+        native::features.emplace(stream.Handle(), native::FeatureState{});
+      }
+      native::EvaluationStagePlan(b);
+      Check(native::stage_source_rr.load(), "game RR source establishes the configuration capability");
+      native::EvaluationStagePlan(present_streams[0].Handle(), false);
+      Check(native::stage_source_rr.load(),
+            "internal Present SR-shaped stream cannot clear the game RR capability");
+      const auto internal_nr = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0x5F003});
+      const auto unknown = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0x5F004});
+      native::created_feature_ids[internal_nr] = native::kFeatureDlssNr;
+      native::features.emplace(unknown, native::FeatureState{});
+      const auto epoch_before_planning = native::history_reset_epoch.load();
+      for (const bool single_color : {false, true}) {
+        for (const uint32_t passes : {1u, 2u}) {
+          native::hook_point = native::kHookPresent;
+          native::stack_passes = passes;
+          for (const auto game_source : {a, b}) {
+            const bool rr = game_source == b;
+            for (uint32_t frame = 0; frame < 32; ++frame) {
+              native::EvaluationStagePlan(game_source);
+              const auto sequence = native::last_source_plan.sequence;
+              for (uint32_t color = 0; color < (single_color ? 1u : 2u); ++color) {
+                // Both model preparation and execution call the planner on
+                // the internal Present stream, not on the game's SR/RR handle.
+                for (uint32_t call = 0; call < 2; ++call) {
+                  const auto internal_plan = native::EvaluationStagePlan(present_streams[color].Handle(), false);
+                  Check(internal_plan.pass_count == passes
+                            && internal_plan.At(addon::stage_plan::Stage::PRESENT).count == passes,
+                        "internal Present keeps its own execution plan and configured pass count");
+                  Check(native::stage_source_rr.load() == rr
+                            && native::last_source_plan.source_handle == game_source
+                            && native::last_source_plan.sequence == sequence,
+                        "single/dual-color one/two-pass planning cannot alternate the published game capability");
+                }
+              }
+              native::EvaluationStagePlan(internal_nr);
+              native::EvaluationStagePlan(unknown);
+              Check(native::stage_source_rr.load() == rr
+                        && native::last_source_plan.source_handle == game_source
+                        && native::last_source_plan.sequence == sequence,
+                    "feature-18 and unclassified handles cannot replace confirmed SR/RR evidence");
+            }
+          }
+        }
+      }
+      Check(native::history_reset_epoch.load() == epoch_before_planning,
+            "capability publication never resets model history");
+      native::created_feature_ids.erase(internal_nr);
+      native::features.erase(unknown);
+      for (auto& stream : present_streams) {
+        native::features.erase(stream.Handle());
+      }
+      native::hook_point = native::kHookUpscaled;
+      native::stack_passes = 1;
+      native::EvaluationStagePlan(a);
+      Check(!native::stage_source_rr.load(), "real game SR evaluation updates the RR capability");
+    }
     const auto epoch = native::history_reset_epoch.load();
     // CPU policy fixture: no NR model, resource, queue or API-success record is
     // synthesized. The first-use pending flag models an already created slot.
@@ -85,6 +145,8 @@ int RunLifecycleBoundaries() {
     native::ForgetSourceHandleLocked(a);
     Check(!native::features.contains(a) && !native::create_contracts.contains(a)
               && native::last_source_plan.source_released, "explicit DLSS release removes the old contract and marks its observation released");
+    Check(native::last_source_plan.source_handle == a && !native::stage_source_rr.load(),
+          "released source evidence cannot leave an active RR capability");
     const auto released_sequence = native::last_source_plan.sequence;
     native::RetireSupersededWorksets(now + 3'600'000'000'000ll);
     Check(native::last_source_plan.sequence == released_sequence && native::last_source_plan.source_released,

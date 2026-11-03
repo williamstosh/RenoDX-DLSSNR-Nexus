@@ -439,6 +439,7 @@ struct FeatureState {
   std::shared_ptr<FeatureState> render_session;
   uint32_t pass_offset = 0;
   NVSDK_NGX_Feature source_feature = kFeatureDlss;
+  bool source_type_confirmed = false;
   uint32_t input_width = 0;
   uint32_t input_height = 0;
   uint32_t output_width = 0;
@@ -1026,6 +1027,9 @@ struct PresentTarget {
   // Optional borrowed, read-only full-surface input; Output remains the
   // private writeback target. The caller keeps the source alive for submission.
   ID3D12Resource* source_color = nullptr;
+  // FG observes one application frame before recording its color roles.
+  // Those synthetic evaluations must not latch the same game Reset again.
+  bool game_frame_observed = false;
   D3D12_RESOURCE_STATES source_color_state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
   uint64_t hdr_temporary_bytes = 0;
   bool hdr_statistics_unshaped = false;
@@ -1992,8 +1996,11 @@ inline std::atomic_uint32_t present_frames = defaults::kPresentFrames;
 inline std::atomic_uint32_t present_fg_source = defaults::kPresentFgSource;
 inline std::atomic_uint32_t present_pre_fg = defaults::kPresentPreFg;
 inline std::atomic_uint32_t present_pre_fg_contract = defaults::kPresentPreFgContract;
-// Opt-in reference-style FG input policy; independent of the NR hotkey.
-inline std::atomic_bool present_block_hudless = false;
+// XeFG AUTO single-color preference, latched when its context is initialized.
+inline std::atomic_bool present_block_hudless = true;
+// Startup-only XeFG compatibility probe. False leaves the foreign XeFG SDK
+// exports and proxy Present methods completely unhooked for P1-C isolation.
+inline std::atomic_bool xefg_sdk_detours_enabled = true;
 inline std::atomic_uint32_t present_mvec_units = defaults::kPresentMvecUnits;
 // Global hotkeys (Windows virtual-key codes, persisted in [RenoDX.DLSS5] as
 // NRToggleKey / NRScreenshotKey).  F6 is the default NR toggle because F5
@@ -9240,6 +9247,7 @@ inline void RejectMixedFinalPresent(const stage_plan::Plan& plan) {
 }
 
 struct SourcePlanDiagnostic {
+  const NVSDK_NGX_Handle* source_handle = nullptr;
   uint64_t sequence = 0;
   uint64_t source_generation = 0;
   NVSDK_NGX_Feature source_feature = NVSDK_NGX_Feature_Reserved_Unknown;
@@ -9252,16 +9260,21 @@ inline SourcePlanDiagnostic last_source_plan;
 
 inline void ObserveSourcePlan(const NVSDK_NGX_Handle* handle, const stage_plan::Plan& plan) {
   const auto source = created_feature_ids.find(handle);
-  if (source != created_feature_ids.end() && source->second != kFeatureDlss && source->second != kFeatureDlssd) return;
-  SourcePlanDiagnostic observed{.sequence = ++source_diagnostic_sequence, .plan = plan};
-  if (const auto feature = features.find(handle); feature != features.end()) {
+  const auto feature = features.find(handle);
+  const auto source_feature = (source != created_feature_ids.end() ? source->second
+      : feature != features.end() && feature->second.source_type_confirmed
+          ? feature->second.source_feature : NVSDK_NGX_Feature_Reserved_Unknown);
+  if (source_feature != kFeatureDlss && source_feature != kFeatureDlssd) return;
+  SourcePlanDiagnostic observed{.source_handle = handle, .sequence = ++source_diagnostic_sequence,
+                                .source_feature = source_feature, .plan = plan};
+  if (feature != features.end()) {
     observed.source_generation = feature->second.source_generation;
   } else if (const auto contract = create_contracts.find(handle); contract != create_contracts.end()) {
     observed.source_generation = contract->second.source_generation;
   }
-  if (source != created_feature_ids.end()) {
-    observed.source_feature = source->second;
-  }
+  // Present's SR-shaped internal streams use observe_source=false. Only the
+  // game source may publish the capability used by menus and preset validation.
+  stage_source_rr.store(source_feature == kFeatureDlssd, std::memory_order_relaxed);
   last_source_plan = observed;
 }
 
@@ -9283,7 +9296,6 @@ inline stage_plan::Plan EvaluationStagePlan(const NVSDK_NGX_Handle* handle, bool
   } else if (const auto source = features.find(handle); source != features.end()) {
     rr = source->second.source_feature == kFeatureDlssd;
   }
-  stage_source_rr.store(rr, std::memory_order_relaxed);
   const auto plan = RequestedStagePlan(rr);
   if (observe_source) {
     ObserveSourcePlan(handle, plan);
@@ -9369,7 +9381,16 @@ inline void BindComparisonContext(const FeatureState& feature, const FeatureStat
     uint32_t hdr_mode, uint32_t width, uint32_t height, DXGI_FORMAT format,
     const stage_plan::Plan& plan, const PresentTarget* present = nullptr) {
   if (!gpu_timers::internal::current.active) return;
-  auto& sample = gpu_timers::internal::segments[gpu_timers::internal::current.idx].comparison;
+  auto& segment = gpu_timers::internal::segments[gpu_timers::internal::current.idx];
+  if (present != nullptr) {
+    segment.guide_serial = present->guide_serial;
+    if (present->domain == present_restore_scope::Domain::PRE_FG_BACKBUFFER) {
+      segment.color_role = 1;
+    } else if (present->domain == present_restore_scope::Domain::PRE_FG_HUDLESS) {
+      segment.color_role = 2;
+    }
+  }
+  auto& sample = segment.comparison;
   auto& identity = sample.identity;
   identity.source_generation = (present != nullptr ? present->diagnostic_source_generation : feature.source_generation);
   identity.source_feature = (present != nullptr ? present->diagnostic_source_feature : feature.source_feature);
@@ -10101,6 +10122,12 @@ struct NrRecording {
   bool model_recorded = false;
   bool output_ready = false;
   bool group_complete = false;
+  // Set immediately before each NGX model call, including a call that later
+  // returns failure. This keeps service diagnostics distinct from successful
+  // pass completion.
+  uint32_t model_evaluate_mask = 0;
+  uint32_t model_reset_mask = 0;
+  std::array<uint32_t, kMaxNrPasses> model_reset_reasons{};
   uint32_t model_pass_mask = 0;
 };
 
@@ -10293,7 +10320,9 @@ inline bool ProcessInline(
   const uint8_t hdr_mode = present != nullptr
                                ? present->hdr_mode
                                : FrameHdrMode(output_format, feature.create_flags);
-  ObserveGameFrame(current);
+  if (present == nullptr || !present->game_frame_observed) {
+    ObserveGameFrame(current);
+  }
   // KCD2 (and most titles) send the full DLSS subrect/size contract only at
   // CreateFeature, not on every EvaluateFeature.  Trust the create-captured
   // contract stored in `feature` for the guide (input) dimensions and subrects;
@@ -11353,7 +11382,14 @@ inline bool ProcessInline(
     submission::TrackUse(command_list, feature.slots[pass].handle);
     NVSDK_NGX_Result nr_result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
     bool nr_returned = false;
-    if (recording != nullptr) recording->model_invoked = true;
+    if (recording != nullptr) {
+      recording->model_invoked = true;
+      recording->model_evaluate_mask |= 1u << pass;
+      if (feature.slots[pass].model_reset) {
+        recording->model_reset_mask |= 1u << pass;
+      }
+      recording->model_reset_reasons[pass] = feature.slots[pass].model_reset_reasons;
+    }
     {
       DirectCallScope ngx_direct_call;
       try {
@@ -13599,6 +13635,7 @@ inline bool ProcessStreamlineInline(
     entry->second.source_feature = streamline_feature == sl::kFeatureDLSS_RR
         ? kFeatureDlssd
         : kFeatureDlss;
+    entry->second.source_type_confirmed = true;
   }
   // The Present hook point takes the guides here as the NGX hooks do; the
   // tags' own states are the before-states (unknown = the guide 3.4 state).
@@ -13943,6 +13980,7 @@ inline void RegisterCreatedFeatureLocked(const NVSDK_NGX_Handle* handle,
   static uint64_t source_generation = 0;
   state.source_generation = ++source_generation;
   state.source_feature = feature;
+  state.source_type_confirmed = true;
   if (const auto stale = features.find(handle); stale != features.end()) {
     ReleaseCom(stale->second.norm.commit);
   }
@@ -13964,12 +14002,13 @@ inline void RegisterCreatedFeatureLocked(const NVSDK_NGX_Handle* handle,
 // that was the last DLSS feature.  Caller holds runtime_mutex.
 inline bool ForgetSourceHandleLocked(const NVSDK_NGX_Handle* handle) {
   OnNativeFgFeatureReleased(handle);
+  if (last_source_plan.source_handle == handle) {
+    last_source_plan.source_released = true;
+    stage_source_rr.store(false, std::memory_order_relaxed);
+  }
   const auto entry = features.find(handle);
   if (entry != features.end()) {
     if (entry->second.source_generation != 0) {
-      if (last_source_plan.source_generation == entry->second.source_generation) {
-        last_source_plan.source_released = true;
-      }
       for (auto& stats : stage_telemetry) {
         if (stats.last_evaluate.source_generation == entry->second.source_generation) {
           stats.last_evaluate.source_released = true;
@@ -18173,7 +18212,8 @@ inline void OnInitDevice(reshade::api::device* device) {
     vk::OnInitDevice(device);
   }
   fg::xefg::Configure(fg_service::Service, fg_service::PrepareCapture, fg_service::Retire,
-      fg_service::Requested, present_block_hudless.load(std::memory_order_relaxed));
+      fg_service::Requested, present_block_hudless.load(std::memory_order_relaxed),
+      xefg_sdk_detours_enabled.load(std::memory_order_relaxed));
   fg::xefg::Poll();
   InstallHooks();
   const bool d3d12_device =
@@ -18225,7 +18265,8 @@ inline void OnInitSwapchain(reshade::api::swapchain* swapchain, bool /*resize*/)
   fg::native_options::Configure(OnNativeFgOptions, OnNativePresentObserved);
   fg::native_options::Poll();
   fg::xefg::Configure(fg_service::Service, fg_service::PrepareCapture, fg_service::Retire,
-      fg_service::Requested, present_block_hudless.load(std::memory_order_relaxed));
+      fg_service::Requested, present_block_hudless.load(std::memory_order_relaxed),
+      xefg_sdk_detours_enabled.load(std::memory_order_relaxed));
   fg::xefg::Poll();
   if (swapchain == nullptr) return;
   reshade::api::device* const device = swapchain->get_device();
@@ -21837,6 +21878,8 @@ inline constexpr Setting kSetPresentFrames{
     "NRPresentFrames", &present_frames, defaults::kPresentFrames, SettingEffect::kNone};
 inline constexpr Setting kSetPresentFgSource{
     "NRPresentFgSource", &present_fg_source, defaults::kPresentFgSource, SettingEffect::kNone};
+inline constexpr Setting kSetPresentBlockHudless{
+    "NRPresentBlockHudless", &present_block_hudless, true, SettingEffect::kNone};
 inline constexpr Setting kSetFollowInputRes{
     "NRFollowInputRes", &nr_follow_input_res, defaults::kFollowInputRes,
     SettingEffect::kNone};
@@ -22332,7 +22375,7 @@ inline constexpr const Setting* kLookResultSettings[] = {
 inline constexpr const Setting* kHookPointSettings[] = {
     &kSetHookPoint,    &kSetPresentGuides,       &kSetPresentEncoding,
     &kSetPresentWhite, &kSetPresentUiCorrection, &kSetPresentFrames, &kSetPresentFgSource,
-    &kSetPresentSdrRestorePolicy};
+    &kSetPresentSdrRestorePolicy, &kSetPresentBlockHudless};
 inline constexpr const Setting* kPerformanceSettings[] = {
     &kSetFollowInputRes, &kSetResolutionScale, &kSetLookUpsample};
 inline constexpr const Setting* kStackingSettings[] = {
@@ -22406,6 +22449,8 @@ inline capability::Result QueryConfigurationCapability(const presets::Json& valu
   input.xefg_enabled = fg::xefg::Enabled();
   input.auto_fg_fallback = auto_fg_fallback_active.load();
   input.native_prefg_resolution_experiment = experimental_native_prefg_resolution.load();
+  input.game_source_known = last_source_plan.source_handle != nullptr && !last_source_plan.source_released
+      && (last_source_plan.source_feature == kFeatureDlss || last_source_plan.source_feature == kFeatureDlssd);
   stage_plan::Configuration config{
       .pass_count = static_cast<uint32_t>(number("NRPasses", stack_passes.load())),
       .hook_point = static_cast<uint32_t>(number("NRHookPoint", hook_point.load()))};
@@ -23325,6 +23370,10 @@ inline void DrawPresentControls(const ui::PanelText& text) {
       }
     }
     if (!text.modern || ui::TreeNode("fg_advanced", ui::Tr(ui::text::kFgAdvanced))) {
+      ToggleSetting(text, kSetPresentBlockHudless, "XeFG single-color processing",
+          "XeFG AUTO without UI Composition: process only the backbuffer (1/2 Pass = 1/2 model calls). "
+          "Off keeps the HUD-less color chain too. Other UI modes and UI Composition keep their existing routing. "
+          "Restart the game after changing this option.");
       constexpr const char* kPresentFrameModes[] = {"Every frame", "Game frames"};
       ChoiceSetting(
           text, kSetPresentFrames, text.Pick("Present Frames", ui::text::kFgFramePolicy),
@@ -26298,7 +26347,7 @@ inline void ReadIniRawValues() {
       {"NRVkStateRestore", IniKind::kUint},
       {"NRPresentMVecUnits", IniKind::kUint},
       {"NRPresentPreFgContract", IniKind::kUint},
-      {"NRPresentBlockHudless", IniKind::kBool},
+      {"NRPresentBlockHudless", IniKind::kBool}, {"NRXeFGSdkDetours", IniKind::kBool},
       {"NRExperimentalPresentChain", IniKind::kBool},
       {"NRExperimentalNativePreFgResolution", IniKind::kBool},
       {"NRAutoFgFallback", IniKind::kUint},
@@ -26560,7 +26609,8 @@ inline void LoadConfiguration() {
   uint32_t saved_present_fg_source = defaults::kPresentFgSource;
   uint32_t saved_present_pre_fg = defaults::kPresentPreFg;
   uint32_t saved_present_pre_fg_contract = defaults::kPresentPreFgContract;
-  bool saved_present_block_hudless = false;
+  bool saved_present_block_hudless = true;
+  bool saved_xefg_sdk_detours = true;
   bool saved_experimental_present_chain = false;
   bool saved_experimental_native_prefg_resolution = false;
   uint32_t saved_present_mvec_units = defaults::kPresentMvecUnits;
@@ -26673,6 +26723,24 @@ inline void LoadConfiguration() {
       nullptr, kConfigSection, "NRPresentPreFgContract", saved_present_pre_fg_contract);
   reshade::get_config_value(
       nullptr, kConfigSection, "NRPresentBlockHudless", saved_present_block_hudless);
+  // This setting predates its menu control and was persisted as false by old
+  // presets. Adopt the new default once, then preserve explicit dual-color
+  // choices. A separate marker avoids migrating unrelated schema-v8 policies.
+  if (!future_config && section_known) {
+    const auto marker = ReadPresentRestoreRaw("NRPresentBlockHudlessConfigVersion");
+    if (!marker || *marker == "0") {
+      if (section_has_settings) BackupConfigFile("pre-xefg-single-color-migration");
+      WritePresentRestoreValue("NRPresentBlockHudless", 1u);
+      if (ReadPresentRestoreRaw("NRPresentBlockHudless") == std::optional<std::string>{"1"}) {
+        WritePresentRestoreValue("NRPresentBlockHudlessConfigVersion", 1u);
+        if (ReadPresentRestoreRaw("NRPresentBlockHudlessConfigVersion") == std::optional<std::string>{"1"}) {
+          saved_present_block_hudless = true;
+        }
+      }
+    }
+  }
+  reshade::get_config_value(
+      nullptr, kConfigSection, "NRXeFGSdkDetours", saved_xefg_sdk_detours);
   reshade::get_config_value(
       nullptr, kConfigSection, "NRExperimentalPresentChain", saved_experimental_present_chain);
   experimental_present_chain.store(saved_experimental_present_chain);
@@ -27357,6 +27425,7 @@ inline void LoadConfiguration() {
       saved_present_pre_fg_contract, defaults::kPresentPreFgContract, 0u, 1u,
       "NRPresentPreFgContract");
   present_block_hudless = saved_present_block_hudless;
+  xefg_sdk_detours_enabled.store(saved_xefg_sdk_detours, std::memory_order_release);
   present_mvec_units = SanitizeEnumKey(
       saved_present_mvec_units, defaults::kPresentMvecUnits, 0u, 2u,
       "NRPresentMVecUnits");
@@ -27594,6 +27663,8 @@ inline void OnDestroyDevice(reshade::api::device* device) {
       RuntimeLock lock(runtime_mutex);
       if (released) screenshot::AbortPending();
       // The game's D3D11 features died with it (see the D3D12 case below).
+      last_source_plan = {};
+      stage_source_rr.store(false, std::memory_order_relaxed);
       created_feature_ids.clear();
       native_fg_ui_recomposition.clear();
       uncreated_dlss_handles.clear();
@@ -27662,6 +27733,8 @@ inline void OnDestroyDevice(reshade::api::device* device) {
     // The game's features died with the device they were created on; a
     // record left behind would classify a later handle at the same address.
     RuntimeLock lock(runtime_mutex);
+    last_source_plan = {};
+    stage_source_rr.store(false, std::memory_order_relaxed);
     created_feature_ids.clear();
     native_fg_ui_recomposition.clear();
     uncreated_dlss_handles.clear();

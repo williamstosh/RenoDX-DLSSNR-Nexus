@@ -11,12 +11,14 @@
 #include <wrl/client.h>
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -78,11 +80,16 @@ static_assert(sizeof(Init) == 72 && offsetof(Init, ui_mode) == 64);
 
 namespace internal {
 using Microsoft::WRL::ComPtr;
+inline constexpr int32_t kUiModeAuto = 0;
 inline std::atomic<Service> service{nullptr};
 inline std::atomic<PrepareCapture> prepare_capture{nullptr};
 inline std::atomic<Retire> retire{nullptr};
 inline std::atomic<bool (*)() noexcept> requested{nullptr};
 inline std::atomic_bool block_optional_hudless{false};
+// Startup-only diagnostic switch. When false, XeFG SDK exports and its proxy
+// Present hooks are left untouched so a host can isolate addon interception
+// without detaching a live context.
+inline std::atomic_bool sdk_detours_enabled{true};
 inline std::atomic_bool stopped{false};
 inline std::atomic_bool owns_stream{false};
 inline std::atomic<Result> result{Result::NOT_SERVED};
@@ -118,6 +125,54 @@ struct Frame {
   bool rejected = false;
   bool presenting = false;
 };
+// Resource identities rotate with the swapchain/capture pool. Log their values
+// in samples, but only nullness changes consume the contract-change budget.
+struct TraceResource {
+  bool present = false;
+  int32_t type = -1;
+  int32_t validity = -1;
+  abi::Extent base{};
+  abi::Extent size{};
+  uintptr_t resource = 0;
+  uint32_t state = 0;
+  bool operator==(const TraceResource& other) const {
+    return present == other.present && type == other.type && validity == other.validity
+        && base.x == other.base.x && base.y == other.base.y && size.x == other.size.x && size.y == other.size.y
+        && (resource != 0) == (other.resource != 0) && state == other.state;
+  }
+};
+struct TraceResourceCall {
+  TraceResource original;
+  TraceResource forwarded;
+  bool replaced = false;
+  bool sdk_called = false;
+  int32_t status = 0;
+  bool nr_requested = false;
+  bool ui_composition = false;
+  bool operator==(const TraceResourceCall&) const = default;
+};
+template <typename Sample>
+struct ContractTrace {
+  Sample last{};
+  uint32_t last_id = 0;
+  uint32_t frame_samples = 0;
+  uint32_t change_samples = 0;
+  bool seen = false;
+  bool Observe(uint32_t id, const Sample& sample) {
+    bool emit = false;
+    if (frame_samples < 3 && (!seen || id != last_id)) {
+      ++frame_samples;
+      emit = true;
+    } else if (seen && !(sample == last) && change_samples < 8) {
+      ++change_samples;
+      emit = true;
+    }
+    last = sample;
+    last_id = id;
+    seen = true;
+    return emit;
+  }
+};
 struct Context {
   ComPtr<ID3D12CommandQueue> queue;
   ComPtr<ID3D12Device> device;
@@ -136,13 +191,32 @@ struct Context {
   bool fresh_id = false;
   bool last_id_known = false;
   bool enabled = false;
+  bool omit_optional_hudless = false;
   bool ui_composition = false;
+  // Lifetime budgets: at most 3 tagged frame samples + 8 contract changes per
+  // resource kind (slot 5 covers null/unknown tags), and 1 + 8 UI-state calls.
+  std::array<ContractTrace<TraceResourceCall>, 6> resource_trace;
+  ContractTrace<std::array<int64_t, 3>> ui_trace;
   int32_t (*get_status)(void*, abi::PresentStatus*) = nullptr;
   std::chrono::steady_clock::time_point interval_start = std::chrono::steady_clock::now();
   uint64_t interval_presents = 0;
+  uint64_t interval_tagged_presents = 0;
+  uint64_t interval_untagged_presents = 0;
   uint64_t interval_displayed = 0;
   uint64_t interval_submitted = 0;
   uint64_t interval_status_samples = 0;
+  std::atomic_uint64_t interval_nr_frames{0};
+  std::atomic_uint64_t interval_nr_processes{0};
+  std::atomic_uint64_t interval_nr_evaluates{0};
+  std::atomic_uint64_t interval_nr_hudless_processes{0};
+  std::atomic_uint64_t interval_nr_backbuffer_processes{0};
+  std::atomic_uint64_t interval_nr_two_color_frames{0};
+  std::atomic_uint64_t interval_nr_composed_frames{0};
+  std::atomic_uint64_t interval_hudless_blocked{0};
+  std::atomic_uint64_t interval_hudless_sdk_calls{0};
+  std::atomic_uint64_t interval_hudless_sdk_success{0};
+  std::atomic_uint64_t interval_input_hudless{0};
+  std::atomic_uint64_t interval_input_ui{0};
 };
 struct State {
   std::shared_mutex mutex;
@@ -156,6 +230,87 @@ inline std::atomic<DWORD> module_bytes{0};
 inline bool Requested() noexcept {
   const auto policy = requested.load(std::memory_order_acquire);
   return !stopped.load(std::memory_order_acquire) && policy != nullptr && policy();
+}
+
+inline void LogDiagnostic(const char* message) noexcept {
+#if defined(RESHADE_API_LIBRARY)
+  ReShadeLogMessage(nullptr, static_cast<int>(reshade::log::level::info), message);
+#else
+  const auto module = reshade::internal::get_reshade_module_handle();
+  if (module == nullptr) return;
+  const auto function = reinterpret_cast<void (*)(void*, int, const char*)>(
+      GetProcAddress(module, "ReShadeLogMessage"));
+  if (function == nullptr) return;
+  function(reshade::internal::get_current_module_handle(), static_cast<int>(reshade::log::level::info), message);
+#endif
+}
+
+inline void TraceResourceContract(void* handle, ID3D12CommandList* list, uint32_t id,
+                                  const abi::Resource* original, const abi::Resource* forwarded,
+                                  bool sdk_called, int32_t status) {
+  if (stopped.load(std::memory_order_acquire) || !sdk_detours_enabled.load(std::memory_order_acquire)) return;
+  const auto snapshot = [](const abi::Resource* data) {
+    if (data == nullptr) return TraceResource{};
+    return TraceResource{.present = true, .type = data->type, .validity = data->validity,
+        .base = data->base, .size = data->size, .resource = reinterpret_cast<uintptr_t>(data->resource),
+        .state = static_cast<uint32_t>(data->state)};
+  };
+  TraceResourceCall sample{.original = snapshot(original), .forwarded = snapshot(forwarded),
+      .replaced = sdk_called && original != forwarded, .sdk_called = sdk_called, .status = status,
+      .nr_requested = Requested()};
+  uint32_t frame_samples = 0;
+  uint32_t change_samples = 0;
+  int32_t ui_mode = 0;
+  {
+    std::unique_lock lock(state.mutex);
+    const auto it = state.contexts.find(handle);
+    if (it == state.contexts.end()) return;
+    sample.ui_composition = it->second->ui_composition;
+    ui_mode = it->second->init.ui_mode;
+    const size_t slot = (original != nullptr && original->type >= 0 && original->type <= 4
+        ? static_cast<size_t>(original->type) : 5);
+    auto& trace = it->second->resource_trace[slot];
+    if (!trace.Observe(id, sample)) return;
+    frame_samples = trace.frame_samples;
+    change_samples = trace.change_samples;
+  }
+  constexpr const char* names[]{"HUDLess", "Depth", "Motion", "UI", "BackbufferRegion", "NullOrUnknown"};
+  const auto& raw = sample.original;
+  const auto& actual = sample.forwarded;
+  const auto* name = names[(raw.present && raw.type >= 0 && raw.type <= 4 ? raw.type : 5)];
+  char sdk_status[24] = "not_called";
+  if (sdk_called) std::snprintf(sdk_status, sizeof(sdk_status), "%d", status);
+  char message[1024];
+  std::snprintf(message, sizeof(message),
+      "DLSS5 XeFG resource_contract context=%llx present_id=%u tag=%s list=%llx nr_requested=%u "
+      "ui_mode=%d ui_composition=%u frame_sample=%u/3 change_sample=%u/8 "
+      "original[present=%u type=%d validity=%d base=%u,%u size=%u,%u resource=%llx state=%u] "
+      "forwarded[present=%u type=%d validity=%d base=%u,%u size=%u,%u resource=%llx state=%u] "
+      "replaced=%u sdk_called=%u sdk_status=%s adapter_return=%d",
+      static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(handle)), id, name,
+      static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(list)), static_cast<unsigned>(sample.nr_requested),
+      ui_mode, static_cast<unsigned>(sample.ui_composition), frame_samples, change_samples,
+      static_cast<unsigned>(raw.present), raw.type, raw.validity, raw.base.x, raw.base.y, raw.size.x, raw.size.y,
+      static_cast<unsigned long long>(raw.resource), raw.state,
+      static_cast<unsigned>(actual.present), actual.type, actual.validity, actual.base.x, actual.base.y, actual.size.x, actual.size.y,
+      static_cast<unsigned long long>(actual.resource), actual.state,
+      static_cast<unsigned>(sample.replaced), static_cast<unsigned>(sdk_called), sdk_status, status);
+  LogDiagnostic(message);
+}
+
+inline void RecordServiceStats(uintptr_t context_value, uint32_t process_calls,
+                               uint32_t evaluates, uint32_t hudless_processes,
+                               uint32_t backbuffer_processes, bool two_color,
+                               bool composed) noexcept {
+  auto* context = reinterpret_cast<Context*>(context_value);
+  if (context == nullptr) return;
+  context->interval_nr_frames.fetch_add(1, std::memory_order_relaxed);
+  context->interval_nr_processes.fetch_add(process_calls, std::memory_order_relaxed);
+  context->interval_nr_evaluates.fetch_add(evaluates, std::memory_order_relaxed);
+  context->interval_nr_hudless_processes.fetch_add(hudless_processes, std::memory_order_relaxed);
+  context->interval_nr_backbuffer_processes.fetch_add(backbuffer_processes, std::memory_order_relaxed);
+  context->interval_nr_two_color_frames.fetch_add(two_color, std::memory_order_relaxed);
+  context->interval_nr_composed_frames.fetch_add(composed, std::memory_order_relaxed);
 }
 
 inline void RefreshOwnership() {
@@ -239,19 +394,46 @@ inline std::shared_ptr<Surface> AcquireSurface(const std::shared_ptr<Context>& c
   return surface;
 }
 
+// Several ONLY_NOW resources commonly come from one command-list generation.
+// One queue wait on the highest value of a fence covers all lower values; an
+// already completed value needs no queue mutation at all.
+inline void CoalesceWaits(std::vector<std::pair<FenceRef, uint64_t>>* waits) {
+  std::vector<std::pair<FenceRef, uint64_t>> unique;
+  unique.reserve(waits->size());
+  for (auto& [fence, value] : *waits) {
+    if (fence.empty()) continue;
+    auto found = std::find_if(unique.begin(), unique.end(),
+        [&](const auto& candidate) { return candidate.first.fence == fence.fence; });
+    if (found == unique.end()) {
+      unique.emplace_back(std::move(fence), value);
+    } else {
+      found->second = std::max(found->second, value);
+    }
+  }
+  waits->swap(unique);
+}
+
 inline bool OrderCopies(const std::shared_ptr<Frame>& frame, ID3D12CommandQueue* queue) {
   if (frame == nullptr) return true;
   std::vector<std::pair<FenceRef, uint64_t>> waits;
+  std::vector<std::pair<FenceRef, uint64_t>> resource_waits;
   bool ordered = true;
   for (const auto& resource : frame->resources) {
     if (resource.copy == nullptr) continue;
-    if (submission::UseSubmissionTokens(resource.resource.Get(), &waits)
-        == submission::UseSubmission::kUnsubmitted) {
+    const auto resource_state = submission::UseSubmissionTokens(resource.resource.Get(), &resource_waits);
+    if (resource_state == submission::UseSubmission::kUnsubmitted) {
       ordered = false;
-      continue;
     }
-    for (const auto& [fence, value] : waits) {
-      if (FAILED(queue->Wait(fence.fence, value))) ordered = false;
+    waits.insert(waits.end(),
+        std::make_move_iterator(resource_waits.begin()),
+        std::make_move_iterator(resource_waits.end()));
+  }
+  CoalesceWaits(&waits);
+  for (const auto& [fence, value] : waits) {
+    const uint64_t completed = fence->GetCompletedValue();
+    if (completed != UINT64_MAX && completed >= value) continue;
+    if (FAILED(queue->Wait(fence.fence, value))) {
+      ordered = false;
     }
   }
   return ordered;
@@ -263,6 +445,8 @@ inline void Initialize(void* handle, ID3D12CommandQueue* queue, const abi::Init*
   auto context = std::make_shared<Context>();
   context->queue = queue;
   context->init = *parameters;
+  context->omit_optional_hudless = block_optional_hudless.load(std::memory_order_acquire)
+      && parameters->ui_mode == kUiModeAuto;
   if (sdk_module != nullptr) {
     context->get_status = reinterpret_cast<int32_t (*)(void*, abi::PresentStatus*)>(
         GetProcAddress(sdk_module, "xefgSwapChainGetLastPresentStatus"));
@@ -298,6 +482,7 @@ struct PresentFrame {
   ComPtr<ID3D12Resource> backbuffer;
   FrameInput input;
   bool service_owned = false;
+  bool service_eligible = false;
   bool continuing_submission = false;
   Result service_result = Result::NOT_SERVED;
 };
@@ -307,21 +492,39 @@ inline PresentFrame BeginPresent(IDXGISwapChain* swapchain, UINT flags) {
   if ((flags & DXGI_PRESENT_TEST) != 0 || proxy_depth != 0) return present;
   const bool service_requested = Requested();
   const auto identity = Identity(swapchain);
+  bool repeated = false;
   {
     std::unique_lock lock(state.mutex);
     for (const auto& [handle, context] : state.contexts) {
       if (context->proxy_identity != identity) continue;
       present.context = context;
       present.service_owned = service_requested && context->enabled;
+      const bool has_present_id = context->fresh_id;
+      repeated = has_present_id && context->last_id_known && context->last_id == context->present_id;
+      if (has_present_id) {
+        ++context->interval_tagged_presents;
+        if (!repeated) {
+          ++context->application_frame;
+          context->last_id = context->present_id;
+          context->last_id_known = true;
+        }
+      } else {
+        ++context->interval_untagged_presents;
+        // The outer swapchain Present still identifies a new application frame
+        // when XeFG does not provide guides (for example, menus and cutscenes).
+        ++context->application_frame;
+      }
       present.input = {.queue = context->queue.Get(), .context = reinterpret_cast<uintptr_t>(handle),
-          .epoch = context->epoch, .application_frame = ++context->application_frame,
+          .epoch = context->epoch, .application_frame = context->application_frame,
           .present_id = context->present_id, .init_flags = context->init.flags,
           .ui_mode = static_cast<uint32_t>(context->init.ui_mode), .color_space = context->color_space,
-          .has_present_id = context->fresh_id, .fg_enabled = context->enabled,
-          .ui_composition = context->ui_composition};
+          .has_present_id = has_present_id, .fg_enabled = context->enabled,
+          .ui_composition = context->ui_composition,
+          .diagnostic_context = reinterpret_cast<uintptr_t>(context.get())};
+      present.service_eligible = present.service_owned && !repeated;
       present.continuing_submission = context->last_submission_frame != 0
           && context->last_submission_frame + 1 == present.input.application_frame;
-      if (const auto it = context->frames.find(context->present_id); context->fresh_id && it != context->frames.end()) {
+      if (const auto it = context->frames.find(context->present_id); has_present_id && it != context->frames.end()) {
         if (!it->second->presenting) {
           it->second->presenting = true;
           present.pending_frame = it->second;
@@ -337,6 +540,11 @@ inline PresentFrame BeginPresent(IDXGISwapChain* swapchain, UINT flags) {
   // switched off or another input declined after its tag.
   const bool copies_ordered = OrderCopies(present.frame, present.context->queue.Get());
   if (!present.service_owned) return present;
+  // A repeated tagged ID is not a new application frame. Untagged outer
+  // Presents still use the current backbuffer with empty guide fields; the
+  // Present service can apply its Optional-guide fallback without borrowing
+  // resources or constants from an earlier XeFG frame.
+  if (!present.service_eligible) return present;
   // A frame phase is not a service outage. Keep an adjacent proven service
   // active only while its next frame records, never after a declined return.
   display_result.store(present.continuing_submission ? Result::SUBMITTED : Result::PREPARED,
@@ -375,6 +583,12 @@ inline PresentFrame BeginPresent(IDXGISwapChain* swapchain, UINT flags) {
     present.input.hudless_state = hudless.data.state;
     present.input.ui = ui.resource.Get();
     present.input.ui_state = ui.data.state;
+    if (present.input.hudless != nullptr) {
+      present.context->interval_input_hudless.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (present.input.ui != nullptr) {
+      present.context->interval_input_ui.fetch_add(1, std::memory_order_relaxed);
+    }
     if (present.input.has_present_id && depth.resource && motion.resource && depth.data.size.x == motion.data.size.x
         && depth.data.size.y == motion.data.size.y && frame.has_constants) {
       present.input.depth = depth.resource.Get();
@@ -396,21 +610,8 @@ inline PresentFrame BeginPresent(IDXGISwapChain* swapchain, UINT flags) {
     present.input.frame_time_ms = frame.constants.frame_time_ms;
     present.input.reset = frame.constants.reset != 0;
   }
-  bool repeated = false;
-  {
-    std::unique_lock lock(state.mutex);
-    repeated = present.input.has_present_id && present.context->last_id_known
-        && present.context->last_id == present.input.present_id;
-    if (present.input.has_present_id && !repeated) {
-      present.context->last_id = present.input.present_id;
-      present.context->last_id_known = true;
-    }
-  }
   const auto callback = service.load(std::memory_order_acquire);
-  // The outer proxy call identifies a new application Present independently
-  // of the optional FG input ID. Untagged menus/CG use only the current BB;
-  // no previous frame's guides, constants or HUDLess are borrowed.
-  if (!repeated && callback != nullptr && copies_ordered) {
+  if (callback != nullptr && copies_ordered) {
     present.service_result = callback(present.input);
   }
   return present;
@@ -419,13 +620,16 @@ inline PresentFrame BeginPresent(IDXGISwapChain* swapchain, UINT flags) {
 inline void EndPresent(PresentFrame* present) {
   if (present->context == nullptr) return;
   uint64_t value = 0;
+  bool needs_consumer_fence = false;
   {
     std::unique_lock lock(state.mutex);
-    value = ++present->context->next_fence;
+    needs_consumer_fence = present->frame != nullptr && !present->frame->captures.empty();
+    if (needs_consumer_fence) value = ++present->context->next_fence;
   }
   // Intel permits tagged input reuse after matching proxy Present. This
   // marker orders our copies behind that public consumption boundary.
-  const bool signaled = SUCCEEDED(present->context->queue->Signal(present->context->fence.Get(), value));
+  const bool signaled = !needs_consumer_fence
+      || SUCCEEDED(present->context->queue->Signal(present->context->fence.Get(), value));
   abi::PresentStatus status{};
   const bool has_status = present->context->get_status != nullptr
       && present->context->get_status(reinterpret_cast<void*>(present->input.context), &status) == 0;
@@ -456,22 +660,48 @@ inline void EndPresent(PresentFrame* present) {
   const auto now = std::chrono::steady_clock::now();
   const double seconds = std::chrono::duration<double>(now - context.interval_start).count();
   if (seconds >= 5.0) {
-    char message[512];
+    const auto nr_frames = context.interval_nr_frames.exchange(0, std::memory_order_relaxed);
+    const auto nr_processes = context.interval_nr_processes.exchange(0, std::memory_order_relaxed);
+    const auto nr_evaluates = context.interval_nr_evaluates.exchange(0, std::memory_order_relaxed);
+    const auto nr_hudless = context.interval_nr_hudless_processes.exchange(0, std::memory_order_relaxed);
+    const auto nr_backbuffer = context.interval_nr_backbuffer_processes.exchange(0, std::memory_order_relaxed);
+    const auto nr_two_color = context.interval_nr_two_color_frames.exchange(0, std::memory_order_relaxed);
+    const auto nr_composed = context.interval_nr_composed_frames.exchange(0, std::memory_order_relaxed);
+    const auto hudless_blocked = context.interval_hudless_blocked.exchange(0, std::memory_order_relaxed);
+    const auto hudless_sdk_calls = context.interval_hudless_sdk_calls.exchange(0, std::memory_order_relaxed);
+    const auto hudless_sdk_success = context.interval_hudless_sdk_success.exchange(0, std::memory_order_relaxed);
+    const auto input_hudless = context.interval_input_hudless.exchange(0, std::memory_order_relaxed);
+    const auto input_ui = context.interval_input_ui.exchange(0, std::memory_order_relaxed);
+    const auto tagged_presents = context.interval_tagged_presents;
+    const auto untagged_presents = context.interval_untagged_presents;
+    char message[768];
     std::snprintf(message, sizeof(message),
-        "DLSS5 FG interval context=%llx seconds=%.3f application_presents=%llu nr_submitted=%llu "
+        "DLSS5 FG interval context=%llx seconds=%.3f application_presents=%llu tagged_presents=%llu "
+        "untagged_presents=%llu nr_submitted=%llu "
         "status_samples=%llu displayed_frames=%llu application_fps=%.2f displayed_fps=%.2f last_result=%u; "
-        "ui_mode=%u ui_composition=%u nr_colors=%u sdk_fg_enabled=%u fresh_present_id=%u; "
+        "ui_mode=%u ui_composition=%u nr_colors=%u sdk_fg_enabled=%u fresh_present_id=%u "
+        "nr_service[frames=%llu process=%llu evals=%llu hudless=%llu backbuffer=%llu two_color=%llu composed=%llu]; "
+        "hudless_contract[blocked=%llu sdk_calls=%llu sdk_success=%llu input=%llu ui=%llu]; "
         "public_SDK_status_not_visual_acceptance",
         static_cast<unsigned long long>(present->input.context), seconds,
         static_cast<unsigned long long>(context.interval_presents),
+        static_cast<unsigned long long>(tagged_presents),
+        static_cast<unsigned long long>(untagged_presents),
         static_cast<unsigned long long>(context.interval_submitted),
         static_cast<unsigned long long>(context.interval_status_samples),
         static_cast<unsigned long long>(context.interval_displayed), context.interval_presents / seconds,
         context.interval_displayed / seconds, static_cast<unsigned>(present->service_result), present->input.ui_mode,
         static_cast<unsigned>(present->input.ui_composition), present->input.hudless != nullptr ? 2u : 1u,
-        has_status ? status.enabled : 0u, static_cast<unsigned>(present->input.has_present_id));
+        has_status ? status.enabled : 0u, static_cast<unsigned>(present->input.has_present_id),
+        static_cast<unsigned long long>(nr_frames), static_cast<unsigned long long>(nr_processes),
+        static_cast<unsigned long long>(nr_evaluates), static_cast<unsigned long long>(nr_hudless),
+        static_cast<unsigned long long>(nr_backbuffer), static_cast<unsigned long long>(nr_two_color),
+        static_cast<unsigned long long>(nr_composed), static_cast<unsigned long long>(hudless_blocked),
+        static_cast<unsigned long long>(hudless_sdk_calls), static_cast<unsigned long long>(hudless_sdk_success),
+        static_cast<unsigned long long>(input_hudless), static_cast<unsigned long long>(input_ui));
     context.interval_start = now;
-    context.interval_presents = context.interval_displayed = context.interval_submitted = context.interval_status_samples = 0;
+    context.interval_presents = context.interval_tagged_presents = context.interval_untagged_presents = 0;
+    context.interval_displayed = context.interval_submitted = context.interval_status_samples = 0;
     lock.unlock();
     reshade::log::message(reshade::log::level::info, message);
   }
@@ -672,38 +902,46 @@ struct SdkHooks {
     TaggedResource tagged;
     abi::Resource replacement{};
     const abi::Resource* forwarded = data;
+    bool omitted = false;
     try {
-      // This explicit policy omits the optional input at the SDK boundary;
-      // merely skipping its NR would leave FG consuming inconsistent colors.
-      // Keep the selected FG contract while NR is Off so a hotkey cannot
-      // introduce a second, unprocessed color within the same frame.
-      if (!stopped.load(std::memory_order_acquire)
-          && block_optional_hudless.load(std::memory_order_acquire)
+      // Only AUTO without UI composition may omit the optional color. NR Off
+      // always forwards it; a frame tagged before NR resumes must remain
+      // unprocessed because the SDK may already own an ONLY_NOW color copy.
+      if (Requested()
+          && !stopped.load(std::memory_order_acquire)
           && data != nullptr && data->type == 0 && data->resource != nullptr
           && (data->validity == 0 || (data->validity == 1 && list != nullptr))) {
         std::shared_lock lock(state.mutex);
         if (const auto it = state.contexts.find(handle); it != state.contexts.end()
-            && it->second->enabled && !it->second->ui_composition) {
+            && it->second->omit_optional_hudless && it->second->enabled && !it->second->ui_composition) {
           const auto description = data->resource->GetDesc();
           const auto tagged_frame = it->second->frames.find(id);
           const bool already_forwarded = tagged_frame != it->second->frames.end()
-              && tagged_frame->second->resources[0].resource != nullptr;
+              && (tagged_frame->second->resources[0].resource != nullptr || tagged_frame->second->rejected);
           if (!already_forwarded && description.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D
               && description.DepthOrArraySize == 1 && description.SampleDesc.Count == 1
               && data->size.x != 0 && data->size.y != 0
               && uint64_t{data->base.x} + data->size.x <= description.Width
-              && uint64_t{data->base.y} + data->size.y <= description.Height) return 0;
+              && uint64_t{data->base.y} + data->size.y <= description.Height) {
+            it->second->interval_hudless_blocked.fetch_add(1, std::memory_order_relaxed);
+            omitted = true;
+          }
         }
       }
-      if (Requested() && data != nullptr) {
+      if (omitted) {
+        TraceResourceContract(handle, list, id, data, nullptr, false, 0);
+        return 0;
+      }
+      if (data != nullptr && (Requested() || data->type == 0)) {
         {
           std::unique_lock lock(state.mutex);
           if (const auto it = state.contexts.find(handle); it != state.contexts.end()) {
             context = it->second;
             frame = GetFrame(context.get(), id);
+            if (frame != nullptr && !Requested()) frame->rejected = true;
           }
         }
-        if (frame != nullptr && data->type >= 0 && data->type < 4 && data->resource != nullptr
+        if (Requested() && frame != nullptr && data->type >= 0 && data->type < 4 && data->resource != nullptr
             && (data->validity == 0 || data->validity == 1)) {
           tagged.data = *data;
           tagged.resource = data->resource;
@@ -770,6 +1008,14 @@ struct SdkHooks {
     } catch (...) { tagged.resource.Reset(); PublishResult(Result::FAILED); }
     const auto status = reinterpret_cast<int32_t (*)(void*, ID3D12CommandList*, uint32_t, const abi::Resource*)>(
         modules[Index].real[3])(handle, list, id, forwarded);
+    TraceResourceContract(handle, list, id, data, forwarded, true, status);
+    if (data != nullptr && data->type == 0) {
+      std::shared_lock lock(state.mutex);
+      if (const auto it = state.contexts.find(handle); it != state.contexts.end()) {
+        it->second->interval_hudless_sdk_calls.fetch_add(1, std::memory_order_relaxed);
+        if (status == 0) it->second->interval_hudless_sdk_success.fetch_add(1, std::memory_order_relaxed);
+      }
+    }
     try {
       if (frame != nullptr && data != nullptr) {
         std::unique_lock lock(state.mutex);
@@ -835,12 +1081,28 @@ struct SdkHooks {
   static int32_t UiState(void* handle, int32_t composition) {
     if (!stopped.load()) PinRuntimeCallback();
     const auto status = reinterpret_cast<int32_t (*)(void*, int32_t)>(modules[Index].real[7])(handle, composition);
-    if (status == 0) {
+    bool trace_call = false;
+    bool applied = false;
+    {
       std::unique_lock lock(state.mutex);
       if (const auto it = state.contexts.find(handle); it != state.contexts.end()) {
-        if (it->second->ui_composition != (composition != 0)) ReleaseFrames(it->second.get());
-        it->second->ui_composition = composition != 0;
+        if (status == 0) {
+          if (it->second->ui_composition != (composition != 0)) ReleaseFrames(it->second.get());
+          it->second->ui_composition = composition != 0;
+        }
+        applied = it->second->ui_composition;
+        if (!stopped.load(std::memory_order_acquire) && sdk_detours_enabled.load(std::memory_order_acquire)) {
+          trace_call = it->second->ui_trace.Observe(0, {composition, status, applied});
+        }
       }
+    }
+    if (trace_call) {
+      char message[256];
+      std::snprintf(message, sizeof(message),
+          "DLSS5 XeFG ui_composition_contract context=%llx requested=%d sdk_called=1 sdk_status=%d applied=%u nr_requested=%u budget=1+8_changes",
+          static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(handle)), composition, status,
+          static_cast<unsigned>(applied), static_cast<unsigned>(Requested()));
+      LogDiagnostic(message);
     }
     return status;
   }
@@ -877,8 +1139,14 @@ inline std::array<void*, EXPORTS.size()> SdkDetours() {
 }  // namespace internal
 
 inline void Configure(Service service, PrepareCapture capture, Retire retire, bool (*requested)() noexcept,
-                      bool block_optional_hudless = false) {
+                      bool block_optional_hudless = false, bool enable_sdk_detours = true) {
+  static std::atomic_bool disabled_logged{false};
+  if (!enable_sdk_detours && !disabled_logged.exchange(true, std::memory_order_relaxed)) {
+    internal::LogDiagnostic(
+        "DLSS5 XeFG SDK detours disabled: no SDK/proxy interception; resource/UI contract trace unavailable");
+  }
   internal::block_optional_hudless.store(block_optional_hudless, std::memory_order_release);
+  internal::sdk_detours_enabled.store(enable_sdk_detours, std::memory_order_release);
   internal::service.store(service, std::memory_order_release);
   internal::prepare_capture.store(capture, std::memory_order_release);
   internal::retire.store(retire, std::memory_order_release);
@@ -921,6 +1189,7 @@ inline void Stop() noexcept {
 
 inline void Poll(bool force_discovery = true) {
   if (internal::stopped.load(std::memory_order_acquire)) return;
+  if (!internal::sdk_detours_enabled.load(std::memory_order_acquire)) return;
   {
     std::unique_lock lock(internal::state.mutex);
     std::erase_if(internal::state.retired_contexts, [](const auto& context) {

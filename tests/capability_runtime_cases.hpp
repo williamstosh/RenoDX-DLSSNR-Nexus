@@ -21,6 +21,13 @@ runtime::direct_runtime_requirements.dual_models = true;
 runtime::enabled = true;
 runtime::native_fg_declaration = runtime::NativeFgDeclaration::kOff;
 runtime::native_fg_public_off = true;
+const auto* capability_source = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xCA9101});
+const auto observe_capability_source = [&](bool rr) {
+  renodx::addons::dlss5::RuntimeLock lock(runtime::runtime_mutex);
+  runtime::created_feature_ids[capability_source] = (rr ? runtime::kFeatureDlssd : runtime::kFeatureDlss);
+  runtime::EvaluationStagePlan(capability_source);
+};
+observe_capability_source(false);
 for (auto& observed : runtime::stage_telemetry) {
   observed.width = 1920;
   observed.height = 1080;
@@ -53,6 +60,65 @@ const auto reject_unchanged = [&](const Json& settings) {
 
 #include "stage_edit_runtime_cases.hpp"
 #include "stage_gpu_runtime_cases.hpp"
+
+{
+  runtime::PresentStream internal_present;
+  {
+    renodx::addons::dlss5::RuntimeLock lock(runtime::runtime_mutex);
+    runtime::features.emplace(internal_present.Handle(), runtime::FeatureState{});
+  }
+  for (const unsigned count : {1u, 2u}) {
+    auto present_request = pair;
+    present_request.update({{"NRHookPoint", 2u}, {"NRPasses", count}, {"NRPass2ResolutionMode", 0u}});
+    Check(apply(present_request), "Source capability fixture starts from one / two Present passes.");
+    auto render_request = present_request;
+    render_request["NRHookPoint"] = 1u;
+    for (const bool rr : {true, false, true, false}) {
+      observe_capability_source(rr);
+      const auto sequence = runtime::last_source_plan.sequence;
+      {
+        renodx::addons::dlss5::RuntimeLock lock(runtime::runtime_mutex);
+        runtime::EvaluationStagePlan(internal_present.Handle(), false);
+      }
+      Check(runtime::last_source_plan.sequence == sequence && runtime::stage_source_rr.load() == rr,
+            "Internal Present planning preserves the observed game SR / RR capability.");
+      const auto result = runtime::QueryConfigurationCapability(render_request);
+      Check(result.plan_reason == (rr ? plan::Reason::RR_AFTER : plan::Reason::NONE)
+                && runtime::ValidateConfigurationCapability(render_request, &error) == !rr
+                && runtime::CanChooseSetting(runtime::kSetHookPoint, 1.f, &error) == !rr,
+            "Render eligibility follows real game SR / RR changes after internal Present planning.");
+      const auto rows = adapter::Preview({.scope = presets::Scope::FULL, .settings = render_request}, true);
+      Check(std::any_of(rows.begin(), rows.end(), [&](const auto& row) {
+              return row.key == "NRHookPoint" && std::string_view(row.status)
+                  == (rr ? "Unavailable in current environment" : "Will change");
+            }), "Production configuration preview follows the latest game source.");
+      if (rr) {
+        reject_unchanged(render_request);
+      } else {
+        Check(apply(render_request), "Real SR restores Render application without restarting.");
+        Check(apply(present_request), "Restore Present before the next source observation.");
+      }
+    }
+    {
+      renodx::addons::dlss5::RuntimeLock lock(runtime::runtime_mutex);
+      runtime::ForgetSourceHandleLocked(capability_source);
+      runtime::EvaluationStagePlan(internal_present.Handle(), false);
+    }
+    const auto unknown = runtime::QueryConfigurationCapability(render_request);
+    Check(unknown.configuration.status == cap::Status::NEEDS_PROOF
+              && unknown.configuration.reason == cap::Reason::ENVIRONMENT_UNKNOWN,
+          "Released game source leaves Render waiting for source evidence after internal planning.");
+    Check(runtime::ValidateConfigurationCapability(present_request, &error),
+          "Missing game source does not block one / two Present passes.");
+    reject_unchanged(render_request);
+    observe_capability_source(false);
+  }
+  {
+    renodx::addons::dlss5::RuntimeLock lock(runtime::runtime_mutex);
+    runtime::ForgetSourceHandleLocked(internal_present.Handle());
+  }
+  Check(apply(pair), "Source alternation restores the following capability fixture.");
+}
 
 // A stale native FG owner must follow the existing planner's route boundary:
 // only experimental Present chains treat it as an owner of a mixed NR chain.
@@ -154,7 +220,7 @@ Check(b1_result.configuration.status == cap::Status::NEEDS_PROOF
 reject_unchanged(b1);
 runtime::experimental_present_chain = false;
 
-runtime::stage_source_rr = true;
+observe_capability_source(true);
 auto rr = pair;
 rr["NRHookPoint"] = 1u;
 rr["NRPass2Stage"] = 2u;
@@ -162,7 +228,7 @@ const auto rr_result = runtime::QueryConfigurationCapability(rr);
 Check(rr_result.plan_reason == plan::Reason::RR_AFTER && rr_result.group_count == 1,
       "RR retains requested Render but reports effective Upscaled grouping.");
 reject_unchanged(rr);
-runtime::stage_source_rr = false;
+observe_capability_source(false);
 
 runtime::d3d12_swapchain_seen = false;
 runtime::vulkan_present_seen = true;
@@ -336,5 +402,62 @@ Check(!runtime::CurrentGpuSample(sample, now), "NR Off never reports current GPU
     Check(std::string(std::istreambuf_iterator<char>(unchanged_file), std::istreambuf_iterator<char>()) == old_bytes,
           "No-binding discovery preserves the surviving Slot document byte-for-byte.");
   }
+  observe_capability_source(false);
+  load_without_binding(fixture_root / "source-cycle");
+  profile::capability_validator = runtime::ValidateConfigurationCapability;
+  const auto settle_cycle = [&] {
+    if (profile::dirty && !profile::Busy()) profile::Schedule(true);
+    const auto deadline = GetTickCount64() + 10000;
+    while (profile::Busy() || profile::dirty || profile::pending_action != profile::Action::NONE) {
+      profile::Tick();
+      if (profile::save_failed || GetTickCount64() >= deadline) {
+        throw std::runtime_error("Source capability Cycle worker did not settle.");
+      }
+      Sleep(1);
+    }
+  };
+  Check(apply({{"NRHookPoint", 2u}, {"NRPasses", 1u}, {"NRPass2Stage", 0u}, {"NRPass2ResolutionMode", 0u}}),
+        "Real-validator hotkey fixture starts from Present.");
+  profile::Observe();
+  settle_cycle();
+  const auto cycle_before = profile::Snapshot();
+  const auto cycle_generation = runtime::configuration_generation.load();
+  const auto cycle_history = runtime::history_reset_epoch.load();
+  profile::dirty = true;
+  ++profile::serial;
+  Check(profile::Cycle(false) && profile::pending_action == profile::Action::SWITCH,
+        "Known SR queues official Lite behind the real outgoing save.");
+  observe_capability_source(true);
+  settle_cycle();
+  Check(profile::active == -1 && profile::state.selected.empty() && profile::Snapshot() == cycle_before
+            && runtime::configuration_generation.load() == cycle_generation
+            && runtime::history_reset_epoch.load() == cycle_history,
+        "Final hotkey validation rejects Lite when real RR arrives during asynchronous save.");
+  Check(!profile::Cycle(false), "Official hotkey cannot apply Lite while the game remains RR.");
+  observe_capability_source(false);
+  Check(profile::Cycle(false), "Official hotkey accepts Lite after real SR returns.");
+  settle_cycle();
+  Check(profile::active == 0 && runtime::hook_point.load() == runtime::kHookRender,
+        "SR hotkey recovery actually applies the Render recipe.");
+  observe_capability_source(true);
+  Check(profile::Cycle(false), "RR still permits the next official Present recipe.");
+  settle_cycle();
+  Check(profile::active == 1 && runtime::hook_point.load() == runtime::kHookPresent,
+        "Balanced applies without inheriting the old Render request.");
+  for (int index = 3; index < 6; ++index) {
+    profile::state.slots[index] = {.populated = true, .template_version = data::TEMPLATE_VERSION,
+        .snapshot = data::Template(index - 3, profile::defaults_snapshot)};
+  }
+  Check(profile::Cycle(true), "Custom hotkey skips the Render snapshot under real RR.");
+  settle_cycle();
+  Check(profile::active == 4, "Custom Cycle selects the next genuinely eligible Present snapshot.");
+  observe_capability_source(false);
+  profile::active = -1;
+  profile::state.selected.clear();
+  Check(profile::Cycle(true), "Custom hotkey can select its Render snapshot after real SR returns.");
+  settle_cycle();
+  Check(profile::active == 3 && runtime::hook_point.load() == runtime::kHookRender,
+        "Custom SR recovery applies the original Render target.");
+  profile::capability_validator = {};
   profile::loaded = false;
 }

@@ -67,6 +67,9 @@ struct FrameInput {
   bool reset = false;
   bool fg_enabled = false;
   bool ui_composition = false;
+  // Internal diagnostics only. This points at the live XeFG Context held by
+  // PresentFrame; it is never exposed to the SDK or used for routing.
+  uintptr_t diagnostic_context = 0;
 };
 
 using Service = Result (*)(const FrameInput&) noexcept;

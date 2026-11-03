@@ -12,6 +12,8 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kKo[] = {
+    {"XeFG single-color processing", "XeFG 단일 색상 처리"},
+    {"XeFG AUTO without UI Composition: process only the backbuffer (1/2 Pass = 1/2 model calls). Off keeps the HUD-less color chain too. Other UI modes and UI Composition keep their existing routing. Restart the game after changing this option.", "UI Composition이 꺼진 XeFG AUTO에서 Backbuffer만 처리합니다(1/2 Pass = 모델 호출 1/2회). 끄면 HUD 없는 색상 체인도 처리합니다. 다른 UI 모드와 UI Composition은 기존 경로를 유지합니다. 변경 후 게임을 다시 시작하세요."},
     {"Unbind monitor mode key", "모니터 모드 키 할당 해제"},
     {"F8 cycles monitor modes by default. Games, Steam or other overlays may use the same key. Change or unbind it if needed; host input is not blocked.", "기본적으로 F8로 모니터 모드를 순환합니다. 게임, Steam 또는 다른 오버레이에서 같은 키를 사용할 수 있습니다. 필요하면 키를 변경하거나 할당을 해제하세요. 호스트 입력은 차단되지 않습니다."},
     {"Restore all official profiles", "모든 공식 프로필 복원"},

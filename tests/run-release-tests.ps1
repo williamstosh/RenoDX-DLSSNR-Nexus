@@ -88,7 +88,7 @@ $releaseTestOldToken = $env:GH_TOKEN
 $env:GH_TOKEN = 'synthetic-test-token'
 $releaseTestResults = @()
 try {
-    foreach ($releaseTestScenario in @('new','empty-array-response','unrelated-array-response','separate-source-root','annotated-tag','existing-exact','existing-different','existing-wrong-source','draft-wrong-source','draft-resume','draft-empty','draft-array-response','multiple-release-array','draft-page-two','duplicate-draft','draft-starter','upload-failure','wrong-remote-tag','forbidden','incomplete-assets','unexpected-draft-asset','checksum-mismatch','tag-version-mismatch','notes-missing','notes-pr-only')) {
+    foreach ($releaseTestScenario in @('new','draft-only','draft-only-incomplete','empty-array-response','unrelated-array-response','separate-source-root','annotated-tag','existing-exact','existing-different','existing-wrong-source','draft-wrong-source','draft-resume','draft-empty','draft-array-response','multiple-release-array','draft-page-two','duplicate-draft','draft-starter','upload-failure','wrong-remote-tag','forbidden','incomplete-assets','unexpected-draft-asset','checksum-mismatch','tag-version-mismatch','notes-missing','notes-pr-only')) {
         Reset-TestChecksum
         & {
             $releaseTestState = @{calls=[Collections.Generic.List[object]]::new();release=$null}
@@ -179,7 +179,7 @@ try {
                     return
                 }
                 if ($Uri -eq 'https://api.github.com/repos/fixture/repository/releases/1' -and $Method -eq 'GET') {
-                    if ($releaseTestScenario -eq 'incomplete-assets') { $releaseTestState.release.assets=@() }
+                    if ($releaseTestScenario -in @('incomplete-assets','draft-only-incomplete')) { $releaseTestState.release.assets=@() }
                     return $releaseTestState.release
                 }
                 if ($Uri -eq 'https://api.github.com/repos/fixture/repository/releases/1' -and $Method -eq 'PATCH') {
@@ -203,14 +203,24 @@ try {
                 $publishArguments = @{Tag=$tag;ArchivePath=$releaseTestArchive;Repository='fixture/repository'}
                 if ($releaseTestScenario -eq 'separate-source-root') { $publishArguments.SourceRoot=$releaseTestSourceRoot }
                 $publishArguments.NotesPath=$releaseTestNotesPath
+                if ($releaseTestScenario.StartsWith('draft-only')) { $publishArguments.DraftOnly=$true }
                 if ($releaseTestScenario -eq 'notes-missing') { $publishArguments.NotesPath=Join-Path $releaseTestDirectory 'absent.md' }
                 if ($releaseTestScenario -eq 'notes-pr-only') {
                     $publishArguments.NotesPath=Join-Path $releaseTestDirectory 'pr-only.md'
                     [IO.File]::WriteAllText($publishArguments.NotesPath, $releaseTestNotes.Replace('Select independent models per pass.', '- [#3](https://github.com/fixture/repository/pull/3)'))
                 }
                 & (Join-Path $releaseTestRoot 'tools/publish-release.ps1') @publishArguments
+                if ($releaseTestScenario -eq 'draft-only') {
+                    Assert-Test $releaseTestState.release.draft 'Candidate acceptance must happen before publication'
+                    Assert-Test ($releaseTestState.release.assets.Count -eq 2) 'Draft must contain both verified assets'
+                    Assert-Test (@($releaseTestState.calls | Where-Object { $_.method -eq 'PATCH' -and $_.payload.PSObject.Properties.Name -contains 'draft' }).Count -eq 0) 'Draft-only crossed the publication boundary'
+                    $stagedCalls = $releaseTestState.calls.Count
+                    $publishArguments.Remove('DraftOnly')
+                    & (Join-Path $releaseTestRoot 'tools/publish-release.ps1') @publishArguments
+                    Assert-Test (@($releaseTestState.calls | Select-Object -Skip $stagedCalls | Where-Object method -EQ 'POST').Count -eq 0) 'Acceptance must publish the same assets without recreating or uploading'
+                }
             } catch { $failed=$true }
-            $success = $releaseTestScenario -in @('new','empty-array-response','unrelated-array-response','separate-source-root','annotated-tag','existing-exact','draft-resume','draft-empty','draft-array-response','multiple-release-array','draft-page-two','draft-starter')
+            $success = $releaseTestScenario -in @('new','draft-only','empty-array-response','unrelated-array-response','separate-source-root','annotated-tag','existing-exact','draft-resume','draft-empty','draft-array-response','multiple-release-array','draft-page-two','draft-starter')
             Assert-Test ($failed -ne $success) "Unexpected outcome: $releaseTestScenario"
             $published=@($releaseTestState.calls | Where-Object { $_.method -eq 'PATCH' -and $_.payload.PSObject.Properties.Name -contains 'draft' })
             Assert-Test ($published.Count -eq $(if ($success -and $releaseTestScenario -ne 'existing-exact') { 1 } else { 0 })) "Publication boundary failed: $releaseTestScenario"

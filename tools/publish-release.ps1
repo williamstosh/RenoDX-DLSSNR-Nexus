@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory)][string]$ArchivePath,
     [string]$Repository = $env:GITHUB_REPOSITORY,
     [string]$SourceRoot = (Split-Path $PSScriptRoot -Parent),
-    [string]$NotesPath
+    [string]$NotesPath,
+    [switch]$DraftOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -149,6 +150,10 @@ if (@($taskRelease.assets).Count -ne $taskNames.Count -or
 foreach ($taskFile in $taskFiles) {
     $taskAsset = @($taskRelease.assets | Where-Object name -CEQ ([IO.Path]::GetFileName($taskFile)))[0]
     Assert-ReleaseAsset $taskAsset $taskFile
+}
+if ($DraftOnly) {
+    Write-Host "Verified draft ready for candidate acceptance: $Tag"
+    return
 }
 # A failed upload/verification leaves a draft. Visibility changes only here.
 $taskPublished = Invoke-ReleaseApi "releases/$($taskRelease.id)" 'PATCH' @{

@@ -14,6 +14,8 @@ k.OpenProcess.restype = W.HANDLE
 k.CloseHandle.argtypes = [W.HANDLE]
 k.QueryFullProcessImageNameW.argtypes = [W.HANDLE, W.DWORD, W.LPWSTR, C.POINTER(W.DWORD)]
 u.GetForegroundWindow.restype = W.HWND
+u.AllowSetForegroundWindow.argtypes = [W.DWORD]
+u.AllowSetForegroundWindow.restype = W.BOOL
 u.IsHungAppWindow.argtypes = [W.HWND]
 u.PostMessageW.argtypes = [W.HWND, W.UINT, W.WPARAM, W.LPARAM]
 u.SetForegroundWindow.argtypes = [W.HWND]
@@ -30,6 +32,12 @@ k.WaitForSingleObject.argtypes = [W.HANDLE, W.DWORD]
 k.WaitForSingleObject.restype = W.DWORD
 k.TerminateProcess.argtypes = [W.HANDLE, W.UINT]
 QUERY_SYNC = 0x1000 | 0x100000
+
+class ForegroundActivationDenied(RuntimeError):
+    pass
+
+class ForegroundHandoffTimeout(RuntimeError):
+    pass
 
 def _running(handle):
     status = k.WaitForSingleObject(handle, 0)
@@ -150,7 +158,37 @@ def activate(window):
         if u.GetForegroundWindow() == window['hwnd'] and window_alive(window):
             return
         time.sleep(.2)
-    raise RuntimeError('Target cannot acquire foreground; no input sent')
+    raise ForegroundActivationDenied('Target cannot acquire foreground; no input sent')
+
+def grant_foreground_permission(pid):
+    """Ask Windows to let this test worker activate its owned game window."""
+    if not 0 < pid <= 0xffffffff:
+        raise ValueError('Invalid foreground permission process id')
+    C.set_last_error(0)
+    granted = bool(u.AllowSetForegroundWindow(pid))
+    return dict(granted=granted, error=None if granted else C.get_last_error())
+
+def wait_for_foreground(window, timeout=90):
+    if not 0 <= timeout <= 600:
+        raise ValueError('Foreground handoff timeout must be between 0 and 600 seconds')
+    deadline = time.monotonic() + timeout
+    while True:
+        if not window_alive(window):
+            raise RuntimeError('Target window disappeared or process identity changed during foreground handoff')
+        if u.GetForegroundWindow() == window['hwnd']:
+            if not window_alive(window):
+                raise RuntimeError('Target window disappeared or process identity changed during foreground handoff')
+            return
+        if time.monotonic() >= deadline:
+            raise ForegroundHandoffTimeout('Foreground handoff timed out; no input sent')
+        time.sleep(.2)
+
+def activate_with_handoff(window, on_handoff, timeout=90):
+    try:
+        activate(window)
+    except ForegroundActivationDenied:
+        on_handoff()
+        wait_for_foreground(window, timeout)
 
 def capture(window, destination):
     if u.GetForegroundWindow() != window['hwnd']:
@@ -183,8 +221,11 @@ u.SendInput.argtypes = [W.UINT, C.POINTER(INPUT), C.c_int]
 u.SendInput.restype = W.UINT
 KEYS = dict(ENTER=0x1C, ESC=0x01, SPACE=0x39, UP=0x48, DOWN=0x50, LEFT=0x4B, RIGHT=0x4D, HOME=0x47, W=0x11, A=0x1E, S=0x1F, D=0x20, E=0x12)
 
-def key(window, name, seconds=.2):
-    activate(window)
+def key(window, name, seconds=.2, on_handoff=None, handoff_timeout=90):
+    if on_handoff:
+        activate_with_handoff(window, on_handoff, handoff_timeout)
+    else:
+        activate(window)
     if name not in KEYS or not 0 < seconds <= 2:
         raise ValueError('Unsupported key or hold duration')
     scan = KEYS[name]
@@ -200,8 +241,11 @@ def key(window, name, seconds=.2):
         if u.SendInput(1, C.byref(up), C.sizeof(INPUT)) != 1:
             raise RuntimeError('Key release failed')
 
-def click(window, x, y):
-    activate(window)
+def click(window, x, y, on_handoff=None, handoff_timeout=90):
+    if on_handoff:
+        activate_with_handoff(window, on_handoff, handoff_timeout)
+    else:
+        activate(window)
     rect, p = W.RECT(), W.POINT()
     u.GetClientRect(window['hwnd'], C.byref(rect))
     u.ClientToScreen(window['hwnd'], C.byref(p))

@@ -12,6 +12,8 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kSl[] = {
+    {"XeFG single-color processing", "XeFG obdelava ene barve"},
+    {"XeFG AUTO without UI Composition: process only the backbuffer (1/2 Pass = 1/2 model calls). Off keeps the HUD-less color chain too. Other UI modes and UI Composition keep their existing routing. Restart the game after changing this option.", "XeFG AUTO brez UI Composition: obdela le backbuffer (1/2 Pass = 1/2 klica modela). Izklop obdela tudi verigo brez HUD. Drugi načini UI in UI Composition ohranijo obstoječo pot. Po spremembi znova zaženite igro."},
     {"Unbind monitor mode key", "Odstrani tipko za način nadzornika"},
     {"F8 cycles monitor modes by default. Games, Steam or other overlays may use the same key. Change or unbind it if needed; host input is not blocked.", "F8 privzeto preklaplja načine nadzornika. Igre, Steam ali druga prekrivna okna lahko uporabljajo isto tipko. Po potrebi jo spremenite ali odstranite dodelitev; vnos v gostiteljsko aplikacijo ni blokiran."},
     {"Restore all official profiles", "Obnovi vse uradne profile"},

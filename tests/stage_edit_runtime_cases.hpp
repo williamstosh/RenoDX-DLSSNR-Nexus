@@ -80,7 +80,7 @@
         Check(apply(request), "Present chain recovery fixture applies on both native backends.");
         // RR's Render-to-Upscaled remap is rejected by the editing capability
         // gate: search must not replace the user's requested root to hide it.
-        runtime::stage_source_rr = mode == 2;
+        observe_capability_source(mode == 2);
         runtime::experimental_present_chain = mode == 1;
         runtime::native_fg_owns = mode == 1;
         const auto saved = profile::Snapshot();
@@ -109,7 +109,7 @@
           }
           edit::Cancel();
         }
-        runtime::stage_source_rr = false;
+        observe_capability_source(false);
         runtime::native_fg_owns = false;
         runtime::experimental_present_chain = false;
       }
@@ -150,6 +150,33 @@
           "Invalid Stage requests never truncate into valid choices.");
   }
   edit::pending = false;
+  auto source_present = pair;
+  source_present.update({{"NRHookPoint", 2u}, {"NRPass2ResolutionMode", 0u}});
+  Check(apply(source_present), "Source-aware Stage preview starts from Present.");
+  observe_capability_source(false);
+  Check(edit::Prepare(runtime::kSetHookPoint, 1.f), "Known game SR permits a Render Stage preview.");
+  const auto source_before = profile::Snapshot();
+  const auto source_ini = Bytes();
+  const auto source_writes = writes.size();
+  const auto source_generation = runtime::configuration_generation.load();
+  observe_capability_source(true);
+  Check(!edit::Confirm() && !edit::error.empty() && profile::Snapshot() == source_before
+            && Bytes() == source_ini && writes.size() == source_writes
+            && runtime::configuration_generation.load() == source_generation,
+        "Real RR arriving after a Render preview rejects final commit without writes.");
+  observe_capability_source(false);
+  Check(edit::Confirm(), "The same Stage preview can commit after real SR returns.");
+  Check(adapter::Undo(&error, &edit::undo) && profile::Snapshot() == source_before,
+        "Source-aware Stage commit retains transactional Undo.");
+  Check(edit::Prepare(runtime::kSetHookPoint, 1.f), "Release fixture prepares another known-SR Render preview.");
+  {
+    renodx::addons::dlss5::RuntimeLock lock(runtime::runtime_mutex);
+    runtime::ForgetSourceHandleLocked(capability_source);
+  }
+  Check(!edit::Confirm() && profile::Snapshot() == source_before && Bytes() == source_ini,
+        "Releasing the game source after preview cannot commit Render with unknown capability.");
+  observe_capability_source(false);
+  edit::Cancel();
   edit::error.clear();
   edit::notice.clear();
   edit::undo.clear();

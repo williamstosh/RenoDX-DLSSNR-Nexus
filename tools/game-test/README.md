@@ -2,7 +2,11 @@
 
 这里只迁入既有 Steam／巫师3 自动化：原存档保护、唯一时间戳选档、焦点核验、所属进程监控、菜单退出、恢复与有界重试。没有新增游戏适配，不包含悟空无人选档。
 
-迁入后已完成语法检查、游戏预检和 90 项 Python 单测（89 项通过、1 项符号链接权限跳过）。新候选已完成巫师3加载、NR 开关、短移动、插件菜单与安全退出／完整恢复；原配置下的 NR 可见效果和 HUD 获用户确认。性能与视觉结论仅适用于实际配置及已测场景，自动化通过不等于完整画质验收。
+自动 menu／smoke 启动时，外层进程会尝试通过 Windows AllowSetForegroundWindow 将前台资格交给隔离 worker；系统拒绝时保留错误码。若 worker 的标准激活仍失败，它会在发送输入前写入 foreground-handoff.json 并等待最多 90 秒，外层入口输出 FOREGROUND_HANDOFF。已连接的 Computer Use 操作器只需将唯一匹配的游戏窗口设为前台；焦点核验通过后，OCR、跳过 CG、选档及后续游戏按键由原脚本继续执行。操作器不发送游戏按键。交接超时、进程身份变化或窗口消失均安全失败，前台拒绝不会触发自动重启。
+
+前台交接回归须调用真实的 Session.event 并读取 events.jsonl，核对交接文件与事件均包含目标身份及时间；不能用 mock 替换事件写入，否则重复 time 字段等序列化错误会漏测。实机核对交接信号后原脚本继续选档、场景确认、菜单退出及原文件恢复；仅激活窗口不记作完整流程通过。
+
+迁入后已完成语法检查、游戏预检和 120 项 Python 单测（119 项通过、1 项符号链接权限跳过）。新候选已完成巫师3加载、NR 开关、短移动、插件菜单与安全退出／完整恢复；原配置下的 NR 可见效果和 HUD 获用户确认。性能与视觉结论仅适用于实际配置及已测场景，自动化通过不等于完整画质验收。
 
 ## 本地配置与依赖
 
@@ -76,3 +80,13 @@ XeFG 和 FSR FG；保持 HDR／分辨率。退出后完整恢复，日志须另�
 完整 FG 入口保持原 HDR 显示条件检查、NR 开关／移动及退出流程；显示器名称和性能目标来自本地 target。测试通过仅覆盖相应保护与编排合同，截图仍需单独判断。
 
 性能对照前核对原 `NRPresentBlockHudless` 值：入口省略 `--block-optional-hudless` 时临时设为 `0`，传入时临时设为 `1`。应与既有验收条件一致，分别记录两个颜色面和单面路由，不能将不同路由的 FPS 直接比较；完整恢复开关会在退出后恢复原值。
+
+XeFG A/B/C 可复用同一候选和目标配置：默认 `--nr-hook-point 2` 运行 Present，`--block-optional-hudless` 仅把 AUTO Present 固定为 Backbuffer 单颜色，`--nr-hook-point 0` 选择 Upscaled 对照。可用 `--nr-passes 1|2` 在受保护会话里临时指定 Pass 数；省略时保留原配置值。每轮均显式使用 `--restore-installation`；`--gpu-timers` 开启逐颜色／Pass GPU Timer，`--telemetry-seconds 1` 记录逐秒实际 Evaluate 计数。比较时保持模型 Preset、工作分辨率、Pass 数及 HDR 条件一致；结果会分别保留应用／显示 FPS、FG 服务 Evaluate 计数、遥测和 GPU Timer 行，视觉质量仍须独立人工判断。
+
+单颜色适用条件还要求 UI Composition 关闭。`--xefg-ui-composition 0|1`（PowerShell：`-XeFGUiComposition 0|1`）仅在完整恢复的受保护会话中，临时修改 `OptiScaler.ini` 已有 `[XeFG] UIComposition`；省略保留用户值，非 AUTO 或启用 UI Composition 时可能保留双链。原文件先备份，退出后整文件校验恢复，不修改 SDK 行为。入口会给临时 NR 策略写入迁移标记，使明确的单／双链测试选择不被一次性升级覆盖；生产迁移由配置测试单独验证。纯合成变换检查为 `tests/run-fg-acceptance-config-tests.ps1`。
+
+XeFG SDK 隔离候选使用 `--nr-off-control --disable-xefg-sdk-detours`，并且必须同时使用 `--start-nr-disabled`（PowerShell：`-StartNrDisabled -DisableXeFGSdkDetours`）和 `--restore-installation`。该开关在启动前决定，整个会话不安装 Nexus 的 XeFG SDK 导出／Swapchain Detour；不在运行中的 Context 上拆卸 Hook，也不通过关闭 XeFG 伪造视觉成功。隔离分支只验证候选加载、NR Evaluate=0、退出和恢复；SDK 资源／UI Composition 到达情况标记为不可观测，`routing_passed=null`，必须另做相同场景的动态人工对照。
+
+正常 Detour 分支的 `ReShade.log` 可用有限样本 `resource_contract` 和 `ui_composition_contract` 核对：原始／转发 Tag、Present ID、有效期、尺寸、资源是否替换、底层 SDK 返回值及实际应用状态。日志中的 SDK 成功、配置值或 `ui_composition=1` 只证明调用／状态契约，不能替代小地图透影和连续运动画质验收。
+
+逐窗口 Evaluate 必须读取 telemetry 的 nr[evals=…]，不能取 nr_stage[evals=…] 累计值。前者用于匹配本窗口的应用帧数和 NR On／Off，后者仅为阶段累计诊断；修正解析后可用已保存的完整日志重新验证，保留修正前派生结果和原始会话记录，不必重新启动游戏。

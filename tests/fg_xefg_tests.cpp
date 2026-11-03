@@ -17,11 +17,34 @@ namespace fg = renodx::addons::dlss5::fg;
 namespace xefg = fg::xefg;
 namespace adapter = xefg::internal;
 namespace submission = renodx::addons::dlss5::submission;
+using renodx::addons::dlss5::FenceRef;
 using Hooks = adapter::SdkHooks<0>;
 constexpr int32_t HUDLESS = 0, DEPTH = 1, MOTION = 2, BACKBUFFER = 4;
 constexpr int32_t UNTIL_NEXT_PRESENT = 0, ONLY_NOW = 1;
 void Check(bool condition, const char* message) {
   if (!condition) throw std::runtime_error(message);
+}
+
+void TestDiagnosticBudgets() {
+  adapter::ContractTrace<int> trace;
+  uint32_t emitted = 0;
+  for (uint32_t id = 1; id <= 3; ++id) emitted += trace.Observe(id, 7);
+  Check(emitted == 3 && trace.frame_samples == 3 && trace.change_samples == 0,
+        "resource diagnostic emits at most three initial frame samples");
+  for (int value = 8; value < 20; ++value) emitted += trace.Observe(3, value);
+  Check(trace.change_samples == 8 && emitted == 11,
+        "resource diagnostic emits at most eight contract changes");
+  Check(!trace.Observe(3, 20), "resource diagnostic budget suppresses later changes");
+
+  adapter::ContractTrace<std::array<int64_t, 3>> ui_trace;
+  Check(ui_trace.Observe(0, {1, 0, 1}), "UI diagnostic emits its first state");
+  for (int status = 1; status <= 8; ++status) {
+    Check(ui_trace.Observe(0, {status + 1, 0, status + 1}),
+          "UI diagnostic emits each bounded state change");
+  }
+  Check(ui_trace.frame_samples == 1 && ui_trace.change_samples == 8
+            && !ui_trace.Observe(0, {99, 0, 99}),
+        "UI diagnostic budget is one initial sample plus eight changes");
 }
 sl::Result options_result = sl::Result::eOk;
 uint32_t options_calls = 0;
@@ -234,8 +257,8 @@ struct Session {
   ComPtr<IDXGISwapChain3> proxy;
   void* handle = this;
   std::shared_ptr<adapter::Context> context;
-  explicit Session(Gpu* value) : gpu(value), proxy(value->Swapchain()) {
-    xefg::abi::Init init{.application_swapchain = proxy.Get(), .flags = 17, .max_interpolated = 1};
+  explicit Session(Gpu* value, int32_t ui_mode = 0) : gpu(value), proxy(value->Swapchain()) {
+    xefg::abi::Init init{.application_swapchain = proxy.Get(), .flags = 17, .max_interpolated = 1, .ui_mode = ui_mode};
     Check(Hooks::Init(handle, gpu->queue.Get(), &init) == 0, "SDK init");
     context = adapter::state.contexts.at(handle);
     context->proxy_identity = adapter::Identity(proxy.Get());
@@ -272,6 +295,8 @@ struct Session {
 }  // namespace
 int main() {
   try {
+    TestDiagnosticBudgets();
+    std::cout << "PASS bounded XeFG contract diagnostics\n";
     fg::native_options::internal::state.real = &FakeOptions;
     fg::native_options::Configure(&OptionsChanged);
     sl::DLSSGOptions options;
@@ -299,6 +324,29 @@ int main() {
     adapter::proxies[0].real[1] = reinterpret_cast<void*>(&FakePresent1);
     xefg::Configure(&Service, &Prepare, nullptr, &Requested);
     Gpu gpu;
+    xefg::Configure(&Service, &Prepare, nullptr, &Requested, false, false);
+    Check(!adapter::sdk_detours_enabled.load(), "XeFG SDK detour diagnostic switch did not latch");
+    xefg::Configure(&Service, &Prepare, nullptr, &Requested);
+    Check(adapter::sdk_detours_enabled.load(), "XeFG SDK detours did not restore for the contract fixture");
+    {
+      std::vector<std::pair<FenceRef, uint64_t>> waits;
+      waits.emplace_back(FenceRef(gpu.fence.Get()), 2);
+      waits.emplace_back(FenceRef(gpu.fence.Get()), 5);
+      waits.emplace_back(FenceRef(gpu.fence.Get()), 3);
+      adapter::CoalesceWaits(&waits);
+      Check(waits.size() == 1 && waits.front().second == 5,
+            "same XeFG consumer fence waits coalesce to the highest value");
+      adapter::Context stats;
+      adapter::RecordServiceStats(reinterpret_cast<uintptr_t>(&stats), 2, 5, 1, 1, true, false);
+      Check(stats.interval_nr_frames.load() == 1
+                && stats.interval_nr_processes.load() == 2
+                && stats.interval_nr_evaluates.load() == 5
+                && stats.interval_nr_hudless_processes.load() == 1
+                && stats.interval_nr_backbuffer_processes.load() == 1
+                && stats.interval_nr_two_color_frames.load() == 1
+                && stats.interval_nr_composed_frames.load() == 0,
+            "XeFG service diagnostic counters preserve role and evaluation scope");
+    }
     {
       Session nested(&gpu);
       auto depth = gpu.Texture();
@@ -324,7 +372,7 @@ int main() {
         const auto fence_delta = nested.context->next_fence - next_fence;
         const auto service_delta = service_calls.size() - calls;
         const bool owned = mode == 2;
-        const bool passed = frames_delta == 1 && fence_delta == 1 && nested.context->interval_presents == 1
+        const bool passed = frames_delta == 1 && fence_delta == 0 && nested.context->interval_presents == 1
             && service_delta == (owned ? 1u : 0u) && fake_present_calls == presents + 1
             && fake_present_owns_stream == owned && xefg::OwnsStream() == owned;
         nested_contracts_passed &= passed;
@@ -389,15 +437,28 @@ int main() {
     Check(SUCCEEDED(first.proxy->GetBuffer(first.proxy->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&real_backbuffer))), "real BB");
     Check(service_calls.back().backbuffer == real_backbuffer.Get() && service_calls.back().backbuffer != decoy.Get(),
           "BACKBUFFER tag substituted for proxy GetBuffer");
+    const auto first_application_frame = first.context->application_frame;
     first.Present(10);
-    Check(service_calls.size() == 1, "duplicate id served twice");
+    Check(service_calls.size() == 1 && first.context->application_frame == first_application_frame,
+          "duplicate id served twice or advanced the application frame");
     Check(xefg::SubmittedFrames() == submitted_before + 1, "repeated ID inflated submitted frame count");
+    const auto calls_before_untagged = service_calls.size();
     Check(SUCCEEDED(adapter::ProxyHooks<0>::Present(first.proxy.Get(), 0, 0)), "repeat Present");
-    Check(service_calls.size() == 2 && !service_calls.back().has_present_id
+    Check(service_calls.size() == calls_before_untagged + 1
+        && first.context->application_frame == first_application_frame + 1,
+          "untagged application Present did not reach the Backbuffer fallback");
+    Check(!service_calls.back().has_present_id && service_calls.back().backbuffer != nullptr
         && service_calls.back().hudless == nullptr && service_calls.back().depth == nullptr
         && service_calls.back().motion == nullptr && !service_calls.back().has_constants,
-          "untagged application Present did not receive isolated neutral NR input");
-    std::cout << "PASS TEST/repeated Present and real proxy backbuffer\n";
+          "untagged Present borrowed stale XeFG guides or frame constants");
+    Check(xefg::CurrentResult() != fg::Result::SUBMITTED,
+          "untagged Backbuffer fallback incorrectly reported a served XeFG frame");
+    first.Guides(11, depth.Get(), motion.Get());
+    first.Present(11);
+    Check(service_calls.size() == calls_before_untagged + 2 && service_calls.back().has_present_id
+        && service_calls.back().application_frame == first_application_frame + 2,
+          "next tagged Present did not resume the real-frame sequence");
+    std::cout << "PASS repeated IDs are skipped; untagged Presents use Backbuffer-only fallback without stale guides\n";
     first.Guides(20, depth.Get(), motion.Get());
     second.Tag(20, HUDLESS, color.Get());
     second.Present(20);
@@ -497,6 +558,7 @@ int main() {
     std::cout << "PASS public UI modes select NR color consumers without changing SDK tags\n";
     xefg::Configure(&Service, &Prepare, nullptr, &Requested, true);
     Session final_color(&gpu);
+    Check(final_color.context->omit_optional_hudless, "AUTO context did not latch the experimental single-color policy");
     final_color.context->ui_composition = false;
     final_color.Guides(80, depth.Get(), motion.Get());
     final_color.Tag(80, 3, decoy.Get());
@@ -511,22 +573,27 @@ int main() {
         "final-color mode changed guides or kept a second NR consumer");
     policy = false;
     final_color.Tag(81, HUDLESS, color.Get());
-    Check(sdk_calls.size() == before_optional, "NR Off changed the selected FG color contract");
+    Check(sdk_calls.size() == before_optional + 1,
+          "NR Off did not restore SDK HUDLess forwarding");
+    Check(sdk_calls.back().resource.resource == color.Get() && sdk_calls.back().resource.type == HUDLESS,
+          "NR Off forwarded the wrong HUDLess resource");
     final_color.Present(81);
     policy = true;
     final_color.context->ui_composition = true;
     final_color.Tag(82, HUDLESS, color.Get());
-    Check(sdk_calls.size() == before_optional + 1, "active UI composition lost HUDLess");
+    Check(sdk_calls.size() == before_optional + 2, "UI composition must forward HUDLess to the SDK");
     final_color.Present(82);
+    Check(service_calls.back().hudless == color.Get() && service_calls.back().backbuffer != nullptr,
+          "AUTO UI composition must retain both color consumers");
     final_color.context->ui_composition = false;
     final_color.context->enabled = false;
     final_color.Tag(83, HUDLESS, color.Get());
-    Check(sdk_calls.size() == before_optional + 2, "FG Off did not pass HUDLess through");
+    Check(sdk_calls.size() == before_optional + 3, "FG Off must forward HUDLess to the SDK");
     final_color.Present(83);
     final_color.context->enabled = true;
     sdk_status = -7;
     final_color.Tag(85, HUDLESS, color.Get(), 2);
-    Check(sdk_calls.size() == before_optional + 3, "unsupported tag validity was hidden");
+    Check(sdk_calls.size() == before_optional + 4, "unsupported tag validity was hidden");
     const xefg::abi::Resource invalid_region{.type = HUDLESS, .validity = ONLY_NOW,
         .size = {0, 0}, .resource = color.Get()};
     Check(Hooks::Resource(final_color.handle, gpu.list.Get(), 86, &invalid_region) == -7,
@@ -538,11 +605,51 @@ int main() {
     sdk_status = 0;
     xefg::Configure(&Service, &Prepare, nullptr, &Requested);
     final_color.Tag(84, HUDLESS, color.Get());
-    Check(sdk_calls.size() == before_optional + 6, "default color policy changed SDK tags");
+    Check(sdk_calls.size() == before_optional + 6, "live option change altered an existing context's color contract");
     final_color.Present(84);
+    Session dual_color(&gpu);
+    dual_color.context->ui_composition = false;
+    Check(!dual_color.context->omit_optional_hudless, "disabled experiment changed the default dual-color context");
+    dual_color.Guides(88, depth.Get(), motion.Get());
+    const auto before_dual_color = sdk_calls.size();
+    dual_color.Tag(88, HUDLESS, color.Get());
+    dual_color.Present(88);
+    Check(sdk_calls.size() == before_dual_color + 1 && service_calls.back().hudless == color.Get(),
+          "new default context did not preserve the dual-color route");
+    xefg::Configure(&Service, &Prepare, nullptr, &Requested, true);
+    Session non_auto(&gpu, 1);
+    non_auto.context->ui_composition = false;
+    Check(!non_auto.context->omit_optional_hudless, "non-AUTO XeFG context accepted the AUTO-only experiment");
+    non_auto.Guides(89, depth.Get(), motion.Get());
+    const auto before_non_auto = sdk_calls.size();
+    non_auto.Tag(89, HUDLESS, color.Get());
+    non_auto.Present(89);
+    Check(sdk_calls.size() == before_non_auto + 1 && service_calls.back().hudless == color.Get(),
+          "non-AUTO XeFG route stopped forwarding HUDLess");
+    // An Off tag may already have been privately copied by the SDK. Resuming
+    // NR in that same frame must not enhance only the backbuffer.
+    for (const auto validity : {UNTIL_NEXT_PRESENT, ONLY_NOW}) {
+      const uint32_t id = 90 + static_cast<uint32_t>(validity);
+      policy = false;
+      const auto before_tag = sdk_calls.size();
+      final_color.Tag(id, HUDLESS, color.Get(), validity);
+      Check(sdk_calls.size() == before_tag + 1 && sdk_calls.back().resource.resource == color.Get(),
+            "Off tag must reach the real SDK unchanged");
+      policy = true;
+      const auto before_service = service_calls.size();
+      final_color.Guides(id, depth.Get(), motion.Get());
+      final_color.Present(id);
+      Check(service_calls.size() == before_service, "Off-to-On frame mixed original HUDLess with NR backbuffer");
+      final_color.Guides(id + 10, depth.Get(), motion.Get());
+      final_color.Tag(id + 10, HUDLESS, color.Get());
+      final_color.Present(id + 10);
+      Check(service_calls.size() == before_service + 1 && service_calls.back().hudless == nullptr,
+            "next complete On frame must resume single-color processing");
+    }
+    xefg::Configure(&Service, &Prepare, nullptr, &Requested);
     gpu.Submit();
     submission::ResetAll();
-    std::cout << "PASS optional HUDLess is omitted at SDK boundary only in explicit final-color mode\n";
+    std::cout << "PASS AUTO single-color option stays latched; UI composition/non-AUTO retain colors; Off/On stays consistent\n";
     {
       Session continuous(&gpu);
       const auto submit = [&](uint32_t id, fg::Result outcome) {

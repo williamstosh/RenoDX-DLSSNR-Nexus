@@ -166,6 +166,38 @@ class DesktopTests(unittest.TestCase):
                 desktop.activate(self.window)
         self.u.SetForegroundWindow.assert_called_once()
 
+    def test_foreground_permission_is_reported_without_masking_denial(self):
+        self.u.AllowSetForegroundWindow.return_value = True
+        self.assertEqual(desktop.grant_foreground_permission(77), dict(granted=True, error=None))
+        self.u.AllowSetForegroundWindow.assert_called_once_with(77)
+        self.u.AllowSetForegroundWindow.return_value = False
+        with mock.patch.object(C, 'get_last_error', return_value=5):
+            self.assertEqual(desktop.grant_foreground_permission(88), dict(granted=False, error=5))
+
+    def test_activate_handoff_waits_only_for_verified_target_foreground(self):
+        on_handoff = mock.Mock()
+        with mock.patch.object(desktop, 'activate', side_effect=desktop.ForegroundActivationDenied()), \
+                mock.patch.object(desktop, 'wait_for_foreground') as wait:
+            desktop.activate_with_handoff(self.window, on_handoff, timeout=12)
+        on_handoff.assert_called_once_with()
+        wait.assert_called_once_with(self.window, 12)
+
+    def test_activate_handoff_does_not_hide_window_identity_failures(self):
+        on_handoff = mock.Mock()
+        with mock.patch.object(desktop, 'activate', side_effect=RuntimeError('window disappeared')):
+            with self.assertRaisesRegex(RuntimeError, 'window disappeared'):
+                desktop.activate_with_handoff(self.window, on_handoff)
+        on_handoff.assert_not_called()
+
+    def test_wait_for_foreground_rejects_identity_loss_and_timeout(self):
+        with mock.patch.object(desktop, 'window_alive', return_value=False):
+            with self.assertRaisesRegex(RuntimeError, 'identity changed'):
+                desktop.wait_for_foreground(self.window, timeout=0)
+        with mock.patch.object(desktop, 'window_alive', return_value=True), \
+                mock.patch.object(desktop.u, 'GetForegroundWindow', return_value=456):
+            with self.assertRaisesRegex(desktop.ForegroundHandoffTimeout, 'no input sent'):
+                desktop.wait_for_foreground(self.window, timeout=0)
+
     def test_terminate_waits_on_same_verified_handle(self):
         self.k.WaitForSingleObject.side_effect = [0x102, 0x102, 0x102, 0]
         desktop.terminate(self.window, timeout=.25)

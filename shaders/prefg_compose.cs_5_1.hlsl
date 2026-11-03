@@ -47,8 +47,9 @@ Texture2D<float4> Ui : register(t3);
 RWTexture2D<float4> Output : register(u0);
 RWByteAddressBuffer Stats : register(u1);
 
-// Two dispatches per frame.  Stage 0 counts the HUD pixels into Stats; stage 1
-// composes.  The addon reads the count a frame or more late, so the frame
+// Difference-mask mode uses two dispatches per frame. Exact UI-alpha modes use
+// only stage 1; the caller skips the unused counter pass and statistics readback.
+// In difference-mask mode the addon reads the count a frame or more late, so the frame
 // that switches from a HUD to grain would still be composed as a mask - every
 // pixel "HUD", the back buffer kept, no NR on the real frame.  Stage 1 reads
 // this frame's own counts instead: above HudLimit the mask is not a HUD, and

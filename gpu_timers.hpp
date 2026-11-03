@@ -159,6 +159,8 @@ struct Segment {
   SampleState proof = SampleState::PENDING;
   FenceRef proof_fence;
   bool expired = false;
+  uint64_t guide_serial = 0;
+  uint32_t color_role = 0;  // 0: ordinary chain, 1: FG backbuffer, 2: FG HUDLess.
   gpu_comparison::Sample comparison;
 };
 
@@ -256,7 +258,7 @@ inline ID3D12Resource* readback = nullptr;
 inline uint64_t* mapped = nullptr;
 inline double frequency = 0.0;
 inline std::atomic_uint64_t poll_ticks{0};
-inline std::atomic<int64_t> last_log_ns{0};
+inline std::array<std::atomic<int64_t>, 3> last_log_ns{};
 
 struct EvalState {
   bool active = false;
@@ -276,6 +278,11 @@ struct DisplayWindow {
   int64_t updated_ns = 0;
 };
 inline std::array<DisplayWindow, 3> display_windows;
+// PENDING is a recording, not a result. Keep result ordering even when a
+// later pending recording temporarily replaces the displayed state.
+inline std::array<uint64_t, 3> result_sequences{};
+inline std::array<uint64_t, 3> execution_result_sequences{};
+inline uint64_t result_sequence = 0;
 
 inline void Release() {
   if (mapped != nullptr) {
@@ -300,6 +307,9 @@ inline void Release() {
   for (auto& stage : stage_stats) stage = Stats{};
   for (auto& stage : execution_stats) stage = Stats{};
   display_windows = {};
+  result_sequences = {};
+  execution_result_sequences = {};
+  result_sequence = 0;
   monitor_events.published = 0;
 }
 
@@ -353,6 +363,10 @@ inline bool Ensure(ID3D12Device* device) {
 // samples publish silently (the addon logs their sum as "NR cost:").
 inline void Reject(const Segment& s, SampleState state) {
   if (!s.measure) {
+    if (state != SampleState::PENDING) {
+      auto& sequence = execution_result_sequences[StageIndex(s.path)];
+      sequence = std::max(sequence, s.sequence);
+    }
     auto& target = execution_stats[StageIndex(s.path)];
     if (s.sequence >= target.sequence) {
       target = Stats{.width = s.width, .height = s.height, .passes = s.passes,
@@ -360,6 +374,11 @@ inline void Reject(const Segment& s, SampleState state) {
       std::memcpy(target.path, s.path, sizeof(target.path));
     }
     return;
+  }
+  if (state != SampleState::PENDING) {
+    auto& sequence = result_sequences[StageIndex(s.path)];
+    sequence = std::max(sequence, s.sequence);
+    result_sequence = std::max(result_sequence, s.sequence);
   }
   auto& target = stage_stats[StageIndex(s.path)];
   if (s.sequence < target.sequence) return;
@@ -372,7 +391,11 @@ inline void Reject(const Segment& s, SampleState state) {
 }
 
 inline bool Publish(const Segment& s, bool log, const void* queue) {
-  if (s.sequence < stage_stats[StageIndex(s.path)].sequence) return false;
+  const auto& previous_stage = stage_stats[StageIndex(s.path)];
+  // Recording a newer pending sample does not supersede a completed result.
+  // Present-owned lists can be reused before the next lifecycle poll.
+  if (s.sequence < result_sequences[StageIndex(s.path)]) return false;
+  if (s.sequence < previous_stage.sequence && previous_stage.state != SampleState::PENDING) return false;
   if (frequency <= 0.0 || mapped == nullptr) return false;
   const uint64_t* q = mapped + s.base;
   if (q[kSlotFrameStart] == kUnwritten) {
@@ -477,7 +500,12 @@ inline bool Publish(const Segment& s, bool log, const void* queue) {
     comparison.Observe(sample, next.measured_ns);
     if (!ComparisonActive()) comparison_result = comparison.Results();
   }
-  if (s.sequence >= stats.sequence) stats = next;
+  result_sequences[StageIndex(s.path)] = s.sequence;
+  if (s.sequence >= result_sequence
+      && (s.sequence >= stats.sequence || stats.state == SampleState::PENDING)) {
+    stats = next;
+  }
+  result_sequence = std::max(result_sequence, s.sequence);
   const uint32_t stage = StageIndex(s.path);
   auto& window = display_windows[stage];
   // Never mix queues, pass identities, models or working sizes in one average.
@@ -547,10 +575,10 @@ inline bool Publish(const Segment& s, bool log, const void* queue) {
   const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                              std::chrono::steady_clock::now().time_since_epoch())
                              .count();
-  int64_t last = last_log_ns.load(std::memory_order_relaxed);
+  auto& log_time = last_log_ns[std::min(s.color_role, 2u)];
+  int64_t last = log_time.load(std::memory_order_relaxed);
   if (!log || now_ns - last < 5000000000LL
-      || !last_log_ns.compare_exchange_strong(last, now_ns,
-                                              std::memory_order_relaxed)) {
+      || !log_time.compare_exchange_strong(last, now_ns, std::memory_order_relaxed)) {
     return true;
   }
   SafeLog(
@@ -565,6 +593,19 @@ inline bool Publish(const Segment& s, bool log, const void* queue) {
           + ", linearize+scale " + std::to_string(next.linearize_us / 1000.0)
           + ", commit " + std::to_string(next.commit_us / 1000.0)
           + ", copies+park " + std::to_string(next.copies_us / 1000.0) + ")");
+  if (s.color_role != 0) {
+    std::string detail = "NR gpu FG frame: role=";
+    detail += (s.color_role == 2 ? "hudless" : "backbuffer");
+    detail += " guide_serial=" + std::to_string(s.guide_serial)
+        + " sequence=" + std::to_string(s.sequence)
+        + " total_us=" + std::to_string(next.total_us)
+        + " model_us=" + std::to_string(next.eval_us);
+    for (uint32_t pass = 0; pass < std::min(s.pass_count, kTimerMaxPasses); ++pass) {
+      detail += " pass" + std::to_string(s.passes[pass].id + 1)
+          + "_model_us=" + std::to_string(next.passes[pass].eval_us);
+    }
+    SafeLog(reshade::log::level::info, detail + " scope=one_color_chain_single_submission");
+  }
   // The look stage on its own line, so the line above keeps its shape for
   // every reader (analyze_longrun.py, the e2e lanes); its span is inside
   // "resolve" there.
@@ -629,6 +670,8 @@ inline bool Begin(
   s.proof = SampleState::PENDING;
   s.proof_fence = {};
   s.expired = false;
+  s.guide_serial = 0;
+  s.color_role = 0;
   s.passes = {};
   s.comparison = {};
   s.comparison.stage = StageIndex(path);
@@ -815,7 +858,9 @@ inline void Poll(bool exact_proofs, bool log) {
         }
         if (complete) {
           auto& target = execution_stats[StageIndex(s.path)];
-          if (s.sequence >= target.sequence) {
+          if (s.sequence >= internal::execution_result_sequences[StageIndex(s.path)]
+              && (s.sequence >= target.sequence || target.state == SampleState::PENDING)) {
+            internal::execution_result_sequences[StageIndex(s.path)] = s.sequence;
             target = Stats{.width = s.width, .height = s.height, .valid = true, .passes = s.passes,
                            .state = SampleState::VALID, .sequence = s.sequence, .measured_ns = NowNs(),
                            .identity = s.comparison.identity,

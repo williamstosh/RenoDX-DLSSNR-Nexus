@@ -41,6 +41,7 @@ ID3D12QueryHeap* model_execution_query = nullptr;
 ID3D12Resource* model_execution_readback = nullptr;
 std::map<const NVSDK_NGX_Handle*, uint32_t> model_create_flags;
 std::function<void()> model_ui_observer;
+std::function<void(const NVSDK_NGX_Handle*, const NVSDK_NGX_Parameter*)> model_parameter_observer;
 constexpr auto NATIVE_INPUT_STATE = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 using BarrierFn = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, UINT, const D3D12_RESOURCE_BARRIER*);
 BarrierFn real_barrier = nullptr;
@@ -116,6 +117,7 @@ NVSDK_NGX_Result NVSDK_CONV ReleaseModel(NVSDK_NGX_Handle* handle) {
 NVSDK_NGX_Result NVSDK_CONV EvaluateModel(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Handle* handle,
                                         const NVSDK_NGX_Parameter* parameters, PFN_NVSDK_NGX_ProgressCallback) {
   if (model_ui_observer) model_ui_observer();
+  if (model_parameter_observer) model_parameter_observer(handle, parameters);
   model_resets.push_back(native::GetInt(parameters, "DLSSNR.Reset", -1));
   model_evaluated_handles.push_back(handle);
   if (++model_calls == fail_call) return NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
@@ -1896,6 +1898,17 @@ int main(int argc, char** argv) {
     composition_input.ui = ui.Get();
     composition_input.backbuffer_state = composition_input.hudless_state = composition_input.ui_state = NATIVE_INPUT_STATE;
     composition_input.color_width = composition_input.color_height = 8;
+    composition_input.ui_mode = 0;  // XeFG AUTO.
+    composition_input.ui_composition = false;
+    const uint32_t configured_preset = native::preset.load();
+    const std::array<uint32_t, 3> configured_pass_presets{
+        native::pass_preset[0].load(), native::pass_preset[1].load(), native::pass_preset[2].load()};
+    const auto preset_configuration_unchanged = [&] {
+      return native::preset.load() == configured_preset
+          && native::pass_preset[0].load() == configured_pass_presets[0]
+          && native::pass_preset[1].load() == configured_pass_presets[1]
+          && native::pass_preset[2].load() == configured_pass_presets[2];
+    };
     auto& composition_slot = stream.slots[0];
     Check(native::fg_service::PrepareSurfaces(&stream, &composition_slot, composition_input), "composition surfaces");
     bool composition_ready = false;
@@ -1939,6 +1952,16 @@ int main(int argc, char** argv) {
       native::fg_service::Record(&stream, &composition_slot, gpu.list.Get(), composition_input,
           owner.prefg_target, &composition_ready, &composition_recordings);
       Check(composition_ready && model_calls == calls_before + 2, "history continuity reaches both model roles");
+      for (uint32_t role = 0; role < composition_recordings.size(); ++role) {
+        const auto& recorded = composition_recordings[role];
+        Check(recorded.model_evaluate_mask == 1u && recorded.model_pass_mask == 1u,
+              "each color records exactly one actual evaluate and completed pass");
+        Check(recorded.model_reset_mask == static_cast<uint32_t>(model_resets[
+                  model_resets.size() - 1 - role]),
+              "per-role diagnostic reset mask matches the actual NGX reset parameter");
+        Check((recorded.model_reset_reasons[0] != 0) == (recorded.model_reset_mask != 0),
+              "per-role diagnostic reset reasons match the actual reset decision");
+      }
       if (frame != 100) {
         const int expected_reset = (frame == 103 ? 1 : 0);
         Check(model_resets[model_resets.size() - 2] == expected_reset
@@ -1950,18 +1973,287 @@ int main(int argc, char** argv) {
     composition_input.application_frame = 105;
     composition_input.hudless = nullptr;
     const auto before_single_color = model_calls;
+    const auto single_color_handle_begin = model_evaluated_handles.size();
     native::fg_service::Record(&stream, &composition_slot, gpu.list.Get(), composition_input,
         owner.prefg_target, &composition_ready, &composition_recordings);
-    Check(composition_ready && model_calls == before_single_color + 1 && model_resets.back() == 0,
-          "continuous backbuffer must retain its history when HUDLess is absent");
+    Check(composition_ready && composition_input.ui_mode == 0 && !composition_input.ui_composition
+              && composition_input.hudless == nullptr && composition_input.ui != nullptr
+              && native::stack_passes.load() == 1 && model_calls == before_single_color + 1
+              && model_evaluated_handles.size() == single_color_handle_begin + 1
+              && composition_recordings[0].model_evaluate_mask == 1u
+              && composition_recordings[0].model_pass_mask == 1u
+              && composition_recordings[1].model_evaluate_mask == 0u
+              && composition_recordings[1].model_pass_mask == 0u && model_resets.back() == 0,
+          "XeFG AUTO without UI composition and HUDLess runs one Backbuffer Evaluate at one Pass");
     gpu.Submit();
-    composition_input.application_frame = 106;
+
+    {
+      auto missing_color = composition_input;
+      missing_color.queue = gpu.queue.Get();
+      missing_color.fg_enabled = true;
+      missing_color.ui_composition = true;
+      const auto calls_before = model_calls;
+      Check(native::fg_service::Requested(), "missing-color fixture requests production Present service");
+      for (const uint32_t mode : {0u, 3u, 4u, 5u}) {
+        missing_color.ui_mode = mode;
+        Check(native::fg_service::Service(missing_color) == fg::Result::NOT_SERVED && model_calls == calls_before,
+              "UI composition without its HUDLess input must skip NR before recording");
+      }
+    }
+    native::stack_passes.store(2);
+    for (uint32_t retry = 0; retry < 6; ++retry) {
+      ++composition_input.application_frame;
+      native::fg_service::Record(&stream, &composition_slot, gpu.list.Get(), composition_input,
+          owner.prefg_target, &composition_ready, &composition_recordings);
+      gpu.Submit();
+      if (composition_ready && composition_recordings[0].model_evaluate_mask == 3u
+          && composition_recordings[0].model_pass_mask == 3u) break;
+    }
+    Check(composition_ready && native::stack_passes.load() == 2
+              && composition_recordings[0].model_evaluate_mask == 3u
+              && composition_recordings[0].model_pass_mask == 3u
+              && composition_recordings[1].model_evaluate_mask == 0u
+              && composition_recordings[1].model_pass_mask == 0u,
+          "single-Backbuffer XeFG AUTO matures both configured Passes without processing HUDLess");
+    ++composition_input.application_frame;
+    const auto before_single_color_two_pass = model_calls;
+    const auto single_color_two_pass_handle_begin = model_evaluated_handles.size();
+    native::fg_service::Record(&stream, &composition_slot, gpu.list.Get(), composition_input,
+        owner.prefg_target, &composition_ready, &composition_recordings);
+    Check(composition_ready && native::stack_passes.load() == 2
+              && model_calls == before_single_color_two_pass + 2
+              && model_evaluated_handles.size() == single_color_two_pass_handle_begin + 2
+              && composition_recordings[0].model_evaluate_mask == 3u
+              && composition_recordings[0].model_pass_mask == 3u
+              && composition_recordings[1].model_evaluate_mask == 0u
+              && composition_recordings[1].model_pass_mask == 0u
+              && model_evaluated_handles[single_color_two_pass_handle_begin]
+                  != model_evaluated_handles[single_color_two_pass_handle_begin + 1]
+              && preset_configuration_unchanged(),
+          "single Backbuffer runs exactly two actual Evaluate calls for two configured Passes");
+    gpu.Submit();
+
+    native::stack_passes.store(1);
+    ++composition_input.application_frame;
     composition_input.hudless = hudless.Get();
+    const auto before_dual_color_single_pass = model_calls;
     native::fg_service::Record(&stream, &composition_slot, gpu.list.Get(), composition_input,
         owner.prefg_target, &composition_ready, &composition_recordings);
-    Check(composition_ready && model_resets[model_resets.size() - 2] == 1 && model_resets.back() == 0,
-          "returning HUDLess alone must reset; continuous backbuffer must not reset");
+    Check(composition_ready && native::stack_passes.load() == 1
+              && model_calls == before_dual_color_single_pass + 2
+              && composition_recordings[0].model_evaluate_mask == 1u
+              && composition_recordings[0].model_pass_mask == 1u
+              && composition_recordings[1].model_evaluate_mask == 1u
+              && composition_recordings[1].model_pass_mask == 1u
+              && model_resets[model_resets.size() - 2] == 1 && model_resets.back() == 0
+              && preset_configuration_unchanged(),
+          "restored dual-color single Pass makes exactly two Evaluates and resets HUDLess history only");
     gpu.Submit();
+    {
+      const bool saved_timers = native::gpu_timers_enabled.exchange(false);
+      const uint32_t saved_interval = native::telemetry_seconds.exchange(1);
+      stream.diagnostic_logged_ns = 0;
+      ++composition_input.application_frame;
+      const auto logs_before = captured_logs.size();
+      native::fg_service::Record(&stream, &composition_slot, gpu.list.Get(), composition_input,
+          owner.prefg_target, &composition_ready, &composition_recordings);
+      Check(stream.diagnostic_logged_ns == 0, "disabled GPU diagnostics do not sample frame logs");
+      gpu.Submit();
+      native::gpu_timers_enabled.store(true);
+      ++composition_input.application_frame;
+      native::fg_service::Record(&stream, &composition_slot, gpu.list.Get(), composition_input,
+          owner.prefg_target, &composition_ready, &composition_recordings);
+      uint32_t frame_logs = 0;
+      for (size_t log = logs_before; log < captured_logs.size(); ++log) {
+        const auto& text = captured_logs[log].second;
+        if (text.find("NR FG frame:") == std::string::npos) continue;
+        Check(text.find("application_frame=" + std::to_string(composition_input.application_frame)) != std::string::npos
+                  && text.find("evaluate_mask=1 reset_mask=0 pass_mask=1") != std::string::npos
+                  && text.find("reset_reasons=1:none;") != std::string::npos
+                  && text.find("counter_basis=recorded_model_calls_not_GPU_completion") != std::string::npos,
+              "sampled frame log keeps actual per-role reset and execution scope");
+        ++frame_logs;
+      }
+      Check(frame_logs == 2 && stream.diagnostic_logged_ns != 0,
+            "one sampled application frame logs both color roles");
+      Check(renodx::addons::dlss5::gpu_timers::internal::segments[
+                renodx::addons::dlss5::gpu_timers::internal::current.idx].color_role == 1,
+            "production backbuffer recording freezes its own GPU color role before submission");
+      gpu.Submit();
+      native::gpu_timers_enabled.store(saved_timers);
+      native::telemetry_seconds.store(saved_interval);
+    }
+    native::stack_passes.store(2);
+    for (uint32_t retry = 0; retry < 6; ++retry) {
+      ++composition_input.application_frame;
+      native::fg_service::Record(&stream, &composition_slot, gpu.list.Get(), composition_input,
+          owner.prefg_target, &composition_ready, &composition_recordings);
+      gpu.Submit();
+      if (composition_ready && composition_recordings[0].model_evaluate_mask == 3u
+          && composition_recordings[1].model_evaluate_mask == 3u) break;
+    }
+    Check(composition_ready && composition_recordings[0].model_evaluate_mask == 3u
+              && composition_recordings[1].model_evaluate_mask == 3u,
+          "two configured passes execute on both colors after model maturation");
+    ++composition_input.application_frame;
+    const auto multi_calls_before = model_calls;
+    native::fg_service::Record(&stream, &composition_slot, gpu.list.Get(), composition_input,
+        owner.prefg_target, &composition_ready, &composition_recordings);
+    Check(composition_ready && model_calls == multi_calls_before + 4,
+          "two passes on two colors make four actual NGX calls per application frame");
+    Check(native::stack_passes.load() == 2 && preset_configuration_unchanged(),
+          "restored dual-color XeFG route retains configured stack count and all preset selections");
+    for (const auto& recorded : composition_recordings) {
+      Check(recorded.model_evaluate_mask == 3u && recorded.model_pass_mask == 3u
+                && recorded.model_reset_mask == 0u
+                && recorded.model_reset_reasons[0] == 0 && recorded.model_reset_reasons[1] == 0,
+            "continuous two-pass color chains preserve both per-pass histories");
+    }
+    for (size_t i = model_evaluated_handles.size() - 4; i < model_evaluated_handles.size(); ++i) {
+      for (size_t j = i + 1; j < model_evaluated_handles.size(); ++j) {
+        Check(model_evaluated_handles[i] != model_evaluated_handles[j],
+              "each color and pass owns a distinct temporal model handle");
+      }
+    }
+    gpu.Submit();
+    {
+      const auto saved_input = composition_input;
+      const auto saved_guides = native::present_guides.exchange(native::kPresentGuidesRequired);
+      const float saved_scale_x = native::motion_scale_x_multiplier.exchange(1.f);
+      const float saved_scale_y = native::motion_scale_y_multiplier.exchange(1.f);
+      composition_input.motion = motion.Get();
+      composition_input.depth = depth.Get();
+      composition_input.motion_state = composition_input.depth_state = NATIVE_INPUT_STATE;
+      composition_input.guide_width = 2;
+      composition_input.guide_height = 3;
+      composition_input.motion_x = 1;
+      composition_input.depth_x = 2;
+      composition_input.depth_y = 1;
+      composition_input.init_flags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
+      composition_input.motion_scale_x = 1.25f;
+      composition_input.motion_scale_y = -2.5f;
+      composition_input.jitter_x = 0.125f;
+      composition_input.jitter_y = -0.375f;
+      // Changing from neutral guides can rebuild features. Observe only after
+      // both real-guide chains have matured, then require four calls per frame.
+      for (uint32_t retry = 0; retry < 6; ++retry) {
+        ++composition_input.application_frame;
+        native::fg_service::Record(&stream, &composition_slot, gpu.list.Get(), composition_input,
+            owner.prefg_target, &composition_ready, &composition_recordings);
+        gpu.Submit();
+        if (composition_ready && composition_recordings[0].model_pass_mask == 3u
+            && composition_recordings[1].model_pass_mask == 3u) break;
+      }
+      Check(composition_ready && composition_recordings[0].model_pass_mask == 3u
+                && composition_recordings[1].model_pass_mask == 3u,
+            "real-guide two-pass temporal fixture matures on both colors");
+      std::array<const NVSDK_NGX_Handle*, 4> temporal_handles{};
+      uint32_t observed_frame = 0;
+      uint32_t observed_calls = 0;
+      std::vector<std::string> parameter_errors;
+      const auto observe_parameter = [&](bool matches, const std::string& message) {
+        if (!matches) {
+          parameter_errors.push_back("frame=" + std::to_string(observed_frame)
+              + " call=" + std::to_string(observed_calls) + " " + message);
+        }
+      };
+      model_parameter_observer = [&](const NVSDK_NGX_Handle* handle, const NVSDK_NGX_Parameter* block) {
+        observe_parameter(observed_calls < temporal_handles.size(), "one real frame has exactly four model evaluations");
+        if (observed_calls >= temporal_handles.size()) {
+          ++observed_calls;
+          return;
+        }
+        // Record evaluates HUDLess Pass 1/2, then Backbuffer Pass 1/2.
+        const uint32_t role = (observed_calls < 2 ? 1u : 0u);
+        if (observed_frame == 0) {
+          temporal_handles[observed_calls] = handle;
+          for (uint32_t previous = 0; previous < observed_calls; ++previous) {
+            observe_parameter(temporal_handles[previous] != handle, "each real-guide color/pass has an independent handle");
+          }
+        }
+        observe_parameter(handle != nullptr && handle == temporal_handles[observed_calls],
+              "frame parameter updates and Reset retain the same four temporal handles");
+        observe_parameter(native::GetD3D12Resource(block, "DLSSNR.MVec") == motion.Get()
+                  && native::GetD3D12Resource(block, "DLSSNR.Depth") == depth.Get()
+                  && stream.roles[role].real_guides,
+              "each actual color/pass evaluation consumes the real motion and depth resources");
+        for (const auto& [key, expected] : {
+                 std::pair{"DLSSNR.MVecScaleX", composition_input.motion_scale_x},
+                 std::pair{"DLSSNR.MVecScaleY", composition_input.motion_scale_y},
+                 std::pair{"DLSSNR.JitterOffsetX", composition_input.jitter_x},
+                 std::pair{"DLSSNR.JitterOffsetY", composition_input.jitter_y}}) {
+          observe_parameter(native::GetFloat(block, key, std::numeric_limits<float>::quiet_NaN()) == expected,
+                key);
+        }
+        for (const auto& [key, expected] : {
+                 std::pair{"DLSSNR.DepthSubrectBaseX", composition_input.depth_x},
+                 std::pair{"DLSSNR.DepthSubrectBaseY", composition_input.depth_y},
+                 std::pair{"DLSSNR.DepthSubrectWidth", composition_input.guide_width},
+                 std::pair{"DLSSNR.DepthSubrectHeight", composition_input.guide_height},
+                 std::pair{"DLSSNR.MVecSubrectBaseX", composition_input.motion_x},
+                 std::pair{"DLSSNR.MVecSubrectBaseY", composition_input.motion_y},
+                 std::pair{"DLSSNR.MVecSubrectWidth", composition_input.guide_width},
+                 std::pair{"DLSSNR.MVecSubrectHeight", composition_input.guide_height}}) {
+          observe_parameter(native::GetUInt(block, key, UINT32_MAX) == expected, key);
+        }
+        observe_parameter(native::GetInt(block, "DLSSNR.Reset", -1) == (composition_input.reset ? 1 : 0),
+              "DLSSNR.Reset expected=" + std::to_string(composition_input.reset ? 1 : 0)
+                  + " actual=" + std::to_string(native::GetInt(block, "DLSSNR.Reset", -1)));
+        ++observed_calls;
+      };
+      for (; observed_frame < 4; ++observed_frame) {
+        ++composition_input.application_frame;
+        composition_input.motion_scale_x = 1.25f + observed_frame * 0.5f;
+        composition_input.motion_scale_y = -2.5f - observed_frame * 0.25f;
+        composition_input.jitter_x = (observed_frame % 2 == 0 ? 0.125f : -0.25f);
+        composition_input.jitter_y = (observed_frame % 2 == 0 ? -0.375f : 0.5f);
+        composition_input.motion_x = observed_frame % 3;
+        composition_input.motion_y = observed_frame % 2;
+        composition_input.depth_x = 2 - observed_frame % 3;
+        composition_input.depth_y = 1 - observed_frame % 2;
+        composition_input.reset = observed_frame == 2;
+        observed_calls = 0;
+        const auto calls_before = model_calls;
+        native::fg_service::Record(&stream, &composition_slot, gpu.list.Get(), composition_input,
+            owner.prefg_target, &composition_ready, &composition_recordings);
+        // Throw outside EvaluateModel: production catches provider exceptions.
+        for (const auto& error : parameter_errors) {
+          std::cerr << "TEMPORAL CONTRACT ERROR " << error << '\n';
+        }
+        Check(parameter_errors.empty(), "actual NGX temporal parameters match the real-frame contract");
+        Check(composition_ready && observed_calls == 4 && model_calls == calls_before + 4,
+              "each consecutive real frame updates both two-pass contracts at the NGX boundary");
+        for (const auto& recorded : composition_recordings) {
+          Check(recorded.model_evaluate_mask == 3u && recorded.model_pass_mask == 3u
+                    && recorded.model_reset_mask == (composition_input.reset ? 3u : 0u),
+                "both pass histories reset once and recover on the next real frame");
+        }
+        gpu.Submit();
+      }
+      model_parameter_observer = {};
+      composition_input = saved_input;
+      native::present_guides.store(saved_guides);
+      native::motion_scale_x_multiplier.store(saved_scale_x);
+      native::motion_scale_y_multiplier.store(saved_scale_y);
+      std::cout << "PASS actual NGX dual-color/two-pass real-guide MV/jitter/subrect contract and one-frame Reset\n";
+    }
+    native::stack_passes.store(1);
+    // Switching back from the real-guide fixture can retire the neutral
+    // feature pair. Mature that pair before arming the injected second-face
+    // failure; otherwise the first call only creates a model and there is no
+    // second NGX evaluation for fail_call to intercept.
+    fail_call = 0;
+    for (uint32_t retry = 0; retry < 6; ++retry) {
+      ++composition_input.application_frame;
+      native::fg_service::Record(&stream, &composition_slot, gpu.list.Get(), composition_input,
+          owner.prefg_target, &composition_ready, &composition_recordings);
+      gpu.Submit();
+      if (composition_ready && composition_recordings[0].model_pass_mask == 1u
+          && composition_recordings[1].model_pass_mask == 1u) break;
+    }
+    Check(composition_ready && composition_recordings[0].model_pass_mask == 1u
+              && composition_recordings[1].model_pass_mask == 1u,
+          "neutral two-color fixture is warm before injected partial failure");
     std::cout << "PASS application-frame gaps reset affected model histories once; continuous roles retain history\n";
     composition_input.application_frame = 0;
     fail_call = model_calls + 2;

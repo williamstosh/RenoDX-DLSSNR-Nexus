@@ -187,10 +187,19 @@ class Session:
         with (self.out / 'events.jsonl').open('a', encoding='utf-8') as stream:
             stream.write(json.dumps(dict(time=stamp(), kind=kind, **data), ensure_ascii=False) + '\n')
 
+    def request_foreground_handoff(self):
+        handoff = dict(hwnd=self.window['hwnd'], pid=self.window['pid'],
+                       title=self.window.get('title', ''), timeout_seconds=90)
+        dump(self.out / 'foreground-handoff.json', dict(time=stamp(), **handoff))
+        self.event('foreground_handoff_required', **handoff)
+
+    def activate(self):
+        desktop.activate_with_handoff(self.window, self.request_foreground_handoff, timeout=90)
+
     def observe(self, label='observe'):
         if not desktop.same_process(self.window):
             raise RuntimeError('unexpected_exit')
-        desktop.activate(self.window)
+        self.activate()
         self.number += 1
         path = self.out / 'latest.png'
         metrics = desktop.capture(self.window, path)
@@ -228,7 +237,7 @@ class Session:
         shutil.copyfile(self.out / 'observation.json', self.out / f'{label}.json')
 
     def key(self, name, seconds=.2):
-        desktop.key(self.window, name, seconds)
+        desktop.key(self.window, name, seconds, on_handoff=self.request_foreground_handoff)
         self.event('key', key=name, seconds=seconds, state=self.ui_state)
 
     def main_menu(self, timeout=None):
@@ -346,7 +355,7 @@ class Session:
         words = candidates[0]['words']
         x = (min(w['x'] for w in words) + max(w['x']+w['width'] for w in words))/2/obs['scale']
         y = (min(w['y'] for w in words) + max(w['y']+w['height'] for w in words))/2/obs['scale']
-        desktop.click(self.window, x, y)
+        desktop.click(self.window, x, y, on_handoff=self.request_foreground_handoff)
         self.event('click_text', text=text, x=x, y=y)
 
     def launch(self):
@@ -780,9 +789,18 @@ def run_attempt(cfg, out):
             try:
                 with (out / 'worker.log').open('w', encoding='utf-8') as log:
                     child = subprocess.Popen([sys.executable, '-B', str(source / 'runner.py'), '--worker', str(out)], stdout=log, stderr=log, creationflags=0x08000000)
+                    foreground_permission = desktop.grant_foreground_permission(child.pid)
+                    dump(out / 'foreground-grant.json', dict(time=stamp(), process_id=child.pid,
+                                                             **foreground_permission))
                     started, hung_since = time.monotonic(), None
                     capture_ready_announced = False
+                    foreground_handoff_announced = False
                     while child.poll() is None:
+                        handoff_path = out / 'foreground-handoff.json'
+                        if handoff_path.exists() and not foreground_handoff_announced:
+                            handoff = json.loads(handoff_path.read_text(encoding='utf-8'))
+                            print('FOREGROUND_HANDOFF=' + json.dumps(handoff, ensure_ascii=False), flush=True)
+                            foreground_handoff_announced = True
                         if (cfg.get('capture_hold_seconds', 0) and not capture_ready_announced
                                 and (out / 'capture-ready.json').exists()):
                             print('CAPTURE_READY=' + str(out), flush=True)
@@ -873,8 +891,7 @@ def should_retry(final, scenario):
         return final['parent_problem'] in ('run_timeout', 'persistent_unresponsive')
     return final.get('error') in (
         'main_menu_timeout', 'startup_timeout: Steam did not produce a DX12 game window',
-        'scene_load_timeout', 'save_selection_timeout', 'persistent_black_scene', 'suspected_frozen_scene',
-        'Target cannot acquire foreground; no input sent')
+        'scene_load_timeout', 'save_selection_timeout', 'persistent_black_scene', 'suspected_frozen_scene')
 
 
 def run_trials(cfg, out, retries):

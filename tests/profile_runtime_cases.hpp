@@ -41,13 +41,26 @@ const auto RunProfileRuntimeCases = [&](const std::filesystem::path& outputdir) 
   struct CapabilityEnvironmentGuard {
     bool dx12_seen = runtime::d3d12_swapchain_seen.load();
     bool dual_models = runtime::direct_runtime_requirements.dual_models;
+    decltype(runtime::last_source_plan) source_plan = runtime::last_source_plan;
+    bool source_rr = runtime::stage_source_rr.load();
     ~CapabilityEnvironmentGuard() {
       runtime::d3d12_swapchain_seen = dx12_seen;
       runtime::direct_runtime_requirements.dual_models = dual_models;
+      runtime::last_source_plan = source_plan;
+      runtime::stage_source_rr = source_rr;
+      runtime::created_feature_ids.erase(reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xCA9102}));
     }
   } capability_environment_guard;
   runtime::d3d12_swapchain_seen = true;
   runtime::direct_runtime_requirements.dual_models = true;
+  // Slot transactions need an observed game source after the source-evidence
+  // fix; an identified DX12 backend alone cannot authorize Render templates.
+  {
+    renodx::addons::dlss5::RuntimeLock lock(runtime::runtime_mutex);
+    const auto* source = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xCA9102});
+    runtime::created_feature_ids[source] = runtime::kFeatureDlss;
+    runtime::EvaluationStagePlan(source);
+  }
   unsigned sequence = 0;
   std::string error;
 
@@ -108,7 +121,7 @@ const auto RunProfileRuntimeCases = [&](const std::filesystem::path& outputdir) 
   const auto select = [&](int index) {
     profile::Request(profile::Action::SWITCH, index);
     settle();
-    Check(profile::active == index, "Requested populated Slot becomes active.");
+    Check(profile::active == index, ("Requested populated Slot becomes active: " + profile::notice).c_str());
   };
 
   // Exercise the registry adapters directly; no GPU execution is claimed here.

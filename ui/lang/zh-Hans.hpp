@@ -12,6 +12,8 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kZhHans[] = {
+    {"XeFG single-color processing", "XeFG 单颜色处理"},
+    {"XeFG AUTO without UI Composition: process only the backbuffer (1/2 Pass = 1/2 model calls). Off keeps the HUD-less color chain too. Other UI modes and UI Composition keep their existing routing. Restart the game after changing this option.", "XeFG AUTO 且 UI Composition 关闭时，仅处理 Backbuffer（1/2 Pass = 1/2 次模型调用）。关闭此项可同时处理无 HUD 颜色链。其他 UI 模式及 UI Composition 沿用既有路由。更改后请重启游戏。"},
     {"Unbind monitor mode key", "取消监视器模式按键绑定"},
     {"F8 cycles monitor modes by default. Games, Steam or other overlays may use the same key. Change or unbind it if needed; host input is not blocked.", "默认按 F8 循环切换监视器模式。游戏、Steam 或其他叠层也可能使用同一按键。需要时可更改或取消绑定；此快捷键不会拦截宿主输入。"},
     {"Advanced groups on this page or the current Pass. Common settings stay visible.", "作用于本页或当前 Pass 的高级分组。常用设置保持可见。"},

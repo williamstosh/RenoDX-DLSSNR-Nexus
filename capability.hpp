@@ -75,6 +75,7 @@ struct Input {
   bool xefg_enabled = false;
   bool auto_fg_fallback = false;
   bool native_prefg_resolution_experiment = false;
+  bool game_source_known = true;
   stage_plan::Plan plan;
   EffectiveResolution main_resolution;
   std::array<Resolution, stage_plan::kMaxPasses - 1> resolutions{};
@@ -227,6 +228,13 @@ inline Result Query(const Input& input) {
     covered += group.count;
   }
   if (covered != plan.pass_count) return reject(Status::UNSUPPORTED, Reason::INVALID_PLAN);
+  if (!input.game_source_known) {
+    for (uint32_t pass = 0; pass < plan.pass_count; ++pass) {
+      if (plan.requested[pass] == stage_plan::Stage::RENDER) {
+        return reject(Status::NEEDS_PROOF, Reason::ENVIRONMENT_UNKNOWN, pass);
+      }
+    }
+  }
   const bool mixed = plan.group_count > 1;
   if (mixed != plan.mixed) {
     // RR may legitimately collapse a requested mixed chain into one group.
