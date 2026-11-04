@@ -86,6 +86,7 @@
 #include "../../utils/png.hpp"
 #include "gpu_lease.hpp"
 #include "submission_tracker.hpp"
+#include "control_mask_capture.hpp"
 
 namespace renodx::addons::dlss5::screenshot {
 
@@ -2222,11 +2223,16 @@ inline void WorkerLoop() noexcept {
       std::unique_lock lock(job_mutex);
       job_signal.wait(lock, [] {
         return shutdown_requested.load(std::memory_order_acquire) || job.has_value() || !hdr_jobs.empty()
-               || sequence_manifest_dirty.load();
+               || sequence_manifest_dirty.load() || control_mask_capture::WorkPending();
       });
       if (job) { work = std::move(*job); job.reset(); }
       else if (!hdr_jobs.empty()) { work = std::move(hdr_jobs.front()); hdr_jobs.pop_front(); }
-      else if (!sequence_manifest_dirty.load()) return;
+    }
+    if (shutdown_requested.load(std::memory_order_acquire)) {
+      control_mask_capture::Stop("shutdown", /*notify_worker=*/false);
+    }
+    if (control_mask_capture::WorkPending()) {
+      control_mask_capture::ProcessPending(renodx::utils::path::GetReShadeBasePath() / L"NR Diagnostics");
     }
     if (work) ProcessJob(std::move(work));
     sequence_manifest_busy.store(true);
@@ -2265,6 +2271,10 @@ inline void WorkerLoop() noexcept {
       }
     }
     sequence_manifest_busy.store(false);
+    if (shutdown_requested.load(std::memory_order_acquire)) {
+      std::scoped_lock lock(job_mutex);
+      if (!job && hdr_jobs.empty() && !sequence_manifest_dirty.load() && !control_mask_capture::WorkPending()) return;
+    }
   }
 }
 
@@ -2402,6 +2412,25 @@ inline bool ConfigureHdrCapture(const HdrCapturePlan& plan) {
 inline std::optional<HdrCapturePlan> PendingHdrCapturePlan() {
   std::scoped_lock lock(internal::state_mutex);
   return internal::pending ? internal::pending->hdr_plan : std::nullopt;
+}
+
+// Reuse the module-pinned screenshot worker. A failed thread start never
+// falls back to file IO on the caller's render/evaluate thread.
+inline bool WakeControlMaskCapture() {
+  if (internal::shutdown_requested.load(std::memory_order_acquire)) return false;
+  if (!internal::worker_started.exchange(true, std::memory_order_acq_rel)) {
+    try {
+      std::thread(internal::WorkerLoop).detach();
+    } catch (...) {
+      internal::worker_started.store(false, std::memory_order_release);
+      return false;
+    }
+  }
+  {
+    std::scoped_lock lock(internal::job_mutex);
+    internal::job_signal.notify_all();
+  }
+  return true;
 }
 
 inline bool StartHdrSequence(const HdrCapturePlan& plan, uint64_t first_generation) {

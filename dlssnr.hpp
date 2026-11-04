@@ -2219,6 +2219,8 @@ inline std::atomic_bool use_auto_mask = defaults::kAutoMask;
 inline constexpr uint32_t kControlMaskRgb = 0;
 inline constexpr uint32_t kControlMaskNeutral = 1;
 inline constexpr uint32_t kControlMaskRect = 2;
+inline constexpr uint32_t kControlMaskGreenRect = 3;
+inline constexpr uint32_t kControlMaskBlueRect = 4;
 inline std::atomic_bool control_mask_enabled = false;
 inline std::atomic_uint32_t control_mask_mode = kControlMaskRgb;
 inline std::atomic<float> control_mask_red = 1.f;
@@ -10595,6 +10597,11 @@ inline bool ProcessInline(
     return false;
   }
   const uint32_t requested_stack = group.count;
+  const bool control_mask_capture_eligible = control_mask_capture::Enabled()
+      && gpu_timers_enabled.load(std::memory_order_relaxed)
+      && present == nullptr && execution_stage == stage_plan::Stage::UPSCALED
+      && !plan.mixed && requested_stack == 1 && group.begin == 0
+      && nr_model::SupportsControlMask(direct_runtime_requirements.file_version);
   const bool control_mask_requested = control_mask_enabled.load(std::memory_order_relaxed);
   const bool control_mask_eligible = control_mask_requested
       && present == nullptr
@@ -11470,6 +11477,19 @@ inline bool ProcessInline(
     if (timers_active) {
       gpu_timers::Mark(command_list, gpu_timers::PassEvalStart(pass));
     }
+    uint32_t mask_mode = kControlMaskRgb;
+    uint32_t mask_blend = 0;
+    std::array<float, 3> mask_rgb{1.f, 1.f, 1.f};
+    if (control_mask_eligible || control_mask_capture_eligible) {
+      mask_mode = control_mask_mode.load(std::memory_order_relaxed);
+      mask_blend = control_mask_blend_mode.load(std::memory_order_relaxed);
+      if (mask_mode == kControlMaskRgb || mask_mode == kControlMaskRect) {
+        mask_rgb = {
+            std::clamp(control_mask_red.load(std::memory_order_relaxed), 0.f, 1.f),
+            std::clamp(control_mask_green.load(std::memory_order_relaxed), 0.f, 1.f),
+            std::clamp(control_mask_blue.load(std::memory_order_relaxed), 0.f, 1.f)};
+      }
+    }
     if (control_mask_eligible) {
       const uint32_t model_bucket = feature.slots[pass].nr_preset == 2u ? 1u : 0u;
       if (!control_mask_active_logged[model_bucket].exchange(true, std::memory_order_relaxed)) {
@@ -11480,13 +11500,16 @@ inline bool ProcessInline(
                 << " requested_model=" << (feature.slots[pass].nr_preset == 2u ? 'B' : 'A')
                 << " size=" << mask_desc.Width << 'x' << mask_desc.Height
                 << " allocation_bytes=" << allocation.SizeInBytes
-                << " generator_mode=" << control_mask_mode.load(std::memory_order_relaxed)
-                << " blend_mode=" << control_mask_blend_mode.load(std::memory_order_relaxed)
-                << " rgb=" << control_mask_red.load(std::memory_order_relaxed)
-                << ',' << control_mask_green.load(std::memory_order_relaxed)
-                << ',' << control_mask_blue.load(std::memory_order_relaxed)
+                << " generator_mode=" << mask_mode
+                << " blend_mode=" << mask_blend
+                << " rgb=" << mask_rgb[0] << ',' << mask_rgb[1] << ',' << mask_rgb[2]
                 << " auto_mask=" << PassModel(group.begin + pass, use_auto_mask, pass_auto_mask)
                 << " stage=DX12-Upscaled passes=1; cost is included in the existing per-pass evaluate GPU timer";
+        if (mask_mode == kControlMaskGreenRect || mask_mode == kControlMaskBlueRect) {
+          message << " configured_rgb_ignored=1 base_rgba=1,1,1,1 local_zero_channel="
+                  << (mask_mode == kControlMaskGreenRect ? 'G' : 'B')
+                  << " rect=0,0," << nr_input_width / 2 << ',' << nr_input_height / 2;
+        }
         Log(reshade::log::level::info, message.str());
       }
       Transition(command_list, res.control_mask, res.control_mask_state,
@@ -11505,11 +11528,9 @@ inline bool ProcessInline(
         float red, green, blue;
       } constants{
           nr_input_width, nr_input_height,
-          control_mask_mode.load(std::memory_order_relaxed),
+          mask_mode,
           nr_input_width / 2, nr_input_height / 2,
-          std::clamp(control_mask_red.load(std::memory_order_relaxed), 0.f, 1.f),
-          std::clamp(control_mask_green.load(std::memory_order_relaxed), 0.f, 1.f),
-          std::clamp(control_mask_blue.load(std::memory_order_relaxed), 0.f, 1.f)};
+          mask_rgb[0], mask_rgb[1], mask_rgb[2]};
       command_list->SetComputeRoot32BitConstants(2, 8, &constants, 0);
       command_list->Dispatch((nr_input_width + 15) / 16,
                              (nr_input_height + 15) / 16, 1);
@@ -11531,7 +11552,7 @@ inline bool ProcessInline(
         feature_out_width,
         feature_out_height,
         control_mask_eligible,
-        control_mask_blend_mode.load(std::memory_order_relaxed));
+        mask_blend);
     ++stage_stats.evaluates;
     stage_stats.resets += feature.slots[pass].model_reset;
     stage_stats.resolved_requests[group.begin + pass] = feature.slots[pass].nr_preset;
@@ -11592,6 +11613,32 @@ inline bool ProcessInline(
                 << static_cast<uint32_t>(nr_result)
                 << " gpu_execution=unverified retry_same_frame=0";
         Log(accepted ? reshade::log::level::info : reshade::log::level::error, message.str());
+      }
+    }
+    if (control_mask_capture_eligible) {
+      const auto& slot = feature.slots[pass];
+      control_mask_capture::Context context{
+          .requested_model = slot.nr_preset,
+          .stage = static_cast<uint32_t>(execution_stage),
+          .mask_enabled = control_mask_eligible, .mask_mode = mask_mode,
+          .mask_blend = static_cast<float>(mask_blend),
+          .mask_r = mask_rgb[0], .mask_g = mask_rgb[1], .mask_b = mask_rgb[2],
+          .auto_mask = slot.model_sent[4] != 0.f, .style = slot.model_sent[0],
+          .intensity = slot.model_intensity_sent, .local_tone = slot.model_sent[1],
+          .sent_structure = slot.model_sent[7], .sent_skin = slot.model_sent[8],
+          .width = nr_input_width, .height = nr_input_height,
+          .api_returned = nr_returned,
+          .ngx_accepted = nr_returned && NVSDK_NGX_SUCCEED(nr_result)};
+      std::snprintf(context.runtime_version, sizeof(context.runtime_version), "%s",
+                    direct_runtime_requirements.file_version.c_str());
+      if (timers_active && gpu_timers::internal::current.active) {
+        auto& timing = gpu_timers::internal::segments[gpu_timers::internal::current.idx];
+        timing.diagnostic_token = control_mask_capture::Reserve(context, timing.sequence, gpu_timers::NowNs());
+      } else {
+        const uint64_t token = control_mask_capture::Reserve(context, 0, gpu_timers::NowNs());
+        control_mask_capture::Observe(gpu_timers::Stats{
+            .state = gpu_timers::SampleState::PROOF_UNAVAILABLE,
+            .measured_ns = gpu_timers::NowNs()}, token);
       }
     }
     ObserveNrEvaluation(execution_stage, handle, feature, feature.slots[pass], group.begin + pass, nr_result, plan, present, nr_returned);
@@ -21226,6 +21273,7 @@ inline void RunLifecycleTick(int64_t present_ns, bool from_present) {
       }
     }
     gpu_timers::Poll(queue_tracking_active.load(), gpu_timers_enabled.load());
+    if (control_mask_capture::CapturePending()) control_mask_capture::Tick(gpu_timers::NowNs());
     norm_trace::Poll(queue_tracking_active.load());
     edit_trace::Poll(queue_tracking_active.load());
     {
@@ -26648,6 +26696,9 @@ inline void ReadIniRawValues() {
       {"NRControlMaskRed", IniKind::kFloat},
       {"NRControlMaskGreen", IniKind::kFloat},
       {"NRControlMaskBlue", IniKind::kFloat},
+      {"NRControlMaskGpuCaptureSamples", IniKind::kUint},
+      {"NRControlMaskGpuCaptureSeconds", IniKind::kUint},
+      {"NRControlMaskGpuCaptureWarmupSeconds", IniKind::kUint},
       {"NRAutoFgFallback", IniKind::kUint},
       {"NRNormTrace", IniKind::kBool},     {"NRScreenshotPlanes", IniKind::kBool},
       {"UiWelcomed", IniKind::kBool},      {"UiIssueNotice", IniKind::kBool},
@@ -27294,12 +27345,28 @@ inline void LoadConfiguration() {
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskBlue", saved_control_mask_blue);
   control_mask_enabled = saved_control_mask_enabled;
   control_mask_mode = SanitizeEnumKey(saved_control_mask_mode, kControlMaskRgb,
-      kControlMaskRgb, kControlMaskRect, "NRControlMaskMode");
+      kControlMaskRgb, kControlMaskBlueRect, "NRControlMaskMode");
   control_mask_blend_mode = SanitizeEnumKey(saved_control_mask_blend_mode, 0u, 0u, 3u,
       "NRControlMaskBlendMode");
   control_mask_red = SanitizeFloatKey(saved_control_mask_red, 1.f, 0.f, 1.f, "NRControlMaskRed");
   control_mask_green = SanitizeFloatKey(saved_control_mask_green, 1.f, 0.f, 1.f, "NRControlMaskGreen");
   control_mask_blue = SanitizeFloatKey(saved_control_mask_blue, 1.f, 0.f, 1.f, "NRControlMaskBlue");
+  uint32_t capture_samples = 0, capture_seconds = 120, capture_warmup = 6;
+  reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskGpuCaptureSamples", capture_samples);
+  reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskGpuCaptureSeconds", capture_seconds);
+  reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskGpuCaptureWarmupSeconds", capture_warmup);
+  capture_samples = SanitizeEnumKey(capture_samples, 0u, 0u, 4096u, "NRControlMaskGpuCaptureSamples");
+  capture_seconds = SanitizeEnumKey(capture_seconds, 120u, 1u, 300u, "NRControlMaskGpuCaptureSeconds");
+  capture_warmup = SanitizeEnumKey(capture_warmup, 6u, 0u, 60u, "NRControlMaskGpuCaptureWarmupSeconds");
+  if (capture_samples != 0 && !saved_gpu_timers) {
+    Log(reshade::log::level::warning, "ControlMask raw capture requires NRGpuTimers=1; no extra GPU queries were enabled");
+    capture_samples = 0;
+  }
+  control_mask_capture::wake_worker = &screenshot::WakeControlMaskCapture;
+  gpu_timers::raw_observer = &control_mask_capture::Observe;
+  if (!control_mask_capture::Configure(capture_samples, capture_seconds, capture_warmup)) {
+    Log(reshade::log::level::warning, "ControlMask GPU capture configuration unavailable or busy; no capture was armed");
+  }
   bool saved_norm_trace = false;
   reshade::get_config_value(
       nullptr, kConfigSection, "NRNormTrace", saved_norm_trace);
@@ -28495,6 +28562,7 @@ inline bool Shutdown(bool proof_gated) {
     ReleaseAllWorksets();
     FlushRetiredResources();
     ReleaseCodecPipeline();
+    control_mask_capture::Stop("device_shutdown");
     gpu_timers::ReleaseAll();
     norm_trace::ReleaseAll();
     edit_trace::ReleaseAll();

@@ -100,6 +100,13 @@ int Run() {
     // the previous closed recording. A pending newer frame is not a result.
     timers::stage_stats[1] = {};
     record();
+    static std::vector<std::pair<timers::Stats, uint64_t>> raw_observations;
+    raw_observations.clear();
+    const auto previous_observer = timers::raw_observer;
+    timers::raw_observer = [](const timers::Stats& sample, uint64_t token) {
+      raw_observations.emplace_back(sample, token);
+    };
+    timers::internal::segments[timers::internal::current.idx].diagnostic_token = 73;
     const auto delayed_sequence = timers::internal::segments[timers::internal::current.idx].sequence;
     const auto delayed_published = timers::published_segments;
     finish(1, true, false);
@@ -112,6 +119,18 @@ int Run() {
               && timers::stats.valid && timers::stats.sequence == delayed_sequence
               && timers::published_segments == delayed_published + 1,
           "newer pending recording cannot suppress an older proven GPU measurement");
+    Check(raw_observations.size() == 1 && raw_observations[0].second == 73
+              && raw_observations[0].first.valid && raw_observations[0].first.samples == 1
+              && raw_observations[0].first.sequence == delayed_sequence,
+          "raw observer receives the original GPU-complete sample before display averaging");
+    timers::Segment old_rejection;
+    std::strcpy(old_rejection.path, "postSR");
+    old_rejection.diagnostic_token = 74;
+    timers::internal::Reject(old_rejection, State::EXPIRED);
+    Check(raw_observations.size() == 2 && raw_observations.back().second == 74
+              && !raw_observations.back().first.valid && raw_observations.back().first.state == State::EXPIRED,
+          "raw observer retains an older rejected recording even when the display has a newer result");
+    timers::raw_observer = previous_observer;
     finish(0);
     timers::execution_stats[1] = {};
     record(false);

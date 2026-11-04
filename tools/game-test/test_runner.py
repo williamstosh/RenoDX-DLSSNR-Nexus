@@ -50,6 +50,26 @@ class ExitTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'baseline_addon_still_present'):
                 self.session.check_mod()
 
+    def test_verified_modules_reuse_observed_paths_once(self):
+        addon = self.out / 'renodx-dlss5.addon64'
+        runtime = self.out / 'nvngx_dlss.dll'
+        addon.write_bytes(b'addon')
+        runtime.write_bytes(b'runtime')
+        self.session.cfg.update(required_module=addon.name, addon_sha256=runner.sha(addon))
+        paths = [str(addon), str(runtime)]
+        with mock.patch.object(runner.desktop, 'modules', return_value=paths) as enumerate_modules, \
+             mock.patch.object(runner.crash_evidence, 'modules', wraps=runner.crash_evidence.modules) as snapshot:
+            self.session.check_mod()
+            first = (self.out / 'verified-module-identities.json').read_bytes()
+            self.session.check_mod()
+        self.assertEqual(enumerate_modules.call_count, 2)
+        snapshot.assert_called_once()
+        self.assertEqual((self.out / 'verified-module-identities.json').read_bytes(), first)
+        entries = json.loads(first)['modules']
+        self.assertEqual([entry['path'] for entry in entries], paths)
+        self.assertTrue(all(entry['hash_status'] == 'hashed' for entry in entries))
+        self.assertEqual(entries[1]['disk_sha256'], runner.sha(runtime))
+
     def test_smoke_pause_uses_observed_focus_without_requiring_full_ocr_sentence(self):
         with mock.patch.object(self.session, 'main_menu'), \
                 mock.patch.object(self.session, 'check_mod'), \

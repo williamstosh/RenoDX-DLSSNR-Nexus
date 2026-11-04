@@ -154,11 +154,15 @@ void RunInline(Gpu& gpu) {
   Check(!slot.control_mask_bound
             && addon::GetD3D12Resource(slot.parameters, "DLSSNR.ControlMask") == nullptr,
         "completed Evaluate leaves no stale mask in reusable NGX parameters");
-  for (uint32_t mode : {addon::kControlMaskNeutral, addon::kControlMaskRect}) {
+  for (uint32_t mode : {addon::kControlMaskNeutral, addon::kControlMaskRect,
+                       addon::kControlMaskGreenRect, addon::kControlMaskBlueRect}) {
     addon::control_mask_mode = mode;
     const auto before = mask_dispatches;
     Check(record() == 1 && mask_dispatches == before + 1 && !slot.control_mask_bound,
           "mode switch has one mask dispatch, one Evaluate and no stale binding");
+    Check(addon::worksets.at({owner, output.Get(), false}).control_mask_state
+                  == D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+          "mode switch restores mask UAV state after Evaluate");
   }
   const auto enabled_dispatches = mask_dispatches;
   addon::control_mask_enabled = false;
@@ -253,10 +257,12 @@ void Dispatch(Gpu& gpu, ID3D12Resource* texture, ID3D12DescriptorHeap* heap,
       * gpu.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
   gpu.list->SetComputeRootDescriptorTable(1, uav);
   const std::array<uint32_t, 8> constants{
-      8, 8, mode, rect_width, rect_height,
+      static_cast<uint32_t>(texture->GetDesc().Width), texture->GetDesc().Height,
+      mode, rect_width, rect_height,
       std::bit_cast<uint32_t>(red), std::bit_cast<uint32_t>(green), std::bit_cast<uint32_t>(blue)};
   gpu.list->SetComputeRoot32BitConstants(2, static_cast<UINT>(constants.size()), constants.data(), 0);
-  gpu.list->Dispatch(1, 1, 1);
+  gpu.list->Dispatch((static_cast<UINT>(texture->GetDesc().Width) + 15) / 16,
+                    (texture->GetDesc().Height + 15) / 16, 1);
   D3D12_RESOURCE_BARRIER barrier{};
   barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
   barrier.UAV.pResource = texture;
@@ -315,6 +321,47 @@ int Run() {
     Check(pixel(6, 6)[0] == 255 && pixel(6, 6)[1] == 128
               && pixel(6, 6)[2] == 0 && pixel(6, 6)[3] == 255,
           "pixels outside test rectangle retain fixed RGB");
+
+    for (const auto& size : {std::array<uint32_t, 2>{8, 8}, {19, 17}, {1, 3}, {3, 1}}) {
+      auto probe_desc = texture_desc;
+      probe_desc.Width = size[0];
+      probe_desc.Height = size[1];
+      ComPtr<ID3D12Resource> probe;
+      Check(SUCCEEDED(gpu.device->CreateCommittedResource(&properties, D3D12_HEAP_FLAG_NONE,
+          &probe_desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+          IID_PPV_ARGS(&probe))), "ControlMask boundary probe allocation");
+      gpu.device->CreateUnorderedAccessView(probe.Get(), nullptr, &view, cpu);
+      for (uint32_t mode : {addon::kControlMaskRgb, addon::kControlMaskNeutral, addon::kControlMaskRect,
+                            addon::kControlMaskGreenRect, addon::kControlMaskBlueRect}) {
+        for (const auto& rgb : {std::array<float, 3>{0.f, 0.f, 0.f}, {0.25f, 0.5f, 0.75f}}) {
+          // New probes derive their half-size region from the texture, ignoring legacy rectangle constants.
+          Dispatch(gpu, probe.Get(), heap.Get(), mode, 1, 1, rgb[0], rgb[1], rgb[2]);
+          const auto probe_pixels = ReadPixels(gpu, probe.Get());
+          const std::array<uint8_t, 4> fixed_rgb = (rgb[0] == 0.f
+              ? std::array<uint8_t, 4>{0, 0, 0, 255}
+              : std::array<uint8_t, 4>{64, 128, 191, 255});
+          for (uint32_t y = 0; y < size[1]; ++y) {
+            for (uint32_t x = 0; x < size[0]; ++x) {
+              auto expected = fixed_rgb;
+              if (mode == addon::kControlMaskNeutral) {
+                expected = {255, 255, 255, 255};
+              } else if (mode == addon::kControlMaskRect && x == 0 && y == 0) {
+                expected = {0, 0, 0, 255};
+              } else if (mode == addon::kControlMaskGreenRect || mode == addon::kControlMaskBlueRect) {
+                expected = {255, 255, 255, 255};
+                if (x < size[0] / 2 && y < size[1] / 2) {
+                  expected[mode == addon::kControlMaskGreenRect ? 1 : 2] = 0;
+                }
+              }
+              const size_t offset = (static_cast<size_t>(y) * size[0] + x) * 4;
+              Check(std::memcmp(probe_pixels.data() + offset, expected.data(), expected.size()) == 0,
+                    "all mask texels match channel, origin, half-open boundary, RGB independence and alpha contracts");
+            }
+          }
+        }
+      }
+    }
+    gpu.device->CreateUnorderedAccessView(texture.Get(), nullptr, &view, cpu);
 
     const auto* owner = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xC04A5});
     const auto* disabled_owner = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xC04A4});
