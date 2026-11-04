@@ -339,6 +339,7 @@ struct NrFeatureSlot {
   NVSDK_NGX_Handle* handle = nullptr;
   NVSDK_NGX_Parameter* parameters = nullptr;  // Owned through the initialized NGX core.
   bool via_core = false;
+  bool control_mask_bound = false;
   uint8_t nr_hdr_mode = 0;  // hdr_mode the NR feature was created with
   uint32_t nr_create_flags = 0;  // effective flags sent when this handle was created
   uint32_t nr_preset = 0;  // Resolved creation request, not a runtime confirmation.
@@ -647,6 +648,7 @@ struct RetiredNrFeature {
 struct CodecPipeline {
   ID3D12RootSignature* root_signature = nullptr;
   ID3D12PipelineState* encode = nullptr;
+  ID3D12PipelineState* control_mask = nullptr;
   ID3D12PipelineState* decode = nullptr;
   ID3D12PipelineState* block_mean_reduce = nullptr;
   ID3D12PipelineState* black_restore_apply = nullptr;
@@ -750,8 +752,9 @@ constexpr uint32_t kDescriptorLookUav = kDescriptorMotionRing + kMotionRingSize;
 // once, like the motion ring.
 constexpr uint32_t kExposureRingSize = 4;
 constexpr uint32_t kDescriptorExposureRing = kDescriptorLookUav + look::kUavCount;
-constexpr uint32_t kDescriptorHeapSize =
+constexpr uint32_t kDescriptorControlMaskUav =
     kDescriptorExposureRing + kExposureRingSize * kCodecSrvSetStride;
+constexpr uint32_t kDescriptorHeapSize = kDescriptorControlMaskUav + 2;
 
 // FinalResources::look_surfaces bits: what a workset allocated for the look.
 constexpr uint32_t kLookSurfaceOutput = 1u;     // look_output, the look set
@@ -787,6 +790,8 @@ struct FinalResources {
   ID3D12Resource* original = nullptr;
   ID3D12Resource* proxy = nullptr;
   ID3D12Resource* nr_output = nullptr;
+  ID3D12Resource* control_mask = nullptr;
+  D3D12_RESOURCE_STATES control_mask_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
   // HDR worksets (rc5): `decoded` IS `original` (one reference each), one
   // output-size surface less (31.6-63.3 MiB at 4K).  Safe because nothing
   // reads `original` after the linearize dispatch: the passes, pedestal and
@@ -2211,6 +2216,20 @@ inline std::atomic<float> local_structure_strength = defaults::kLocalStructure;
 inline std::atomic<float> skin_structure_strength = defaults::kSkinStructure;
 inline std::atomic_bool skin_independent = defaults::kSkinIndependent;
 inline std::atomic_bool use_auto_mask = defaults::kAutoMask;
+inline constexpr uint32_t kControlMaskRgb = 0;
+inline constexpr uint32_t kControlMaskNeutral = 1;
+inline constexpr uint32_t kControlMaskRect = 2;
+inline std::atomic_bool control_mask_enabled = false;
+inline std::atomic_uint32_t control_mask_mode = kControlMaskRgb;
+inline std::atomic<float> control_mask_red = 1.f;
+inline std::atomic<float> control_mask_green = 1.f;
+inline std::atomic<float> control_mask_blue = 1.f;
+inline std::atomic_uint32_t control_mask_blend_mode = 0;
+inline std::atomic_bool control_mask_refusal_logged{false};
+inline std::atomic_bool control_mask_failure_logged{false};
+inline std::atomic_bool control_mask_active_logged[2]{};
+inline std::atomic_bool control_mask_success_logged[2]{};
+inline std::atomic_bool control_mask_evaluate_failure_logged{false};
 inline std::atomic_bool ui_correction = defaults::kUiCorrection;
 // NR codec operating mode.  0 = classic: the codec input gain is the raw
 // paper-white scale (a scene-linear multiplier).  1 = anchored: the gain is
@@ -4458,6 +4477,7 @@ inline void ReleaseFinalResources(FinalResources& resources) {
   ReleaseCom(resources.decoded_alt);
   ReleaseCom(resources.decoded);
   ReleaseCom(resources.nr_output);
+  ReleaseCom(resources.control_mask);
   ReleaseCom(resources.proxy);
   ReleaseCom(resources.original);
   ReleaseCom(resources.pre_sr_color);
@@ -4521,6 +4541,7 @@ inline const std::vector<const void*>& CollectWorksetGpuObjects(const FinalResou
     }
     if (res.proxy != nullptr) objects.push_back(res.proxy);
     if (res.nr_output != nullptr) objects.push_back(res.nr_output);
+    if (res.control_mask != nullptr) objects.push_back(res.control_mask);
     // A child heap proves its own use of shared images. Listing those images
     // here would let ongoing parent recordings pin every retired child forever.
     if (!res.shared_stage_surfaces) {
@@ -4774,7 +4795,10 @@ inline void ReleaseNrSlot(
     uint32_t slot_index,
     bool retire = false) {
   NrFeatureSlot& slot = state.slots[slot_index];
-  if (slot.handle == nullptr && slot.parameters == nullptr) return;
+  if (slot.handle == nullptr && slot.parameters == nullptr) {
+    slot.control_mask_bound = false;
+    return;
+  }
   if (slot.handle != nullptr) {
     ++(retire ? nr_features_retired : nr_features_released);
   }
@@ -4804,6 +4828,7 @@ inline void ReleaseNrSlot(
   }
   slot.handle = nullptr;
   slot.parameters = nullptr;
+  slot.control_mask_bound = false;
   slot.via_core = false;
   slot.tracked_since_create = false;
   slot.look_history = {};
@@ -5049,6 +5074,7 @@ inline void ReleaseCodecPipeline() {
   ReleaseCom(codec_pipeline.block_mean_reduce_unshaped);
   ReleaseCom(codec_pipeline.pedestal_reduce_unshaped);
   ReleaseCom(codec_pipeline.decode);
+  ReleaseCom(codec_pipeline.control_mask);
   ReleaseCom(codec_pipeline.encode);
   ReleaseCom(codec_pipeline.autoscale);
   ReleaseCom(codec_pipeline.commit);
@@ -5688,6 +5714,13 @@ inline bool CreateCodecPipelineState(
   return true;
 }
 
+inline bool EnsureControlMaskPipeline(ID3D12Device* device) {
+  return EnsureCodecRootSignature(device)
+      && CreateCodecPipelineState(
+          device, __control_mask, &codec_pipeline.control_mask,
+          L"" NR_NEXUS_NAME " ControlMask generator", "ControlMask generator");
+}
+
 inline bool EnsureLegacyCodecPipeline(ID3D12Device* device) {
   if (codec_pipeline.encode != nullptr && codec_pipeline.decode != nullptr
       && codec_pipeline.block_mean_reduce != nullptr
@@ -6242,7 +6275,8 @@ inline FinalResources* EnsureWorkset(
     // The Present hook point's units (PresentTarget): the swapchain's colour
     // space decides them, not the NRSourceEncoding family.
     const codec::SourceUnits* units_override = nullptr,
-    FinalResources* stage_resources = nullptr) {
+    FinalResources* stage_resources = nullptr,
+    bool create_control_mask = false) {
   if (device == nullptr || key == nullptr || input_width == 0 || input_height == 0
       || output_width == 0 || output_height == 0) {
     // Bounded by the caller's periodic failure retry, not per-frame.
@@ -6252,6 +6286,11 @@ inline FinalResources* EnsureWorkset(
             << input_height << ", out=" << output_width << 'x' << output_height
             << ")";
     Log(reshade::log::level::error, message.str());
+    return nullptr;
+  }
+  if (create_control_mask && !SupportsCodecFormat(device, DXGI_FORMAT_R8G8B8A8_UNORM)) {
+    Log(reshade::log::level::error,
+        "ControlMask disabled for this evaluate: RGBA8 typed UAV is unavailable");
     return nullptr;
   }
   const WorksetKey workset_key{owner, key, create_pre_sr_color};
@@ -6292,6 +6331,7 @@ inline FinalResources* EnsureWorkset(
         && resources.units.unit_nits == current_units.unit_nits
         && resources.units.bt2020 == current_units.bt2020
         && resources.block_mean != nullptr
+        && ((resources.control_mask != nullptr) == create_control_mask)
         && (hdr_mode == 0
             || (resources.work0 != nullptr && resources.norm_scale != nullptr
                 && resources.norm_commit != nullptr));
@@ -6502,6 +6542,12 @@ inline FinalResources* EnsureWorkset(
           D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
           &resources.nr_output,
           L"" NR_NEXUS_NAME " raw neural output")
+      || (create_control_mask
+          && !CreateScratchTexture(
+              device, input_width, input_height, DXGI_FORMAT_R8G8B8A8_UNORM,
+              D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+              D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &resources.control_mask,
+              L"" NR_NEXUS_NAME " ControlMask"))
       || (hdr_mode == 0
           && !stage_texture(
               device,
@@ -6893,6 +6939,14 @@ inline FinalResources* EnsureWorkset(
         DescriptorHeapSlot(heap_start, kDescriptorUavPadding, resources.descriptor_size));
 
   }
+  D3D12_UNORDERED_ACCESS_VIEW_DESC control_mask_uav{};
+  control_mask_uav.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  control_mask_uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+  for (uint32_t slot = 0; slot < 2; ++slot) {
+    device->CreateUnorderedAccessView(
+        resources.control_mask, nullptr, &control_mask_uav,
+        DescriptorHeapSlot(heap_start, kDescriptorControlMaskUav + slot, resources.descriptor_size));
+  }
   if (resources.look_surfaces != 0) {
     // The look UAV table (look::kUav* order).  A surface this workset did
     // not allocate gets a null view of the declared dimension.
@@ -6931,7 +6985,7 @@ inline FinalResources* EnsureWorkset(
   for (ID3D12Resource* surface :
        {resources.original, resources.proxy, resources.nr_output,
         resources.decoded != resources.original ? resources.decoded : nullptr,
-        resources.decoded_alt, resources.pre_sr_color,
+        resources.decoded_alt, resources.pre_sr_color, resources.control_mask,
         resources.block_mean, resources.work0, resources.work_a,
         resources.work_b, resources.norm_scale, resources.norm_commit,
         resources.look_output, resources.look_band_a, resources.look_band_b,
@@ -7174,6 +7228,7 @@ inline bool EnsureNrFeature(
       core_destroy_parameters(slot.parameters);
       slot.parameters = nullptr;
     }
+    slot.control_mask_bound = false;
     std::ostringstream message;
     message << "feature 18 create failed with 0x" << std::hex
             << static_cast<uint32_t>(result)
@@ -7227,6 +7282,16 @@ inline bool EnsureNrFeature(
   return true;
 }
 
+inline void ClearControlMaskBinding(NrFeatureSlot& slot) {
+  if (!slot.control_mask_bound || slot.parameters == nullptr) return;
+  slot.parameters->Set("DLSSNR.ControlMask", static_cast<ID3D12Resource*>(nullptr));
+  NVSDK_NGX_Parameter_SetUI(slot.parameters, "DLSSNR.ControlMaskSubrectBaseX", 0);
+  NVSDK_NGX_Parameter_SetUI(slot.parameters, "DLSSNR.ControlMaskSubrectBaseY", 0);
+  NVSDK_NGX_Parameter_SetUI(slot.parameters, "DLSSNR.ControlMaskSubrectWidth", 0);
+  NVSDK_NGX_Parameter_SetUI(slot.parameters, "DLSSNR.ControlMaskSubrectHeight", 0);
+  slot.control_mask_bound = false;
+}
+
 inline void SetModelParameters(NrFeatureSlot& slot, uint32_t slot_index,
                                uint64_t chain_reset_epoch, uint32_t create_flags,
                                int32_t frame_reset, bool frame_ui_correction,
@@ -7241,12 +7306,25 @@ inline void SetEvaluationParameters(
     uint32_t input_width,
     uint32_t input_height,
     uint32_t output_width,
-    uint32_t output_height) {
+    uint32_t output_height,
+    bool bind_control_mask = false,
+    uint32_t control_mask_blend = 0) {
   NVSDK_NGX_Parameter* parameters = slot.parameters;
   parameters->Set("DLSSNR.Color", resources.proxy);
   parameters->Set("DLSSNR.Output", resources.nr_output);
   parameters->Set("DLSSNR.MVec", frame.motion);
   parameters->Set("DLSSNR.Depth", frame.depth);
+  if (bind_control_mask) {
+    parameters->Set("DLSSNR.ControlMask", resources.control_mask);
+    NVSDK_NGX_Parameter_SetUI(parameters, "DLSSNR.ControlMaskSubrectBaseX", 0);
+    NVSDK_NGX_Parameter_SetUI(parameters, "DLSSNR.ControlMaskSubrectBaseY", 0);
+    NVSDK_NGX_Parameter_SetUI(parameters, "DLSSNR.ControlMaskSubrectWidth", input_width);
+    NVSDK_NGX_Parameter_SetUI(parameters, "DLSSNR.ControlMaskSubrectHeight", input_height);
+    NVSDK_NGX_Parameter_SetUI(parameters, "DLSSNR.MaskBlendMode", control_mask_blend);
+    slot.control_mask_bound = true;
+  } else {
+    ClearControlMaskBinding(slot);
+  }
   NVSDK_NGX_Parameter_SetUI(parameters, NVSDK_NGX_Parameter_Width, input_width);
   NVSDK_NGX_Parameter_SetUI(parameters, NVSDK_NGX_Parameter_Height, input_height);
   NVSDK_NGX_Parameter_SetUI(parameters, NVSDK_NGX_Parameter_OutWidth, output_width);
@@ -10517,6 +10595,19 @@ inline bool ProcessInline(
     return false;
   }
   const uint32_t requested_stack = group.count;
+  const bool control_mask_requested = control_mask_enabled.load(std::memory_order_relaxed);
+  const bool control_mask_eligible = control_mask_requested
+      && present == nullptr
+      && execution_stage == stage_plan::Stage::UPSCALED
+      && !plan.mixed && requested_stack == 1
+      && group.begin == 0
+      && nr_model::SupportsControlMask(direct_runtime_requirements.file_version);
+  if (control_mask_requested && !control_mask_eligible
+      && !control_mask_refusal_logged.exchange(true, std::memory_order_relaxed)) {
+    Log(reshade::log::level::warning,
+        "ControlMask requested but declined: requires exact DLSSNR 310.9.16.0,"
+        " D3D12 Upscaled, single-pass evaluation");
+  }
   stage_stats.width = width;
   stage_stats.height = height;
   const bool dims_committed =
@@ -10664,6 +10755,8 @@ inline bool ProcessInline(
 
   const bool codec_ok = hdr_mode != 0 ? EnsureV6CodecPipeline(device)
                                       : EnsureLegacyCodecPipeline(device);
+  const bool control_mask_pipeline_ok = !control_mask_eligible
+      || EnsureControlMaskPipeline(device);
   // The NR look stage (look_stage.hpp): this chain's look values and the
   // surfaces they need, fixed before the workset is sized.  Detail
   // stability's Auto engages on every after-path frame: this path already
@@ -10683,7 +10776,7 @@ inline bool ProcessInline(
   }
   const bool split_working_sizes = independent_pair
       && (pass_widths[1] != nr_input_width || pass_heights[1] != nr_input_height);
-  FinalResources* workset = codec_ok
+  FinalResources* workset = codec_ok && control_mask_pipeline_ok
                                 ? EnsureWorkset(
                                       device,
                                       handle,
@@ -10697,7 +10790,9 @@ inline bool ProcessInline(
                                       requested_stack,
                                       split_working_sizes ? pass_look_wanted[0] : look_chain.wanted,
                                       false,
-                                      present != nullptr ? &present->units : nullptr)
+                                      present != nullptr ? &present->units : nullptr,
+                                      nullptr,
+                                      control_mask_eligible)
                                 : nullptr;
   // The NR features themselves are ensured per stack pass inside the chain
   // below; this gate covers the codec pipeline and the scratch surfaces only.
@@ -10834,6 +10929,17 @@ inline bool ProcessInline(
         present_restore_scope::Reason::INACTIVE_DOMAIN, true, 0, 0, "workset_setup_failed");
     if (!codec_ok) {
       LogCodecPipelineFailure(path_name);
+    }
+    if (control_mask_eligible) {
+      if (!control_mask_failure_logged.exchange(true, std::memory_order_relaxed)) {
+        Log(reshade::log::level::error,
+            "ControlMask setup failed; this evaluate is skipped without a retry");
+      }
+      for (uint32_t slot = 0; slot < requested_stack; ++slot) {
+        ClearControlMaskBinding(feature.slots[slot]);
+        feature.slots[slot].pending_reset = true;
+        feature.slots[slot].pending_reset_reasons |= kResetRecovery;
+      }
     }
     // EnsureWorkset's failure sites log their own reason and descriptor.
     CountNrDecline(NrDeclineReason::kWorksetSetupFailed);
@@ -11359,6 +11465,60 @@ inline bool ProcessInline(
         res.nr_output_state,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     res.nr_output_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    // The existing per-pass evaluation segment includes ControlMask generation
+    // when enabled, so its off/on delta captures the added GPU dispatch.
+    if (timers_active) {
+      gpu_timers::Mark(command_list, gpu_timers::PassEvalStart(pass));
+    }
+    if (control_mask_eligible) {
+      const uint32_t model_bucket = feature.slots[pass].nr_preset == 2u ? 1u : 0u;
+      if (!control_mask_active_logged[model_bucket].exchange(true, std::memory_order_relaxed)) {
+        const auto mask_desc = res.control_mask->GetDesc();
+        const auto allocation = device->GetResourceAllocationInfo(0, 1, &mask_desc);
+        std::ostringstream message;
+        message << "ControlMask active: runtime=" << direct_runtime_requirements.file_version
+                << " requested_model=" << (feature.slots[pass].nr_preset == 2u ? 'B' : 'A')
+                << " size=" << mask_desc.Width << 'x' << mask_desc.Height
+                << " allocation_bytes=" << allocation.SizeInBytes
+                << " generator_mode=" << control_mask_mode.load(std::memory_order_relaxed)
+                << " blend_mode=" << control_mask_blend_mode.load(std::memory_order_relaxed)
+                << " rgb=" << control_mask_red.load(std::memory_order_relaxed)
+                << ',' << control_mask_green.load(std::memory_order_relaxed)
+                << ',' << control_mask_blue.load(std::memory_order_relaxed)
+                << " auto_mask=" << PassModel(group.begin + pass, use_auto_mask, pass_auto_mask)
+                << " stage=DX12-Upscaled passes=1; cost is included in the existing per-pass evaluate GPU timer";
+        Log(reshade::log::level::info, message.str());
+      }
+      Transition(command_list, res.control_mask, res.control_mask_state,
+                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+      res.control_mask_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+      ID3D12DescriptorHeap* heaps[] = {res.descriptors};
+      command_list->SetDescriptorHeaps(1, heaps);
+      command_list->SetComputeRootSignature(codec_pipeline.root_signature);
+      command_list->SetPipelineState(codec_pipeline.control_mask);
+      const D3D12_GPU_DESCRIPTOR_HANDLE heap_start =
+          res.descriptors->GetGPUDescriptorHandleForHeapStart();
+      command_list->SetComputeRootDescriptorTable(
+          1, DescriptorHeapSlot(heap_start, kDescriptorControlMaskUav, res.descriptor_size));
+      struct ControlMaskConstants {
+        uint32_t width, height, mode, rect_width, rect_height;
+        float red, green, blue;
+      } constants{
+          nr_input_width, nr_input_height,
+          control_mask_mode.load(std::memory_order_relaxed),
+          nr_input_width / 2, nr_input_height / 2,
+          std::clamp(control_mask_red.load(std::memory_order_relaxed), 0.f, 1.f),
+          std::clamp(control_mask_green.load(std::memory_order_relaxed), 0.f, 1.f),
+          std::clamp(control_mask_blue.load(std::memory_order_relaxed), 0.f, 1.f)};
+      command_list->SetComputeRoot32BitConstants(2, 8, &constants, 0);
+      command_list->Dispatch((nr_input_width + 15) / 16,
+                             (nr_input_height + 15) / 16, 1);
+      UavBarrier(command_list, res.control_mask);
+      Transition(command_list, res.control_mask,
+                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+      res.control_mask_state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    }
     SetEvaluationParameters(
         feature,
         feature.slots[pass],
@@ -11369,14 +11529,13 @@ inline bool ProcessInline(
         nr_input_width,
         nr_input_height,
         feature_out_width,
-        feature_out_height);
+        feature_out_height,
+        control_mask_eligible,
+        control_mask_blend_mode.load(std::memory_order_relaxed));
     ++stage_stats.evaluates;
     stage_stats.resets += feature.slots[pass].model_reset;
     stage_stats.resolved_requests[group.begin + pass] = feature.slots[pass].nr_preset;
 
-    if (timers_active) {
-      gpu_timers::Mark(command_list, gpu_timers::PassEvalStart(pass));
-    }
     // The NGX runtime records this handle's work into the game's list: a
     // tracked use, so a later retirement waits for exactly this submission.
     submission::TrackUse(command_list, feature.slots[pass].handle);
@@ -11411,6 +11570,28 @@ inline bool ProcessInline(
         // exception only substitutes the result code.
         Log(reshade::log::level::error, "feature 18 evaluate raised an exception");
         nr_result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
+      }
+    }
+    if (control_mask_eligible) {
+      Transition(command_list, res.control_mask,
+                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+      res.control_mask_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+      // NGX has consumed the CPU parameter block. Recorded GPU work keeps its
+      // workset lease; removing the pointer here also covers later early-outs.
+      ClearControlMaskBinding(feature.slots[pass]);
+      const uint32_t model_bucket = feature.slots[pass].nr_preset == 2u ? 1u : 0u;
+      const bool accepted = nr_returned && NVSDK_NGX_SUCCEED(nr_result);
+      const bool log_result = (accepted
+          ? !control_mask_success_logged[model_bucket].exchange(true, std::memory_order_relaxed)
+          : !control_mask_evaluate_failure_logged.exchange(true, std::memory_order_relaxed));
+      if (log_result) {
+        std::ostringstream message;
+        message << "ControlMask evaluate: api_returned=" << nr_returned
+                << " ngx_accepted=" << accepted << " result=0x" << std::hex
+                << static_cast<uint32_t>(nr_result)
+                << " gpu_execution=unverified retry_same_frame=0";
+        Log(accepted ? reshade::log::level::info : reshade::log::level::error, message.str());
       }
     }
     ObserveNrEvaluation(execution_stage, handle, feature, feature.slots[pass], group.begin + pass, nr_result, plan, present, nr_returned);
@@ -26461,6 +26642,12 @@ inline void ReadIniRawValues() {
       {"NRPresentBlockHudless", IniKind::kBool}, {"NRXeFGSdkDetours", IniKind::kBool},
       {"NRExperimentalPresentChain", IniKind::kBool},
       {"NRExperimentalNativePreFgResolution", IniKind::kBool},
+      {"NRControlMaskEnabled", IniKind::kBool},
+      {"NRControlMaskMode", IniKind::kUint},
+      {"NRControlMaskBlendMode", IniKind::kUint},
+      {"NRControlMaskRed", IniKind::kFloat},
+      {"NRControlMaskGreen", IniKind::kFloat},
+      {"NRControlMaskBlue", IniKind::kFloat},
       {"NRAutoFgFallback", IniKind::kUint},
       {"NRNormTrace", IniKind::kBool},     {"NRScreenshotPlanes", IniKind::kBool},
       {"UiWelcomed", IniKind::kBool},      {"UiIssueNotice", IniKind::kBool},
@@ -27093,6 +27280,26 @@ inline void LoadConfiguration() {
   reshade::get_config_value(
       nullptr, kConfigSection, "NRTelemetrySeconds", saved_telemetry_seconds);
   telemetry_seconds = std::min(saved_telemetry_seconds, 3600u);
+  bool saved_control_mask_enabled = false;
+  uint32_t saved_control_mask_mode = kControlMaskRgb;
+  uint32_t saved_control_mask_blend_mode = 0;
+  float saved_control_mask_red = 1.f;
+  float saved_control_mask_green = 1.f;
+  float saved_control_mask_blue = 1.f;
+  reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskEnabled", saved_control_mask_enabled);
+  reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskMode", saved_control_mask_mode);
+  reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskBlendMode", saved_control_mask_blend_mode);
+  reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskRed", saved_control_mask_red);
+  reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskGreen", saved_control_mask_green);
+  reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskBlue", saved_control_mask_blue);
+  control_mask_enabled = saved_control_mask_enabled;
+  control_mask_mode = SanitizeEnumKey(saved_control_mask_mode, kControlMaskRgb,
+      kControlMaskRgb, kControlMaskRect, "NRControlMaskMode");
+  control_mask_blend_mode = SanitizeEnumKey(saved_control_mask_blend_mode, 0u, 0u, 3u,
+      "NRControlMaskBlendMode");
+  control_mask_red = SanitizeFloatKey(saved_control_mask_red, 1.f, 0.f, 1.f, "NRControlMaskRed");
+  control_mask_green = SanitizeFloatKey(saved_control_mask_green, 1.f, 0.f, 1.f, "NRControlMaskGreen");
+  control_mask_blue = SanitizeFloatKey(saved_control_mask_blue, 1.f, 0.f, 1.f, "NRControlMaskBlue");
   bool saved_norm_trace = false;
   reshade::get_config_value(
       nullptr, kConfigSection, "NRNormTrace", saved_norm_trace);

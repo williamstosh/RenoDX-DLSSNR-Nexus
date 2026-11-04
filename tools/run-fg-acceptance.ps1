@@ -26,12 +26,17 @@ param(
     [ValidateRange(-1,3)][int]$NrPass2Stage = -1,
     [ValidateRange(-1,3)][int]$NrPass3Stage = -1,
     [ValidateRange(-1,3)][int]$NrPass4Stage = -1,
+    [ValidateSet('T0','T1','T2','T3','T4','T5','T6')][string]$ControlMaskCase,
     [switch]$InstallOnly,
     [switch]$ManualImeSession,
     [switch]$RestoreInstallation,
     [switch]$AddonAbsentControl
 )
 $ErrorActionPreference = 'Stop'
+if ($ControlMaskCase -and (-not $RestoreInstallation -or $InstallOnly -or -not $SrOnly -or
+        -not $NrRuntimePath -or $NrPreset -notin @(1,2) -or $NrPasses -gt 1 -or $NrHookPoint -gt 0)) {
+    throw 'ControlMask requires -RestoreInstallation, -SrOnly, exact -NrRuntimePath, explicit model A/B and single-pass Upscaled.'
+}
 if ($ManualImeSession -and ($Scenario -ne 'menu' -or $CaptureHoldSeconds -eq 0 -or $InstallOnly -or -not $RestoreInstallation)) {
     throw '-ManualImeSession requires menu, a nonzero hold and -RestoreInstallation; installation-only is not supported.'
 }
@@ -46,6 +51,33 @@ if (($TelemetrySeconds -ge 0 -or $SrOnly -or $NrRuntimePath -or $NrPreset -ge 0 
         $NrHookPoint -ge 0 -or $NrPass2Stage -ge 0 -or $NrPass3Stage -ge 0 -or $NrPass4Stage -ge 0) -and
     (-not $RestoreInstallation -or $InstallOnly)) {
     throw 'Model tests require a protected session and -RestoreInstallation; -InstallOnly is not supported.'
+}
+function Get-ControlMaskSettings([ValidateSet('T0','T1','T2','T3','T4','T5','T6')][string]$Case) {
+    $settings = @{
+        NRHookPoint=0; NRPasses=1; NRFollowInputRes=0; NRResolutionScale=1; NRScreenshotSource=2
+        NRAutoMask=0; NRControlMaskEnabled=[int]($Case -ne 'T0')
+        NRControlMaskMode=0; NRControlMaskBlendMode=0
+        NRControlMaskRed=1; NRControlMaskGreen=1; NRControlMaskBlue=1
+    }
+    switch ($Case) {
+        T1 { $settings.NRControlMaskMode = 1 }
+        T2 { $settings.NRControlMaskRed = 0 }
+        T3 { $settings.NRControlMaskRed = '0.5' }
+        T4 { $settings.NRControlMaskGreen = 0 }
+        T5 { $settings.NRControlMaskBlue = 0 }
+        T6 { $settings.NRControlMaskMode = 2 }
+    }
+    return $settings
+}
+function Set-OptiFgDisabled([string]$Text) {
+    $sections = [regex]::Matches($Text, '(?ms)^\[FrameGen\]\r?\n(?:(?!^\[).)*')
+    if ($sections.Count -ne 1) { throw 'Expected one OptiScaler FrameGen section' }
+    $section = $sections[0]
+    if ([regex]::Matches($section.Value, '(?m)^Enabled\s*=[^\r\n]*').Count -ne 1) {
+        throw 'Expected one explicit OptiScaler FrameGen Enabled setting'
+    }
+    $updated = [regex]::Replace($section.Value, '(?m)^Enabled\s*=[^\r\n]*', 'Enabled = false')
+    return $Text.Substring(0,$section.Index) + $updated + $Text.Substring($section.Index+$section.Length)
 }
 function Set-FgPresentSection([string]$Text, [bool]$BlockHudless) {
     if ($Text -notmatch '(?m)^NRHookPoint=') { throw 'NRHookPoint is missing' }
@@ -109,7 +141,7 @@ if ($NrRuntimePath) {
     }
     $taskBackupFiles += Join-Path $taskGame 'nvngx_dlssnr.dll'
 }
-if ($CleanEnvironment -or $XeFGUiComposition -ge 0) {
+if ($CleanEnvironment -or $XeFGUiComposition -ge 0 -or $ControlMaskCase) {
     $taskBackupFiles += Join-Path $taskGame 'OptiScaler.ini'
 }
 if ($CleanEnvironment) {
@@ -159,6 +191,7 @@ $taskReceipt = [ordered]@{
     requested_telemetry_seconds=$TelemetrySeconds
     nr_model_test=@{runtime=$NrRuntimePath; main=$NrPreset; pass2=$NrPass2Preset; passes=$NrPasses}
     nr_stage_test=@{hook=$NrHookPoint; pass2=$NrPass2Stage; pass3=$NrPass3Stage; pass4=$NrPass4Stage}
+    control_mask_case=$ControlMaskCase
     temporary_game_sdr=[bool]$SdrGameOutput
     start_nr_disabled=[bool]$StartNrDisabled
     requested_sr_only=[bool]$SrOnly
@@ -216,6 +249,13 @@ try {
             throw 'Installed NR runtime hash mismatch'
         }
     }
+    if ($ControlMaskCase) {
+        $taskOptiPath = Join-Path $taskGame 'OptiScaler.ini'
+        [IO.File]::WriteAllText($taskOptiPath,
+            (Set-OptiFgDisabled ([IO.File]::ReadAllText($taskOptiPath))),
+            [Text.UTF8Encoding]::new($false))
+        $taskReceipt.test_optiscaler_fg_config_sha256 = (Get-FileHash -LiteralPath $taskOptiPath).Hash
+    }
     if ($XeFGUiComposition -ge 0) {
         $taskOptiPath = Join-Path $taskGame 'OptiScaler.ini'
         [IO.File]::WriteAllText($taskOptiPath,
@@ -248,6 +288,11 @@ try {
     if ($NrPass2Stage -ge 0) { $taskModelSettings.NRPass2Stage = $NrPass2Stage }
     if ($NrPass3Stage -ge 0) { $taskModelSettings.NRPass3Stage = $NrPass3Stage }
     if ($NrPass4Stage -ge 0) { $taskModelSettings.NRPass4Stage = $NrPass4Stage }
+    if ($ControlMaskCase) {
+        foreach ($taskSetting in (Get-ControlMaskSettings $ControlMaskCase).GetEnumerator()) {
+            $taskModelSettings[$taskSetting.Key] = $taskSetting.Value
+        }
+    }
     foreach ($taskEntry in $taskModelSettings.GetEnumerator()) {
         $taskPattern = '(?m)^' + $taskEntry.Key + '=[^\r\n]*'
         $taskLine = $taskEntry.Key + '=' + $taskEntry.Value
