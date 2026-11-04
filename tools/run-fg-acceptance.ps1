@@ -26,13 +26,22 @@ param(
     [ValidateRange(-1,3)][int]$NrPass2Stage = -1,
     [ValidateRange(-1,3)][int]$NrPass3Stage = -1,
     [ValidateRange(-1,3)][int]$NrPass4Stage = -1,
-    [ValidateSet('T0','T1','T2','T3','T4','T5','T6')][string]$ControlMaskCase,
+    [ValidateSet('T0','T1','T2','T3','T4','T5','T6','GRect','BRect')][string]$ControlMaskCase,
+    [ValidateRange(0,4096)][int]$ControlMaskGpuSamples = 0,
+    [ValidateRange(1,300)][int]$ControlMaskGpuSeconds = 120,
+    [ValidateRange(0,60)][int]$ControlMaskGpuWarmupSeconds = 6,
     [switch]$InstallOnly,
     [switch]$ManualImeSession,
     [switch]$RestoreInstallation,
     [switch]$AddonAbsentControl
 )
 $ErrorActionPreference = 'Stop'
+if ($ControlMaskGpuSamples -gt 0 -and (-not $ControlMaskCase -or -not $GpuTimers)) {
+    throw 'ControlMask raw capture requires an explicit protected ControlMask case and existing -GpuTimers.'
+}
+if ($ControlMaskGpuSamples -gt 0 -and $ControlMaskGpuWarmupSeconds -ge $ControlMaskGpuSeconds) {
+    throw 'ControlMask GPU warmup must be shorter than the bounded sampling window.'
+}
 if ($ControlMaskCase -and (-not $RestoreInstallation -or $InstallOnly -or -not $SrOnly -or
         -not $NrRuntimePath -or $NrPreset -notin @(1,2) -or $NrPasses -gt 1 -or $NrHookPoint -gt 0)) {
     throw 'ControlMask requires -RestoreInstallation, -SrOnly, exact -NrRuntimePath, explicit model A/B and single-pass Upscaled.'
@@ -52,12 +61,14 @@ if (($TelemetrySeconds -ge 0 -or $SrOnly -or $NrRuntimePath -or $NrPreset -ge 0 
     (-not $RestoreInstallation -or $InstallOnly)) {
     throw 'Model tests require a protected session and -RestoreInstallation; -InstallOnly is not supported.'
 }
-function Get-ControlMaskSettings([ValidateSet('T0','T1','T2','T3','T4','T5','T6')][string]$Case) {
+function Get-ControlMaskSettings([ValidateSet('T0','T1','T2','T3','T4','T5','T6','GRect','BRect')][string]$Case) {
     $settings = @{
         NRHookPoint=0; NRPasses=1; NRFollowInputRes=0; NRResolutionScale=1; NRScreenshotSource=2
         NRAutoMask=0; NRControlMaskEnabled=[int]($Case -ne 'T0')
         NRControlMaskMode=0; NRControlMaskBlendMode=0
         NRControlMaskRed=1; NRControlMaskGreen=1; NRControlMaskBlue=1
+        NRLocalTone=1; NRLocalStructure=1; NRStyle=2; NRIntensity=1
+        NRSkinStructure='0.8'; NRSkinIndependent=1; NRUICorrection=0
     }
     switch ($Case) {
         T1 { $settings.NRControlMaskMode = 1 }
@@ -66,6 +77,8 @@ function Get-ControlMaskSettings([ValidateSet('T0','T1','T2','T3','T4','T5','T6'
         T4 { $settings.NRControlMaskGreen = 0 }
         T5 { $settings.NRControlMaskBlue = 0 }
         T6 { $settings.NRControlMaskMode = 2 }
+        GRect { $settings.NRControlMaskMode = 3 }
+        BRect { $settings.NRControlMaskMode = 4 }
     }
     return $settings
 }
@@ -78,6 +91,40 @@ function Set-OptiFgDisabled([string]$Text) {
     }
     $updated = [regex]::Replace($section.Value, '(?m)^Enabled\s*=[^\r\n]*', 'Enabled = false')
     return $Text.Substring(0,$section.Index) + $updated + $Text.Substring($section.Index+$section.Length)
+}
+function Copy-ControlMaskGpuEvidence([string]$Directory, [string]$OutputDirectory, [string[]]$BeforeNames, [int]$Target) {
+    $files = @(Get-ChildItem -LiteralPath $Directory -Filter 'control-mask-*.json' -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notin $BeforeNames })
+    if ($files.Count -gt 32) { throw 'Unexpected number of new ControlMask GPU evidence files' }
+    [void][IO.Directory]::CreateDirectory($OutputDirectory)
+    $records = @()
+    $complete = @()
+    foreach ($file in $files) {
+        if ($file.Length -gt 32MB) { throw 'ControlMask GPU evidence exceeds the bounded export size' }
+        $copy = Join-Path $OutputDirectory $file.Name
+        if (Test-Path -LiteralPath $copy) { throw 'Refusing to replace ControlMask GPU evidence' }
+        Copy-Item -LiteralPath $file.FullName -Destination $copy -ErrorAction Stop
+        $record = [ordered]@{file=$file.Name;sha256=(Get-FileHash -LiteralPath $copy).Hash;status='unreadable'}
+        try {
+            $json = Get-Content -LiteralPath $copy -Raw | ConvertFrom-Json
+            $record.status = $json.status
+            if ($json.status -eq 'terminal' -and $json.schema -eq 'control_mask_capture_v1') {
+                $record.summary = $json.summary
+                $validEvents = @($json.events | Where-Object { $_.status -eq 'valid' })
+                if ($validEvents.Count -ne $json.summary.actual_valid -or
+                    @($validEvents | Where-Object { $_.samples -ne 1 -or -not $_.context.ngx_accepted -or $null -eq $_.timing_us }).Count) {
+                    throw 'GPU summary does not match the actual valid raw records'
+                }
+                if ($json.summary.reason -eq 'target_reached' -and $json.summary.actual_valid -ge $Target -and
+                    $json.summary.dropped -eq 0 -and $json.summary.overflow -eq 0 -and $json.summary.pending_stop -eq 0) {
+                    $complete += $file.Name
+                }
+            }
+        } catch { $record.error = $_.Exception.Message }
+        $records += $record
+    }
+    return [ordered]@{target_valid_samples=$Target;target_reached=($complete.Count -eq 1);files=$records
+        measurement='Original per-pass GPU Evaluate interval includes mask generation; not independent mask cost.'}
 }
 function Set-FgPresentSection([string]$Text, [bool]$BlockHudless) {
     if ($Text -notmatch '(?m)^NRHookPoint=') { throw 'NRHookPoint is missing' }
@@ -126,6 +173,8 @@ $taskTarget = Get-Content -LiteralPath $TargetPath -Raw | ConvertFrom-Json
 $taskPerformanceTarget = [double]$taskTarget.performance_target_fps
 if ($taskPerformanceTarget -le 0) { throw 'Configure performance_target_fps in the local target.' }
 $taskGame = (Resolve-Path -LiteralPath $GameBinaryDirectory).Path
+$taskGpuDirectory = Join-Path $taskGame 'NR Diagnostics'
+$taskGpuBefore = @(Get-ChildItem -LiteralPath $taskGpuDirectory -Filter 'control-mask-*.json' -File -ErrorAction SilentlyContinue | ForEach-Object Name)
 $taskManifestPath = (Resolve-Path -LiteralPath $CandidateManifest).Path
 $taskManifest = Get-Content -LiteralPath $taskManifestPath -Raw | ConvertFrom-Json
 $taskCandidate = $taskManifest.candidate_dll.copy
@@ -192,6 +241,7 @@ $taskReceipt = [ordered]@{
     nr_model_test=@{runtime=$NrRuntimePath; main=$NrPreset; pass2=$NrPass2Preset; passes=$NrPasses}
     nr_stage_test=@{hook=$NrHookPoint; pass2=$NrPass2Stage; pass3=$NrPass3Stage; pass4=$NrPass4Stage}
     control_mask_case=$ControlMaskCase
+    control_mask_gpu_capture=@{target_valid_samples=$ControlMaskGpuSamples; seconds=$ControlMaskGpuSeconds; warmup_seconds=$ControlMaskGpuWarmupSeconds}
     temporary_game_sdr=[bool]$SdrGameOutput
     start_nr_disabled=[bool]$StartNrDisabled
     requested_sr_only=[bool]$SrOnly
@@ -292,6 +342,9 @@ try {
         foreach ($taskSetting in (Get-ControlMaskSettings $ControlMaskCase).GetEnumerator()) {
             $taskModelSettings[$taskSetting.Key] = $taskSetting.Value
         }
+        $taskModelSettings.NRControlMaskGpuCaptureSamples = $ControlMaskGpuSamples
+        $taskModelSettings.NRControlMaskGpuCaptureSeconds = $ControlMaskGpuSeconds
+        $taskModelSettings.NRControlMaskGpuCaptureWarmupSeconds = $ControlMaskGpuWarmupSeconds
     }
     foreach ($taskEntry in $taskModelSettings.GetEnumerator()) {
         $taskPattern = '(?m)^' + $taskEntry.Key + '=[^\r\n]*'
@@ -412,6 +465,15 @@ try {
         }
     } elseif ($taskChanged) {
         $taskReceipt.restore_pending = 'Game/crash reporter remains alive; preserve backup and restore after safe exit'
+    }
+    if ($ControlMaskGpuSamples -gt 0 -and $taskRunning.Count -eq 0) {
+        try {
+            $taskReceipt.control_mask_gpu_result = Copy-ControlMaskGpuEvidence $taskGpuDirectory (Join-Path $taskRun 'raw-gpu') $taskGpuBefore $ControlMaskGpuSamples
+            if (-not $taskReceipt.control_mask_gpu_result.target_reached) { $taskReceipt.test_exit_code = 1 }
+        } catch {
+            $taskReceipt.control_mask_gpu_result = @{target_reached=$false;error=$_.Exception.Message}
+            $taskReceipt.test_exit_code = 1
+        }
     }
     $taskReceipt.finished_utc = [DateTimeOffset]::UtcNow.ToString('o')
     $taskReceipt | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $taskReceiptPath -Encoding utf8

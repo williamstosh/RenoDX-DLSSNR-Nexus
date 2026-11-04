@@ -99,6 +99,7 @@ class MonitorTests(unittest.TestCase):
         self.runner.crash_reports = mock.Mock(return_value={})
         self.runner.collect_crashes = mock.Mock(return_value=[])
         self.runner.freeze_logs = mock.Mock(side_effect=self.freeze_logs)
+        self.stack.enter_context(mock.patch.object(self.runner.crash_evidence, 'collect', return_value=[]))
         ticks = iter(range(1000))
         self.runner.time = types.SimpleNamespace(
             monotonic=lambda: next(ticks), sleep=mock.Mock())
@@ -106,6 +107,13 @@ class MonitorTests(unittest.TestCase):
 
     def freeze_logs(self, cfg, destination):
         self.events.append(("logs", destination.name, self.locked))
+
+    def test_evidence_failure_does_not_prevent_guard_restore(self):
+        self.runner.crash_evidence.collect.side_effect = OSError('synthetic failure')
+        final = self.runner.run_attempt(self.cfg, self.out)
+        self.assertEqual(final['guard'], 'verified_original_hashes_and_released')
+        self.assertIn('synthetic failure', final['diagnostic_error'])
+        self.assertFalse(self.locked)
 
     def launch_worker(self, *args, **kwargs):
         self.events.append("worker_launch")

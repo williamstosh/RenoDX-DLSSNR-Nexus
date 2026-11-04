@@ -162,6 +162,7 @@ struct Segment {
   uint64_t guide_serial = 0;
   uint32_t color_role = 0;  // 0: ordinary chain, 1: FG backbuffer, 2: FG HUDLess.
   gpu_comparison::Sample comparison;
+  uint64_t diagnostic_token = 0;
 };
 
 // Latest published per-evaluate timing, in microseconds.  Guarded by
@@ -205,6 +206,9 @@ inline uint64_t lease_starved_segments = 0;
 inline gpu_comparison::Engine comparison;
 inline gpu_comparison::Comparison comparison_result;
 inline uint64_t device_session = 0;
+// Optional experiment consumer; observes the original, unaveraged completion
+// result. A token belongs to the recording, never to the current configuration.
+inline void (*raw_observer)(const Stats&, uint64_t) = nullptr;
 // Dedicated HUD history is dormant until the visible trend view requests it.
 // Producers and the UI drain hold runtime_mutex; only the enable flag crosses
 // callbacks without that lock. Overflow is reported as a history gap.
@@ -362,6 +366,14 @@ inline bool Ensure(ID3D12Device* device) {
 // `log`: the "NR gpu timers" lines, NRGpuTimers' own; the cost meter's
 // samples publish silently (the addon logs their sum as "NR cost:").
 inline void Reject(const Segment& s, SampleState state) {
+  if (s.measure && s.diagnostic_token != 0 && raw_observer != nullptr && state != SampleState::PENDING) {
+    Stats rejected{.width = s.width, .height = s.height, .passes = s.passes,
+                   .state = state, .sequence = s.sequence, .measured_ns = NowNs(),
+                   .identity = s.comparison.identity,
+                   .recorded_ns = static_cast<int64_t>(s.comparison.recorded_ns)};
+    std::memcpy(rejected.path, s.path, sizeof(rejected.path));
+    raw_observer(rejected, s.diagnostic_token);
+  }
   if (!s.measure) {
     if (state != SampleState::PENDING) {
       auto& sequence = execution_result_sequences[StageIndex(s.path)];
@@ -480,6 +492,9 @@ inline bool Publish(const Segment& s, bool log, const void* queue) {
   next.recorded_ns = static_cast<int64_t>(s.comparison.recorded_ns);
   next.queue = queue;
   next.samples = 1;
+  if (s.diagnostic_token != 0 && raw_observer != nullptr) {
+    raw_observer(next, s.diagnostic_token);
+  }
   QueueMonitorSample(next);
   if (s.comparison.sequence != 0 && ComparisonActive()) {
     auto sample = s.comparison;
@@ -674,6 +689,7 @@ inline bool Begin(
   s.color_role = 0;
   s.passes = {};
   s.comparison = {};
+  s.diagnostic_token = 0;
   s.comparison.stage = StageIndex(path);
   s.comparison.recorded_ns = NowNs();
   s.comparison.identity.device_session = device_session;

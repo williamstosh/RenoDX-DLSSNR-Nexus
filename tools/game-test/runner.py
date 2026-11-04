@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+from itertools import islice
 import os
 from pathlib import Path
 import re
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import time
 import traceback
+import uuid
 from datetime import datetime, timezone
 import winreg
 from contextlib import contextmanager
@@ -17,6 +19,7 @@ import msvcrt
 from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageStat
 import desktop
 import normal_process
+import crash_evidence
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -148,12 +151,24 @@ def crash_reports():
 
 def collect_crashes(before, out):
     fresh = {name: path for name, path in crash_reports().items() if name not in before}
-    for name, source in fresh.items():
+    records, budget = [], crash_evidence.Budget()
+    if len(fresh) > crash_evidence.MAX_FILES:
+        records.append(dict(status='skipped', reason='report_enumeration_limit'))
+    for name, source in islice(fresh.items(), crash_evidence.MAX_FILES):
         dest = out / 'crashes' / name
         dest.mkdir(parents=True, exist_ok=True)
-        for item in source.iterdir():
-            if item.is_file() and item.stat().st_size < 128 * 1024 * 1024:
-                shutil.copyfile(item, dest / item.name)
+        for index, item in enumerate(islice(source.iterdir(), crash_evidence.MAX_FILES + 1)):
+            if index == crash_evidence.MAX_FILES:
+                records.append(dict(source=str(source), status='skipped', reason='file_enumeration_limit'))
+                break
+            if item.is_file():
+                target = dest / item.name
+                try:
+                    records.append(budget.copy(item, target))
+                except Exception as error:
+                    records.append(dict(source=str(item), error=str(error)))
+    if records:
+        crash_evidence.write_new(out / ('crash-copy-' + uuid.uuid4().hex + '.json'), json.dumps(records, indent=2))
     return list(fresh)
 
 def freeze_logs(cfg, out):
@@ -337,6 +352,11 @@ class Session:
         if len(matches) != 1 or receipt['actual_sha256'] != self.cfg['addon_sha256']:
             raise RuntimeError('required_mod_identity_mismatch')
         self.status['mod_load'] = 'loaded_path_and_disk_hash_confirmed'
+        identities = self.out / 'verified-module-identities.json'
+        if not identities.exists():
+            snapshot = crash_evidence.modules(self.window, lambda _: paths, self.cfg['required_module'])
+            snapshot['time'] = stamp()
+            crash_evidence.write_new(identities, json.dumps(snapshot, ensure_ascii=False, indent=2))
 
     def wait_text(self, pattern, timeout=60, label='wait'):
         deadline = time.monotonic() + timeout
@@ -359,6 +379,7 @@ class Session:
         self.event('click_text', text=text, x=x, y=y)
 
     def launch(self):
+        dump(self.out / 'early-modules.json', crash_evidence.modules(None, desktop.modules))
         subprocess.Popen([self.cfg['steam']] + self.cfg['launch_args'], creationflags=0x08000000)
         deadline = time.monotonic() + self.cfg['startup_timeout']
         while time.monotonic() < deadline:
@@ -368,6 +389,7 @@ class Session:
             if found:
                 self.window = found[0]
                 dump(self.out / 'owned-process.json', self.window)
+                dump(self.out / 'early-modules.json', crash_evidence.modules(self.window, desktop.modules, self.cfg.get('required_module')))
                 self.status['startup'] = 'process_and_dx12_path_confirmed'
                 self.event('window', **self.window)
                 return
@@ -382,6 +404,7 @@ class Session:
                     if metrics:
                         self.window = dict(pid=pid, created=metrics['created'], path=candidates[0]['ExecutablePath'], hwnd=0)
                         dump(self.out / 'owned-process.json', self.window)
+                        dump(self.out / 'early-modules.json', crash_evidence.modules(self.window, desktop.modules, self.cfg.get('required_module')))
             time.sleep(1)
         raise TimeoutError('startup_timeout: Steam did not produce a DX12 game window')
 
@@ -769,7 +792,7 @@ def run_attempt(cfg, out):
     source = out / 'source'
     source.mkdir()
     sources = []
-    for name in ('runner.py', 'desktop.py', 'guard.py', 'normal_process.py'):
+    for name in ('runner.py', 'desktop.py', 'guard.py', 'normal_process.py', 'crash_evidence.py'):
         shutil.copyfile(HERE / name, source / name)
         sources.append(dict(name=name, sha256=sha(source / name)))
     dump(out / 'source-manifest.json', dict(files=sources, target_sha256=sha(out / 'target.json'),
@@ -786,6 +809,8 @@ def run_attempt(cfg, out):
         with ProtectedFiles(protected, out / 'protected') as guard:
             dump(out / 'protected-files.json', guard.manifest)
             freeze_logs(cfg, out / 'logs-before')
+            crash_evidence.configurations(cfg, out / 'deployment-config')
+            dump(out / 'early-modules.json', crash_evidence.modules(None, lambda p: desktop.modules(p)))
             try:
                 with (out / 'worker.log').open('w', encoding='utf-8') as log:
                     child = subprocess.Popen([sys.executable, '-B', str(source / 'runner.py'), '--worker', str(out)], stdout=log, stderr=log, creationflags=0x08000000)
@@ -847,6 +872,17 @@ def run_attempt(cfg, out):
                     ownership = out / 'owned-process.json'
                     if ownership.exists():
                         owned = json.loads(ownership.read_text(encoding='utf-8'))
+                    for action in (
+                        lambda: dump(out / 'recovery-modules.json', crash_evidence.modules(owned, lambda p: desktop.modules(p), cfg.get('required_module'))),
+                        lambda: freeze_logs(cfg, out / 'pre-restore-logs'),
+                        lambda: collect_crashes(crashes_before, out),
+                        lambda: crash_evidence.collect(cfg, out, final['started'], 'pre-restore'),
+                    ):
+                        try:
+                            action()
+                        except Exception as error:
+                            final['diagnostic_error'] = str(error)
+                            problem = problem or 'diagnostic_collection_failed'
                     if recover_owned(cfg, out, owned):
                         problem = problem or 'worker_left_owned_process'
                         dump(out / 'recovery.json', dict(time=stamp(), reason=problem, method='owned_process_termination_or_manual_recovery'))
@@ -869,6 +905,7 @@ def run_attempt(cfg, out):
         try:
             crashes = collect_crashes(crashes_before, out)
             freeze_logs(cfg, out / 'final-logs')
+            crash_evidence.collect(cfg, out, final['started'], 'post-exit')
             if crashes:
                 problem = problem or 'crash_report_created'
                 final['crashes'] = crashes
