@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string_view>
 
 namespace renodx::addons::dlss5::nr_model {
 
@@ -14,6 +15,10 @@ namespace renodx::addons::dlss5::nr_model {
 inline constexpr bool SupportsSmallModel(uint32_t major, uint32_t minor,
                                          uint32_t build, uint32_t revision) {
   return major == 310 && minor == 9 && build == 16 && revision == 0;
+}
+
+inline constexpr bool SupportsControlMask(std::string_view file_version) {
+  return file_version == "310.9.16.0";
 }
 
 // Main 0 is automatic; a stacked pass's 0 inherits the main selection.

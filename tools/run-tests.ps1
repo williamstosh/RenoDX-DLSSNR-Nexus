@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('all','report','branding','ui','presets','unicode-input','native','sdr-policy','hdr-policy','scope','config','constants','fg-xefg','fg-native','lifecycle','bridge-motion','stage-plan','copy-slots')]
+    [ValidateSet('all','report','branding','ui','presets','unicode-input','native','sdr-policy','hdr-policy','scope','config','constants','control-mask','fg-xefg','fg-native','lifecycle','bridge-motion','stage-plan','copy-slots')]
     [string[]]$Suite = @('all'),
     [string]$SourceRoot = (Split-Path $PSScriptRoot -Parent),
     [string]$HostRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) '.local/renodx'),
@@ -11,7 +11,7 @@ param(
     [string]$DetoursLibrary,
     [string]$PythonExecutable,
     [ValidateSet('Auto','Quick','Full','None')][string]$UiPreview = 'Auto',
-    [ValidateSet('gpu-pass-diagnostics','native-required-menu','native-owner-idle','native-options-resume','native-options-delayed','native-guide-contract','present-guide-models','native-present-decision','trace-metadata','stage-chain','stage-resolution','stage-resolution-hardware','same-stage-resolution','same-stage-resolution-hardware','render-stage-resolution','render-stage-resolution-hardware','present-stage-resolution','present-stage-resolution-hardware','native-prefg-resolution','native-prefg-resolution-hardware','native-frame-identity','same-stage-model-pair','same-stage-mixed-pair','source-lifecycle','feature-switch','feature-switch-hardware','f5-mixed','present-chain','present-chain-hardware','present-chain-scrgb','present-chain-hdr10','native-full','native-full-hardware')]
+    [ValidateSet('control-mask','gpu-pass-diagnostics','native-required-menu','native-owner-idle','native-options-resume','native-options-delayed','native-guide-contract','present-guide-models','native-present-decision','trace-metadata','stage-chain','stage-resolution','stage-resolution-hardware','same-stage-resolution','same-stage-resolution-hardware','render-stage-resolution','render-stage-resolution-hardware','present-stage-resolution','present-stage-resolution-hardware','native-prefg-resolution','native-prefg-resolution-hardware','native-frame-identity','same-stage-model-pair','same-stage-mixed-pair','source-lifecycle','feature-switch','feature-switch-hardware','f5-mixed','present-chain','present-chain-hardware','present-chain-scrgb','present-chain-hdr10','native-full','native-full-hardware')]
     [string[]]$NativeCase = @(),
     [ValidateSet('dlaa','sr','stage-resolution','same-stage-resolution','render-stage-resolution','present-stage-resolution')][string[]]$BridgeCase = @(),
     [switch]$BuildOnly,
@@ -42,6 +42,7 @@ $sources = [ordered]@{
     native='native_contract_tests'; 'sdr-policy'='present_sdr_restore_policy_tests'
     'hdr-policy'='present_hdr_pedestal_policy_tests'; scope='present_restore_scope_tests'
     config='present_restore_configuration_tests'; constants='present_hdr_runtime_constants_tests'
+    'control-mask'='control_mask_contract_tests'
     'fg-xefg'='fg_xefg_tests'; 'fg-native'='fg_native_tests'
     lifecycle='fg_lifecycle_tests'; 'bridge-motion'='d3d11_bridge_motion_tests'
     'stage-plan'='stage_plan_tests'
@@ -98,7 +99,7 @@ foreach ($item in $Suite) {
     $exe = Join-Path $directory "$name.exe"
     $arguments = $common + @($includes | ForEach-Object { "/I$_" })
     $link = $libraries
-    if ($item -in @('branding','sdr-policy','hdr-policy','scope','stage-plan')) { $link = @() }
+    if ($item -in @('branding','sdr-policy','hdr-policy','scope','stage-plan','control-mask')) { $link = @() }
     if ($item -in @('fg-native','bridge-motion')) {
         if (-not (Test-Path -LiteralPath "$ShaderIncludeDirectory/embed/shaders.h")) { throw 'Build new shaders first.' }
         $arguments += @('/bigobj','/Gy','/Gw','/DNDEBUG','/DRESHADE_ADDON=1',
@@ -133,7 +134,10 @@ foreach ($item in $Suite) {
             foreach ($case in $NativeCase) { Invoke-TestProcess $exe $directory $case @("--$case") }
         } else {
             Invoke-TestProcess $exe $directory 'test'
-            if ($item -eq 'fg-native') { Invoke-TestProcess $exe $directory 'f5-mixed' @('--f5-mixed') }
+            if ($item -eq 'fg-native') {
+                Invoke-TestProcess $exe $directory 'f5-mixed' @('--f5-mixed')
+                Invoke-TestProcess $exe $directory 'control-mask' @('--control-mask')
+            }
         }
         foreach ($inputHash in $hashes) {
             if ((Get-FileHash -LiteralPath $inputHash.path).Hash -ne $inputHash.sha256) { throw "Test input changed: $($inputHash.path)" }
