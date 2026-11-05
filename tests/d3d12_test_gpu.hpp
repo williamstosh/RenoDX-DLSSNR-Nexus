@@ -39,6 +39,7 @@ struct Gpu {
   ComPtr<ID3D12CommandAllocator> allocator;
   ComPtr<ID3D12GraphicsCommandList> list;
   ComPtr<ID3D12Fence> fence;
+  std::vector<ComPtr<ID3D12Resource>> uploads;
   std::vector<ComPtr<ID3D12Resource>> retained_resources;
   uint64_t serial = 0;
   bool submission_pending = false;
@@ -73,6 +74,9 @@ struct Gpu {
     if (submission_pending && fence->GetCompletedValue() < serial
         && device->GetDeviceRemovedReason() != DXGI_ERROR_DEVICE_REMOVED) {
       // A failed isolated test process must not release resources still referenced by queued work.
+      for (auto& resource : uploads) {
+        resource.Detach();
+      }
       for (auto& resource : retained_resources) {
         resource.Detach();
       }
@@ -225,7 +229,7 @@ struct Gpu {
         .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, .SubresourceIndex = 0};
     list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
     Transition(resource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
-    Retain(upload.Get());
+    uploads.push_back(upload);
   }
   void Submit() {
     Check(SUCCEEDED(list->Close()), "close");
@@ -246,6 +250,7 @@ struct Gpu {
     Check(SUCCEEDED(list->Reset(allocator.Get(), nullptr)), "list reset");
     submission::OnCommandListReset(list.Get());
     submission::PruneCompletedGenerations();
+    uploads.clear();
     retained_resources.clear();
   }
   void ExpectPixels(ID3D12Resource* resource, uint8_t value) {
