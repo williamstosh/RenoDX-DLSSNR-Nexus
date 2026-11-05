@@ -73,6 +73,10 @@ struct RecordingStatus {
   uint64_t generation = 0;
   std::atomic_bool submitted{false};
   std::atomic_bool closed{false};
+  // Protected by tracker_mutex. Survives pruning as positive evidence for
+  // objects whose last recording is no longer in live_uses.
+  bool completed_healthy = false;
+  std::vector<const void*> completed_uses;
 };
 
 // One recording generation of one command list.
@@ -429,6 +433,18 @@ inline size_t PruneCompletedGenerations(
         ++gen_it;
         continue;
       }
+      if (generation.status != nullptr) {
+        // Copy before publishing either proof. Allocation failure leaves the
+        // generation live and cannot turn a partial snapshot into evidence.
+        generation.status->completed_uses = generation.uses;
+        bool healthy = !generation.submissions.empty() && !device_removed;
+        for (const auto& receipt : generation.submissions) {
+          healthy &= receipt.fence->GetCompletedValue() != UINT64_MAX;
+        }
+        if (healthy) {
+          generation.status->completed_healthy = true;
+        }
+      }
       for (const void* use : generation.uses) {
         if (on_pruned_use != nullptr) on_pruned_use(use, generation.submissions);
         const auto use_it = live_uses.find(use);
@@ -497,6 +513,46 @@ inline bool OnlyRecordingUses(const void* use, std::pair<uint64_t, uint64_t> rec
       if ((identity != recording.first || generation != recording.second)
           && std::ranges::find(data.uses, use) != data.uses.end()) return false;
     }
+  }
+  return true;
+}
+
+// Conservative record-time reuse: every object must have positive provenance.
+// Other recordings must be non-replayable AND all their submissions complete.
+// This establishes serialization, not a resource-state or SDK contract.
+inline bool CanReuseRecordingObjects(
+    const std::vector<const void*>& objects,
+    std::pair<uint64_t, uint64_t> recording,
+    const std::shared_ptr<RecordingStatus>& previous) {
+  std::lock_guard lock(tracker_mutex);
+  if (previous == nullptr || (recording.first >> 63) != 0
+      || list_identity_fallbacks.load(std::memory_order_relaxed) != 0) return false;
+  for (const void* object : objects) {
+    if (object == nullptr) continue;
+    const bool discarded = previous->closed.load() && !previous->submitted.load();
+    bool known = (previous->completed_healthy || discarded)
+        && std::ranges::find(previous->completed_uses, object) != previous->completed_uses.end();
+    for (const auto& [identity, state] : tracked_lists) {
+      for (const auto& [generation, data] : state.generations) {
+        if (std::ranges::find(data.uses, object) == data.uses.end()) continue;
+        known = true;
+        if (data.unreserved_submissions != 0) return false;
+        if (identity == recording.first && generation == recording.second) continue;
+        if (data.open) return false;
+        if (data.submissions.empty()) {
+          // The caller reconstructs this exact discarded recording's state.
+          // Other recordings of these objects must still satisfy the contract.
+          if (discarded && identity == previous->list && generation == previous->generation) continue;
+          return false;
+        }
+        for (const auto& receipt : data.submissions) {
+          if (receipt.pending || receipt.fence.empty()) return false;
+          const auto completed = receipt.fence->GetCompletedValue();
+          if (completed == UINT64_MAX || completed < receipt.value) return false;
+        }
+      }
+    }
+    if (!known) return false;
   }
   return true;
 }

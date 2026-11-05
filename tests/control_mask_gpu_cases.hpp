@@ -238,6 +238,9 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   Check(mask_dispatches == 0, "default-off ProcessInline records zero ControlMask dispatches");
   Check(addon::worksets.at({owner, output.Get(), false}).control_mask == nullptr,
         "default-off production path allocates no mask");
+  Check(addon::worksets.at({owner, output.Get(), false}).recording == nullptr
+            && addon::features.at(owner).slots[0].recording == nullptr,
+        "default-off NR allocates no ControlMask recording observations");
   addon::control_mask_enabled = true;
   bool saw_mask = false;
   model_parameter_observer = [&](const NVSDK_NGX_Handle*, const NVSDK_NGX_Parameter* block) {
@@ -325,6 +328,15 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   model_parameter_observer = {};
   mature();
   Check(model_resets.back() == 1, "NGX exception recovers with History reset");
+  int unknown_object = 0;
+  const auto& completed_workset = addon::worksets.at({owner, output.Get(), false});
+  Check(submission::CanReuseRecordingObjects(
+            addon::CollectWorksetGpuObjects(completed_workset),
+            submission::RecordingIdentity(gpu.list.Get()), completed_workset.recording),
+        "pruned healthy completed recording retains positive object provenance");
+  Check(!submission::CanReuseRecordingObjects({&unknown_object},
+            submission::RecordingIdentity(gpu.list.Get()), completed_workset.recording),
+        "untracked object cannot borrow another object's completed receipt");
   std::cout << "CASE location=NGX-return-and-exception evidence=MOCK+GPU size=8x8 output=preserved binding=clear recovery=production-retry\n";
 
   // A second list cannot reuse state whose first recording has no submission.
@@ -338,8 +350,10 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   const auto before_parked = model_calls;
   addon::ProcessInline(gpu.list.Get(), owner, &parameters);
   Check(model_calls == before_parked + 1, "first parked recording evaluates");
+  addon::ProcessInline(gpu.list.Get(), owner, &parameters);
+  Check(model_calls == before_parked + 2, "exclusive same recording permits ordered reuse");
   auto* parked_mask = addon::worksets.at(key).control_mask;
-  Check(!addon::ProcessInline(other_list.Get(), owner, &parameters) && model_calls == before_parked + 1,
+  Check(!addon::ProcessInline(other_list.Get(), owner, &parameters) && model_calls == before_parked + 2,
         "unsubmitted recording rejects second list reuse without another Evaluate");
   // Real Close/Reset discards work. Do not submit commands with stale before-states.
   Check(SUCCEEDED(gpu.list->Close()) && SUCCEEDED(gpu.allocator->Reset())
@@ -400,8 +414,13 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
     gpu.list = other_list;
     addon::ProcessInline(gpu.list.Get(), owner, &parameters);
     gpu.list = saved_list;
-    Check(model_calls == queued_before + 2 && addon::worksets.at(key).control_mask == queued_mask,
-          "healthy same-queue pending fence does not skip next Evaluate or rebuild workset");
+    Check(model_calls == queued_before + 1 && addon::worksets.at(key).control_mask == queued_mask,
+          "unknown final queue rejects reuse while a healthy prior submission is pending");
+    parameters.Set(NVSDK_NGX_Parameter_Output, output_b.Get());
+    addon::ProcessInline(other_list.Get(), owner, &parameters);
+    parameters.Set(NVSDK_NGX_Parameter_Output, output.Get());
+    Check(model_calls == queued_before + 1,
+          "rotating output cannot bypass shared owner NR History completion gate");
     Check(SUCCEEDED(other_list->Close()), "next queued frame Close");
     ID3D12CommandList* next[]{other_list.Get()};
     gpu.queue->ExecuteCommandLists(1, next);
@@ -409,13 +428,21 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   } catch (...) { gate->Signal(1); wait_real(); throw; }
   Check(SUCCEEDED(gate->Signal(1)), "release healthy queue gate");
   wait_real();
+  Check(SUCCEEDED(other_list->Reset(other_allocator.Get(), nullptr)), "open empty rejected list");
+  const auto before_replayable = model_calls;
+  addon::ProcessInline(other_list.Get(), owner, &parameters);
+  Check(model_calls == before_replayable,
+        "Fence completion without Reset still rejects replayable prior recording");
+  Check(SUCCEEDED(other_list->Close()), "close replayability probe without addon work");
   Check(SUCCEEDED(gpu.allocator->Reset()) && SUCCEEDED(gpu.list->Reset(gpu.allocator.Get(), nullptr)), "reset completed frame");
   Check(SUCCEEDED(other_allocator->Reset()) && SUCCEEDED(other_list->Reset(other_allocator.Get(), nullptr)), "reset completed second frame");
   submission::OnCommandListReset(gpu.list.Get());
   submission::OnCommandListReset(other_list.Get());
   addon::DrainRetiredResources(true);
   Check(submission::ResourceReleasable(queued_mask), "real delayed fence then Reset releases use");
-  std::cout << "CASE location=healthy-queued evidence=GPU size=8x8 evaluates=2 resource=retained-then-releasable recovery=real-fence-and-reset no_cpu_fence_gate=1\n";
+  Check(record() == 1 && addon::worksets.at(key).control_mask == queued_mask,
+        "healthy completion plus Reset permits next recording without rebuilding");
+  std::cout << "CASE location=healthy-queued evidence=GPU+MOCK size=8x8 pending=declined replayable=declined complete-closed=reused resource=retained no_cpu_wait=1\n";
 
   // Exercise the actual detour's exception boundary, not manual null receipts.
   for (int stage : {0, 1, 2}) {

@@ -53,9 +53,9 @@ $python = & pwsh -File tools/offline/test.ps1 -ResolveOnly
 ./tools/run-tests.ps1 -Suite fg-native -NativeCase @('control-mask-safety','control-mask-safety-hardware') -HostRoot <固定宿主目录> -ShaderIncludeDirectory <当前生成头目录> -UiPreview None -OutputDirectory tmp/tests/control-mask-safety
 ~~~
 
-两个 case 分别使用 WARP／NVIDIA，复用同一编译目标和真实 command list／queue／Fence。日志中每项 `CASE` 记录故障位置、8×8 输入、资源保留／重建状态和恢复条件。覆盖 Root Signature／PSO／Descriptor／资源分配失败、Evaluate 替身失败、未提交录制的 Reset 丢弃、池换 key／跨 owner 驱逐、健康队列在飞连续帧、提交预约分配异常及 Signal 失败。三种提交故障还检查换 owner、输出轮换、选项关闭及 owner 释放／再注册后的资源数量，确认活跃或退休 ControlMask 资源仍存在时，未知提交会阻止继续分配；有效 Fence 正常在飞不触发该门禁。未知提交不以超时或测试独立 Fence 变成生产成功，pending／可重放录制保留到可信生命周期边界。`control-mask` 保留为 WARP 入口。
+两个 case 分别使用 WARP／NVIDIA，复用同一编译目标和真实 command list／queue／Fence。日志中每项 `CASE` 记录故障位置、8×8 输入、资源保留／重建状态和恢复条件。覆盖 Root Signature／PSO／Descriptor／资源分配失败、Evaluate 替身失败、未提交录制的 Reset 丢弃、池换 key／跨 owner 驱逐、健康在飞／完成后的复用准入、提交预约分配异常及 Signal 失败。三种提交故障还检查换 owner、输出轮换、选项关闭及 owner 释放／再注册后的资源数量，确认活跃或退休 ControlMask 资源仍存在时，未知提交会阻止继续分配。保守完成门禁另检查未知对象拒绝、同 recording 排他复用、健康 Fence 尚未完成时拒绝、同 owner 换输出不能绕过共享 History、Fence 完成但仍可 replay 时拒绝，以及完成并 Reset 后复用。旧的同 Queue 在飞连续 Evaluate 期望已改为跳过：Upscaled 录制时没有最终 Queue 保证。未知提交不以超时或测试独立 Fence 变成生产成功，pending／可重放录制保持保活。`control-mask` 保留为 WARP 入口。
 
-故障返回、NGX Runtime 和设备移除观察均为 MOCK；真实 GPU 证据只覆盖资源、Shader、提交与完成。移除观察在本次实际 GPU 工作独立完成后注入，验证旧设备拒绝处理、生产退休／计时消费者及独立新设备重建；不会主动移除真实设备。跨队列不在 P0 支持范围。Upscaled 的 NGX 入口只提供 command list，最终 queue 到提交拦截时才确定；同 device、同 queue type、Present queue 或上次提交均不能证明下一次提交身份。目前没有可靠的同队列录制门禁，新增的未知提交门禁也不承担此职责。解锁需要集成方在录制前提供并保证实际提交 queue 与 recording generation 的绑定，且覆盖重放／Reset；提交后发现不匹配不能撤销已录命令。真实驱动故障、原生 NGX、游戏接入和画质仍须分别验证。
+故障返回、NGX Runtime 和设备移除观察均为 MOCK；真实 GPU 证据只覆盖资源、Shader、提交与完成。移除观察在本次实际 GPU 工作独立完成后注入，验证旧设备拒绝处理、生产退休／计时消费者及独立新设备重建；不会主动移除真实设备。Upscaled 的 NGX 入口只提供 command list，最终 Queue 到提交拦截时才确定。ControlMask 相关路径复用全部 workset 对象、共享 NR handle／Look History 前，要求当前 recording 排他，或旧 recordings 均已不可 replay 且健康提交凭据全部完成；未满足时跳过注入，不新增 CPU 等待。完成对象的正证据仅保留所持 recording 的对象快照；未知／未追踪对象不能借用其他对象的凭据。默认关闭的旧 NR 不分配这些 observation；off→on 时等待旧精确追踪引用结束，再重建没有 ControlMask 正证据的 Feature／workset。DIRECT／COMPUTE 的共享状态规则与 Fence 串行共同构成资源合同，不以本门禁证明任意 Queue 类型、NGX 私有资源行为或所有 replay 序列。跨 Queue 原生 NGX、真实驱动故障、游戏接入与画质仍须分别验证。
 
 ## 自动回归
 

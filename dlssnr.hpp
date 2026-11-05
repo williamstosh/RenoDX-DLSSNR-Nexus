@@ -365,6 +365,7 @@ struct NrFeatureSlot {
   // recording that used it is a tracked submission use (see
   // RetiredNrFeature::tracker_proof).
   bool tracked_since_create = false;
+  std::shared_ptr<submission::RecordingStatus> recording;
   // Reset-epoch acknowledgement (v5.3): the global history_reset_epoch value
   // this slot has already reset at.  Replaces the v5.2.2 global Boolean
   // latch, whose stacked short-circuit never reached the consuming
@@ -785,6 +786,7 @@ inline DescriptorHandle DescriptorHeapSlot(
 }
 
 struct FinalResources {
+  const NVSDK_NGX_Handle* owner = nullptr;
   // Optional second-pass working surfaces. Full-stage images are held by COM
   // references; this owned child has its own immutable descriptor heap.
   FinalResources* resolution_tail = nullptr;
@@ -795,6 +797,8 @@ struct FinalResources {
   ID3D12Resource* control_mask = nullptr;
   D3D12_RESOURCE_STATES control_mask_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
   std::shared_ptr<submission::RecordingStatus> control_mask_recording;
+  mutable std::shared_ptr<submission::RecordingStatus> recording;
+  mutable bool tracked_recording = false;
   // HDR worksets (rc5): `decoded` IS `original` (one reference each), one
   // output-size surface less (31.6-63.3 MiB at 4K).  Safe because nothing
   // reads `original` after the linearize dispatch: the passes, pedestal and
@@ -4607,10 +4611,18 @@ inline bool ControlMaskSubmissionsUnproven() {
 // evaluate after the workset is ensured; the autoscale and exposure
 // work recorded later in the same flow belong to the same generation
 // (D3D12 requires recording to finish before the first submit).
+inline std::atomic_bool queue_tracking_active = false;
+
 inline void TrackWorksetRecording(
     ID3D12GraphicsCommandList* command_list, const FinalResources& res) {
   for (const void* object : CollectWorksetGpuObjects(res)) {
     submission::TrackUse(command_list, object);
+  }
+  for (const FinalResources* current = &res; current != nullptr; current = current->resolution_tail) {
+    current->tracked_recording = queue_tracking_active.load(std::memory_order_relaxed);
+    if (control_mask_enabled.load(std::memory_order_relaxed) || current->control_mask_recording != nullptr) {
+      current->recording = submission::ObserveRecording(command_list);
+    }
   }
 }
 
@@ -4623,7 +4635,6 @@ inline void TrackWorksetRecording(
 // GPU-inert until the first tracked use arms the tracker (see
 // HookedQueueExecuteCommandLists); every entry that reads exact proofs here
 // was necessarily recorded after that arming, so the meaning is unchanged.
-inline std::atomic_bool queue_tracking_active = false;
 
 // Cumulative ExecuteCommandLists forwards the detour left completely alone:
 // hooks installed, but no tracked use was ever recorded (v6.5.3 inert gate,
@@ -4862,6 +4873,7 @@ inline void ReleaseNrSlot(
   slot.control_mask_bound = false;
   slot.via_core = false;
   slot.tracked_since_create = false;
+  slot.recording.reset();
   slot.look_history = {};
   RefreshActiveFeatureCount();
 }
@@ -6455,6 +6467,7 @@ inline FinalResources* EnsureWorkset(
   }
 
   FinalResources resources;
+  resources.owner = owner;
   resources.shared_stage_surfaces = stage_resources != nullptr;
   resources.width = output_width;
   resources.height = output_height;
@@ -7232,6 +7245,9 @@ inline bool EnsureNrFeature(
   // very first NR create, and the flag must then read TRUE - this handle's
   // submissions carry exact proofs from that moment, not lease fallbacks.
   submission::TrackUse(command_list, slot.handle);
+  if (control_mask_enabled.load(std::memory_order_relaxed) || state.control_mask_recording != nullptr) {
+    slot.recording = submission::ObserveRecording(command_list);
+  }
   slot.tracked_since_create =
       queue_tracking_active.load(std::memory_order_relaxed);
   slot.configuration_generation = configuration_generation.load();
@@ -10603,6 +10619,74 @@ inline bool ProcessInline(
   }
   stage_stats.width = width;
   stage_stats.height = height;
+  if (control_mask_eligible || feature.control_mask_recording != nullptr) {
+    const auto current_recording = submission::RecordingIdentity(command_list);
+    const auto reusable = [&](const std::vector<const void*>& objects,
+                              const std::shared_ptr<submission::RecordingStatus>& previous) {
+      return submission::CanReuseRecordingObjects(objects, current_recording, previous);
+    };
+    bool ready = queue_tracking_active.load(std::memory_order_relaxed)
+        && SUCCEEDED(device->GetDeviceRemovedReason());
+    for (const auto& slot : feature.slots) {
+      if (slot.handle == nullptr) continue;
+      if (slot.recording != nullptr) {
+        ready &= slot.tracked_since_create && reusable(
+            {slot.handle, slot.look_history.buffers[0], slot.look_history.buffers[1]}, slot.recording);
+      } else {
+        // Off -> on: old NR has no ControlMask provenance. Only reconstruct
+        // after every exact tracked reference has ended; never reuse it.
+        ready &= slot.tracked_since_create && submission::ResourceReleasable(slot.handle);
+        for (const auto* history : slot.look_history.buffers) {
+          ready &= submission::ResourceReleasable(history);
+        }
+      }
+    }
+    if (feature.slots[0].recording != nullptr && feature.slots[0].recording->closed.load()
+        && !feature.slots[0].recording->submitted.load()) {
+      feature.control_mask_recording = feature.slots[0].recording;
+    }
+    // Output keys share their owner's NR History and normalization texel.
+    // Check every owner workset before any contract mutation or pool re-key.
+    for (auto& [key, resources] : worksets) {
+      if (key.handle != handle) continue;
+      ready &= resources.recording != nullptr
+          ? reusable(CollectWorksetGpuObjects(resources), resources.recording)
+          : resources.tracked_recording && WorksetRecordingsComplete(resources);
+      if (resources.recording != nullptr && resources.recording->closed.load()
+          && !resources.recording->submitted.load()) {
+        resources.control_mask_recording = resources.recording;
+      }
+    }
+    // Retired worksets can still share the stream's norm_commit; retirement
+    // keeps it alive but does not serialize a new writer.
+    for (const auto& retired : retired_final_resources) {
+      if (retired.resources.owner == handle) {
+        ready &= retired.resources.recording != nullptr
+            ? reusable(CollectWorksetGpuObjects(retired.resources), retired.resources.recording)
+            : retired.resources.tracked_recording && WorksetRecordingsComplete(retired.resources);
+      }
+    }
+    if (!ready) {
+      ClearControlMaskBinding(feature.slots[0]);
+      CountNrDecline(NrDeclineReason::kWorksetSetupFailed);
+      device->Release();
+      return false;
+    }
+    for (uint32_t pass = 0; pass < kMaxNrPasses; ++pass) {
+      if (feature.slots[pass].handle != nullptr && feature.slots[pass].recording == nullptr) {
+        ReleaseNrSlot(feature, pass, true);
+      }
+    }
+    for (auto existing = worksets.begin(); existing != worksets.end();) {
+      if (existing->first.handle == handle && existing->second.recording == nullptr) {
+        const auto key = existing->first;
+        ++existing;
+        RetireWorkset(key);
+      } else {
+        ++existing;
+      }
+    }
+  }
   const bool dims_committed =
       CommitNrResolution(feature, nr_input_width, nr_input_height, group.begin);
   std::array<uint32_t, kMaxNrPasses> pass_widths{}, pass_heights{};
@@ -10778,25 +10862,6 @@ inline bool ProcessInline(
       feature.slots[0].pending_reset_reasons |= kResetRecovery;
       feature.control_mask_recording.reset();
     }
-    if (feature.control_mask_recording != nullptr && feature.slots[0].handle != nullptr) {
-      const auto& previous = *feature.control_mask_recording;
-      if (submission::RecordingIdentity(command_list) != std::pair{previous.list, previous.generation}) {
-        std::vector<std::pair<FenceRef, uint64_t>> tokens;
-        bool reusable = submission::UseSubmissionTokens(feature.slots[0].handle, &tokens)
-            != submission::UseSubmission::kUnsubmitted;
-        for (const auto& [fence, value] : tokens) {
-          reusable &= fence->GetCompletedValue() != UINT64_MAX;
-        }
-        if (!reusable) {
-          ClearControlMaskBinding(feature.slots[0]);
-          feature.slots[0].pending_reset = true;
-          feature.slots[0].pending_reset_reasons |= kResetRecovery;
-          CountNrDecline(NrDeclineReason::kWorksetSetupFailed);
-          device->Release();
-          return false;
-        }
-      }
-    }
     // The model is shared across this owner's output keys. Check all of them
     // before EnsureWorkset can evict or re-key a pooled workset.
     for (auto existing = worksets.begin(); existing != worksets.end();) {
@@ -10817,26 +10882,6 @@ inline bool ProcessInline(
           feature.slots[0].pending_reset = true;
           feature.slots[0].pending_reset_reasons |= kResetRecovery;
           continue;
-        } else {
-          std::vector<std::pair<FenceRef, uint64_t>> tokens;
-          const auto proof = submission::UseSubmissionTokens(existing->second.control_mask, &tokens);
-          bool reusable = proof != submission::UseSubmission::kUnsubmitted;
-          for (const auto& [fence, value] : tokens) {
-            const auto completed = fence->GetCompletedValue();
-            // Healthy queued work retains the existing ordered-queue reuse
-            // contract; this is not a CPU wait for the previous frame.
-            reusable &= completed != UINT64_MAX;
-          }
-          if (!reusable) {
-            // Retaining a workset prevents release, not a second queue from
-            // writing it. An unknown receipt stays isolated until teardown.
-            ClearControlMaskBinding(feature.slots[0]);
-            feature.slots[0].pending_reset = true;
-            feature.slots[0].pending_reset_reasons |= kResetRecovery;
-            CountNrDecline(NrDeclineReason::kWorksetSetupFailed);
-            device->Release();
-            return false;
-          }
         }
       }
       ++existing;
@@ -11625,6 +11670,9 @@ inline bool ProcessInline(
     // The NGX runtime records this handle's work into the game's list: a
     // tracked use, so a later retirement waits for exactly this submission.
     submission::TrackUse(command_list, feature.slots[pass].handle);
+    if (control_mask_enabled.load(std::memory_order_relaxed) || feature.control_mask_recording != nullptr) {
+      feature.slots[pass].recording = submission::ObserveRecording(command_list);
+    }
     NVSDK_NGX_Result nr_result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
     bool nr_returned = false;
     if (recording != nullptr) {
@@ -13302,6 +13350,9 @@ inline bool ProcessInlinePreSR(
     // The NGX runtime records this handle's work into the game's list: a
     // tracked use, so a later retirement waits for exactly this submission.
     submission::TrackUse(command_list, feature.slots[pass].handle);
+    if (control_mask_enabled.load(std::memory_order_relaxed) || feature.control_mask_recording != nullptr) {
+      feature.slots[pass].recording = submission::ObserveRecording(command_list);
+    }
     NVSDK_NGX_Result nr_result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
     bool nr_returned = false;
     {
