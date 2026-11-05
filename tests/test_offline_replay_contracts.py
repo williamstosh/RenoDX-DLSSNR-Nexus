@@ -32,7 +32,8 @@ class OfflineReplayContractsTests(unittest.TestCase):
                 (self.output / resource["file"]).write_bytes((self.source / resource["file"]).read_bytes())
                 resources[name] = {"output_file": resource["file"], "format": resource["format"],
                                    "bytes": resource["bytes"], "bitwise_equal": True}
-            self.backend["frames"].append({"index": frame["index"], "evidence": "WARP", "resources": resources,
+            self.backend["frames"].append({"index": frame["index"], "width": frame.get("width", self.sequence["width"]),
+                "height": frame.get("height", self.sequence["height"]), "evidence": "WARP", "resources": resources,
                 "completion": {"gpu_completed": True, "fence_value": frame["index"] + 1},
                 "controls": {"evidence": "STATIC", "history_evaluated": False,
                              **{key: frame[key] for key in ("reset", "jitter", "motion_scale", "subrect")}}})

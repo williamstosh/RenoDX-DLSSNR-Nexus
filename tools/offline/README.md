@@ -41,6 +41,7 @@ id、width、height，其他默认如下。未知字段、重复 ID（含 Window
 python tools/offline/run.py validate tests/fixtures/offline/control-mask-smoke.json
 python tools/offline/run.py matrix --output tmp/offline/matrix.json
 python tools/offline/run.py prepare --output tmp/offline/sequence --width 64 --height 36 --frames 8 --seed 7
+python tools/offline/run.py prepare --output tmp/offline/resize-sequence --width 64 --height 36 --frames 8 --resize-cycle 64x36 96x54 128x72 --subrect 8,4,40,24
 python tools/offline/run.py verify-sequence tmp/offline/sequence/inputs
 ~~~
 
@@ -48,11 +49,20 @@ python tools/offline/run.py verify-sequence tmp/offline/sequence/inputs
 线程组边界及 R/G/B 对照。matrix --frames 1008 --warmup 8 可声明较长采样；是否适合
 正式性能比较还取决于测量 scope、设备、负载与输入身份。
 
+真实尺寸 ControlMask Shader-only Fixture：
+
+~~~powershell
+pwsh -File tools/offline/build.ps1 -Backend gpu -OutputDirectory tmp/offline/gpu-build
+python tools/offline/run.py run --fixture tests/fixtures/offline/control-mask-raster-performance.json --backend-exe tmp/offline/gpu-build/offline_gpu_tests.exe --adapter nvidia --performance --timeout 300 --output tmp/offline/raster-nvidia
+~~~
+
+`--performance` 在同一生产 Dispatch helper 和同一 ControlMask Shader 下批量记录 D3D12 timestamp，稳态样本各自在最后一次 readback／Fence 后核实。Scope 明确为 Shader Dispatch 加其 UAV Barrier；结果另记设备／队列和生产管线初始化、每 case 资源／descriptor／query 分配估计、CPU 资源准备／命令录制／case wall time，以及可用时 `nvidia-smi` 前后时钟／负载快照。D3D12 timestamp frequency 是队列 tick 频率，不是核心频率；没有 GPU clock lock。WARP 只作功能回归，不将其运行时间作为硬件性能结论。该批处理用于重复采样而复用生产 Dispatch 和 Barrier，不代表产品 NR 多 Pass 调度；不包含 NR Evaluate、NGX、FG、输入生成、游戏或端到端成本。
+
 合成序列保存 little-endian 原始 Color R32G32B32A32_FLOAT、Depth R32_FLOAT、
 Motion R32G32_FLOAT，逐帧明确 Reset、Jitter、Motion Scale、Subrect、格式、长度与
 SHA-256。当前 moving-ramp/1 为周期水平平移、普通深度、零 jitter、首帧 reset；这是
 可重建的 CPU Fixture，可由 E0 后端上传到真实 D3D12 资源并完成 GPU copy／读回；
-生成阶段本身仅为 STATIC，GPU 传输验证不执行 NGX History。
+生成阶段本身仅为 STATIC，GPU 传输验证不执行 NGX History。sequence/2 支持逐帧 Width／Height、资源重建及变化的 Subrect 边界；sequence/1 固定尺寸仍可读取。
 生成数据有 256 MiB 预算，不纳入 Git。
 
 ## E0：float32 GPU 输入回放
@@ -80,6 +90,31 @@ controls 中 Reset、Jitter、Motion Scale、Subrect 仅转录输入，标记 ST
 `run.py replay` 另行核验构建身份和输入 SHA-256，运行后再次核对输入，并独立检查
 全部读回资源与完成序号。统一输出为 `result.json`，原始后端结果与 float32 文件
 保留在 `backend/`。直接执行 EXE 不替代 runner 的输入 SHA-256 校验。
+
+## 既有 FG／XeFG／生命周期套件统一入口
+
+用版本化 Fixture 将现有生产测试入口接入统一结果，不实现第二套 GPU 调度：
+
+~~~powershell
+python tools/offline/suites.py tests/fixtures/offline/fg-contracts.json --output tmp/offline/fg-contracts-run
+~~~
+
+Runner 调用 `tools/run-tests.ps1` 一次构建并运行 Fixture 指定的 `fg-native`、
+`fg-xefg`、`lifecycle` 用例，GPU case 仍由原测试二进制执行。`result.json` 逐 case
+核对原始日志／生命周期退出码和 suite 的 `result.json`，记录原始产物 SHA-256、
+Fixture 身份及执行前后源码身份；源码变化、缺失产物、错误 suite 结果、非零退出或
+超时均为失败，日志与部分产物保留。测试 suite 的输出放在本次报告目录下独立的
+`test-run/`，避免覆盖保护拒绝非空目录。
+
+Windows 上 Runner 将既有测试入口放入独立 Job Object；超时会终止并核对本次 Job
+中的进程树，再收集 stdout／stderr、部分 suite 产物和失败报告。Job 创建／分配、进程树
+回收或管道关闭无法核实都会保留失败状态，不把根进程退出误记作整个进程树已停止。
+
+版本化 Fixture 当前登记 17 项：同 Stage、跨 Stage、Render、Present 双 Pass 的同尺寸／独立尺寸及 WARP／NVIDIA 用例，另含 A/B 模型请求、Feature Switch、Present Chain、XeFG 资源合同与 DLL 生命周期。报告分别列出 STATIC、MOCK、WARP、NATIVE_GPU、NATIVE_NGX、IN_GAME、VISUAL。当前
+Fixture 中 FG 模型／SDK 为替身：`same-stage-model-pair`、`same-stage-mixed-pair`、
+`present-chain` 与 `feature-switch` 的资源／Shader／提交证据按 WARP 或硬件 case
+分别标记，参数与模型请求标 MOCK；XeFG resource lifecycle 是 WARP＋fake SDK MOCK，
+DLL 生命周期为 MOCK。NVIDIA GPU 资源通过不表示 NVIDIA NGX／XeFG SDK 已运行。
 
 ## 真实 Shader 与参数矩阵
 

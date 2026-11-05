@@ -74,8 +74,10 @@ int wmain(int argc, wchar_t** argv) {
     Check(manifest_input.good(), "cannot open sequence manifest");
     Json manifest;
     manifest_input >> manifest;
-    Check(manifest.is_object() && manifest.at("schema") == "nr-nexus-offline-sequence/1"
+    Check(manifest.is_object() && (manifest.at("schema") == "nr-nexus-offline-sequence/1"
+              || manifest.at("schema") == "nr-nexus-offline-sequence/2")
               && manifest.at("byte_order") == "little", "unsupported sequence envelope");
+    const bool per_frame_geometry = manifest.at("schema") == "nr-nexus-offline-sequence/2";
     const auto read_uint = [](const Json& value, uint32_t minimum, uint32_t maximum) {
       Check(value.is_number_integer() && value >= minimum && value <= maximum, "integer sequence field out of range");
       return value.get<uint32_t>();
@@ -84,8 +86,14 @@ int wmain(int argc, wchar_t** argv) {
     const uint32_t height = read_uint(manifest.at("height"), 1, 8192);
     Check(manifest.at("frames").is_array() && !manifest.at("frames").empty()
               && manifest.at("frames").size() <= 4096, "sequence requires 1..4096 frames");
-    Check(static_cast<uint64_t>(width) * height * 28 * manifest.at("frames").size() <= 256 * 1024 * 1024,
-          "sequence exceeds 256 MiB");
+    uint64_t total_bytes = 0;
+    for (const auto& item : manifest.at("frames")) {
+      const auto frame_width = per_frame_geometry ? read_uint(item.at("width"), 1, 8192) : width;
+      const auto frame_height = per_frame_geometry ? read_uint(item.at("height"), 1, 8192) : height;
+      Check(frame_width <= 8192 && frame_height <= 8192, "frame geometry out of range");
+      total_bytes += static_cast<uint64_t>(frame_width) * frame_height * 28;
+      Check(total_bytes <= 256 * 1024 * 1024, "sequence exceeds 256 MiB");
+    }
     Check(manifest.at("sequence_sha256").is_string(), "sequence identity required");
     result["sequence_sha256"] = manifest.at("sequence_sha256");
     result["width"] = width;
@@ -154,7 +162,10 @@ int wmain(int argc, wchar_t** argv) {
     };
     for (size_t index = 0; index < manifest.at("frames").size(); ++index) {
       const auto& frame = manifest.at("frames")[index];
+      const uint32_t frame_width = per_frame_geometry ? read_uint(frame.at("width"), 1, 8192) : width;
+      const uint32_t frame_height = per_frame_geometry ? read_uint(frame.at("height"), 1, 8192) : height;
       result["frames"].push_back({{"index", index}, {"status", "failed"}, {"evidence", nullptr},
+          {"width", frame_width}, {"height", frame_height},
           {"requested_evidence", (selected_adapter == "warp" ? "WARP" : "NATIVE_GPU")},
           {"resources", Json::object()}, {"controls", {{"evidence", "STATIC"}, {"history_evaluated", false}}},
           {"network_evaluated", false}, {"completion", {{"gpu_completed", false}, {"fence_value", nullptr}}}});
@@ -168,7 +179,14 @@ int wmain(int argc, wchar_t** argv) {
         frame_result["controls"][field] = frame.at(field);
       }
       frame_result["controls"]["reset"] = frame.at("reset");
-      Check(frame.at("subrect") == Json::array({0, 0, width, height}), "only full-frame sequence subrect supported");
+      Check(frame.at("subrect").is_array() && frame.at("subrect").size() == 4,
+            "four-component sequence subrect required");
+      const auto rect_x = read_uint(frame.at("subrect")[0], 0, frame_width);
+      const auto rect_y = read_uint(frame.at("subrect")[1], 0, frame_height);
+      const auto rect_width = read_uint(frame.at("subrect")[2], 0, frame_width);
+      const auto rect_height = read_uint(frame.at("subrect")[3], 0, frame_height);
+      Check(rect_x + rect_width <= frame_width && rect_y + rect_height <= frame_height,
+            "sequence subrect exceeds input geometry");
       frame_result["controls"]["subrect"] = frame.at("subrect");
       Check(frame.at("resources").is_object() && frame.at("resources").size() == 3, "three sequence resources required");
       std::array<ResourceCopy, 3> copies{{
@@ -177,7 +195,7 @@ int wmain(int argc, wchar_t** argv) {
           {.name = "motion", .format_name = "R32G32_FLOAT", .format = DXGI_FORMAT_R32G32_FLOAT, .stride = 8}}};
       for (auto& copy : copies) {
         const auto& resource = frame.at("resources").at(copy.name);
-        const auto bytes = static_cast<size_t>(width) * height * copy.stride;
+        const auto bytes = static_cast<size_t>(frame_width) * frame_height * copy.stride;
         Check(resource.at("format") == copy.format_name && resource.at("bytes").is_number_integer()
                   && resource.at("bytes") == bytes, "resource format/length mismatch");
         const auto name = resource.at("file").get<std::string>();
@@ -191,8 +209,8 @@ int wmain(int argc, wchar_t** argv) {
         Check(input.good() && static_cast<bool>(input.read(reinterpret_cast<char*>(copy.input.data()), bytes)), "resource read failed");
         D3D12_RESOURCE_DESC texture{};
         texture.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        texture.Width = width;
-        texture.Height = height;
+        texture.Width = frame_width;
+        texture.Height = frame_height;
         texture.DepthOrArraySize = 1;
         texture.MipLevels = 1;
         texture.Format = copy.format;
@@ -205,7 +223,7 @@ int wmain(int argc, wchar_t** argv) {
         UINT rows = 0;
         UINT64 row_bytes = 0;
         gpu.device->GetCopyableFootprints(&texture, 0, 1, 0, &copy.footprint, &rows, &row_bytes, &copy.allocation_bytes);
-        Check(rows == height && row_bytes == static_cast<uint64_t>(width) * copy.stride
+        Check(rows == frame_height && row_bytes == static_cast<uint64_t>(frame_width) * copy.stride
                   && copy.footprint.Footprint.RowPitch >= row_bytes, "copy footprint shape mismatch");
         copy.upload = gpu.Buffer(copy.allocation_bytes, D3D12_HEAP_TYPE_UPLOAD);
         copy.readback = gpu.Buffer(copy.allocation_bytes, D3D12_HEAP_TYPE_READBACK);
@@ -213,7 +231,7 @@ int wmain(int argc, wchar_t** argv) {
         const D3D12_RANGE no_reads{0, 0};
         Check(SUCCEEDED(copy.upload->Map(0, &no_reads, reinterpret_cast<void**>(&mapped))), "upload map");
         std::memset(mapped, 0, static_cast<size_t>(copy.allocation_bytes));
-        for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t y = 0; y < frame_height; ++y) {
           std::memcpy(mapped + copy.footprint.Offset + static_cast<size_t>(y) * copy.footprint.Footprint.RowPitch,
                       copy.input.data() + static_cast<size_t>(y) * row_bytes, static_cast<size_t>(row_bytes));
         }
@@ -259,8 +277,8 @@ int wmain(int argc, wchar_t** argv) {
         const D3D12_RANGE read_range{0, static_cast<SIZE_T>(copy.allocation_bytes)};
         Check(SUCCEEDED(copy.readback->Map(0, &read_range, reinterpret_cast<void**>(&mapped))), "readback map");
         std::vector<uint8_t> pixels(copy.input.size());
-        const auto row_bytes = static_cast<size_t>(width) * copy.stride;
-        for (uint32_t y = 0; y < height; ++y) {
+        const auto row_bytes = static_cast<size_t>(frame_width) * copy.stride;
+        for (uint32_t y = 0; y < frame_height; ++y) {
           std::memcpy(pixels.data() + static_cast<size_t>(y) * row_bytes,
                       mapped + copy.footprint.Offset + static_cast<size_t>(y) * copy.footprint.Footprint.RowPitch, row_bytes);
         }

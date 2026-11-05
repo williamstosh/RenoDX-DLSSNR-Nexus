@@ -25,21 +25,59 @@ class OfflineRunnerTests(unittest.TestCase):
             "cases": [{"id": "one", "width": 2, "height": 2, "frames": 3, "warmup": 1}]})
         (self.directory / "one.rgba8").write_bytes(c.mask_reference(self.fixture["cases"][0]))
         self.backend = {"schema": "nr-nexus-offline-backend/1", "backend": "d3d12-control-mask",
+            "execution_mode": "validation", "cpu_timing": {"clock": "std::chrono::steady_clock",
+                "device_queue_init_ms": 1.0, "pipeline_init_ms": 1.0,
+                "all_case_resource_and_execution_ms": 2.0},
             "adapter": "warp", "environment": {"unit_test_only": True, "adapter_flags": 2,
+                "timestamp_frequency_hz": 1000,
+                "timestamp_frequency_scope": "D3D12 command-queue timestamp ticks per second; not GPU core clock",
                 "ngx_loaded": False, "network_evaluated": False}, "cases": [{
                 "id": "one", "status": "passed", "evidence": "WARP", "width": 2, "height": 2,
                 "format": "R8G8B8A8_UNORM", "pixels_file": "one.rgba8",
+                "pixel_checks": 48, "validated_frames": 3,
+                "allocation": {"texture_bytes_estimate": 512, "timestamp_query_count": 6},
+                "cpu_timing": {"clock": "std::chrono::steady_clock", "resource_setup_ms": 1.0,
+                    "command_recording_ms": 1.0, "case_wall_ms": 2.0},
                 "parameter_contract": {"evidence": "MOCK", "model_request": "A", "auto_mask": False, "blend_mode": 0},
                 "completion": {"gpu_completed": True, "fence_value": 3},
-                "timing": {"scope": "control-mask-dispatch", "frequency_hz": 1000, "samples": [
+                "timing": {"scope": "control-mask-dispatch", "frequency_hz": 1000,
+                    "includes_uav_barrier": True, "source": "D3D12_QUERY_TYPE_TIMESTAMP",
+                    "execution_mode": "per-frame-readback", "validation_scope": "all-frames", "samples": [
                     {"frame": index, "begin_tick": 100, "end_tick": 101 + index, "gpu_ms": 1 + index,
                      "warmup": index == 0, "completion_serial": index + 1} for index in range(3)]}}]}
 
     def test_separate_evidence_and_actual_steady_sample_count(self):
         checks = runner.verify_gpu_result(self.fixture, self.backend, self.directory, "warp")[0]["checks"]
-        self.assertEqual([check["evidence"] for check in checks], ["WARP", "MOCK", "WARP"])
-        self.assertEqual(checks[-1]["statistics"]["count"], 2)
-        self.assertEqual(checks[-1]["statistics"]["p95"], 3)
+        self.assertEqual([check["evidence"] for check in checks], ["WARP", "MOCK", "WARP", "WARP"])
+        self.assertEqual(checks[2]["statistics"]["count"], 2)
+        self.assertEqual(checks[2]["statistics"]["p95"], 3)
+
+    def test_benchmark_requires_batched_fence_and_one_full_readback(self):
+        fixture = copy.deepcopy(self.fixture)
+        fixture["cases"][0]["frames"] = 5
+        fixture["cases"][0]["warmup"] = 1
+        benchmark = copy.deepcopy(self.backend)
+        benchmark["execution_mode"] = "performance"
+        benchmark["adapter"] = "nvidia"
+        benchmark["environment"]["adapter_flags"] = 0
+        benchmark["environment"]["vendor_id"] = 0x10DE
+        benchmark_case = benchmark["cases"][0]
+        benchmark_case["evidence"] = "NATIVE_GPU"
+        benchmark_case["pixel_checks"] = 16
+        benchmark_case["validated_frames"] = 1
+        benchmark_case["allocation"]["timestamp_query_count"] = 10
+        benchmark_case["timing"]["execution_mode"] = "batched"
+        benchmark_case["timing"]["validation_scope"] = "final-frame"
+        benchmark_case["completion"]["fence_value"] = 5
+        benchmark_case["timing"]["samples"] = [
+            {"frame": index, "begin_tick": 100 + index, "end_tick": 101 + index,
+             "gpu_ms": 1, "warmup": index == 0, "completion_serial": 5} for index in range(5)]
+        checks = runner.verify_gpu_result(fixture, benchmark, self.directory, "nvidia", performance=True)[0]["checks"]
+        self.assertEqual(checks[2]["statistics"]["count"], 4)
+        self.assertEqual(checks[3]["pixel_validation"], "final-frame-only")
+        benchmark_case["timing"]["samples"][2]["completion_serial"] = 3
+        with self.assertRaises(c.ContractError):
+            runner.verify_gpu_result(fixture, benchmark, self.directory, "nvidia", performance=True)
 
     def test_rejects_evidence_upgrade_and_adapter_fallback(self):
         self.backend["cases"][0]["evidence"] = "NATIVE_NGX"
@@ -52,6 +90,14 @@ class OfflineRunnerTests(unittest.TestCase):
         self.backend["environment"]["adapter_flags"] = 0
         with self.assertRaises(c.ContractError):
             runner.verify_gpu_result(self.fixture, self.backend, self.directory, "warp")
+
+    def test_performance_rejects_warp_and_unknown_timestamp_scope(self):
+        with self.assertRaises(c.ContractError):
+            runner.verify_gpu_result(self.fixture, self.backend, self.directory, "warp", performance=True)
+        value = copy.deepcopy(self.backend)
+        value["cases"][0]["timing"]["includes_uav_barrier"] = False
+        with self.assertRaises(c.ContractError):
+            runner.verify_gpu_result(self.fixture, value, self.directory, "warp")
 
     def test_missing_case_or_sample_is_failure(self):
         for field in ("cases", "samples"):

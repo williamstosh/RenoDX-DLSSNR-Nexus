@@ -61,6 +61,8 @@ class OfflineReplayBackendTests(unittest.TestCase):
         previous_fence = 0
         for source, actual in zip(manifest["frames"], result["frames"]):
             self.assertEqual(actual["index"], source["index"])
+            self.assertEqual(actual["width"], source.get("width", manifest["width"]))
+            self.assertEqual(actual["height"], source.get("height", manifest["height"]))
             self.assertEqual(actual["status"], "passed")
             self.assertEqual(actual["controls"]["evidence"], "STATIC")
             for field in ("reset", "jitter", "motion_scale", "subrect"):
@@ -99,6 +101,18 @@ class OfflineReplayBackendTests(unittest.TestCase):
         completed = self.run_backend()
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         self.check_roundtrip(manifest, self.read_result())
+
+    def test_resize_recreates_per_frame_resources_and_accepts_subrect(self):
+        manifest = contracts.prepare_sequence(self.sequence, 3, 2, 4, seed=11,
+            resolutions=[(3, 2), (5, 3), (5, 3), (1, 4)],
+            subrects=[(0, 0, 3, 2), (1, 0, 4, 3), (0, 1, 2, 2), (0, 0, 1, 4)])
+        contracts.verify_sequence(self.sequence)
+        completed = self.run_backend()
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        result = self.read_result()
+        self.check_roundtrip(manifest, result)
+        self.assertEqual([(frame["width"], frame["height"]) for frame in result["frames"]],
+                         [(3, 2), (5, 3), (5, 3), (1, 4)])
 
     def test_nonempty_output_is_untouched(self):
         self.generate(frames=1)

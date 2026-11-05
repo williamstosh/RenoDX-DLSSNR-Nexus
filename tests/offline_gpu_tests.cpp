@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <cstdint>
@@ -25,11 +26,13 @@ int wmain(int argc, wchar_t** argv) {
   fs::path output;
   std::string selected_adapter;
   bool contracts = false;
+  bool benchmark = false;
   bool owns_output = false;
   int exit_code = 0;
   Json fixture;
   Json result{{"schema", "nr-nexus-offline-backend/1"},
               {"backend", "d3d12-control-mask"},
+              {"execution_mode", "validation"},
               {"reference_policy", "d3d-float-to-unorm-0.6-ulp"},
               {"environment", Json::object()}, {"cases", Json::array()}};
   // D3D11 functional spec section 3.2.3.6, applied through the D3D12 SDK tolerance:
@@ -66,6 +69,10 @@ int wmain(int argc, wchar_t** argv) {
         contracts = true;
         continue;
       }
+      if (option == L"--benchmark") {
+        benchmark = true;
+        continue;
+      }
       Check(i + 1 < argc, "CLI option requires a value");
       const std::wstring value = argv[++i];
       if (option == L"--fixture") {
@@ -81,8 +88,10 @@ int wmain(int argc, wchar_t** argv) {
     }
     Check(!output.empty() && !selected_adapter.empty(), "--output and --adapter are required");
     Check(contracts != !fixture_path.empty(), "select either --fixture or --contracts");
+    Check(!contracts || !benchmark, "--benchmark requires a fixture");
     Check(!contracts || selected_adapter == "warp", "--contracts reuses the WARP harness; select --adapter warp");
     result["adapter"] = selected_adapter;
+    result["execution_mode"] = benchmark ? "performance" : "validation";
     output = fs::absolute(output);
     if (fs::exists(output)) {
       Check(fs::is_directory(output) && fs::is_empty(output), "refusing existing nonempty output");
@@ -123,7 +132,11 @@ int wmain(int argc, wchar_t** argv) {
                               {"entry", "control_mask_gpu_cases::Run"},
                               {"network_evaluated", false}};
     } else {
+      const auto device_init_start = std::chrono::steady_clock::now();
       Gpu gpu(selected_adapter == "nvidia");
+      result["cpu_timing"] = {{"clock", "std::chrono::steady_clock"},
+          {"device_queue_init_ms", std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - device_init_start).count()}};
       bool ngx_loaded = false;
       for (const auto* module : {L"nvngx.dll", L"_nvngx.dll", L"nvngx_dlssnr.dll"}) {
         ngx_loaded = ngx_loaded || GetModuleHandleW(module) != nullptr;
@@ -168,9 +181,15 @@ int wmain(int argc, wchar_t** argv) {
       }
       Check(addon::InstallQueueCompletionHooks(gpu.queue.Get()), "production queue completion hooks");
       Check(addon::InstallCommandListStateHooks(gpu.list.Get()), "production list state hooks");
+      const auto pipeline_init_start = std::chrono::steady_clock::now();
       Check(addon::EnsureControlMaskPipeline(gpu.device.Get()), "production ControlMask pipeline");
+      result["cpu_timing"]["pipeline_init_ms"] = std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - pipeline_init_start).count();
       UINT64 frequency = 0;
       Check(SUCCEEDED(gpu.queue->GetTimestampFrequency(&frequency)) && frequency != 0, "GPU timestamp frequency");
+      result["environment"]["timestamp_frequency_hz"] = frequency;
+      result["environment"]["timestamp_frequency_scope"] = "D3D12 command-queue timestamp ticks per second; not GPU core clock";
+      const auto resources_init_start = std::chrono::steady_clock::now();
       ComPtr<ID3D12InfoQueue> info;
       gpu.device.As(&info);
       result["environment"]["debug_message_queue_available"] = info != nullptr;
@@ -218,7 +237,7 @@ int wmain(int argc, wchar_t** argv) {
           const uint32_t height = read_uint(item.at("height"), 1, D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION);
           case_result["width"] = width;
           case_result["height"] = height;
-          const uint32_t frames = read_uint(item.at("frames"), 1, INT_MAX);
+          const uint32_t frames = read_uint(item.at("frames"), 1, 4096);
           const uint32_t warmup = read_uint(item.at("warmup"), 0, frames - 1);
           Check(item.at("auto_mask").is_boolean(), "auto_mask must be boolean");
           const bool auto_mask = item.at("auto_mask");
@@ -245,6 +264,8 @@ int wmain(int argc, wchar_t** argv) {
             // computes its ideal continuous integer-side value without another float32 rounding.
             base_ideal[channel] = static_cast<double>(rgb[channel]) * 255.0;
           }
+          const auto case_start = std::chrono::steady_clock::now();
+          const auto resource_setup_start = case_start;
           const D3D12_HEAP_PROPERTIES properties{.Type = D3D12_HEAP_TYPE_DEFAULT};
           const D3D12_RESOURCE_DESC desc{.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D,
               .Width = width, .Height = height, .DepthOrArraySize = 1, .MipLevels = 1,
@@ -253,6 +274,7 @@ int wmain(int argc, wchar_t** argv) {
           ComPtr<ID3D12Resource> texture;
           Check(SUCCEEDED(gpu.device->CreateCommittedResource(&properties, D3D12_HEAP_FLAG_NONE, &desc,
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&texture))), "case RGBA8 texture");
+          const auto texture_allocation = gpu.device->GetResourceAllocationInfo(0, 1, &desc);
           const D3D12_DESCRIPTOR_HEAP_DESC heap_desc{.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
               .NumDescriptors = addon::kDescriptorHeapSize, .Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE};
           ComPtr<ID3D12DescriptorHeap> heap;
@@ -299,39 +321,82 @@ int wmain(int argc, wchar_t** argv) {
               {"scope", "SetNrCreateParameters + SetEvaluationParameters on OwnedParameters; no NGX create/evaluate"}});
 
           ComPtr<ID3D12QueryHeap> queries;
-          const D3D12_QUERY_HEAP_DESC query_desc{.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP, .Count = 2};
+          const D3D12_QUERY_HEAP_DESC query_desc{.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP, .Count = 2 * frames};
           Check(SUCCEEDED(gpu.device->CreateQueryHeap(&query_desc, IID_PPV_ARGS(&queries))), "timestamp query heap");
-          auto ticks_readback = gpu.Buffer(2 * sizeof(uint64_t), D3D12_HEAP_TYPE_READBACK);
+          auto ticks_readback = gpu.Buffer(2 * frames * sizeof(uint64_t), D3D12_HEAP_TYPE_READBACK);
           case_result["timing"]["warmup_frames"] = warmup;
           case_result["timing"]["total_frames"] = frames;
+          case_result["timing"]["execution_mode"] = benchmark ? "batched" : "per-frame-readback";
+          case_result["timing"]["validation_scope"] = benchmark ? "final-frame" : "all-frames";
+          case_result["allocation"] = {{"texture_bytes_estimate", texture_allocation.SizeInBytes},
+              {"texture_alignment", texture_allocation.Alignment},
+              {"descriptor_count", addon::kDescriptorHeapSize},
+              {"descriptor_increment_bytes", gpu.device->GetDescriptorHandleIncrementSize(
+                  D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)},
+              {"timestamp_query_count", 2 * frames},
+              {"timestamp_readback_bytes", 2 * frames * sizeof(uint64_t)}};
+          case_result["cpu_timing"] = {{"resource_setup_ms", nullptr}, {"command_recording_ms", 0.0},
+              {"case_wall_ms", nullptr}, {"clock", "std::chrono::steady_clock"}};
+          case_result["cpu_timing"]["resource_setup_ms"] = std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - resource_setup_start).count();
           uint64_t checks = 0;
           uint64_t exact_differences = 0;
           double max_quantization_error = 0.0;
           bool pixels_match = true;
           for (uint32_t index = 0; index < frames; ++index) {
-            gpu.list->EndQuery(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
+            const auto recording_start = std::chrono::steady_clock::now();
+            const UINT query_index = 2 * index;
+            gpu.list->EndQuery(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query_index);
             control_mask_gpu_cases::Dispatch(gpu, texture.Get(), heap.Get(), mode, rect_width, rect_height, rgb[0], rgb[1], rgb[2]);
-            gpu.list->EndQuery(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
-            gpu.list->ResolveQueryData(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, ticks_readback.Get(), 0);
-            const auto pixels = control_mask_gpu_cases::ReadPixels(gpu, texture.Get());
-            const uint64_t completed_serial = gpu.fence->GetCompletedValue();
-            Check(completed_serial != UINT64_MAX && completed_serial >= gpu.serial, "real submission fence completed");
-            case_result["completion"] = {{"completed", true}, {"gpu_completed", true},
-                                          {"fence_value", completed_serial}, {"readback_serial", gpu.serial},
-                                          {"submitted_serial", gpu.serial},
-                                          {"completed_serial", completed_serial}, {"frames", index + 1},
-                                          {"source", "Gpu::Submit + ID3D12Fence::GetCompletedValue"}};
-            uint64_t* mapped_ticks = nullptr;
-            const D3D12_RANGE read_range{0, 2 * sizeof(uint64_t)};
-            Check(SUCCEEDED(ticks_readback->Map(0, &read_range, reinterpret_cast<void**>(&mapped_ticks))), "completed timestamp map");
-            const std::array<uint64_t, 2> ticks{mapped_ticks[0], mapped_ticks[1]};
-            const D3D12_RANGE written_range{0, 0};
-            ticks_readback->Unmap(0, &written_range);
-            Check(ticks[1] >= ticks[0], "timestamp order");
-            case_result["timing"]["samples"].push_back({{"frame", index}, {"begin_tick", ticks[0]},
-                {"end_tick", ticks[1]}, {"ticks", ticks[1] - ticks[0]}, {"warmup", index < warmup},
-                {"gpu_ms", static_cast<double>(ticks[1] - ticks[0]) * 1000.0 / static_cast<double>(frequency)},
-                {"completion_serial", completed_serial}});
+            gpu.list->EndQuery(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query_index + 1);
+            gpu.list->ResolveQueryData(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query_index, 2,
+                ticks_readback.Get(), static_cast<uint64_t>(query_index) * sizeof(uint64_t));
+            case_result["cpu_timing"]["command_recording_ms"] = case_result["cpu_timing"]["command_recording_ms"].get<double>()
+                + std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - recording_start).count();
+            std::vector<uint8_t> pixels;
+            uint64_t completed_serial = 0;
+            std::array<uint64_t, 2> ticks{};
+            if (!benchmark || index + 1 == frames) {
+              pixels = control_mask_gpu_cases::ReadPixels(gpu, texture.Get());
+              completed_serial = gpu.fence->GetCompletedValue();
+              Check(completed_serial != UINT64_MAX && completed_serial >= gpu.serial, "real submission fence completed");
+              case_result["completion"] = {{"completed", true}, {"gpu_completed", true},
+                                            {"fence_value", completed_serial}, {"readback_serial", gpu.serial},
+                                            {"submitted_serial", gpu.serial},
+                                            {"completed_serial", completed_serial}, {"frames", frames},
+                                            {"source", "Gpu::Submit + ID3D12Fence::GetCompletedValue"}};
+              if (benchmark) {
+                uint64_t* mapped_ticks = nullptr;
+                const D3D12_RANGE read_range{0, 2 * frames * sizeof(uint64_t)};
+                Check(SUCCEEDED(ticks_readback->Map(0, &read_range, reinterpret_cast<void**>(&mapped_ticks))), "completed timestamp map");
+                for (uint32_t sample_index = 0; sample_index < frames; ++sample_index) {
+                  const uint64_t begin = mapped_ticks[2 * sample_index];
+                  const uint64_t end = mapped_ticks[2 * sample_index + 1];
+                  Check(end >= begin, "timestamp order");
+                  case_result["timing"]["samples"].push_back({{"frame", sample_index}, {"begin_tick", begin},
+                      {"end_tick", end}, {"ticks", end - begin}, {"warmup", sample_index < warmup},
+                      {"gpu_ms", static_cast<double>(end - begin) * 1000.0 / static_cast<double>(frequency)},
+                      {"completion_serial", completed_serial}});
+                }
+                ticks = {mapped_ticks[2 * index], mapped_ticks[2 * index + 1]};
+                const D3D12_RANGE written_range{0, 0};
+                ticks_readback->Unmap(0, &written_range);
+              } else {
+                uint64_t* mapped_ticks = nullptr;
+                const D3D12_RANGE read_range{static_cast<SIZE_T>(2 * index * sizeof(uint64_t)),
+                    static_cast<SIZE_T>((2 * index + 2) * sizeof(uint64_t))};
+                Check(SUCCEEDED(ticks_readback->Map(0, &read_range, reinterpret_cast<void**>(&mapped_ticks))), "completed timestamp map");
+                ticks = {mapped_ticks[2 * index], mapped_ticks[2 * index + 1]};
+                const D3D12_RANGE written_range{0, 0};
+                ticks_readback->Unmap(0, &written_range);
+                Check(ticks[1] >= ticks[0], "timestamp order");
+                case_result["timing"]["samples"].push_back({{"frame", index}, {"begin_tick", ticks[0]},
+                    {"end_tick", ticks[1]}, {"ticks", ticks[1] - ticks[0]}, {"warmup", index < warmup},
+                    {"gpu_ms", static_cast<double>(ticks[1] - ticks[0]) * 1000.0 / static_cast<double>(frequency)},
+                    {"completion_serial", completed_serial}});
+              }
+            }
+            if (benchmark && index + 1 != frames) continue;
             uint64_t frame_exact_differences = 0;
             double frame_max_error = 0.0;
             bool frame_conforms = true;
@@ -383,12 +448,15 @@ int wmain(int argc, wchar_t** argv) {
             case_result["format_conformant"] = pixels_match;
             case_result["bitwise_identical_to_reference"] = exact_differences == 0;
             case_result["pixel_checks"] = checks;
+            case_result["validated_frames"] = benchmark ? 1 : index + 1;
             if (index + 1 == frames) {
               const std::string pixels_file = id + ".rgba8";
               write_new(output / pixels_file, pixels.data(), pixels.size());
               case_result["pixels_file"] = pixels_file;
             }
           }
+          case_result["cpu_timing"]["case_wall_ms"] = std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - case_start).count();
           Check(pixels_match, "RGBA8 FLOAT-to-UNORM format conformance failed");
           if (info != nullptr) {
             for (UINT64 index = 0; index < info->GetNumStoredMessages(); ++index) {
@@ -414,6 +482,8 @@ int wmain(int argc, wchar_t** argv) {
         }
         result["cases"].push_back(std::move(case_result));
       }
+      result["cpu_timing"]["all_case_resource_and_execution_ms"] = std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - resources_init_start).count();
     }
   } catch (const std::exception& error) {
     result["error"] = error.what();

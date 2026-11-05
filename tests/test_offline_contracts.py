@@ -114,6 +114,30 @@ class OfflineContractsTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 c.prepare_sequence(Path(tmp) / "a", 3, 2, 2)
 
+    def test_resized_sequence_subrect_bounds_and_format_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "resize"
+            manifest = c.prepare_sequence(directory, 4, 3, 4, seed=2,
+                resolutions=[(4, 3), (6, 4), (6, 4), (2, 1)],
+                subrects=[(0, 0, 4, 3), (1, 1, 4, 2), (0, 0, 6, 4), (0, 0, 2, 1)])
+            self.assertEqual(manifest["schema"], "nr-nexus-offline-sequence/2")
+            self.assertEqual([(frame["width"], frame["height"]) for frame in manifest["frames"]],
+                             [(4, 3), (6, 4), (6, 4), (2, 1)])
+            self.assertEqual(c.verify_sequence(directory), manifest)
+            frame = manifest["frames"][1]
+            self.assertEqual(frame["resources"]["color"]["bytes"], 6 * 4 * 16)
+            unsigned = {key: value for key, value in manifest.items() if key != "sequence_sha256"}
+            manifest["frames"][1]["subrect"] = [4, 3, 4, 2]
+            manifest["sequence_sha256"] = c.identity(unsigned)
+            (directory / "sequence.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(c.ContractError):
+                c.verify_sequence(directory)
+
+    def test_nonfinite_identical_f32_is_still_rejected(self):
+        bad = struct.pack("<f", float("nan"))
+        with self.assertRaises(c.ContractError):
+            c.compare_raw(bad, bad, "f32le")
+
     def test_sequence_tamper_and_path_escape(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp) / "sequence"
@@ -151,6 +175,13 @@ class OfflineContractsTests(unittest.TestCase):
         combinations = {(case["model"], case["auto_mask"], case["blend_mode"], case["mode"])
                         for case in matrix["cases"]}
         self.assertEqual(len(combinations), 80)
+
+    def test_raster_performance_fixture_covers_common_resolutions(self):
+        path = Path(__file__).parent / "fixtures" / "offline" / "control-mask-raster-performance.json"
+        fixture = c.validate_fixture(c.read_json(path))
+        self.assertEqual([(item["width"], item["height"]) for item in fixture["cases"]],
+                         [(1920, 1080), (2560, 1440), (3840, 2160)])
+        self.assertTrue(all(item["frames"] == 1008 and item["warmup"] == 8 for item in fixture["cases"]))
 
 
 if __name__ == "__main__":
