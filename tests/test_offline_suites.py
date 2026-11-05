@@ -16,6 +16,20 @@ def fixture(*cases):
 
 
 class OfflineSuitesFixtureTests(unittest.TestCase):
+    def test_source_identity_preflight_failure_does_not_leave_output_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "tmp").mkdir()
+            fixture_path = root / "fixture.json"
+            fixture_path.write_text(json.dumps(fixture(
+                {"id": "life", "suite": "lifecycle", "case": "dll-lifecycle"})))
+            output = root / "tmp" / "identity-failed"
+            with patch.object(suites, "ROOT", root), \
+                 patch.object(suites, "_source_identity", side_effect=OSError("missing source")):
+                with self.assertRaisesRegex(OSError, "missing source"):
+                    suites.run(fixture_path, output, "pwsh-test")
+            self.assertFalse(output.exists())
+
     def test_accepts_requested_evidence_boundaries(self):
         checked = suites.validate_fixture(fixture(
             {"id": "native", "suite": "fg-native", "case": "feature-switch-hardware"},

@@ -15,8 +15,8 @@ pwsh -File tools/offline/build.ps1 -Backend replay -HostRoot <固定宿主目录
 ~~~powershell
 $python = & pwsh -File tools/offline/test.ps1 -ResolveOnly
 & $python -S tools/offline/run.py prepare --output tmp/offline/sequence --width 64 --height 36 --frames 8 --seed 7
-& $python -S tools/offline/run.py verify-sequence tmp/offline/sequence
-& $python -S tools/offline/run.py replay tmp/offline/sequence --backend-exe tmp/offline/replay-build/offline_replay_tests.exe --adapter warp --timeout 60 --output tmp/offline/replay-warp
+& $python -S tools/offline/run.py verify-sequence tmp/offline/sequence/inputs
+& $python -S tools/offline/run.py replay --sequence tmp/offline/sequence/inputs --backend-exe tmp/offline/replay-build/offline_replay_tests.exe --adapter warp --timeout 60 --output tmp/offline/replay-warp
 ~~~
 
 Runner 核对序列、构建、输入和原始 float32 读回身份，并要求每帧具有递增 Fence 完成证明。后续帧输入损坏时，已完成帧的读回／Fence 留存，失败帧标记未完成，整体结果失败。Reset、Jitter、Motion Scale 与 Subrect 只验证 STATIC 元数据；回放只执行真实 D3D12 upload／copy／readback，不调用 NGX，也不重建网络 History。WARP 与 NVIDIA 资源执行分别标记 WARP／NATIVE_GPU。

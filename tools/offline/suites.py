@@ -404,8 +404,8 @@ def _evidence_summary(cases: list[dict[str, Any]], source_unchanged: bool) -> di
 def run(fixture_path: Path, output_path: Path | None = None, powershell: str = "pwsh") -> dict[str, Any]:
     fixture = validate_fixture(json.loads(fixture_path.read_text(encoding="utf-8"), object_pairs_hook=_strict_object))
     identity = fixture_identity(fixture)
-    output = _new_output(output_path)
     source_before = _source_identity()
+    output = _new_output(output_path)
     (output / "fixture.json").write_text(json.dumps(fixture, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (output / "source-identity.json").write_text(
         json.dumps({"before": source_before}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

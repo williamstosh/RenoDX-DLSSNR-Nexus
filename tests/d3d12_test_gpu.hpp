@@ -40,7 +40,7 @@ struct Gpu {
   ComPtr<ID3D12GraphicsCommandList> list;
   ComPtr<ID3D12Fence> fence;
   std::vector<ComPtr<ID3D12Resource>> uploads;
-  std::vector<ComPtr<ID3D12Resource>> retained_resources;
+  std::vector<ComPtr<IUnknown>> retained_resources;
   uint64_t serial = 0;
   bool submission_pending = false;
   explicit Gpu(bool hardware = false) {
@@ -199,9 +199,9 @@ struct Gpu {
     transfer.readback->Unmap(0, &no_writes);
     return result;
   }
-  void Retain(ID3D12Resource* resource) {
+  void Retain(IUnknown* resource) {
     Check(resource != nullptr, "retained resource");
-    ComPtr<ID3D12Resource> retained;
+    ComPtr<IUnknown> retained;
     retained = resource;
     retained_resources.push_back(std::move(retained));
   }
@@ -259,6 +259,7 @@ struct Gpu {
     uint64_t bytes = 0;
     device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, nullptr, nullptr, &bytes);
     auto readback = Buffer(bytes, D3D12_HEAP_TYPE_READBACK);
+    Retain(readback.Get());
     Transition(resource, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
     D3D12_TEXTURE_COPY_LOCATION source{.pResource = resource,
         .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, .SubresourceIndex = 0};
@@ -290,18 +291,23 @@ struct TimestampSample {
 struct TimestampQueries {
   ComPtr<ID3D12QueryHeap> heap;
   ComPtr<ID3D12Resource> readback;
+  Gpu* owner = nullptr;
   uint64_t frequency_hz = 0;
   uint64_t readback_bytes = 0;
   UINT interval_count = 0;
 
   void Begin(ID3D12GraphicsCommandList* list, UINT interval) const {
-    Check(list != nullptr && heap != nullptr && interval < interval_count, "timestamp begin arguments");
+    Check(list != nullptr && owner != nullptr && heap != nullptr && interval < interval_count,
+          "timestamp begin arguments");
+    owner->Retain(heap.Get());
     list->EndQuery(heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 2 * interval);
   }
 
   void EndAndResolve(ID3D12GraphicsCommandList* list, UINT interval) const {
-    Check(list != nullptr && heap != nullptr && readback != nullptr && interval < interval_count,
+    Check(list != nullptr && owner != nullptr && heap != nullptr && readback != nullptr && interval < interval_count,
           "timestamp end arguments");
+    owner->Retain(heap.Get());
+    owner->Retain(readback.Get());
     const UINT query = 2 * interval;
     list->EndQuery(heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 1);
     list->ResolveQueryData(heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query, 2,
@@ -361,6 +367,7 @@ inline TimestampQueries CreateTimestampQueries(Gpu& gpu, UINT interval_count) {
   Check(interval_count > 0 && interval_count <= std::numeric_limits<UINT>::max() / 2,
         "timestamp interval count");
   TimestampQueries result{};
+  result.owner = &gpu;
   result.interval_count = interval_count;
   result.frequency_hz = TimestampFrequency(gpu.queue.Get());
   const D3D12_QUERY_HEAP_DESC query_desc{.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
