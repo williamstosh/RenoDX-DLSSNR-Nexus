@@ -47,6 +47,16 @@ $python = & pwsh -File tools/offline/test.ps1 -ResolveOnly
 
 专项 CLI 复用通用输出路径、构建身份和设备核验，冻结专项及通用 Python 输入，并在执行后复核身份。每次使用新输出目录，保留 `result.json`、后端原始结果、读回与日志。专项 Python 文件命名为 `test_control_mask_*`，不加入通用 `test.ps1` 的 21 项回归。
 
+生产失败恢复通过已有 `fg-native` 夹具执行：
+
+~~~powershell
+./tools/run-tests.ps1 -Suite fg-native -NativeCase @('control-mask-safety','control-mask-safety-hardware') -HostRoot <固定宿主目录> -ShaderIncludeDirectory <当前生成头目录> -UiPreview None -OutputDirectory tmp/tests/control-mask-safety
+~~~
+
+两个 case 分别使用 WARP／NVIDIA，复用同一编译目标和真实 command list／queue／Fence。日志中每项 `CASE` 记录故障位置、8×8 输入、资源保留／重建状态和恢复条件。覆盖 Root Signature／PSO／Descriptor／资源分配失败、Evaluate 替身失败、未提交录制的 Reset 丢弃、池换 key／跨 owner 驱逐、健康队列在飞连续帧、提交预约分配异常及 Signal 失败。未知提交不以超时或测试独立 Fence 变成生产成功，pending／可重放录制保留到可信生命周期边界。`control-mask` 保留为 WARP 入口。
+
+故障返回、NGX Runtime 和设备移除观察均为 MOCK；真实 GPU 证据只覆盖资源、Shader、提交与完成。移除观察在本次实际 GPU 工作独立完成后注入，验证旧设备拒绝处理、生产退休／计时消费者及独立新设备重建；不会主动移除真实设备。跨队列不在 P0 支持范围，当前无同队列录制门禁，不能由此推导跨队列安全。真实驱动故障、原生 NGX、游戏接入和画质仍须分别验证。
+
 ## 自动回归
 
 使用固定版本的 64 位 CPython 3.12.14；测试脚本验证解释器实际版本和架构，显式使用绝对路径，不依赖当前 shell 的 PATH。发现顺序为显式 -PythonPath／NR_NEXUS_PYTHON、Worktree .venv、用户 uv 托管安装和 Python 3.12 用户安装路径。测试只用 Python 标准库。运行 all 或 backend 测试集必须提供已构建 Replay EXE，防止真实后端测试被静默跳过。

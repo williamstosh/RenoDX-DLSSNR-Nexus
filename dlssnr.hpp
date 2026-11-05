@@ -433,6 +433,8 @@ struct NrPassResolutionContract {
 };
 
 struct FeatureState {
+  // Outlives workset eviction: discarded commands also invalidate NGX History.
+  std::shared_ptr<submission::RecordingStatus> control_mask_recording;
   uint64_t source_generation = 0;
   bool mixed_recording_discarded = false;
   // Stage-local dimensions, normalization and slots must not alternate
@@ -792,6 +794,7 @@ struct FinalResources {
   ID3D12Resource* nr_output = nullptr;
   ID3D12Resource* control_mask = nullptr;
   D3D12_RESOURCE_STATES control_mask_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  std::shared_ptr<submission::RecordingStatus> control_mask_recording;
   // HDR worksets (rc5): `decoded` IS `original` (one reference each), one
   // output-size surface less (31.6-63.3 MiB at 4K).  Safe because nothing
   // reads `original` after the linearize dispatch: the passes, pedestal and
@@ -1187,10 +1190,9 @@ inline uint32_t runtime_face_run = 0;
 constexpr uint32_t kRuntimeFaceSwitchEvaluates = 8;
 // The switch target (device or face) whose first attempt ran the bounded
 // queue wait, compared only, and when: retries for the same target only poll
-// the proof, and a replayable one is given up kTeardownAbandonNs after it.
+// the proof. Replayable recordings retain the old runtime until closed.
 // Cleared when a runtime initializes.  Caller holds runtime_mutex.
 inline const ID3D12Device* runtime_switch_target = nullptr;
-inline int64_t runtime_switch_since_ns = 0;
 // Declines logged per reason before the lines go quiet (the counters go on).
 constexpr uint64_t kRuntimeSwitchDeclineLogCap = 8;
 // v8 (TIME-12): teardowns that kept NR state because a wait did not prove
@@ -1420,9 +1422,9 @@ inline std::atomic<int64_t> teardown_pending_since_ns{0};
 inline std::atomic_uint64_t teardown_device_native{0};
 inline std::atomic_uint64_t teardown_resumes_in_drain{0};
 // An evaluate on another device was declined for the pending teardown
-// (NrWaitsForTeardown), which lets it release on a replayable proof, or on
-// a pending one that aged (TeardownMayRelease); and the teardowns that did
-// (LIFE-08, TIME-07).
+// (NrWaitsForTeardown). Other-device activity cannot replace completion and
+// recording closure. The release counters retain their telemetry schema;
+// conservative teardown no longer increments them.
 inline std::atomic_bool teardown_other_device_waiting{false};
 inline std::atomic_uint64_t teardown_replayable_releases{0};
 inline std::atomic_uint64_t teardown_abandoned_releases{0};
@@ -5108,49 +5110,13 @@ inline submission::RecordedWork TeardownProof() {
              : submission::RecordedWork::kPending;
 }
 
-// Whether the proof-gated teardown may release on `proof`.  A replayable
-// recording - completed, never Reset - keeps NR state (LIFE-08: releasing on
-// it let a replay run NR work against freed state and hang the device).
-// Keeping it costs nothing while the game stays on NR's device: its next
-// evaluate there resumes NR on that state (NrWaitsForTeardown).  Two things
-// end the wait, each counted (teardown_replayable_releases) and logged:
-//   - the game's last tracked queue was destroyed (the queue-destroy
-//     service point; a list runs only on a queue).  This is the exit: every
-//     engine leaves its last frame's lists un-Reset, and without it the
-//     release would wait for a list destroy, which cannot service a teardown
-//     (OnDestroyCommandListEvent), while NGX's reference kept the device -
-//     and so destroy_device - from ever coming;
-//   - an evaluate on ANOTHER device was declined for the teardown.  What
-//     that gives up is a replay of an old-device list after the game moved.
-//
-// A pending proof - a recording never submitted, or a submission that never
-// completed - would decline the new device for the rest of the session
-// (TIME-07: nothing aged the teardown).  After kTeardownAbandonNs of it with
-// the new device waiting, the old device's work is taken as abandoned and
-// the release goes ahead, counted (teardown_abandoned_releases) and logged:
-// NR off for good is the worst outcome, and a late submit of that work is a
-// fault on a device the game has left.  A parked submit (UE's RHI thread in
-// ReShade's queue lock, the case the proof exists for) lands within
-// milliseconds of the destroy.
-inline constexpr int64_t kTeardownAbandonNs = 2'000'000'000;
-
-// The replayable rule above, shared by the swapchain teardown and the
-// runtime switch (EnsureDirectRuntime): a completed recording that was never
-// Reset is given up once the game renders elsewhere, or once no queue is
-// left to replay it on.
-inline bool ReplayableMayRelease(bool game_elsewhere) {
-  return game_elsewhere || !AnyQueueTracked();
-}
-
+// A completed list can still be replayed until Reset or destruction closes
+// its recording. Elapsed CPU time, another device, or disappearance of known
+// queues does not prevent it being submitted on a newly created queue.
+// A device's terminal fence removal also ends its resource lifetimes, without
+// proving execution or requiring Reset on that failed device.
 inline bool TeardownMayRelease(submission::RecordedWork proof) {
-  if (proof == submission::RecordedWork::kComplete) return true;
-  const bool other_device = teardown_other_device_waiting.load(std::memory_order_acquire);
-  if (proof == submission::RecordedWork::kReplayable) {
-    return ReplayableMayRelease(other_device);
-  }
-  return other_device
-         && SteadyNowNs() - teardown_pending_since_ns.load(std::memory_order_relaxed)
-                >= kTeardownAbandonNs;
+  return proof == submission::RecordedWork::kComplete;
 }
 
 // Waits for the work already submitted on every tracked queue, bounded to
@@ -5257,6 +5223,10 @@ inline bool EnsureDirectRuntime(ID3D12GraphicsCommandList* command_list,
   }
 
   if (direct_device == device) {
+    if (FAILED(device->GetDeviceRemovedReason())) {
+      device->Release();
+      return false;
+    }
     runtime_face_run = 0;
     device->Release();
     return true;
@@ -5290,13 +5260,8 @@ inline bool EnsureDirectRuntime(ID3D12GraphicsCommandList* command_list,
     //     (up to 1 s per queue, under runtime_mutex); every retry polls the
     //     proof and returns at once, so a pending switch never stalls the
     //     evaluate thread;
-    //   - a replayable proof (every submission completed, a recording never
-    //     Reset) is given up by the swapchain teardown's rule
-    //     (ReplayableMayRelease), with the switch's own evaluates waiting
-    //     kTeardownAbandonNs since the first attempt as the evidence that
-    //     the game renders elsewhere, and counted as that teardown's
-    //     replayable releases are.  A pending proof (work unsubmitted or
-    //     unfinished) is never given up here: it stays a retry.
+    //   - replayable and pending recordings both retain the old runtime
+    //     until they close and all submitted work completes.
     const bool same_device =
         renodx::utils::directx::SameNativeObject(direct_device, device);
     ID3D12Device* native_face = device;
@@ -5335,15 +5300,10 @@ inline bool EnsureDirectRuntime(ID3D12GraphicsCommandList* command_list,
     bool queues_finished = true;
     if (runtime_switch_target != device) {
       runtime_switch_target = device;
-      runtime_switch_since_ns = SteadyNowNs();
       queues_finished = WaitForTrackedQueues();
     }
     const submission::RecordedWork proof = TeardownProof();
-    const bool replay_given_up =
-        proof == submission::RecordedWork::kReplayable
-        && ReplayableMayRelease(SteadyNowNs() - runtime_switch_since_ns
-                                >= kTeardownAbandonNs);
-    if (proof != submission::RecordedWork::kComplete && !replay_given_up) {
+    if (proof != submission::RecordedWork::kComplete) {
       if (decline != nullptr) *decline = NrDeclineReason::kRuntimeSwitchPending;
       static uint64_t logged_switch_pending = 0;
       if (++logged_switch_pending <= kRuntimeSwitchDeclineLogCap) {
@@ -5352,7 +5312,6 @@ inline bool EnsureDirectRuntime(ID3D12GraphicsCommandList* command_list,
                 + (proof == submission::RecordedWork::kReplayable
                        ? ": a recording carrying NR work completed but was"
                          " never Reset, so the game can execute it again"
-                         " (given up 2 s after the first attempt)"
                    : queues_finished
                        ? ": a recording carrying NR work is not proven"
                          " complete (unsubmitted, or its queue untracked)"
@@ -5367,9 +5326,6 @@ inline bool EnsureDirectRuntime(ID3D12GraphicsCommandList* command_list,
       device->Release();
       return false;
     }
-    if (replay_given_up) {
-      teardown_replayable_releases.fetch_add(1, std::memory_order_relaxed);
-    }
     const uint64_t changes =
         nr_runtime_device_changes.fetch_add(1, std::memory_order_relaxed) + 1;
     if (changes <= kNrRuntimeDeviceChangeLogCap) {
@@ -5380,12 +5336,7 @@ inline bool EnsureDirectRuntime(ID3D12GraphicsCommandList* command_list,
                        " records in the world of its list)"
                      : "")
               + "; change " + std::to_string(changes)
-              + (replay_given_up
-                     ? "; NR's recorded work had completed, and a recording"
-                       " carrying it that was never Reset is given up after"
-                       " 2 s of waiting (counted as"
-                       " teardown[replayable_release=])"
-                     : "; NR's recorded work had completed")
+              + "; NR's recorded work had completed and every recording was closed"
               + (changes == kNrRuntimeDeviceChangeLogCap
                      ? ", further changes are not logged"
                      : ""));
@@ -5394,8 +5345,7 @@ inline bool EnsureDirectRuntime(ID3D12GraphicsCommandList* command_list,
     RetireAllWorksets();
     ReleaseCodecPipeline();
     // Releases retirements without their own proofs: reached only on the
-    // proof above, or on a replayable one given up as the swapchain
-    // teardown gives it up.
+    // closed-and-completed proof above.
     FlushRetiredResources();
     // Guard re-entrancy like create/evaluate/release do: this runs under
     // runtime_mutex, and if the signed runtime called back into a detoured
@@ -6333,6 +6283,9 @@ inline FinalResources* EnsureWorkset(
         && resources.units.unit_nits == current_units.unit_nits
         && resources.units.bt2020 == current_units.bt2020
         && resources.block_mean != nullptr
+        && (resources.control_mask_recording == nullptr
+            || !resources.control_mask_recording->closed.load()
+            || resources.control_mask_recording->submitted.load())
         && ((resources.control_mask != nullptr) == create_control_mask)
         && (hdr_mode == 0
             || (resources.work0 != nullptr && resources.norm_scale != nullptr
@@ -10783,6 +10736,79 @@ inline bool ProcessInline(
   }
   const bool split_working_sizes = independent_pair
       && (pass_widths[1] != nr_input_width || pass_heights[1] != nr_input_height);
+  {
+    if (feature.control_mask_recording != nullptr
+        && feature.control_mask_recording->closed.load()
+        && !feature.control_mask_recording->submitted.load()) {
+      ReleaseNrSlot(feature, 0, true);
+      feature.slots[0].pending_reset = true;
+      feature.slots[0].pending_reset_reasons |= kResetRecovery;
+      feature.control_mask_recording.reset();
+    }
+    if (feature.control_mask_recording != nullptr && feature.slots[0].handle != nullptr) {
+      const auto& previous = *feature.control_mask_recording;
+      if (submission::RecordingIdentity(command_list) != std::pair{previous.list, previous.generation}) {
+        std::vector<std::pair<FenceRef, uint64_t>> tokens;
+        bool reusable = submission::UseSubmissionTokens(feature.slots[0].handle, &tokens)
+            != submission::UseSubmission::kUnsubmitted;
+        for (const auto& [fence, value] : tokens) {
+          reusable &= fence->GetCompletedValue() != UINT64_MAX;
+        }
+        if (!reusable) {
+          ClearControlMaskBinding(feature.slots[0]);
+          feature.slots[0].pending_reset = true;
+          feature.slots[0].pending_reset_reasons |= kResetRecovery;
+          CountNrDecline(NrDeclineReason::kWorksetSetupFailed);
+          device->Release();
+          return false;
+        }
+      }
+    }
+    // The model is shared across this owner's output keys. Check all of them
+    // before EnsureWorkset can evict or re-key a pooled workset.
+    for (auto existing = worksets.begin(); existing != worksets.end();) {
+      if (existing->first.handle != handle || existing->second.control_mask_recording == nullptr) {
+        ++existing;
+        continue;
+      }
+      const auto& previous = *existing->second.control_mask_recording;
+      const auto current = submission::RecordingIdentity(command_list);
+      if (current != std::pair{previous.list, previous.generation}) {
+        if (previous.closed.load() && !previous.submitted.load()) {
+          // Reset discarded the GPU commands, but not the CPU resource states
+          // or NGX History ledger. Recreate both before recording another frame.
+          const auto key = existing->first;
+          ++existing;
+          RetireWorkset(key);
+          ReleaseNrSlot(feature, 0, true);
+          feature.slots[0].pending_reset = true;
+          feature.slots[0].pending_reset_reasons |= kResetRecovery;
+          continue;
+        } else {
+          std::vector<std::pair<FenceRef, uint64_t>> tokens;
+          const auto proof = submission::UseSubmissionTokens(existing->second.control_mask, &tokens);
+          bool reusable = proof != submission::UseSubmission::kUnsubmitted;
+          for (const auto& [fence, value] : tokens) {
+            const auto completed = fence->GetCompletedValue();
+            // Healthy queued work retains the existing ordered-queue reuse
+            // contract; this is not a CPU wait for the previous frame.
+            reusable &= completed != UINT64_MAX;
+          }
+          if (!reusable) {
+            // Retaining a workset prevents release, not a second queue from
+            // writing it. An unknown receipt stays isolated until teardown.
+            ClearControlMaskBinding(feature.slots[0]);
+            feature.slots[0].pending_reset = true;
+            feature.slots[0].pending_reset_reasons |= kResetRecovery;
+            CountNrDecline(NrDeclineReason::kWorksetSetupFailed);
+            device->Release();
+            return false;
+          }
+        }
+      }
+      ++existing;
+    }
+  }
   FinalResources* workset = codec_ok && control_mask_pipeline_ok
                                 ? EnsureWorkset(
                                       device,
@@ -10881,7 +10907,13 @@ inline bool ProcessInline(
   }
   // Exact submission-use proof (issue 01): this evaluate's recordings on the
   // game's list can reference the workset's GPU objects.
-  if (setup_ok) TrackWorksetRecording(command_list, *workset);
+  if (setup_ok) {
+    TrackWorksetRecording(command_list, *workset);
+    if (control_mask_eligible) {
+      workset->control_mask_recording = submission::ObserveRecording(command_list);
+      feature.control_mask_recording = workset->control_mask_recording;
+    }
+  }
   bool capture_this_eval = false;
   if (setup_ok && present != nullptr && present->capture_display
       && screenshot::WantsFinalPresent()) {
@@ -20986,12 +21018,8 @@ inline void EmitTelemetry(int64_t now_ns, bool force = false) {
   if (nr_features_retired_on_lease != 0) {
     line << " lifecycle[nr_on_lease=" << nr_features_retired_on_lease << ']';
   }
-  // Swapchain teardowns an evaluate withdrew while Shutdown drained (TIME-10),
-  // releases for a game on a new device on a replayable proof (LIFE-08) or an
-  // aged pending one (TIME-07), teardowns that kept NR state because its
-  // submitted work was not proven complete (v8, TIME-12), and the foreign
-  // route's deferred last-feature teardowns: armed, cancelled by a recreate,
-  // run by a present (TIME-12 b).
+  // Swapchain teardowns withdrawn during drain, unproven work retained, and
+  // deferred foreign teardowns. Legacy release counters remain in the schema.
   if (const uint64_t drain_resumes = teardown_resumes_in_drain.load(),
       replayable = teardown_replayable_releases.load(),
       abandoned = teardown_abandoned_releases.load(),
@@ -28176,9 +28204,9 @@ inline void OnDestroyDevice(reshade::api::device* device) {
 // the game never Reset can be executed again) - at once when that is already
 // true (a game that idled the GPU first), otherwise on the next present or
 // queue destroy.  An evaluate on the same device in between resumes NR on
-// the state it has (NrWaitsForTeardown); one on another device lets a
-// replayable proof release (TeardownMayRelease).  Without the proof - no
-// queue detour - the state is kept, as v6 always did.
+// the state it has (NrWaitsForTeardown). Another device does not license
+// releasing an old recording; without a closed-and-completed proof the
+// state is retained.
 //
 // Known limitation: NR is device-scoped, and so is the match here - a game
 // that destroys a SECOND swapchain on the same device tears NR down with it
@@ -28399,11 +28427,9 @@ inline bool Shutdown(bool proof_gated) {
     shutting_down.store(false, std::memory_order_release);
     return false;
   }
-  const submission::RecordedWork proof =
-      proof_gated ? TeardownProof() : submission::RecordedWork::kComplete;
-  if (proof_gated
-      && (!teardown_pending.load(std::memory_order_acquire)
-          || !TeardownMayRelease(proof))) {
+  const submission::RecordedWork proof = TeardownProof();
+  if (!TeardownMayRelease(proof)
+      || (proof_gated && !teardown_pending.load(std::memory_order_acquire))) {
     shutting_down.store(false, std::memory_order_release);
     return false;
   }
@@ -28453,38 +28479,12 @@ inline bool Shutdown(bool proof_gated) {
         (SteadyNowNs()
          - teardown_pending_since_ns.load(std::memory_order_relaxed))
         / 1000000);
-    // A replayable recording with no queue left to run it is as complete as
-    // a closed one; only the new-device releases give something up.
-    const bool replayable = proof == submission::RecordedWork::kReplayable;
-    const bool proven = proof == submission::RecordedWork::kComplete
-                        || (replayable && !AnyQueueTracked());
-    if (!proven) {
-      (replayable ? teardown_replayable_releases : teardown_abandoned_releases)
-          .fetch_add(1, std::memory_order_relaxed);
-    }
-    Log(proven ? reshade::log::level::info : reshade::log::level::warning,
+    Log(reshade::log::level::info,
         std::string("the swapchain on the device NR was initialized on was"
-                    " destroyed and ")
-            + (proof == submission::RecordedWork::kComplete
-                   ? "every recording that carries NR work has completed"
-               : proven
-                   ? "every recording that carries NR work has completed, and"
-                     " with the game's last queue gone none can run again"
-               : replayable
-                   ? "the game now renders on another device; a recording"
-                     " that carries NR work completed but was never Reset, so"
-                     " the game could still execute it again on the old device"
-                   : "the game now renders on another device; a recording"
-                     " that carries NR work on the old device is still"
-                     " unsubmitted or unfinished, taken as abandoned")
+                    " destroyed and NR recordings are closed and complete"
+                    " or belong to a removed device")
             + " (" + waited_ms
-            + " ms after the destroy); releasing NR state for re-arm"
-            + (proven ? ""
-               : replayable
-                   ? " so NR runs on the new device (counted as"
-                     " teardown[replayable_release=])"
-                   : " so NR runs on the new device (counted as"
-                     " teardown[abandoned_release=])"));
+            + " ms after the destroy); releasing NR state for re-arm");
   }
   // This release is the one a deferred foreign teardown waited to run.
   foreign_teardown_due_ns.store(0, std::memory_order_release);

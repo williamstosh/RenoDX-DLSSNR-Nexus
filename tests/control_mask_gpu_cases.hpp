@@ -21,6 +21,89 @@ using AllocateFn = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*, const D3D12_HEAP_P
 inline AllocateFn real_allocate = nullptr;
 inline bool fail_mask_allocation = false;
 inline uint32_t allocation_failures = 0;
+using RootFn = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*, UINT, const void*, SIZE_T, REFIID, void**);
+using PsoFn = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*, const D3D12_COMPUTE_PIPELINE_STATE_DESC*, REFIID, void**);
+using HeapFn = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*, const D3D12_DESCRIPTOR_HEAP_DESC*, REFIID, void**);
+using SignalFn = HRESULT(STDMETHODCALLTYPE*)(ID3D12CommandQueue*, ID3D12Fence*, UINT64);
+using CompletedFn = UINT64(STDMETHODCALLTYPE*)(ID3D12Fence*);
+using RemovedFn = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*);
+inline RootFn real_root = nullptr;
+inline PsoFn real_pso = nullptr;
+inline HeapFn real_heap = nullptr;
+inline SignalFn real_signal = nullptr;
+inline CompletedFn real_completed = nullptr;
+inline RemovedFn real_removed = nullptr;
+inline ID3D12Device* removed_device = nullptr;
+inline uint32_t runtime_initializations = 0;
+inline uint32_t runtime_shutdowns = 0;
+enum class Fault { NONE, ROOT, PSO, HEAP };
+inline Fault fault = Fault::NONE;
+inline uint32_t injected_failures = 0;
+inline ID3D12Fence* signal_fault_fence = nullptr;
+inline ID3D12Fence* removed_fence = nullptr;
+inline int reservation_fault_stage = -1;
+
+HRESULT STDMETHODCALLTYPE CreateRoot(ID3D12Device* device, UINT node, const void* blob, SIZE_T bytes,
+                                     REFIID iid, void** result) {
+  if (fault == Fault::ROOT) {
+    ++injected_failures;
+    *result = nullptr;
+    return E_OUTOFMEMORY;
+  }
+  return real_root(device, node, blob, bytes, iid, result);
+}
+HRESULT STDMETHODCALLTYPE CreatePso(ID3D12Device* device, const D3D12_COMPUTE_PIPELINE_STATE_DESC* desc,
+                                    REFIID iid, void** result) {
+  if (fault == Fault::PSO) {
+    ++injected_failures;
+    *result = nullptr;
+    return E_OUTOFMEMORY;
+  }
+  return real_pso(device, desc, iid, result);
+}
+HRESULT STDMETHODCALLTYPE CreateHeap(ID3D12Device* device, const D3D12_DESCRIPTOR_HEAP_DESC* desc,
+                                     REFIID iid, void** result) {
+  if (fault == Fault::HEAP) {
+    ++injected_failures;
+    *result = nullptr;
+    return E_OUTOFMEMORY;
+  }
+  return real_heap(device, desc, iid, result);
+}
+HRESULT STDMETHODCALLTYPE Signal(ID3D12CommandQueue* queue, ID3D12Fence* fence, UINT64 value) {
+  if (fence == signal_fault_fence) {
+    ++injected_failures;
+    signal_fault_fence = nullptr;
+    return E_FAIL;
+  }
+  return real_signal(queue, fence, value);
+}
+UINT64 STDMETHODCALLTYPE Completed(ID3D12Fence* fence) {
+  if (removed_device != nullptr) {
+    ComPtr<ID3D12Device> device;
+    if (SUCCEEDED(fence->GetDevice(IID_PPV_ARGS(&device))) && device.Get() == removed_device) return UINT64_MAX;
+  }
+  return fence == removed_fence ? UINT64_MAX : real_completed(fence);
+}
+HRESULT STDMETHODCALLTYPE RemovedReason(ID3D12Device* device) {
+  return device == removed_device ? DXGI_ERROR_DEVICE_REMOVED : real_removed(device);
+}
+NVSDK_NGX_Result NVSDK_CONV InitializeRuntime(unsigned long long, const wchar_t*, ID3D12Device*,
+                                             NVSDK_NGX_Version, const NVSDK_NGX_Parameter*) {
+  ++runtime_initializations;
+  return NVSDK_NGX_Result_Success;
+}
+NVSDK_NGX_Result NVSDK_CONV ShutdownRuntime(ID3D12Device*) {
+  ++runtime_shutdowns;
+  return NVSDK_NGX_Result_Success;
+}
+void ReservationFault(unsigned stage) {
+  if (reservation_fault_stage == static_cast<int>(stage)) {
+    reservation_fault_stage = -1;
+    ++injected_failures;
+    throw std::bad_alloc();
+  }
+}
 
 void STDMETHODCALLTYPE ObservePipeline(ID3D12GraphicsCommandList* list, ID3D12PipelineState* pipeline) {
   observed_pipeline = pipeline;
@@ -47,7 +130,7 @@ HRESULT STDMETHODCALLTYPE Allocate(ID3D12Device* device, const D3D12_HEAP_PROPER
   return real_allocate(device, heap, flags, desc, state, clear, iid, resource);
 }
 
-void RunInline(Gpu& gpu) {
+void RunInline(Gpu& gpu, bool hardware, bool safety) {
   model_gpu = &gpu;
   addon::enabled = true;
   addon::hooks_enabled = true;
@@ -118,11 +201,23 @@ void RunInline(Gpu& gpu) {
   real_dispatch = reinterpret_cast<DispatchFn>((*reinterpret_cast<void***>(gpu.list.Get()))[14]);
   real_pipeline = reinterpret_cast<PipelineFn>((*reinterpret_cast<void***>(gpu.list.Get()))[25]);
   real_allocate = reinterpret_cast<AllocateFn>((*reinterpret_cast<void***>(gpu.device.Get()))[27]);
+  real_root = reinterpret_cast<RootFn>((*reinterpret_cast<void***>(gpu.device.Get()))[16]);
+  real_pso = reinterpret_cast<PsoFn>((*reinterpret_cast<void***>(gpu.device.Get()))[11]);
+  real_heap = reinterpret_cast<HeapFn>((*reinterpret_cast<void***>(gpu.device.Get()))[14]);
+  real_signal = reinterpret_cast<SignalFn>((*reinterpret_cast<void***>(gpu.queue.Get()))[14]);
+  real_completed = reinterpret_cast<CompletedFn>((*reinterpret_cast<void***>(gpu.fence.Get()))[8]);
+  real_removed = reinterpret_cast<RemovedFn>((*reinterpret_cast<void***>(gpu.device.Get()))[37]);
   Check(DetourTransactionBegin() == NO_ERROR && DetourUpdateThread(GetCurrentThread()) == NO_ERROR,
         "ControlMask observer transaction");
   Check(DetourAttach(reinterpret_cast<PVOID*>(&real_dispatch), reinterpret_cast<PVOID>(ObserveDispatch)) == NO_ERROR
             && DetourAttach(reinterpret_cast<PVOID*>(&real_pipeline), reinterpret_cast<PVOID>(ObservePipeline)) == NO_ERROR
             && DetourAttach(reinterpret_cast<PVOID*>(&real_allocate), reinterpret_cast<PVOID>(Allocate)) == NO_ERROR
+            && DetourAttach(reinterpret_cast<PVOID*>(&real_root), reinterpret_cast<PVOID>(CreateRoot)) == NO_ERROR
+            && DetourAttach(reinterpret_cast<PVOID*>(&real_pso), reinterpret_cast<PVOID>(CreatePso)) == NO_ERROR
+            && DetourAttach(reinterpret_cast<PVOID*>(&real_heap), reinterpret_cast<PVOID>(CreateHeap)) == NO_ERROR
+            && DetourAttach(reinterpret_cast<PVOID*>(&real_signal), reinterpret_cast<PVOID>(Signal)) == NO_ERROR
+            && DetourAttach(reinterpret_cast<PVOID*>(&real_completed), reinterpret_cast<PVOID>(Completed)) == NO_ERROR
+            && DetourAttach(reinterpret_cast<PVOID*>(&real_removed), reinterpret_cast<PVOID>(RemovedReason)) == NO_ERROR
             && DetourTransactionCommit() == NO_ERROR, "ControlMask observers attached");
   const auto record = [&] {
     const auto before = model_calls;
@@ -184,8 +279,25 @@ void RunInline(Gpu& gpu) {
   Check(before_failure.Pixels() == after_failure.Pixels() && slot.pending_reset && !slot.control_mask_bound,
         "allocation failure preserves game output, clears mask and arms history reset");
   fail_mask_allocation = false;
-  slot.failed = false;
   mature();
+  Check(model_resets.back() == 1, "allocation recovery resets History through production retry");
+  std::cout << "CASE location=mask-allocation evidence=MOCK+GPU size=8x8 output=preserved binding=clear recovery=production-retry\n";
+  for (const auto injected : {Fault::ROOT, Fault::PSO, Fault::HEAP}) {
+    if (injected == Fault::ROOT) addon::ReleaseCodecPipeline();
+    else if (injected == Fault::PSO) addon::ReleaseCom(addon::codec_pipeline.control_mask);
+    else addon::RetireWorkset({owner, output.Get(), false});
+    const auto before = injected_failures;
+    fault = injected;
+    Check(record() == 0 && injected_failures > before && slot.failed && !slot.control_mask_bound,
+          "setup creation failure skips model and clears mask");
+    fault = Fault::NONE;
+    // Advance only the existing failure clock; never clear the production latch.
+    slot.failed_ns -= addon::kFeatureRetryMaxNs;
+    mature();
+    Check(model_resets.back() == 1, "setup retry sends History reset");
+    std::cout << "CASE location=create-" << static_cast<int>(injected)
+              << " evidence=MOCK+GPU size=8x8 binding=clear recovery=expired-production-backoff\n";
+  }
   fail_call = model_calls + 1;
   const auto before_evaluate_failure = stage_execution_cases::Capture(gpu, output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   gpu.Submit();
@@ -196,8 +308,8 @@ void RunInline(Gpu& gpu) {
             && !addon::features.at(owner).slots[0].control_mask_bound,
         "NGX failure preserves game output and clears the old mask");
   fail_call = 0;
-  slot.failed = false;
   mature();
+  Check(model_resets.back() == 1, "NGX failure recovers with History reset");
   uint32_t exception_attempts = 0;
   model_parameter_observer = [&](const NVSDK_NGX_Handle*, const NVSDK_NGX_Parameter*) {
     ++exception_attempts;
@@ -211,10 +323,257 @@ void RunInline(Gpu& gpu) {
   Check(exception_attempts == 1 && before_exception.Pixels() == after_exception.Pixels()
             && !slot.control_mask_bound, "NGX exception clears mask without retry or output change");
   model_parameter_observer = {};
+  mature();
+  Check(model_resets.back() == 1, "NGX exception recovers with History reset");
+  std::cout << "CASE location=NGX-return-and-exception evidence=MOCK+GPU size=8x8 output=preserved binding=clear recovery=production-retry\n";
+
+  // A second list cannot reuse state whose first recording has no submission.
+  ComPtr<ID3D12CommandAllocator> other_allocator;
+  ComPtr<ID3D12GraphicsCommandList> other_list;
+  Check(SUCCEEDED(gpu.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+      IID_PPV_ARGS(&other_allocator))), "second allocator");
+  Check(SUCCEEDED(gpu.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+      other_allocator.Get(), nullptr, IID_PPV_ARGS(&other_list))), "second list");
+  const addon::WorksetKey key{owner, output.Get(), false};
+  const auto before_parked = model_calls;
+  addon::ProcessInline(gpu.list.Get(), owner, &parameters);
+  Check(model_calls == before_parked + 1, "first parked recording evaluates");
+  auto* parked_mask = addon::worksets.at(key).control_mask;
+  Check(!addon::ProcessInline(other_list.Get(), owner, &parameters) && model_calls == before_parked + 1,
+        "unsubmitted recording rejects second list reuse without another Evaluate");
+  // Real Close/Reset discards work. Do not submit commands with stale before-states.
+  Check(SUCCEEDED(gpu.list->Close()) && SUCCEEDED(gpu.allocator->Reset())
+            && SUCCEEDED(gpu.list->Reset(gpu.allocator.Get(), nullptr)), "discard parked recording");
+  submission::OnCommandListReset(gpu.list.Get());
+  submission::PruneCompletedGenerations();
+  const auto old_budget = addon::max_worksets.load();
+  addon::max_worksets = 1;
+  ++addon::present_generation;
+  auto output_b = texture(DXGI_FORMAT_R8G8B8A8_UNORM, true);
+  gpu.Transition(output_b.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  gpu.Submit();
+  parameters.Set(NVSDK_NGX_Parameter_Output, output_b.Get());
+  mature();
+  Check(addon::worksets.at({owner, output_b.Get(), false}).control_mask != parked_mask
+            && model_resets.back() == 1, "discarded A cannot re-key into B with stale state or History");
+  parameters.Set(NVSDK_NGX_Parameter_Output, output.Get());
+  // Evict A under another owner before A gets a chance to inspect its old key.
+  addon::ProcessInline(gpu.list.Get(), owner, &parameters);
+  Check(SUCCEEDED(gpu.list->Close()) && SUCCEEDED(gpu.allocator->Reset())
+            && SUCCEEDED(gpu.list->Reset(gpu.allocator.Get(), nullptr)), "discard before owner eviction");
+  submission::OnCommandListReset(gpu.list.Get());
+  submission::PruneCompletedGenerations();
+  const auto previous_handle = slot.handle;
+  const auto* other_owner = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xC04A7});
+  Check(addon::EnsureWorkset(gpu.device.Get(), other_owner, output_b.Get(), 8, 8, 8, 8,
+      DXGI_FORMAT_R8G8B8A8_UNORM, 0, 1, 0, false, nullptr, nullptr, true) != nullptr,
+      "other owner evicts discarded owner A workset");
+  addon::max_worksets = old_budget;
+  mature();
+  Check(slot.handle != previous_handle && model_resets.back() == 1,
+        "owner History reset survives eviction of its discarded workset");
+  std::cout << "CASE location=unsubmitted-and-reset-rekey evidence=MOCK+GPU size=8x8 resource=fresh binding=clear recovery=discard-and-recreate\n";
+
+  // Hold one actual queue, then record the next frame without waiting for it.
+  ComPtr<ID3D12Fence> gate;
+  Check(SUCCEEDED(gpu.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gate))), "GPU delay gate");
+  const auto wait_real = [&] {
+    Check(SUCCEEDED(real_signal(gpu.queue.Get(), gpu.fence.Get(), ++gpu.serial)), "test-owned completion signal");
+    HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    Check(event != nullptr, "test-owned completion event");
+    const auto hr = gpu.fence->SetEventOnCompletion(gpu.serial, event);
+    const auto wait = SUCCEEDED(hr) ? WaitForSingleObject(event, 10000) : WAIT_FAILED;
+    CloseHandle(event);
+    Check(wait == WAIT_OBJECT_0 && real_completed(gpu.fence.Get()) >= gpu.serial,
+          "independent real fence finishes actual GPU work before cleanup or removal mock");
+  };
+  Check(SUCCEEDED(gpu.queue->Wait(gate.Get(), 1)), "queue waits on test gate");
+  const auto queued_before = model_calls;
+  addon::ProcessInline(gpu.list.Get(), owner, &parameters);
+  Check(SUCCEEDED(gpu.list->Close()), "queued frame Close");
+  ID3D12CommandList* queued[]{gpu.list.Get()};
+  gpu.queue->ExecuteCommandLists(1, queued);
+  auto* queued_mask = addon::worksets.at(key).control_mask;
+  try {
+    const auto saved_list = gpu.list;
+    gpu.list = other_list;
+    addon::ProcessInline(gpu.list.Get(), owner, &parameters);
+    gpu.list = saved_list;
+    Check(model_calls == queued_before + 2 && addon::worksets.at(key).control_mask == queued_mask,
+          "healthy same-queue pending fence does not skip next Evaluate or rebuild workset");
+    Check(SUCCEEDED(other_list->Close()), "next queued frame Close");
+    ID3D12CommandList* next[]{other_list.Get()};
+    gpu.queue->ExecuteCommandLists(1, next);
+    Check(!submission::ResourceReleasable(queued_mask), "delayed work remains retained");
+  } catch (...) { gate->Signal(1); wait_real(); throw; }
+  Check(SUCCEEDED(gate->Signal(1)), "release healthy queue gate");
+  wait_real();
+  Check(SUCCEEDED(gpu.allocator->Reset()) && SUCCEEDED(gpu.list->Reset(gpu.allocator.Get(), nullptr)), "reset completed frame");
+  Check(SUCCEEDED(other_allocator->Reset()) && SUCCEEDED(other_list->Reset(other_allocator.Get(), nullptr)), "reset completed second frame");
+  submission::OnCommandListReset(gpu.list.Get());
+  submission::OnCommandListReset(other_list.Get());
+  addon::DrainRetiredResources(true);
+  Check(submission::ResourceReleasable(queued_mask), "real delayed fence then Reset releases use");
+  std::cout << "CASE location=healthy-queued evidence=GPU size=8x8 evaluates=2 resource=retained-then-releasable recovery=real-fence-and-reset no_cpu_fence_gate=1\n";
+
+  // Exercise the actual detour's exception boundary, not manual null receipts.
+  for (int stage : {0, 1, 2}) {
+    const auto before = model_calls;
+    addon::ProcessInline(gpu.list.Get(), owner, &parameters);
+    Check(model_calls == before + 1, "fault case records actual mask and model");
+    auto* mask = addon::worksets.at(key).control_mask;
+    Check(SUCCEEDED(gpu.list->Close()), "fault recording Close");
+    ComPtr<ID3D12Fence> delayed;
+    Check(SUCCEEDED(gpu.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&delayed))), "fault GPU gate");
+    Check(SUCCEEDED(gpu.queue->Wait(delayed.Get(), 1)), "delay actual fault submission");
+    const auto failures_before = injected_failures;
+    if (stage < 2) {
+      reservation_fault_stage = stage;
+      submission::reservation_fault = ReservationFault;
+    } else {
+      std::lock_guard lock(renodx::addons::dlss5::queue_completion_mutex);
+      signal_fault_fence = renodx::addons::dlss5::queue_completions.at(gpu.queue.Get()).fence;
+    }
+    ID3D12CommandList* lists[]{gpu.list.Get()};
+    gpu.queue->ExecuteCommandLists(1, lists);
+    submission::reservation_fault = nullptr;
+    try {
+      Check(injected_failures == failures_before + 1, "production submit fault was reached");
+      Check(SUCCEEDED(gpu.list->Reset(gpu.allocator.Get(), nullptr)), "Reset in-flight list without resetting allocator");
+      submission::OnCommandListReset(gpu.list.Get());
+      submission::PruneCompletedGenerations();
+      Check(!submission::ResourceReleasable(mask), "failed bookkeeping or Signal retains actual in-flight mask");
+      const auto failed_calls = model_calls;
+      Check(!addon::ProcessInline(gpu.list.Get(), owner, &parameters) && model_calls == failed_calls,
+            "unknown submit proof forbids reusing mask and model");
+      addon::teardown_pending = true;
+      addon::teardown_other_device_waiting = true;
+      addon::teardown_pending_since_ns = addon::SteadyNowNs() - 60'000'000'000LL;
+      Check(!addon::ServicePendingTeardown() && addon::worksets.contains(key),
+            "actual pending teardown cannot release aged unfinished work");
+    } catch (...) { delayed->Signal(1); wait_real(); throw; }
+    delayed->Signal(1);
+    wait_real();
+    // Test fence proves physical safety only: the production receipt stays unknown.
+    Check(!submission::ResourceReleasable(mask) && !addon::ServicePendingTeardown(),
+          "test-owned GPU completion does not repair production unknown proof");
+    addon::teardown_pending = false;
+    addon::teardown_other_device_waiting = false;
+    // Explicit isolated fixture reset after real GPU completion, never a product recovery.
+    submission::ResetAll();
+    addon::RetireWorkset(key);
+    addon::ReleaseNrSlot(addon::features.at(owner), 0, true);
+    addon::DrainRetiredResources(true);
+    renodx::addons::dlss5::ReleaseQueueCompletions();
+    Check(SUCCEEDED(gpu.list->Close()) && SUCCEEDED(gpu.allocator->Reset())
+              && SUCCEEDED(gpu.list->Reset(gpu.allocator.Get(), nullptr)), "safe fixture reset");
+    mature();
+    std::cout << "CASE location=" << (stage < 2 ? "submission-reservation-allocation" : "post-execute-signal")
+              << " stage=" << stage << " evidence=MOCK+GPU size=8x8 resource=retained proof=unknown recovery=isolated-fixture-reset-after-independent-fence\n";
+  }
+  // Keep a real completed recording replayable: neither teardown entry nor
+  // a new runtime may discard it just because another device is waiting.
+  namespace timers = renodx::addons::dlss5::gpu_timers;
+  Check(timers::Begin(gpu.list.Get(), gpu.device.Get(), "postSR", 8, 8, 0, 1, false), "removal completion-only sample");
+  addon::ProcessInline(gpu.list.Get(), owner, &parameters);
+  timers::End(gpu.list.Get());
+  Check(SUCCEEDED(gpu.list->Close()), "replayable removal recording Close");
+  ID3D12CommandList* removal_lists[]{gpu.list.Get()};
+  gpu.queue->ExecuteCommandLists(1, removal_lists);
+  wait_real();
+  addon::teardown_pending = true;
+  addon::teardown_other_device_waiting = true;
+  addon::teardown_pending_since_ns = addon::SteadyNowNs() - 60'000'000'000LL;
+  Check(!addon::ServicePendingTeardown() && !addon::Shutdown(false)
+            && addon::worksets.contains(key), "all teardown entries retain completed replayable list");
+  // D3D12CreateDevice may return the existing device on the same adapter.
+  // Use the other already-supported adapter to obtain a distinct generation.
+  std::unique_ptr<Gpu> recovery_gpu;
+  if (safety) recovery_gpu = std::make_unique<Gpu>(!hardware);
+  if (recovery_gpu != nullptr) {
+  auto& recovered = *recovery_gpu;
+  Check(recovered.device.Get() != gpu.device.Get(), "recovery uses a genuinely distinct device");
+  addon::direct_api.init = InitializeRuntime;
+  addon::direct_api.shutdown = ShutdownRuntime;
+  Check(!addon::EnsureDirectRuntime(recovered.list.Get()) && runtime_initializations == 0,
+        "runtime switch retains replayable old work despite new device");
+  addon::teardown_pending = false;
+  addon::teardown_other_device_waiting = false;
+  std::cout << "CASE location=replayable-teardown-and-runtime-switch evidence=GPU+MOCK size=8x8 resource=retained recovery=close-recording\n";
+  // Removal substitutes only API observations after independent real completion.
+  {
+    namespace leases = renodx::addons::dlss5;
+    leases::GpuLease unknown;
+    Check(leases::QueryGpuLease(unknown) == leases::GpuLeaseState::kPending, "unknown lease stays pending");
+    leases::GpuLease removed;
+    removed.coverage_complete = true;
+    removed.waits.emplace_back(leases::FenceRef(gpu.fence.Get()), gpu.serial);
+    auto* production_fence = leases::queue_completions.at(gpu.queue.Get()).fence;
+    removed_fence = production_fence;
+    removed_device = gpu.device.Get();
+    removed.waits.clear();
+    removed.waits.emplace_back(leases::FenceRef(production_fence), 1);
+    Check(leases::QueryGpuLease(removed) == leases::GpuLeaseState::kDeviceRemoved
+              && !leases::GpuLeaseCompleted(removed), "removed fence cannot prove successful execution");
+    const auto calls = model_calls;
+    Check(!addon::ProcessInline(gpu.list.Get(), owner, &parameters) && model_calls == calls,
+          "removed device cannot evaluate again");
+    addon::RetireWorkset(key);
+    addon::ReleaseNrSlot(addon::features.at(owner), 0, true);
+    addon::DrainRetiredResources(true);
+    timers::Poll(true, false);
+    Check(!timers::execution_stats[1].valid
+              && timers::execution_stats[1].state == timers::SampleState::DEVICE_REMOVED,
+          "production completion consumer rejects removed sample instead of successful readback");
+    Check(addon::retired_final_resources.empty() && addon::retired_nr_features.empty()
+              && addon::TeardownProof() == submission::RecordedWork::kComplete,
+          "production removal retires dead-device resources without requiring old-list Reset");
+    Check(addon::EnsureDirectRuntime(recovered.list.Get()) && addon::direct_device == recovered.device.Get()
+              && runtime_initializations == 1 && runtime_shutdowns == 1,
+          "production runtime switch initializes a distinct legal device generation");
+    removed_fence = nullptr;
+    removed_device = nullptr;
+    auto* rebuilt = addon::EnsureWorkset(recovered.device.Get(), owner, output.Get(), 8, 8, 8, 8,
+        DXGI_FORMAT_R8G8B8A8_UNORM, 0, 1, 0, false, nullptr, nullptr, true);
+    Check(rebuilt != nullptr && addon::EnsureControlMaskPipeline(recovered.device.Get()),
+          "new device rebuilds actual mask resources and PSO");
+    addon::TrackWorksetRecording(recovered.list.Get(), *rebuilt);
+    ID3D12DescriptorHeap* heaps[]{rebuilt->descriptors};
+    recovered.list->SetDescriptorHeaps(1, heaps);
+    recovered.list->SetComputeRootSignature(addon::codec_pipeline.root_signature);
+    recovered.list->SetPipelineState(addon::codec_pipeline.control_mask);
+    recovered.list->SetComputeRootDescriptorTable(1, addon::DescriptorHeapSlot(
+        rebuilt->descriptors->GetGPUDescriptorHandleForHeapStart(), addon::kDescriptorControlMaskUav, rebuilt->descriptor_size));
+    const std::array<uint32_t, 8> constants{8, 8, addon::kControlMaskNeutral, 4, 4, 0, 0, 0};
+    recovered.list->SetComputeRoot32BitConstants(2, 8, constants.data(), 0);
+    recovered.list->Dispatch(1, 1, 1);
+    recovered.Transition(rebuilt->control_mask, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    auto transfer = recovered.CreateTextureTransfer(rebuilt->control_mask);
+    recovered.RecordTextureReadback(rebuilt->control_mask, transfer);
+    recovered.Submit();
+    const auto pixels = recovered.ReadTexture(transfer);
+    Check(std::all_of(pixels.begin(), pixels.end(), [](uint8_t value) { return value == 255; }),
+          "new device generation dispatch completes with neutral mask bytes");
+  }
+  std::cout << "CASE location=device-removal evidence=MOCK+GPU size=8x8 actual_gpu=already-completed old_device_evaluates=0 old_device_reset=0 recovery=distinct-adapter-device-new-PSO-resource-dispatch runtime=MOCK\n";
+  } else {
+    // The ordinary WARP case remains usable on machines without NVIDIA.
+    Check(SUCCEEDED(gpu.list->Reset(gpu.allocator.Get(), nullptr)), "close replay lifetime in WARP-only case");
+    submission::OnCommandListReset(gpu.list.Get());
+    addon::teardown_pending = false;
+    addon::teardown_other_device_waiting = false;
+    std::cout << "CASE location=device-removal evidence=NOT_RUN recovery=requires-explicit-safety-case-and-second-adapter\n";
+  }
   Check(DetourTransactionBegin() == NO_ERROR && DetourUpdateThread(GetCurrentThread()) == NO_ERROR
             && DetourDetach(reinterpret_cast<PVOID*>(&real_dispatch), reinterpret_cast<PVOID>(ObserveDispatch)) == NO_ERROR
             && DetourDetach(reinterpret_cast<PVOID*>(&real_pipeline), reinterpret_cast<PVOID>(ObservePipeline)) == NO_ERROR
             && DetourDetach(reinterpret_cast<PVOID*>(&real_allocate), reinterpret_cast<PVOID>(Allocate)) == NO_ERROR
+            && DetourDetach(reinterpret_cast<PVOID*>(&real_root), reinterpret_cast<PVOID>(CreateRoot)) == NO_ERROR
+            && DetourDetach(reinterpret_cast<PVOID*>(&real_pso), reinterpret_cast<PVOID>(CreatePso)) == NO_ERROR
+            && DetourDetach(reinterpret_cast<PVOID*>(&real_heap), reinterpret_cast<PVOID>(CreateHeap)) == NO_ERROR
+            && DetourDetach(reinterpret_cast<PVOID*>(&real_signal), reinterpret_cast<PVOID>(Signal)) == NO_ERROR
+            && DetourDetach(reinterpret_cast<PVOID*>(&real_completed), reinterpret_cast<PVOID>(Completed)) == NO_ERROR
+            && DetourDetach(reinterpret_cast<PVOID*>(&real_removed), reinterpret_cast<PVOID>(RemovedReason)) == NO_ERROR
             && DetourTransactionCommit() == NO_ERROR, "ControlMask observers detached");
   std::cout << "PASS ControlMask ProcessInline default-off dispatch, allocation/NGX failure and no-retry contracts\n";
 }
@@ -269,12 +628,12 @@ void Dispatch(Gpu& gpu, ID3D12Resource* texture, ID3D12DescriptorHeap* heap,
   gpu.list->ResourceBarrier(1, &barrier);
 }
 
-int Run() {
+int RunSafety(bool hardware, bool safety = true) {
   try {
     reshade::internal::get_reshade_module_handle(GetModuleHandleW(nullptr));
     ComPtr<ID3D12Debug> debug;
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) debug->EnableDebugLayer();
-    Gpu gpu(false);
+    Gpu gpu(hardware);
     ComPtr<ID3D12InfoQueue> info;
     gpu.device.As(&info);
     std::cout << "ControlMask WARP debug_layer=" << (debug != nullptr) << '\n';
@@ -305,7 +664,7 @@ int Run() {
     Dispatch(gpu, texture.Get(), heap.Get(), addon::kControlMaskRgb, 0, 0, 0.25f, 0.5f, 0.75f);
     auto pixels = ReadPixels(gpu, texture.Get());
     auto pixel = [&](uint32_t x, uint32_t y) { return pixels.data() + (y * 8 + x) * 4; };
-    Check(pixel(7, 7)[0] == 64 && pixel(7, 7)[1] == 128
+    Check(pixel(7, 7)[0] == 64 && (pixel(7, 7)[1] == 128 || pixel(7, 7)[1] == 127)
               && pixel(7, 7)[2] == 191 && pixel(7, 7)[3] == 255,
           "fixed RGB mask writes expected RGBA8 texels");
     Dispatch(gpu, texture.Get(), heap.Get(), addon::kControlMaskNeutral, 0, 0, 0.f, 0.f, 0.f);
@@ -318,7 +677,7 @@ int Run() {
     Check(pixel(1, 1)[0] == 0 && pixel(1, 1)[1] == 0
               && pixel(1, 1)[2] == 0 && pixel(1, 1)[3] == 255,
           "local test rectangle is zero RGB with opaque alpha");
-    Check(pixel(6, 6)[0] == 255 && pixel(6, 6)[1] == 128
+    Check(pixel(6, 6)[0] == 255 && (pixel(6, 6)[1] == 128 || pixel(6, 6)[1] == 127)
               && pixel(6, 6)[2] == 0 && pixel(6, 6)[3] == 255,
           "pixels outside test rectangle retain fixed RGB");
 
@@ -354,7 +713,12 @@ int Run() {
                 }
               }
               const size_t offset = (static_cast<size_t>(y) * size[0] + x) * 4;
-              Check(std::memcmp(probe_pixels.data() + offset, expected.data(), expected.size()) == 0,
+              bool matches = true;
+              for (size_t channel = 0; channel < 4; ++channel) {
+                const auto actual = probe_pixels[offset + channel];
+                matches &= actual == expected[channel] || (expected[channel] == 128 && actual == 127);
+              }
+              Check(matches,
                     "all mask texels match channel, origin, half-open boundary, RGB independence and alpha contracts");
             }
           }
@@ -431,7 +795,7 @@ int Run() {
     addon::ReleaseNrSlot(feature, 1, false);
     Check(!feature.slots[1].control_mask_bound,
           "released parameter slot forgets its prior mask binding");
-    RunInline(gpu);
+    RunInline(gpu, hardware, safety);
     if (info != nullptr) {
       for (UINT64 i = 0; i < info->GetNumStoredMessages(); ++i) {
         SIZE_T bytes = 0;
@@ -445,11 +809,14 @@ int Run() {
         }
       }
     }
-    std::cout << "PASS ControlMask WARP shader and NGX parameter binding; NVIDIA runtime not exercised";
+    std::cout << "PASS ControlMask safety adapter=" << (hardware ? "NATIVE_GPU" : "WARP")
+              << " model=MOCK; NVIDIA runtime not exercised\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "FAIL ControlMask: " << error.what() << std::endl;
     return 1;
   }
 }
+
+int Run() { return RunSafety(false, false); }
 }  // namespace control_mask_gpu_cases

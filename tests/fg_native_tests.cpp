@@ -1,4 +1,5 @@
 #define DEBUG_LEVEL_0
+#define NR_NEXUS_TEST_SUBMISSION_FAILURE
 #include <windows.h>
 #include <d3d12sdklayers.h>
 #include <array>
@@ -702,6 +703,8 @@ int RunNativeRequiredMenuTest() {
 #include "control_mask_capture_cases.hpp"
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--control-mask-safety") == 0) return control_mask_gpu_cases::RunSafety(false);
+  if (argc == 2 && std::strcmp(argv[1], "--control-mask-safety-hardware") == 0) return control_mask_gpu_cases::RunSafety(true);
   if (argc == 2 && std::strcmp(argv[1], "--control-mask-capture") == 0) return control_mask_capture_cases::Run();
   if (argc == 2 && std::strcmp(argv[1], "--control-mask") == 0) return control_mask_gpu_cases::Run();
   if (argc == 2 && std::strcmp(argv[1], "--gpu-pass-diagnostics") == 0) return gpu_timer_cases::Run();

@@ -42,6 +42,7 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <memory>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -65,6 +66,15 @@ struct GenerationSubmission {
   uint64_t recording_generation = 0;
 };
 
+// Optional observation survives pruning, so a CPU state ledger can distinguish
+// a discarded recording from one whose submitted work completed.
+struct RecordingStatus {
+  uint64_t list = 0;
+  uint64_t generation = 0;
+  std::atomic_bool submitted{false};
+  std::atomic_bool closed{false};
+};
+
 // One recording generation of one command list.
 struct Generation {
   // False once the recording was discarded (Reset) or the list destroyed:
@@ -73,6 +83,10 @@ struct Generation {
   // Addon-owned GPU objects this recording can reference (deduplicated).
   std::vector<const void*> uses;
   std::vector<GenerationSubmission> submissions;
+  std::shared_ptr<RecordingStatus> status;
+  // Marked before any reservation allocation. If bookkeeping throws, the
+  // real Execute still runs and Reset must not turn this into a discarded use.
+  uint64_t unreserved_submissions = 0;
 };
 
 struct ListState {
@@ -257,6 +271,7 @@ inline void OnCommandListReset(ID3D12CommandList* list) {
   if (const auto current = state.generations.find(state.current);
       current != state.generations.end()) {
     current->second.open = false;
+    if (current->second.status != nullptr) current->second.status->closed.store(true);
     generations_outstanding.fetch_add(1, std::memory_order_relaxed);
   }
   ++state.current;
@@ -278,6 +293,7 @@ inline void OnCommandListDestroyed(ID3D12CommandList* list) {
   it->second.destroyed = true;
   for (auto& [id, generation] : it->second.generations) {
     generation.open = false;
+    if (generation.status != nullptr) generation.status->closed.store(true);
   }
   generations_outstanding.fetch_add(1, std::memory_order_relaxed);
 }
@@ -296,11 +312,26 @@ struct PendingSubmission {
   uint64_t generation = 0;
 };
 
+#ifdef NR_NEXUS_TEST_SUBMISSION_FAILURE
+inline void (*reservation_fault)(unsigned) = nullptr;
+#endif
+
 inline std::vector<PendingSubmission> BeginSubmission(
     UINT count, ID3D12CommandList* const* lists) {
   std::vector<PendingSubmission> pending;
   if (lists == nullptr) return pending;
   std::lock_guard<std::mutex> lock(tracker_mutex);
+  // Cover the whole batch before any operation that can allocate. A throw
+  // on the first list must also retain every later list that Execute forwards.
+  for (UINT i = 0; i < count; ++i) {
+    if (lists[i] == nullptr) continue;
+    const auto list = tracked_lists.find(ListIdentity(lists[i], false));
+    if (list == tracked_lists.end()) continue;
+    const auto generation = list->second.generations.find(list->second.current);
+    if (generation == list->second.generations.end() || generation->second.uses.empty()) continue;
+    ++generation->second.unreserved_submissions;
+    if (generation->second.status != nullptr) generation->second.status->submitted.store(true);
+  }
   for (UINT i = 0; i < count; ++i) {
     ID3D12CommandList* list = lists[i];
     if (list == nullptr) continue;
@@ -317,8 +348,15 @@ inline std::vector<PendingSubmission> BeginSubmission(
       }
       continue;
     }
+#ifdef NR_NEXUS_TEST_SUBMISSION_FAILURE
+    if (reservation_fault != nullptr) reservation_fault(0);
+#endif
     generation.submissions.push_back({});
+#ifdef NR_NEXUS_TEST_SUBMISSION_FAILURE
+    if (reservation_fault != nullptr) reservation_fault(1);
+#endif
     pending.push_back({key, state.current});
+    --generation.unreserved_submissions;
   }
   return pending;
 }
@@ -367,7 +405,8 @@ inline size_t PruneCompletedGenerations(
     left += generations.size();
     for (auto gen_it = generations.begin(); gen_it != generations.end();) {
       const Generation& generation = gen_it->second;
-      bool done = !generation.open;
+      bool done = generation.unreserved_submissions == 0;
+      bool device_removed = !generation.submissions.empty();
       if (done) {
         for (const GenerationSubmission& submission :
              generation.submissions) {
@@ -376,12 +415,16 @@ inline size_t PruneCompletedGenerations(
             break;
           }
           const uint64_t completed = submission.fence->GetCompletedValue();
+          device_removed &= completed == UINT64_MAX;
           if (completed != UINT64_MAX && completed < submission.value) {
             done = false;
             break;
           }
         }
       }
+      // A terminal device cannot execute or replay its lists, and may reject
+      // Reset. This retires lifetimes only; readback must still reject removal.
+      done &= !generation.open || device_removed;
       if (!done) {
         ++gen_it;
         continue;
@@ -434,6 +477,19 @@ inline std::pair<uint64_t, uint64_t> RecordingIdentity(ID3D12CommandList* list) 
   return {identity, state.current};
 }
 
+inline std::shared_ptr<RecordingStatus> ObserveRecording(ID3D12CommandList* list) {
+  const auto identity = ListIdentity(list, true);
+  std::lock_guard lock(tracker_mutex);
+  auto& state = tracked_lists[identity];
+  auto& generation = state.generations[state.current];
+  if (generation.status == nullptr) {
+    generation.status = std::make_shared<RecordingStatus>();
+    generation.status->list = identity;
+    generation.status->generation = state.current;
+  }
+  return generation.status;
+}
+
 inline bool OnlyRecordingUses(const void* use, std::pair<uint64_t, uint64_t> recording) {
   std::lock_guard lock(tracker_mutex);
   for (const auto& [identity, state] : tracked_lists) {
@@ -456,7 +512,8 @@ inline bool OnlyRecordingUses(const void* use, std::pair<uint64_t, uint64_t> rec
 // teardown had released NR state on "every submission completed" and the
 // replay hung the device, DXGI_ERROR_DEVICE_HUNG, on rc10).
 enum class RecordedWork {
-  // Every recording with addon work is closed and its submissions completed.
+  // Recordings are closed and completed, or their submitted device is removed.
+  // This is a lifetime verdict, never evidence of successful GPU execution.
   kComplete,
   // Every submission completed, but a recording was never Reset: the app can
   // still execute it again, and that execution reaches the addon's objects.
@@ -474,20 +531,23 @@ inline RecordedWork RecordedWorkState() {
   for (const auto& [key, state] : tracked_lists) {
     for (const auto& [id, generation] : state.generations) {
       if (generation.uses.empty()) continue;
+      if (generation.unreserved_submissions != 0) return RecordedWork::kPending;
       if (generation.submissions.empty()) {
         if (generation.open) return RecordedWork::kPending;
         continue;
       }
+      bool device_removed = true;
       for (const GenerationSubmission& submission : generation.submissions) {
         if (submission.pending || submission.fence.empty()) {
           return RecordedWork::kPending;
         }
         const uint64_t completed = submission.fence->GetCompletedValue();
+        device_removed &= completed == UINT64_MAX;
         if (completed != UINT64_MAX && completed < submission.value) {
           return RecordedWork::kPending;
         }
       }
-      replayable = replayable || generation.open;
+      replayable = replayable || (generation.open && !device_removed);
     }
   }
   return replayable ? RecordedWork::kReplayable : RecordedWork::kComplete;
@@ -519,6 +579,7 @@ inline UseSubmission UseSubmissionTokens(
       bool carries = false;
       for (const void* tracked : generation.uses) carries |= tracked == use;
       if (!carries) continue;
+      if (generation.unreserved_submissions != 0) return UseSubmission::kUnsubmitted;
       if (generation.submissions.empty()) return UseSubmission::kUnsubmitted;
       for (const GenerationSubmission& submission : generation.submissions) {
         if (submission.pending || submission.fence.empty()) {
@@ -557,6 +618,7 @@ inline TrackerStats Snapshot() {
     stats.generations += state.generations.size();
     for (const auto& [id, generation] : state.generations) {
       if (generation.open) ++stats.open_generations;
+      stats.unprovable_submissions += generation.unreserved_submissions;
       for (const GenerationSubmission& submission : generation.submissions) {
         if (!submission.pending && submission.fence.empty()) {
           ++stats.unprovable_submissions;
