@@ -10,6 +10,7 @@ from unittest.mock import patch
 OFFLINE = Path(__file__).resolve().parents[1] / "tools" / "offline"
 sys.path.insert(0, str(OFFLINE))
 import contracts as c
+import control_mask_contracts as mask
 
 spec = importlib.util.spec_from_file_location("offline_runner", OFFLINE / "run.py")
 runner = importlib.util.module_from_spec(spec)
@@ -21,9 +22,9 @@ class OfflineRunnerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
-        self.fixture = c.validate_fixture({"schema": c.FIXTURE_SCHEMA, "fixture_id": "runner-unit",
+        self.fixture = mask.validate_fixture({"schema": mask.FIXTURE_SCHEMA, "fixture_id": "runner-unit",
             "cases": [{"id": "one", "width": 2, "height": 2, "frames": 3, "warmup": 1}]})
-        (self.directory / "one.rgba8").write_bytes(c.mask_reference(self.fixture["cases"][0]))
+        (self.directory / "one.rgba8").write_bytes(mask.mask_reference(self.fixture["cases"][0]))
         self.backend = {"schema": "nr-nexus-offline-backend/1", "backend": "d3d12-control-mask",
             "execution_mode": "validation", "cpu_timing": {"clock": "std::chrono::steady_clock",
                 "device_queue_init_ms": 1.0, "pipeline_init_ms": 1.0,

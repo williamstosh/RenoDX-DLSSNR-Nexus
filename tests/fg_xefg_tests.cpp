@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <include/reshade.hpp>
+#include "d3d12_test_gpu.hpp"
 #include <fg_xefg.hpp>
 #include <fg_native_options.hpp>
 
@@ -23,6 +24,8 @@ extern "C" __declspec(dllexport) void ReShadeLogMessage(void*, int, const char* 
 
 namespace {
 using Microsoft::WRL::ComPtr;
+using d3d12_test::Check;
+using d3d12_test::Gpu;
 namespace fg = renodx::addons::dlss5::fg;
 namespace xefg = fg::xefg;
 namespace adapter = xefg::internal;
@@ -31,9 +34,6 @@ using renodx::addons::dlss5::FenceRef;
 using Hooks = adapter::SdkHooks<0>;
 constexpr int32_t HUDLESS = 0, DEPTH = 1, MOTION = 2, BACKBUFFER = 4;
 constexpr int32_t UNTIL_NEXT_PRESENT = 0, ONLY_NOW = 1;
-void Check(bool condition, const char* message) {
-  if (!condition) throw std::runtime_error(message);
-}
 
 void TestDiagnosticBudgets() {
   adapter::ContractTrace<int> trace;
@@ -68,160 +68,6 @@ void OptionsChanged(bool enabled) noexcept {
   ++options_events;
   last_options_enabled = enabled;
 }
-struct Gpu {
-  ComPtr<IDXGIFactory4> factory;
-  ComPtr<ID3D12Device> device;
-  ComPtr<ID3D12CommandQueue> queue;
-  ComPtr<ID3D12CommandAllocator> allocator;
-  ComPtr<ID3D12GraphicsCommandList> list;
-  ComPtr<ID3D12Fence> fence;
-  std::vector<ComPtr<ID3D12Resource>> uploads;
-  uint64_t serial = 0;
-  explicit Gpu(bool hardware = false) {
-    ComPtr<IDXGIAdapter> warp;
-    Check(SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))), "DXGI factory");
-    if (hardware) {
-      for (UINT index = 0; ; ++index) {
-        ComPtr<IDXGIAdapter1> candidate;
-        if (factory->EnumAdapters1(index, &candidate) == DXGI_ERROR_NOT_FOUND) break;
-        DXGI_ADAPTER_DESC1 adapter_desc{};
-        candidate->GetDesc1(&adapter_desc);
-        if (adapter_desc.VendorId == 0x10DE && (adapter_desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0) {
-          candidate.As(&warp);
-          std::wcout << L"GPU fixture: " << adapter_desc.Description << L'\n';
-          break;
-        }
-      }
-      Check(warp != nullptr, "NVIDIA hardware adapter");
-    } else {
-      Check(SUCCEEDED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp))), "WARP adapter");
-    }
-    Check(SUCCEEDED(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))), "WARP device");
-    D3D12_COMMAND_QUEUE_DESC desc{};
-    Check(SUCCEEDED(device->CreateCommandQueue(&desc, IID_PPV_ARGS(&queue))), "queue");
-    Check(SUCCEEDED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))), "allocator");
-    Check(SUCCEEDED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
-                                            IID_PPV_ARGS(&list))), "list");
-    Check(SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))), "fence");
-  }
-  ComPtr<IDXGISwapChain3> Swapchain() {
-    DXGI_SWAP_CHAIN_DESC1 desc{};
-    desc.Width = 8;
-    desc.Height = 8;
-    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    desc.SampleDesc.Count = 1;
-    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    desc.BufferCount = 2;
-    desc.Scaling = DXGI_SCALING_STRETCH;
-    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-    ComPtr<IDXGISwapChain1> swapchain;
-    Check(SUCCEEDED(factory->CreateSwapChainForComposition(queue.Get(), &desc, nullptr, &swapchain)), "composition swapchain");
-    ComPtr<IDXGISwapChain3> result;
-    Check(SUCCEEDED(swapchain.As(&result)), "swapchain3");
-    return result;
-  }
-  ComPtr<ID3D12Resource> Texture() {
-    D3D12_RESOURCE_DESC desc{};
-    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    desc.Width = 8;
-    desc.Height = 8;
-    desc.DepthOrArraySize = 1;
-    desc.MipLevels = 1;
-    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    desc.SampleDesc.Count = 1;
-    D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
-    ComPtr<ID3D12Resource> result;
-    Check(SUCCEEDED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-        D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&result))), "texture");
-    return result;
-  }
-  ComPtr<ID3D12Resource> Buffer(uint64_t bytes, D3D12_HEAP_TYPE type) {
-    D3D12_RESOURCE_DESC desc{};
-    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    desc.Width = bytes;
-    desc.Height = 1;
-    desc.DepthOrArraySize = 1;
-    desc.MipLevels = 1;
-    desc.SampleDesc.Count = 1;
-    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    D3D12_HEAP_PROPERTIES heap{.Type = type};
-    ComPtr<ID3D12Resource> result;
-    Check(SUCCEEDED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-        (type == D3D12_HEAP_TYPE_UPLOAD ? D3D12_RESOURCE_STATE_GENERIC_READ : D3D12_RESOURCE_STATE_COPY_DEST),
-        nullptr, IID_PPV_ARGS(&result))), "buffer");
-    return result;
-  }
-  void Transition(ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
-    D3D12_RESOURCE_BARRIER barrier{};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition = {resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, before, after};
-    list->ResourceBarrier(1, &barrier);
-  }
-  void Write(ID3D12Resource* resource, uint8_t value) {
-    const auto desc = resource->GetDesc();
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
-    uint64_t bytes = 0;
-    device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, nullptr, nullptr, &bytes);
-    auto upload = Buffer(bytes, D3D12_HEAP_TYPE_UPLOAD);
-    void* mapped = nullptr;
-    Check(SUCCEEDED(upload->Map(0, nullptr, &mapped)), "upload map");
-    std::memset(mapped, value, static_cast<size_t>(bytes));
-    upload->Unmap(0, nullptr);
-    Transition(resource, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
-    D3D12_TEXTURE_COPY_LOCATION source{.pResource = upload.Get(),
-        .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, .PlacedFootprint = footprint};
-    D3D12_TEXTURE_COPY_LOCATION destination{.pResource = resource,
-        .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, .SubresourceIndex = 0};
-    list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
-    Transition(resource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
-    uploads.push_back(upload);
-  }
-  void Submit() {
-    Check(SUCCEEDED(list->Close()), "close");
-    ID3D12CommandList* lists[]{list.Get()};
-    const auto pending = submission::BeginSubmission(1, lists);
-    queue->ExecuteCommandLists(1, lists);
-    Check(SUCCEEDED(queue->Signal(fence.Get(), ++serial)), "submit signal");
-    submission::CompleteSubmission(pending, fence.Get(), serial);
-    HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    Check(event != nullptr, "completion event");
-    const auto hr = fence->SetEventOnCompletion(serial, event);
-    const auto wait = (SUCCEEDED(hr) ? WaitForSingleObject(event, 10000) : WAIT_FAILED);
-    CloseHandle(event);
-    Check(wait == WAIT_OBJECT_0, "bounded WARP completion");
-    Check(SUCCEEDED(allocator->Reset()), "allocator reset");
-    Check(SUCCEEDED(list->Reset(allocator.Get(), nullptr)), "list reset");
-    submission::OnCommandListReset(list.Get());
-    submission::PruneCompletedGenerations();
-    uploads.clear();
-  }
-  void ExpectPixels(ID3D12Resource* resource, uint8_t value) {
-    const auto desc = resource->GetDesc();
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
-    uint64_t bytes = 0;
-    device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, nullptr, nullptr, &bytes);
-    auto readback = Buffer(bytes, D3D12_HEAP_TYPE_READBACK);
-    Transition(resource, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    D3D12_TEXTURE_COPY_LOCATION source{.pResource = resource,
-        .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, .SubresourceIndex = 0};
-    D3D12_TEXTURE_COPY_LOCATION destination{.pResource = readback.Get(),
-        .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, .PlacedFootprint = footprint};
-    list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
-    Transition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
-    Submit();
-    uint8_t* mapped = nullptr;
-    Check(SUCCEEDED(readback->Map(0, nullptr, reinterpret_cast<void**>(&mapped))), "readback map");
-    bool matches = true;
-    for (UINT y = 0; y < desc.Height; ++y) {
-      for (UINT x = 0; x < desc.Width * 4; ++x) {
-        matches &= mapped[footprint.Offset + y * footprint.Footprint.RowPitch + x] == value;
-      }
-    }
-    readback->Unmap(0, nullptr);
-    Check(matches, "GPU pixels changed after ONLY_NOW source overwrite");
-  }
-};
 struct SdkCall {
   void* context;
   ID3D12CommandList* list;

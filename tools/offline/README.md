@@ -6,9 +6,10 @@
 ## 环境与构建
 
 沿用[项目构建前提](../../README.md#zh-build)中的固定宿主、MSVC 与 Windows SDK。
-Python 工具仅用标准库。GPU 后端复用既有生成 Shader 头和 embed_file 工具，并在
+Python 工具仅用标准库。`gpu` 后端复用既有生成 Shader 头和 embed_file 工具，并在
 每个隔离构建目录重新用 FXC 编译当前 ControlMask Shader，通过预包含头绑定该字节码；
-不改共享生成目录。NGX 探针只用已有 SDK 头，不链接或打包第三方 Runtime。
+不改共享生成目录。`replay` 仅复用通用 D3D12 测试助手，不生成或包含 ControlMask Shader。
+NGX 探针只用已有 SDK 头，不链接或打包第三方 Runtime。
 
 ~~~powershell
 pwsh -File tools/offline/build.ps1 -Backend gpu -OutputDirectory tmp/offline/gpu-build
@@ -23,7 +24,8 @@ HostRoot、ShaderIncludeDirectory、Fxc、EmbedFile 参数可显式指定已有�
 
 ## Fixture、合成序列与原始数据
 
-nr-nexus-offline-fixture/1 的规范化及验证以 contracts.py 为准。
+nr-nexus-offline-fixture/1 的 ControlMask case 规范化及验证以 control_mask_contracts.py 为准；
+contracts.py 维护通用 JSON、数值、文件身份与 Color／Depth／Motion 序列契约；ControlMask 的 Fixture schema 与 CLI 保持原版本和参数。
 顶层为 schema、fixture_id、可选 description 和 cases；case 必须有
 id、width、height，其他默认如下。未知字段、重复 ID（含 Windows 大小写冲突）、
 重复 JSON 键、非有限值及不支持的 schema 均拒绝。
@@ -67,7 +69,9 @@ SHA-256。当前 moving-ramp/1 为周期水平平移、普通深度、零 jitter
 
 ## E0：float32 GPU 输入回放
 
-使用上面的 `-Backend replay` 构建得到 `offline_replay_tests.exe`，可直接运行或交由
+使用上面的 `-Backend replay` 构建得到 `offline_replay_tests.exe`。该目标与
+`tests/fg_xefg_tests.cpp` 共用 `tests/d3d12_test_gpu.hpp` 中的设备／Adapter、Queue／Command List、资源上传／读回、Barrier、Fence 及通用 timestamp 助手；
+不包含 ControlMask GPU harness，也不需要编译 ControlMask HLSL、FXC 或 embed_file。可直接运行或交由
 统一 runner 校验。`--sequence` 指向包含 `sequence.json` 和原始文件的目录，而非 JSON
 文件本身；`prepare` 示例对应 `tmp/offline/sequence/inputs`。
 
@@ -90,6 +94,8 @@ controls 中 Reset、Jitter、Motion Scale、Subrect 仅转录输入，标记 ST
 `run.py replay` 另行核验构建身份和输入 SHA-256，运行后再次核对输入，并独立检查
 全部读回资源与完成序号。统一输出为 `result.json`，原始后端结果与 float32 文件
 保留在 `backend/`。直接执行 EXE 不替代 runner 的输入 SHA-256 校验。
+后续帧输入损坏时，后端仍保留此前已完成帧的原始读回和 Fence 记录；失败帧保持
+`status=failed`、`gpu_completed=false`，整个结果为 failed，不覆盖已有输出。
 
 ## 既有 FG／XeFG／生命周期套件统一入口
 

@@ -1,10 +1,29 @@
-// Reuse the established real D3D12 device, barrier and bounded submission host.
-#define wmain UnusedOfflineControlMain
-#include "offline_gpu_tests.cpp"
-#undef wmain
+#include <windows.h>
+#include <d3d12.h>
+#include <dxgi1_6.h>
+#include <wrl/client.h>
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <exception>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
 #include <memory>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
+#include <nlohmann/json.hpp>
+
+#include "d3d12_test_gpu.hpp"
+
+using d3d12_test::Check;
+using d3d12_test::Gpu;
+using Microsoft::WRL::ComPtr;
 #pragma comment(linker, "/ENTRY:wmainCRTStartup")
 
 int wmain(int argc, wchar_t** argv) {
@@ -98,7 +117,6 @@ int wmain(int argc, wchar_t** argv) {
     result["sequence_sha256"] = manifest.at("sequence_sha256");
     result["width"] = width;
     result["height"] = height;
-    reshade::internal::get_reshade_module_handle(GetModuleHandleW(nullptr));
     ComPtr<ID3D12Debug> debug;
     const HRESULT debug_status = D3D12GetDebugInterface(IID_PPV_ARGS(&debug));
     if (SUCCEEDED(debug_status)) { debug->EnableDebugLayer(); }
@@ -153,12 +171,9 @@ int wmain(int argc, wchar_t** argv) {
       DXGI_FORMAT format;
       uint32_t stride;
       std::vector<uint8_t> input;
-      ComPtr<ID3D12Resource> upload;
       ComPtr<ID3D12Resource> source;
       ComPtr<ID3D12Resource> destination;
-      ComPtr<ID3D12Resource> readback;
-      D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
-      uint64_t allocation_bytes = 0;
+      d3d12_test::TextureTransfer transfer;
     };
     for (size_t index = 0; index < manifest.at("frames").size(); ++index) {
       const auto& frame = manifest.at("frames")[index];
@@ -207,52 +222,20 @@ int wmain(int argc, wchar_t** argv) {
         copy.input.resize(bytes);
         std::ifstream input(path, std::ios::binary);
         Check(input.good() && static_cast<bool>(input.read(reinterpret_cast<char*>(copy.input.data()), bytes)), "resource read failed");
-        D3D12_RESOURCE_DESC texture{};
-        texture.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        texture.Width = frame_width;
-        texture.Height = frame_height;
-        texture.DepthOrArraySize = 1;
-        texture.MipLevels = 1;
-        texture.Format = copy.format;
-        texture.SampleDesc.Count = 1;
-        const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
-        for (auto* target : {std::addressof(copy.source), std::addressof(copy.destination)}) {
-          Check(SUCCEEDED(gpu.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &texture,
-              D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(target->ReleaseAndGetAddressOf()))), "copy texture allocation");
-        }
-        UINT rows = 0;
-        UINT64 row_bytes = 0;
-        gpu.device->GetCopyableFootprints(&texture, 0, 1, 0, &copy.footprint, &rows, &row_bytes, &copy.allocation_bytes);
-        Check(rows == frame_height && row_bytes == static_cast<uint64_t>(frame_width) * copy.stride
-                  && copy.footprint.Footprint.RowPitch >= row_bytes, "copy footprint shape mismatch");
-        copy.upload = gpu.Buffer(copy.allocation_bytes, D3D12_HEAP_TYPE_UPLOAD);
-        copy.readback = gpu.Buffer(copy.allocation_bytes, D3D12_HEAP_TYPE_READBACK);
-        uint8_t* mapped = nullptr;
-        const D3D12_RANGE no_reads{0, 0};
-        Check(SUCCEEDED(copy.upload->Map(0, &no_reads, reinterpret_cast<void**>(&mapped))), "upload map");
-        std::memset(mapped, 0, static_cast<size_t>(copy.allocation_bytes));
-        for (uint32_t y = 0; y < frame_height; ++y) {
-          std::memcpy(mapped + copy.footprint.Offset + static_cast<size_t>(y) * copy.footprint.Footprint.RowPitch,
-                      copy.input.data() + static_cast<size_t>(y) * row_bytes, static_cast<size_t>(row_bytes));
-        }
-        const D3D12_RANGE upload_written{0, static_cast<SIZE_T>(copy.allocation_bytes)};
-        copy.upload->Unmap(0, &upload_written);
-        const D3D12_TEXTURE_COPY_LOCATION upload_location{.pResource = copy.upload.Get(),
-            .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, .PlacedFootprint = copy.footprint};
-        const D3D12_TEXTURE_COPY_LOCATION source_location{.pResource = copy.source.Get(),
-            .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, .SubresourceIndex = 0};
-        const D3D12_TEXTURE_COPY_LOCATION readback_location{.pResource = copy.readback.Get(),
-            .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, .PlacedFootprint = copy.footprint};
-        const D3D12_TEXTURE_COPY_LOCATION destination_location{.pResource = copy.destination.Get(),
-            .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, .SubresourceIndex = 0};
-        gpu.list->CopyTextureRegion(&source_location, 0, 0, 0, &upload_location, nullptr);
+        copy.source = gpu.Texture(frame_width, frame_height, copy.format, D3D12_RESOURCE_STATE_COPY_DEST);
+        copy.destination = gpu.Texture(frame_width, frame_height, copy.format, D3D12_RESOURCE_STATE_COPY_DEST);
+        copy.transfer = gpu.CreateTextureTransfer(copy.source.Get());
+        Check(copy.transfer.rows == frame_height && copy.transfer.row_bytes == static_cast<uint64_t>(frame_width) * copy.stride
+                  && copy.transfer.footprint.Footprint.RowPitch >= copy.transfer.row_bytes,
+              "copy footprint shape mismatch");
+        gpu.UploadTexture(copy.source.Get(), copy.transfer, copy.input.data(), copy.input.size(), copy.transfer.row_bytes);
         gpu.Transition(copy.source.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE);
         gpu.list->CopyResource(copy.destination.Get(), copy.source.Get());
         gpu.Transition(copy.destination.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        gpu.list->CopyTextureRegion(&readback_location, 0, 0, 0, &destination_location, nullptr);
+        gpu.RecordTextureReadback(copy.destination.Get(), copy.transfer);
         frame_result["resources"][copy.name] = {{"output_file", nullptr}, {"format", copy.format_name}, {"bytes", bytes},
-            {"bitwise_equal", false}, {"row_pitch", copy.footprint.Footprint.RowPitch},
-            {"row_bytes", row_bytes}, {"footprint_bytes", copy.allocation_bytes}};
+            {"bitwise_equal", false}, {"row_pitch", copy.transfer.footprint.Footprint.RowPitch},
+            {"row_bytes", copy.transfer.row_bytes}, {"footprint_bytes", copy.transfer.allocation_bytes}};
       }
       gpu.Submit();
       const auto completed = gpu.fence->GetCompletedValue();
@@ -273,17 +256,7 @@ int wmain(int argc, wchar_t** argv) {
         info->ClearStoredMessages();
       }
       for (auto& copy : copies) {
-        uint8_t* mapped = nullptr;
-        const D3D12_RANGE read_range{0, static_cast<SIZE_T>(copy.allocation_bytes)};
-        Check(SUCCEEDED(copy.readback->Map(0, &read_range, reinterpret_cast<void**>(&mapped))), "readback map");
-        std::vector<uint8_t> pixels(copy.input.size());
-        const auto row_bytes = static_cast<size_t>(frame_width) * copy.stride;
-        for (uint32_t y = 0; y < frame_height; ++y) {
-          std::memcpy(pixels.data() + static_cast<size_t>(y) * row_bytes,
-                      mapped + copy.footprint.Offset + static_cast<size_t>(y) * copy.footprint.Footprint.RowPitch, row_bytes);
-        }
-        const D3D12_RANGE no_writes{0, 0};
-        copy.readback->Unmap(0, &no_writes);
+        auto pixels = gpu.ReadTexture(copy.transfer);
         const auto filename = std::to_string(index) + "-" + copy.name + ".f32";
         write_new(output / filename, pixels.data(), pixels.size());
         auto& resource_result = frame_result["resources"][copy.name];

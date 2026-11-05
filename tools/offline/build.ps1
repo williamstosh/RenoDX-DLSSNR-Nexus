@@ -31,11 +31,15 @@ try {
     $exe = Join-Path $directory "offline_$($Backend)_tests.exe"
     $arguments = @('/nologo','/std:c++20','/EHsc','/W4','/O2','/MT','/utf-8',
         '/DNOMINMAX','/DWIN32_LEAN_AND_MEAN','/DNDEBUG')
-    $includes = @($root, "$hostDirectory/external/DLSS/include", "$hostDirectory/external/json/include")
+    $includes = if ($Backend -eq 'replay') {
+        @("$hostDirectory/src/addons/dlss5", "$hostDirectory/external/DLSS/include", "$hostDirectory/external/json/include")
+    } else {
+        @($root, "$hostDirectory/external/DLSS/include", "$hostDirectory/external/json/include")
+    }
     $libraries = @('d3d12.lib','dxgi.lib','dxguid.lib','version.lib')
     if ($Backend -eq 'ngx') { $libraries += 'bcrypt.lib' }
     $extraInputs = @($source, $PSCommandPath, $lockPath, (Join-Path $root 'tests/test-support.ps1'))
-    if ($Backend -in @('gpu','replay')) {
+    if ($Backend -eq 'gpu') {
         if (-not (Test-Path -LiteralPath "$shaderDirectory/embed/shaders.h")) { throw 'Prepare the existing generated shader headers first.' }
         # Compile the current mask source into a run-local header. The existing embed
         # generator preserves the production symbol/guard; /FI supersedes only this
@@ -70,9 +74,9 @@ try {
     $dependencies = (Get-Content -LiteralPath "$directory/dependencies.json" -Raw | ConvertFrom-Json).Data.Includes
     $compiler = (Get-Command cl.exe).Source
     $generatedInputs = @()
-    if ($Backend -in @('gpu','replay')) { $generatedInputs = @($shaderHeader, $bytecode) }
+    if ($Backend -eq 'gpu') { $generatedInputs = @($shaderHeader, $bytecode) }
     $sourceInputs = @($extraInputs + $dependencies | Where-Object { $_ -notin $generatedInputs } | Sort-Object -Unique)
-    if ($Backend -in @('gpu','replay')) {
+    if ($Backend -eq 'gpu') {
         & $Fxc @shaderArguments *> (Join-Path $directory 'shader-compile.log')
         if ($LASTEXITCODE -ne 0) { throw 'ControlMask FXC recompilation failed; see shader-compile.log.' }
         & $EmbedFile $bytecode $shaderHeader *> (Join-Path $directory 'shader-embed.log')

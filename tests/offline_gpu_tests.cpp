@@ -185,8 +185,7 @@ int wmain(int argc, wchar_t** argv) {
       Check(addon::EnsureControlMaskPipeline(gpu.device.Get()), "production ControlMask pipeline");
       result["cpu_timing"]["pipeline_init_ms"] = std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - pipeline_init_start).count();
-      UINT64 frequency = 0;
-      Check(SUCCEEDED(gpu.queue->GetTimestampFrequency(&frequency)) && frequency != 0, "GPU timestamp frequency");
+      const auto frequency = d3d12_test::TimestampFrequency(gpu.queue.Get());
       result["environment"]["timestamp_frequency_hz"] = frequency;
       result["environment"]["timestamp_frequency_scope"] = "D3D12 command-queue timestamp ticks per second; not GPU core clock";
       const auto resources_init_start = std::chrono::steady_clock::now();
@@ -320,10 +319,7 @@ int wmain(int argc, wchar_t** argv) {
               {"mask_bound", true}, {"binding_cleared", true},
               {"scope", "SetNrCreateParameters + SetEvaluationParameters on OwnedParameters; no NGX create/evaluate"}});
 
-          ComPtr<ID3D12QueryHeap> queries;
-          const D3D12_QUERY_HEAP_DESC query_desc{.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP, .Count = 2 * frames};
-          Check(SUCCEEDED(gpu.device->CreateQueryHeap(&query_desc, IID_PPV_ARGS(&queries))), "timestamp query heap");
-          auto ticks_readback = gpu.Buffer(2 * frames * sizeof(uint64_t), D3D12_HEAP_TYPE_READBACK);
+          const auto timestamps = d3d12_test::CreateTimestampQueries(gpu, frames);
           case_result["timing"]["warmup_frames"] = warmup;
           case_result["timing"]["total_frames"] = frames;
           case_result["timing"]["execution_mode"] = benchmark ? "batched" : "per-frame-readback";
@@ -333,8 +329,8 @@ int wmain(int argc, wchar_t** argv) {
               {"descriptor_count", addon::kDescriptorHeapSize},
               {"descriptor_increment_bytes", gpu.device->GetDescriptorHandleIncrementSize(
                   D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)},
-              {"timestamp_query_count", 2 * frames},
-              {"timestamp_readback_bytes", 2 * frames * sizeof(uint64_t)}};
+              {"timestamp_query_count", 2 * timestamps.interval_count},
+              {"timestamp_readback_bytes", timestamps.readback_bytes}};
           case_result["cpu_timing"] = {{"resource_setup_ms", nullptr}, {"command_recording_ms", 0.0},
               {"case_wall_ms", nullptr}, {"clock", "std::chrono::steady_clock"}};
           case_result["cpu_timing"]["resource_setup_ms"] = std::chrono::duration<double, std::milli>(
@@ -345,17 +341,13 @@ int wmain(int argc, wchar_t** argv) {
           bool pixels_match = true;
           for (uint32_t index = 0; index < frames; ++index) {
             const auto recording_start = std::chrono::steady_clock::now();
-            const UINT query_index = 2 * index;
-            gpu.list->EndQuery(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query_index);
+            timestamps.Begin(gpu.list.Get(), index);
             control_mask_gpu_cases::Dispatch(gpu, texture.Get(), heap.Get(), mode, rect_width, rect_height, rgb[0], rgb[1], rgb[2]);
-            gpu.list->EndQuery(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query_index + 1);
-            gpu.list->ResolveQueryData(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query_index, 2,
-                ticks_readback.Get(), static_cast<uint64_t>(query_index) * sizeof(uint64_t));
+            timestamps.EndAndResolve(gpu.list.Get(), index);
             case_result["cpu_timing"]["command_recording_ms"] = case_result["cpu_timing"]["command_recording_ms"].get<double>()
                 + std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - recording_start).count();
             std::vector<uint8_t> pixels;
             uint64_t completed_serial = 0;
-            std::array<uint64_t, 2> ticks{};
             if (!benchmark || index + 1 == frames) {
               pixels = control_mask_gpu_cases::ReadPixels(gpu, texture.Get());
               completed_serial = gpu.fence->GetCompletedValue();
@@ -366,33 +358,19 @@ int wmain(int argc, wchar_t** argv) {
                                             {"completed_serial", completed_serial}, {"frames", frames},
                                             {"source", "Gpu::Submit + ID3D12Fence::GetCompletedValue"}};
               if (benchmark) {
-                uint64_t* mapped_ticks = nullptr;
-                const D3D12_RANGE read_range{0, 2 * frames * sizeof(uint64_t)};
-                Check(SUCCEEDED(ticks_readback->Map(0, &read_range, reinterpret_cast<void**>(&mapped_ticks))), "completed timestamp map");
+                const auto samples = timestamps.ReadAll();
                 for (uint32_t sample_index = 0; sample_index < frames; ++sample_index) {
-                  const uint64_t begin = mapped_ticks[2 * sample_index];
-                  const uint64_t end = mapped_ticks[2 * sample_index + 1];
-                  Check(end >= begin, "timestamp order");
-                  case_result["timing"]["samples"].push_back({{"frame", sample_index}, {"begin_tick", begin},
-                      {"end_tick", end}, {"ticks", end - begin}, {"warmup", sample_index < warmup},
-                      {"gpu_ms", static_cast<double>(end - begin) * 1000.0 / static_cast<double>(frequency)},
+                  const auto& sample = samples[sample_index];
+                  case_result["timing"]["samples"].push_back({{"frame", sample_index}, {"begin_tick", sample.begin_tick},
+                      {"end_tick", sample.end_tick}, {"ticks", sample.ticks}, {"warmup", sample_index < warmup},
+                      {"gpu_ms", sample.gpu_ms},
                       {"completion_serial", completed_serial}});
                 }
-                ticks = {mapped_ticks[2 * index], mapped_ticks[2 * index + 1]};
-                const D3D12_RANGE written_range{0, 0};
-                ticks_readback->Unmap(0, &written_range);
               } else {
-                uint64_t* mapped_ticks = nullptr;
-                const D3D12_RANGE read_range{static_cast<SIZE_T>(2 * index * sizeof(uint64_t)),
-                    static_cast<SIZE_T>((2 * index + 2) * sizeof(uint64_t))};
-                Check(SUCCEEDED(ticks_readback->Map(0, &read_range, reinterpret_cast<void**>(&mapped_ticks))), "completed timestamp map");
-                ticks = {mapped_ticks[2 * index], mapped_ticks[2 * index + 1]};
-                const D3D12_RANGE written_range{0, 0};
-                ticks_readback->Unmap(0, &written_range);
-                Check(ticks[1] >= ticks[0], "timestamp order");
-                case_result["timing"]["samples"].push_back({{"frame", index}, {"begin_tick", ticks[0]},
-                    {"end_tick", ticks[1]}, {"ticks", ticks[1] - ticks[0]}, {"warmup", index < warmup},
-                    {"gpu_ms", static_cast<double>(ticks[1] - ticks[0]) * 1000.0 / static_cast<double>(frequency)},
+                const auto sample = timestamps.Read(index);
+                case_result["timing"]["samples"].push_back({{"frame", index}, {"begin_tick", sample.begin_tick},
+                    {"end_tick", sample.end_tick}, {"ticks", sample.ticks}, {"warmup", index < warmup},
+                    {"gpu_ms", sample.gpu_ms},
                     {"completion_serial", completed_serial}});
               }
             }

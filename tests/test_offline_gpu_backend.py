@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXECUTABLE = os.environ.get("NR_NEXUS_OFFLINE_GPU_EXE")
 sys.path.insert(0, str(ROOT / "tools" / "offline"))
 import contracts as c
+import control_mask_contracts as mask
 
 
 # SDK float constant; D3D11 functional spec section 3.2.3.6 defines integer-side ULPs.
@@ -62,7 +63,7 @@ class OfflineGpuOracleTests(unittest.TestCase):
     """CPU oracle checks only; these synthetic inputs never assert a GPU success."""
 
     def setUp(self):
-        self.case = c.validate_fixture({"schema": c.FIXTURE_SCHEMA, "fixture_id": "oracle",
+        self.case = mask.validate_fixture({"schema": mask.FIXTURE_SCHEMA, "fixture_id": "oracle",
             "cases": [{"id": "one", "width": 1, "height": 1, "mode": "rgb",
                        "rgb": [.5, .25, 1.0]}]})["cases"][0]
 
@@ -94,7 +95,7 @@ class OfflineGpuOracleTests(unittest.TestCase):
     def test_region_boundaries_remain_exact(self):
         for mode in ("rect", "green_rect", "blue_rect"):
             self.case.update(width=3, height=3, mode=mode, rect=[1, 1], rgb=[1.0, 1.0, 1.0])
-            reference = c.mask_reference(self.case)
+            reference = mask.mask_reference(self.case)
             self.assertTrue(measure_mask_quantization(self.case, reference)["format_conformant"])
             for offset in (0, 4, 12):
                 pixels = bytearray(reference)
@@ -128,8 +129,8 @@ class OfflineGpuBackendTests(unittest.TestCase):
         self.root = self.artifacts / self._testMethodName
         self.root.mkdir()
         self.invocations = 0
-        self.fixture = c.validate_fixture({
-            "schema": c.FIXTURE_SCHEMA, "fixture_id": "backend-regression",
+        self.fixture = mask.validate_fixture({
+            "schema": mask.FIXTURE_SCHEMA, "fixture_id": "backend-regression",
             "cases": [{"id": "one", "width": 3, "height": 1}],
         })
 
@@ -165,7 +166,7 @@ class OfflineGpuBackendTests(unittest.TestCase):
         return case
 
     def test_real_warp_smoke(self):
-        fixture = c.validate_fixture(c.read_json(ROOT / "tests" / "fixtures" / "offline" / "control-mask-smoke.json"))
+        fixture = mask.validate_fixture(c.read_json(ROOT / "tests" / "fixtures" / "offline" / "control-mask-smoke.json"))
         arguments, output = self.fixture_arguments(fixture, "smoke")
         self.assertEqual(self.invoke(arguments).returncode, 0)
         result = c.read_json(output / "backend-result.json")

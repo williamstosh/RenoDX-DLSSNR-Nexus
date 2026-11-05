@@ -15,9 +15,8 @@ import sys
 import time
 import uuid
 
-from contracts import (ContractError, RESULT_SCHEMA, artifact_path, compare_mask, compare_raw, digest, identity,
-                       integer, parameter_matrix, prepare_sequence, read_json,
-                       sample_statistics, validate_fixture, verify_sequence, write_json)
+from contracts import (ContractError, RESULT_SCHEMA, artifact_path, compare_raw, digest, identity,
+                       integer, prepare_sequence, read_json, sample_statistics, verify_sequence, write_json)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -54,11 +53,14 @@ def verify_build(executable: Path, backend: str = "gpu") -> dict:
     return {"manifest_sha256": digest(manifest_path), **manifest}
 
 
-def freeze_runner(directory: Path) -> dict:
+def freeze_runner(directory: Path, include_control_mask: bool = False) -> dict:
     snapshot = directory / "runner"
     snapshot.mkdir()
     inputs = {}
-    for path in (Path(__file__), Path(__file__).with_name("contracts.py")):
+    paths = [Path(__file__), Path(__file__).with_name("contracts.py")]
+    if include_control_mask:
+        paths.append(Path(__file__).with_name("control_mask_contracts.py"))
+    for path in paths:
         target = snapshot / path.name
         with target.open("xb") as stream:
             stream.write(path.read_bytes())
@@ -79,6 +81,8 @@ def verify_environment(environment: dict, adapter: str) -> None:
 
 def verify_gpu_result(fixture: dict, backend: dict, directory: Path, adapter: str,
                       performance: bool = False) -> list[dict]:
+    from control_mask_contracts import compare_mask
+
     evidence = "WARP" if adapter == "warp" else "NATIVE_GPU"
     if (backend.get("schema") != "nr-nexus-offline-backend/1"
             or backend.get("backend") != "d3d12-control-mask" or backend.get("adapter") != adapter):
@@ -303,7 +307,7 @@ def run_gpu(fixture: dict, executable: Path, directory: Path, adapter: str, time
     write_json(directory / "fixture.json", fixture)
     fixture_hash = digest(directory / "fixture.json")
     try:
-        runner_inputs = freeze_runner(directory)
+        runner_inputs = freeze_runner(directory, include_control_mask=True)
         build = verify_build(executable)
         report["build"] = build
         report["runner_inputs"] = runner_inputs
@@ -432,9 +436,11 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if args.command == "validate":
+            from control_mask_contracts import validate_fixture
             fixture = validate_fixture(read_json(args.fixture))
             result = {"fixture_id": fixture["fixture_id"], "sha256": identity(fixture), "cases": len(fixture["cases"]), "evidence": "STATIC"}
         elif args.command == "matrix":
+            from control_mask_contracts import parameter_matrix, validate_fixture
             fixture = parameter_matrix()
             for case in fixture["cases"]:
                 case.update(frames=args.frames, warmup=args.warmup)
@@ -457,6 +463,7 @@ def main() -> int:
         elif args.command == "compare":
             result = compare_raw(args.first.read_bytes(), args.second.read_bytes(), args.storage, args.data_range)
         elif args.command == "run":
+            from control_mask_contracts import parameter_matrix, validate_fixture
             integer(args.timeout, 1, 600, "timeout seconds")
             fixture = parameter_matrix() if args.matrix else validate_fixture(read_json(args.fixture))
             directory = new_output(args.output)
