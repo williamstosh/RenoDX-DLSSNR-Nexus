@@ -1,4 +1,9 @@
 {
+  "python": {
+    "version": "3.12.14",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260929/cpython-3.12.14%2B20260929-x86_64-pc-windows-msvc-install_only.tar.gz",
+    "sha256": "28728BAF30B65E263F0B25C5A85BE8226E7AB0D212FBADD6A8F0F796139FA804"
+  },
   "dxc": {
     "version": "1.9.2602",
     "url": "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602/dxc_2026_02_20.zip",
