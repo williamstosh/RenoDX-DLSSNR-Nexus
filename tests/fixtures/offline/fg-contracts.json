@@ -1,0 +1,24 @@
+{
+  "schema": "nr-nexus-offline-suite-fixture/1",
+  "fixture_id": "fg-xefg-lifecycle-contracts-v1",
+  "timeout_ms": 600000,
+  "cases": [
+    {"id": "same-stage-resolution-warp", "suite": "fg-native", "case": "same-stage-resolution"},
+    {"id": "same-stage-resolution-nvidia", "suite": "fg-native", "case": "same-stage-resolution-hardware"},
+    {"id": "same-stage-model-pair-nvidia", "suite": "fg-native", "case": "same-stage-model-pair"},
+    {"id": "same-stage-mixed-pair-warp", "suite": "fg-native", "case": "same-stage-mixed-pair"},
+    {"id": "cross-stage-resolution-warp", "suite": "fg-native", "case": "stage-resolution"},
+    {"id": "cross-stage-resolution-nvidia", "suite": "fg-native", "case": "stage-resolution-hardware"},
+    {"id": "render-stage-resolution-warp", "suite": "fg-native", "case": "render-stage-resolution"},
+    {"id": "render-stage-resolution-nvidia", "suite": "fg-native", "case": "render-stage-resolution-hardware"},
+    {"id": "present-stage-resolution-warp", "suite": "fg-native", "case": "present-stage-resolution"},
+    {"id": "present-stage-resolution-nvidia", "suite": "fg-native", "case": "present-stage-resolution-hardware"},
+    {"id": "present-guide-model-contract-warp", "suite": "fg-native", "case": "present-guide-models"},
+    {"id": "present-chain-warp", "suite": "fg-native", "case": "present-chain"},
+    {"id": "present-chain-nvidia", "suite": "fg-native", "case": "present-chain-hardware"},
+    {"id": "feature-switch-warp", "suite": "fg-native", "case": "feature-switch"},
+    {"id": "feature-switch-nvidia", "suite": "fg-native", "case": "feature-switch-hardware"},
+    {"id": "xefg-resource-lifecycle", "suite": "fg-xefg", "case": "resource-lifecycle"},
+    {"id": "dll-lifecycle-contract", "suite": "lifecycle", "case": "dll-lifecycle"}
+  ]
+}
