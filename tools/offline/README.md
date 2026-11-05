@@ -27,3 +27,14 @@ python tools/offline/suites.py tests/fixtures/offline/fg-contracts.json --output
 ~~~
 
 报告区分 STATIC、MOCK、WARP、NATIVE_GPU、NATIVE_NGX、IN_GAME 与 VISUAL；fake SDK 不视作真实 SDK 执行。输出目录必须是新目录，失败报告和原始证据保留在 tmp/offline/。
+
+## 自动回归
+
+使用固定版本的 64 位 CPython 3.12.14；测试脚本验证解释器实际版本和架构，显式使用绝对路径，不依赖当前 shell 的 PATH。发现顺序为显式 -PythonPath／NR_NEXUS_PYTHON、Worktree .venv、用户 uv 托管安装和 Python 3.12 用户安装路径。测试只用 Python 标准库。运行 all 或 backend 测试集必须提供已构建 Replay EXE，防止真实后端测试被静默跳过。
+
+~~~powershell
+pwsh -File tools/offline/test.ps1 -ReplayBackendExe tmp/offline/replay-build/offline_replay_tests.exe -Adapter warp
+pwsh -File tools/offline/test.ps1 -TestSet all -ReplayBackendExe tmp/offline/replay-build/offline_replay_tests.exe -Adapter nvidia
+~~~
+
+TestSet 可选 all、backend、contracts 或 suites。all 运行全部 offline Python 测试；backend、contracts、suites 分别运行对应文件。解释器可由 PythonPath 参数或 NR_NEXUS_PYTHON 指定；uv 可由 NR_NEXUS_UV 指定。脚本不自动下载、安装或修改系统环境。

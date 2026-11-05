@@ -1,4 +1,6 @@
 import copy
+from contextlib import redirect_stdout
+import io
 import importlib.util
 from pathlib import Path
 import sys
@@ -37,6 +39,14 @@ class OfflineReplayContractsTests(unittest.TestCase):
                 "completion": {"gpu_completed": True, "fence_value": frame["index"] + 1},
                 "controls": {"evidence": "STATIC", "history_evaluated": False,
                              **{key: frame[key] for key in ("reset", "jitter", "motion_scale", "subrect")}}})
+
+    def test_generic_cli_lists_only_portable_commands(self):
+        output = io.StringIO()
+        with patch.object(sys, "argv", [str(OFFLINE / "run.py"), "--help"]), redirect_stdout(output):
+            with self.assertRaises(SystemExit) as raised:
+                runner.main()
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn("{prepare,verify-sequence,compare,replay}", output.getvalue())
 
     def test_independent_raw_f32_identity_and_separate_control_evidence(self):
         results = runner.verify_replay_result(self.sequence, self.source, self.backend, self.output, "warp")

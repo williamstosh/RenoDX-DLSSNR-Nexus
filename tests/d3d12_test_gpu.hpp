@@ -11,6 +11,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include <submission_tracker.hpp>
@@ -38,8 +39,9 @@ struct Gpu {
   ComPtr<ID3D12CommandAllocator> allocator;
   ComPtr<ID3D12GraphicsCommandList> list;
   ComPtr<ID3D12Fence> fence;
-  std::vector<ComPtr<ID3D12Resource>> uploads;
+  std::vector<ComPtr<ID3D12Resource>> retained_resources;
   uint64_t serial = 0;
+  bool submission_pending = false;
   explicit Gpu(bool hardware = false) {
     ComPtr<IDXGIAdapter> adapter;
     Check(SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))), "DXGI factory");
@@ -66,6 +68,15 @@ struct Gpu {
     Check(SUCCEEDED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
                                             IID_PPV_ARGS(&list))), "list");
     Check(SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))), "fence");
+  }
+  ~Gpu() {
+    if (submission_pending && fence->GetCompletedValue() < serial
+        && device->GetDeviceRemovedReason() != DXGI_ERROR_DEVICE_REMOVED) {
+      // A failed isolated test process must not release resources still referenced by queued work.
+      for (auto& resource : retained_resources) {
+        resource.Detach();
+      }
+    }
   }
   ComPtr<IDXGISwapChain3> Swapchain() {
     DXGI_SWAP_CHAIN_DESC1 desc{};
@@ -155,10 +166,12 @@ struct Gpu {
         .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, .PlacedFootprint = transfer.footprint};
     const D3D12_TEXTURE_COPY_LOCATION destination{.pResource = texture,
         .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, .SubresourceIndex = 0};
+    Retain(transfer.upload.Get());
     list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
   }
   void RecordTextureReadback(ID3D12Resource* texture, const TextureTransfer& transfer) {
     Check(texture != nullptr && transfer.readback != nullptr, "texture readback arguments");
+    Retain(transfer.readback.Get());
     const D3D12_TEXTURE_COPY_LOCATION source{.pResource = texture,
         .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, .SubresourceIndex = 0};
     const D3D12_TEXTURE_COPY_LOCATION destination{.pResource = transfer.readback.Get(),
@@ -182,7 +195,14 @@ struct Gpu {
     transfer.readback->Unmap(0, &no_writes);
     return result;
   }
+  void Retain(ID3D12Resource* resource) {
+    Check(resource != nullptr, "retained resource");
+    ComPtr<ID3D12Resource> retained;
+    retained = resource;
+    retained_resources.push_back(std::move(retained));
+  }
   void Transition(ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
+    Retain(resource);
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition = {resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, before, after};
@@ -205,13 +225,14 @@ struct Gpu {
         .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, .SubresourceIndex = 0};
     list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
     Transition(resource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
-    uploads.push_back(upload);
+    Retain(upload.Get());
   }
   void Submit() {
     Check(SUCCEEDED(list->Close()), "close");
     ID3D12CommandList* lists[]{list.Get()};
     const auto pending = submission::BeginSubmission(1, lists);
     queue->ExecuteCommandLists(1, lists);
+    submission_pending = true;
     Check(SUCCEEDED(queue->Signal(fence.Get(), ++serial)), "submit signal");
     submission::CompleteSubmission(pending, fence.Get(), serial);
     HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -220,11 +241,12 @@ struct Gpu {
     const auto wait = (SUCCEEDED(hr) ? WaitForSingleObject(event, 10000) : WAIT_FAILED);
     CloseHandle(event);
     Check(wait == WAIT_OBJECT_0, "bounded GPU completion");
+    submission_pending = false;
     Check(SUCCEEDED(allocator->Reset()), "allocator reset");
     Check(SUCCEEDED(list->Reset(allocator.Get(), nullptr)), "list reset");
     submission::OnCommandListReset(list.Get());
     submission::PruneCompletedGenerations();
-    uploads.clear();
+    retained_resources.clear();
   }
   void ExpectPixels(ID3D12Resource* resource, uint8_t value) {
     const auto desc = resource->GetDesc();
