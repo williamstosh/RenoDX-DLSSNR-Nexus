@@ -72,15 +72,15 @@ try {
     $generatedInputs = @()
     if ($Backend -in @('gpu','replay')) { $generatedInputs = @($shaderHeader, $bytecode) }
     $sourceInputs = @($extraInputs + $dependencies | Where-Object { $_ -notin $generatedInputs } | Sort-Object -Unique)
-    $compileSnapshot = @($sourceInputs + $compiler | Sort-Object -Unique | ForEach-Object {
-        [ordered]@{path=$_; sha256=(Get-FileHash -LiteralPath $_).Hash.ToLowerInvariant()}
-    })
     if ($Backend -in @('gpu','replay')) {
         & $Fxc @shaderArguments *> (Join-Path $directory 'shader-compile.log')
         if ($LASTEXITCODE -ne 0) { throw 'ControlMask FXC recompilation failed; see shader-compile.log.' }
         & $EmbedFile $bytecode $shaderHeader *> (Join-Path $directory 'shader-embed.log')
         if ($LASTEXITCODE -ne 0) { throw 'Existing shader embed tool failed during final compilation.' }
     }
+    $compileSnapshot = @($sourceInputs + $generatedInputs + $compiler | Sort-Object -Unique | ForEach-Object {
+        [ordered]@{path=$_; sha256=(Get-FileHash -LiteralPath $_).Hash.ToLowerInvariant()}
+    })
     & cl.exe @arguments *> (Join-Path $directory 'compile.log')
     if ($LASTEXITCODE -ne 0) { throw 'Offline backend final compile/link failed; see compile.log.' }
     $finalDependencies = (Get-Content -LiteralPath "$directory/dependencies.json" -Raw | ConvertFrom-Json).Data.Includes
@@ -95,7 +95,13 @@ try {
         }
     }
     $inputs = @($sourceInputs + $generatedInputs | Sort-Object -Unique | ForEach-Object {
-        [ordered]@{path=$_; sha256=(Get-FileHash -LiteralPath $_).Hash.ToLowerInvariant()}
+        $inputPath = $_
+        $hash = (Get-FileHash -LiteralPath $inputPath).Hash.ToLowerInvariant()
+        $snapshot = $compileSnapshot | Where-Object { $_.path -ceq $inputPath } | Select-Object -First 1
+        if (-not $snapshot -or $snapshot.sha256 -cne $hash) {
+            throw "Build input changed before the final manifest was written: $([IO.Path]::GetFileName($inputPath))"
+        }
+        [ordered]@{path=$inputPath; sha256=$hash}
     })
     [ordered]@{schema='nr-nexus-offline-build/1'; status='built'; backend=$Backend
         source_commit=$global:NexusTestOutputs[$directory].sourceCommit; host_commit=$hostCommit
