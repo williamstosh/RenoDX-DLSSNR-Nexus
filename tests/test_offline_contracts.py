@@ -56,6 +56,27 @@ class OfflineContractsTests(unittest.TestCase):
         case.update(mode="rect", rgb=[.25, .5, .75], rect=[1, 1])
         self.assertEqual(c.mask_reference(case)[:8], bytes([0, 0, 0, 255, 64, 128, 191, 255]))
 
+    def test_d3d_unorm_tolerance_is_not_an_arbitrary_one_byte_allowance(self):
+        case = c.validate_fixture(self.fixture)["cases"][0]
+        case.update(width=1, height=1, mode="rgb", rgb=[.25, .5, .75])
+        for green in (127, 128):
+            result = c.compare_mask(case, bytes([64, green, 191, 255]))
+            self.assertTrue(result["format_conformant"])
+            self.assertEqual(result["nearest_even_reference"]["identical"], green == 128)
+        for pixel in ([63, 128, 191, 255], [65, 128, 191, 255], [64, 126, 191, 255],
+                      [64, 129, 191, 255], [64, 128, 192, 255], [64, 128, 191, 254]):
+            with self.subTest(pixel=pixel):
+                self.assertFalse(c.compare_mask(case, bytes(pixel))["format_conformant"])
+
+    def test_mask_endpoints_and_rectangle_boundaries_remain_exact(self):
+        case = c.validate_fixture(self.fixture)["cases"][0]
+        case["mode"] = "green_rect"
+        pixels = bytearray(c.mask_reference(case))
+        pixels[1] = 1
+        self.assertFalse(c.compare_mask(case, pixels)["format_conformant"])
+        pixels[1], pixels[5] = 0, 254
+        self.assertFalse(c.compare_mask(case, pixels)["format_conformant"])
+
     def test_nearest_rank_p95(self):
         stats = c.sample_statistics(list(range(1, 101)))
         self.assertEqual(stats["p95"], 95)

@@ -14,6 +14,10 @@ FIXTURE_SCHEMA = "nr-nexus-offline-fixture/1"
 RESULT_SCHEMA = "nr-nexus-offline-result/1"
 EVIDENCE = frozenset({"STATIC", "MOCK", "WARP", "NATIVE_GPU", "NATIVE_NGX", "IN_GAME", "VISUAL"})
 MODES = ("rgb", "neutral", "rect", "green_rect", "blue_rect")
+# D3D12_FLOAT32_TO_INTEGER_TOLERANCE_IN_ULP; the conversion has an integer-side
+# tolerance, so .5 may legitimately become either 127 or 128 on different GPUs.
+# https://learn.microsoft.com/en-us/windows/win32/direct3d12/constants
+UNORM_CONVERSION_TOLERANCE = struct.unpack("<f", struct.pack("<f", .6))[0]
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}\Z")
 CASE_DEFAULTS = {"mode": "neutral", "rgb": [1.0, 1.0, 1.0], "rect": [0, 0],
                  "model": "A", "auto_mask": False, "blend_mode": 0, "frames": 8, "warmup": 2}
@@ -23,9 +27,9 @@ class ContractError(ValueError):
     pass
 
 
-def read_json(path: Path) -> Any:
-    if path.stat().st_size > 16 * 1024 * 1024:
-        raise ContractError(f"JSON input exceeds 16 MiB: {path.name}")
+def read_json(path: Path, max_bytes: int = 16 * 1024 * 1024) -> Any:
+    if path.stat().st_size > max_bytes:
+        raise ContractError(f"JSON input exceeds {max_bytes} bytes: {path.name}")
 
     def pairs(values):
         result = {}
@@ -128,10 +132,9 @@ def validate_fixture(value: Any) -> dict:
             "description": value.get("description", ""), "cases": result}
 
 
-def mask_reference(case: dict) -> bytes:
-    # RGBA8 conversion is checked independently of the shader implementation.
-    fixed = [round(channel * 255) for channel in case["rgb"]] + [255]
-    pixels = bytearray(case["width"] * case["height"] * 4)
+def mask_values(case: dict):
+    # Match the actual float32 root constants before considering UNORM conversion.
+    fixed = [struct.unpack("<f", struct.pack("<f", channel))[0] * 255 for channel in case["rgb"]] + [255]
     for y in range(case["height"]):
         for x in range(case["width"]):
             pixel = fixed[:]
@@ -143,9 +146,26 @@ def mask_reference(case: dict) -> bytes:
                     pixel[1 if case["mode"] == "green_rect" else 2] = 0
             elif case["mode"] == "rect" and x < case["rect"][0] and y < case["rect"][1]:
                 pixel = [0, 0, 0, 255]
-            offset = (y * case["width"] + x) * 4
-            pixels[offset:offset + 4] = bytes(pixel)
-    return bytes(pixels)
+            yield pixel
+
+
+def mask_reference(case: dict) -> bytes:
+    """Nearest-even reference bytes, not a requirement for bitwise GPU equality."""
+    return bytes(round(value) for pixel in mask_values(case) for value in pixel)
+
+
+def compare_mask(case: dict, actual: bytes) -> dict:
+    if len(actual) != case["width"] * case["height"] * 4:
+        raise ContractError("Mask readback length mismatch")
+    invalid, maximum = 0, 0.0
+    for index, ideal in enumerate(value for pixel in mask_values(case) for value in pixel):
+        error = abs(actual[index] - ideal)
+        maximum = max(maximum, error)
+        invalid += error > UNORM_CONVERSION_TOLERANCE
+    return {"reference_policy": "d3d-float-to-unorm-0.6-ulp", "format_conformant": invalid == 0,
+            "invalid_components": invalid, "max_quantization_error_ulp": maximum,
+            "conversion_tolerance_ulp": UNORM_CONVERSION_TOLERANCE,
+            "nearest_even_reference": compare_raw(mask_reference(case), actual, "u8", 255.0)}
 
 
 def sample_statistics(samples: list[float]) -> dict:
