@@ -68,10 +68,35 @@ try {
     & cl.exe @arguments *> (Join-Path $directory 'compile.log')
     if ($LASTEXITCODE -ne 0) { throw 'Offline backend compile/link failed; see compile.log.' }
     $dependencies = (Get-Content -LiteralPath "$directory/dependencies.json" -Raw | ConvertFrom-Json).Data.Includes
-    $inputs = @($extraInputs + $dependencies | Sort-Object -Unique | ForEach-Object {
+    $compiler = (Get-Command cl.exe).Source
+    $generatedInputs = @()
+    if ($Backend -in @('gpu','replay')) { $generatedInputs = @($shaderHeader, $bytecode) }
+    $sourceInputs = @($extraInputs + $dependencies | Where-Object { $_ -notin $generatedInputs } | Sort-Object -Unique)
+    $compileSnapshot = @($sourceInputs + $compiler | Sort-Object -Unique | ForEach-Object {
         [ordered]@{path=$_; sha256=(Get-FileHash -LiteralPath $_).Hash.ToLowerInvariant()}
     })
-    $compiler = (Get-Command cl.exe).Source
+    if ($Backend -in @('gpu','replay')) {
+        & $Fxc @shaderArguments *> (Join-Path $directory 'shader-compile.log')
+        if ($LASTEXITCODE -ne 0) { throw 'ControlMask FXC recompilation failed; see shader-compile.log.' }
+        & $EmbedFile $bytecode $shaderHeader *> (Join-Path $directory 'shader-embed.log')
+        if ($LASTEXITCODE -ne 0) { throw 'Existing shader embed tool failed during final compilation.' }
+    }
+    & cl.exe @arguments *> (Join-Path $directory 'compile.log')
+    if ($LASTEXITCODE -ne 0) { throw 'Offline backend final compile/link failed; see compile.log.' }
+    $finalDependencies = (Get-Content -LiteralPath "$directory/dependencies.json" -Raw | ConvertFrom-Json).Data.Includes
+    $dependencySet = @($dependencies | Sort-Object -Unique)
+    $finalDependencySet = @($finalDependencies | Sort-Object -Unique)
+    if (Compare-Object -ReferenceObject $dependencySet -DifferenceObject $finalDependencySet) {
+        throw 'Compiler dependencies changed during the final identity-bound compilation.'
+    }
+    foreach ($input in $compileSnapshot) {
+        if ((Get-FileHash -LiteralPath $input.path).Hash.ToLowerInvariant() -cne $input.sha256) {
+            throw "Build input changed during final compilation: $([IO.Path]::GetFileName($input.path))"
+        }
+    }
+    $inputs = @($sourceInputs + $generatedInputs | Sort-Object -Unique | ForEach-Object {
+        [ordered]@{path=$_; sha256=(Get-FileHash -LiteralPath $_).Hash.ToLowerInvariant()}
+    })
     [ordered]@{schema='nr-nexus-offline-build/1'; status='built'; backend=$Backend
         source_commit=$global:NexusTestOutputs[$directory].sourceCommit; host_commit=$hostCommit
         executable=[IO.Path]::GetFileName($exe); executable_sha256=(Get-FileHash -LiteralPath $exe).Hash.ToLowerInvariant()

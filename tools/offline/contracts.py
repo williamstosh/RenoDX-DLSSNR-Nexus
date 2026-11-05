@@ -261,6 +261,8 @@ def parameter_matrix() -> dict:
 
 def verify_sequence(directory: Path) -> dict:
     manifest = read_json(directory / "sequence.json")
+    if not isinstance(manifest, dict):
+        raise ContractError("Sequence manifest must be a JSON object")
     if manifest.get("schema") != "nr-nexus-offline-sequence/1":
         raise ContractError("Unsupported sequence schema")
     unsigned = {key: value for key, value in manifest.items() if key != "sequence_sha256"}
