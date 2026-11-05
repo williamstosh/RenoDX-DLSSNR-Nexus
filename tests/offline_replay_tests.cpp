@@ -1,0 +1,296 @@
+// Reuse the established real D3D12 device, barrier and bounded submission host.
+#define wmain UnusedOfflineControlMain
+#include "offline_gpu_tests.cpp"
+#undef wmain
+
+#include <memory>
+
+#pragma comment(linker, "/ENTRY:wmainCRTStartup")
+
+int wmain(int argc, wchar_t** argv) {
+  using Json = nlohmann::json;
+  namespace fs = std::filesystem;
+  fs::path sequence;
+  fs::path output;
+  std::string selected_adapter;
+  bool owns_output = false;
+  int exit_code = 0;
+  Json result{{"schema", "nr-nexus-offline-replay-backend/1"}, {"status", "failed"},
+              {"adapter", nullptr}, {"evidence", nullptr},
+              {"not_evaluated", Json::array({"NATIVE_NGX", "IN_GAME", "VISUAL"})},
+              {"environment", {{"ngx_loaded", false}, {"network_evaluated", false}}},
+              {"history_rebuilt", false}, {"input_sha_validation", "external_runner_required"},
+              {"frames", Json::array()}};
+  const auto write_new = [](const fs::path& path, const void* data, size_t bytes) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Check(file != INVALID_HANDLE_VALUE, "exclusive output creation failed");
+    bool written = true;
+    const auto* cursor = static_cast<const uint8_t*>(data);
+    while (bytes != 0 && written) {
+      const DWORD chunk = static_cast<DWORD>(std::min<size_t>(bytes, MAXDWORD));
+      DWORD count = 0;
+      written = WriteFile(file, cursor, chunk, &count, nullptr) != FALSE && count == chunk;
+      if (written) {
+        cursor += count;
+        bytes -= count;
+      }
+    }
+    const bool closed = CloseHandle(file) != FALSE;
+    Check(written && closed, "output write failed");
+  };
+  try {
+    std::set<std::wstring> options;
+    for (int i = 1; i < argc; ++i) {
+      const std::wstring option = argv[i];
+      Check(options.insert(option).second && i + 1 < argc, "duplicate option or missing option value");
+      const std::wstring value = argv[++i];
+      if (option == L"--sequence") {
+        sequence = value;
+      } else if (option == L"--output") {
+        output = value;
+      } else if (option == L"--adapter") {
+        Check(value == L"warp" || value == L"nvidia", "adapter must be warp or nvidia");
+        selected_adapter = (value == L"warp" ? "warp" : "nvidia");
+      } else {
+        throw std::runtime_error("unknown CLI option");
+      }
+    }
+    Check(!sequence.empty() && !output.empty() && !selected_adapter.empty(), "--sequence --output --adapter are required");
+    result["adapter"] = selected_adapter;
+    sequence = fs::canonical(sequence);
+    output = fs::weakly_canonical(fs::absolute(output));
+    const auto relative_output = output.lexically_relative(sequence);
+    Check(output != sequence && (relative_output.empty() || *relative_output.begin() == L".."),
+          "output must be outside sequence directory");
+    if (fs::exists(output)) {
+      Check(fs::is_directory(output) && fs::is_empty(output), "refusing existing nonempty output");
+    } else {
+      Check(fs::create_directories(output), "cannot create output directory");
+    }
+    owns_output = true;
+    const auto manifest_path = sequence / "sequence.json";
+    Check(fs::file_size(manifest_path) <= 16 * 1024 * 1024, "sequence manifest exceeds 16 MiB");
+    std::ifstream manifest_input(manifest_path, std::ios::binary);
+    Check(manifest_input.good(), "cannot open sequence manifest");
+    Json manifest;
+    manifest_input >> manifest;
+    Check(manifest.is_object() && manifest.at("schema") == "nr-nexus-offline-sequence/1"
+              && manifest.at("byte_order") == "little", "unsupported sequence envelope");
+    const auto read_uint = [](const Json& value, uint32_t minimum, uint32_t maximum) {
+      Check(value.is_number_integer() && value >= minimum && value <= maximum, "integer sequence field out of range");
+      return value.get<uint32_t>();
+    };
+    const uint32_t width = read_uint(manifest.at("width"), 1, 8192);
+    const uint32_t height = read_uint(manifest.at("height"), 1, 8192);
+    Check(manifest.at("frames").is_array() && !manifest.at("frames").empty()
+              && manifest.at("frames").size() <= 4096, "sequence requires 1..4096 frames");
+    Check(static_cast<uint64_t>(width) * height * 28 * manifest.at("frames").size() <= 256 * 1024 * 1024,
+          "sequence exceeds 256 MiB");
+    Check(manifest.at("sequence_sha256").is_string(), "sequence identity required");
+    result["sequence_sha256"] = manifest.at("sequence_sha256");
+    result["width"] = width;
+    result["height"] = height;
+    reshade::internal::get_reshade_module_handle(GetModuleHandleW(nullptr));
+    ComPtr<ID3D12Debug> debug;
+    const HRESULT debug_status = D3D12GetDebugInterface(IID_PPV_ARGS(&debug));
+    if (SUCCEEDED(debug_status)) { debug->EnableDebugLayer(); }
+    result["environment"]["debug_layer_enabled"] = debug != nullptr;
+    result["environment"]["debug_layer_hresult"] = static_cast<int64_t>(debug_status);
+    Gpu gpu(selected_adapter == "nvidia");
+    bool ngx_loaded = false;
+    for (const wchar_t* module : {L"nvngx.dll", L"_nvngx.dll", L"nvngx_dlss.dll", L"nvngx_dlssd.dll", L"nvngx_dlssnr.dll"}) {
+      ngx_loaded = ngx_loaded || GetModuleHandleW(module) != nullptr;
+    }
+    result["environment"]["ngx_loaded"] = ngx_loaded;
+    Check(!ngx_loaded, "NGX module unexpectedly loaded in replay process");
+    ComPtr<IDXGIAdapter1> actual_adapter;
+    const LUID luid = gpu.device->GetAdapterLuid();
+    Check(SUCCEEDED(gpu.factory->EnumAdapterByLuid(luid, IID_PPV_ARGS(&actual_adapter))), "actual adapter lookup");
+    DXGI_ADAPTER_DESC1 description{};
+    Check(SUCCEEDED(actual_adapter->GetDesc1(&description)), "actual adapter description");
+    const bool software = (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
+    if (selected_adapter == "nvidia") {
+      Check(description.VendorId == 0x10de && !software, "actual NVIDIA hardware identity");
+    } else {
+      ComPtr<IDXGIAdapter1> warp;
+      DXGI_ADAPTER_DESC1 warp_description{};
+      Check(SUCCEEDED(gpu.factory->EnumWarpAdapter(IID_PPV_ARGS(&warp))) && SUCCEEDED(warp->GetDesc1(&warp_description))
+                && warp_description.AdapterLuid.HighPart == luid.HighPart && warp_description.AdapterLuid.LowPart == luid.LowPart,
+            "actual WARP adapter identity");
+    }
+    const int description_bytes = WideCharToMultiByte(CP_UTF8, 0, description.Description, -1, nullptr, 0, nullptr, nullptr);
+    Check(description_bytes > 0, "adapter description UTF-8 size");
+    std::string description_text(description_bytes, '\0');
+    Check(WideCharToMultiByte(CP_UTF8, 0, description.Description, -1, description_text.data(), description_bytes,
+                             nullptr, nullptr) == description_bytes, "adapter description UTF-8 conversion");
+    description_text.pop_back();
+    LARGE_INTEGER driver{};
+    const HRESULT driver_status = actual_adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &driver);
+    result["environment"].update(Json{{"description", description_text}, {"vendor_id", description.VendorId},
+        {"device_id", description.DeviceId}, {"adapter_flags", description.Flags}, {"actual_gpu", !software},
+        {"software_adapter", software}, {"adapter_luid", {{"high", luid.HighPart}, {"low", luid.LowPart}}},
+        {"driver", {{"source", "IDXGIAdapter::CheckInterfaceSupport(IDXGIDevice)"}, {"available", SUCCEEDED(driver_status)},
+                    {"hresult", static_cast<int64_t>(driver_status)}}}});
+    if (SUCCEEDED(driver_status)) {
+      const auto version = static_cast<uint64_t>(driver.QuadPart);
+      result["environment"]["driver"]["raw_version"] = version;
+      result["environment"]["driver"]["version"] = std::to_string((version >> 48) & 0xffff) + "."
+          + std::to_string((version >> 32) & 0xffff) + "." + std::to_string((version >> 16) & 0xffff) + "." + std::to_string(version & 0xffff);
+    }
+    ComPtr<ID3D12InfoQueue> info;
+    gpu.device.As(&info);
+    struct ResourceCopy {
+      const char* name;
+      const char* format_name;
+      DXGI_FORMAT format;
+      uint32_t stride;
+      std::vector<uint8_t> input;
+      ComPtr<ID3D12Resource> upload;
+      ComPtr<ID3D12Resource> source;
+      ComPtr<ID3D12Resource> destination;
+      ComPtr<ID3D12Resource> readback;
+      D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+      uint64_t allocation_bytes = 0;
+    };
+    for (size_t index = 0; index < manifest.at("frames").size(); ++index) {
+      const auto& frame = manifest.at("frames")[index];
+      result["frames"].push_back({{"index", index}, {"status", "failed"}, {"evidence", nullptr},
+          {"requested_evidence", (selected_adapter == "warp" ? "WARP" : "NATIVE_GPU")},
+          {"resources", Json::object()}, {"controls", {{"evidence", "STATIC"}, {"history_evaluated", false}}},
+          {"network_evaluated", false}, {"completion", {{"gpu_completed", false}, {"fence_value", nullptr}}}});
+      auto& frame_result = result["frames"].back();
+      Check(frame.is_object() && frame.at("index") == index && frame.at("reset").is_boolean(), "frame index/reset mismatch");
+      for (const char* field : {"jitter", "motion_scale"}) {
+        Check(frame.at(field).is_array() && frame.at(field).size() == 2, "two-component metadata required");
+        for (const auto& value : frame.at(field)) {
+          Check(value.is_number() && std::isfinite(value.get<double>()), "finite frame metadata required");
+        }
+        frame_result["controls"][field] = frame.at(field);
+      }
+      frame_result["controls"]["reset"] = frame.at("reset");
+      Check(frame.at("subrect") == Json::array({0, 0, width, height}), "only full-frame sequence subrect supported");
+      frame_result["controls"]["subrect"] = frame.at("subrect");
+      Check(frame.at("resources").is_object() && frame.at("resources").size() == 3, "three sequence resources required");
+      std::array<ResourceCopy, 3> copies{{
+          {.name = "color", .format_name = "R32G32B32A32_FLOAT", .format = DXGI_FORMAT_R32G32B32A32_FLOAT, .stride = 16},
+          {.name = "depth", .format_name = "R32_FLOAT", .format = DXGI_FORMAT_R32_FLOAT, .stride = 4},
+          {.name = "motion", .format_name = "R32G32_FLOAT", .format = DXGI_FORMAT_R32G32_FLOAT, .stride = 8}}};
+      for (auto& copy : copies) {
+        const auto& resource = frame.at("resources").at(copy.name);
+        const auto bytes = static_cast<size_t>(width) * height * copy.stride;
+        Check(resource.at("format") == copy.format_name && resource.at("bytes").is_number_integer()
+                  && resource.at("bytes") == bytes, "resource format/length mismatch");
+        const auto name = resource.at("file").get<std::string>();
+        Check(!name.empty() && name.find_first_of("/\\:") == std::string::npos && name != "." && name != "..",
+              "resource must name a sequence-local file");
+        const auto path = sequence / fs::path(std::u8string(name.begin(), name.end()));
+        Check((GetFileAttributesW(path.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) == 0, "resource reparse point rejected");
+        Check(fs::is_regular_file(path) && fs::file_size(path) == bytes, "resource file size mismatch");
+        copy.input.resize(bytes);
+        std::ifstream input(path, std::ios::binary);
+        Check(input.good() && static_cast<bool>(input.read(reinterpret_cast<char*>(copy.input.data()), bytes)), "resource read failed");
+        D3D12_RESOURCE_DESC texture{};
+        texture.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        texture.Width = width;
+        texture.Height = height;
+        texture.DepthOrArraySize = 1;
+        texture.MipLevels = 1;
+        texture.Format = copy.format;
+        texture.SampleDesc.Count = 1;
+        const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
+        for (auto* target : {std::addressof(copy.source), std::addressof(copy.destination)}) {
+          Check(SUCCEEDED(gpu.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &texture,
+              D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(target->ReleaseAndGetAddressOf()))), "copy texture allocation");
+        }
+        UINT rows = 0;
+        UINT64 row_bytes = 0;
+        gpu.device->GetCopyableFootprints(&texture, 0, 1, 0, &copy.footprint, &rows, &row_bytes, &copy.allocation_bytes);
+        Check(rows == height && row_bytes == static_cast<uint64_t>(width) * copy.stride
+                  && copy.footprint.Footprint.RowPitch >= row_bytes, "copy footprint shape mismatch");
+        copy.upload = gpu.Buffer(copy.allocation_bytes, D3D12_HEAP_TYPE_UPLOAD);
+        copy.readback = gpu.Buffer(copy.allocation_bytes, D3D12_HEAP_TYPE_READBACK);
+        uint8_t* mapped = nullptr;
+        const D3D12_RANGE no_reads{0, 0};
+        Check(SUCCEEDED(copy.upload->Map(0, &no_reads, reinterpret_cast<void**>(&mapped))), "upload map");
+        std::memset(mapped, 0, static_cast<size_t>(copy.allocation_bytes));
+        for (uint32_t y = 0; y < height; ++y) {
+          std::memcpy(mapped + copy.footprint.Offset + static_cast<size_t>(y) * copy.footprint.Footprint.RowPitch,
+                      copy.input.data() + static_cast<size_t>(y) * row_bytes, static_cast<size_t>(row_bytes));
+        }
+        const D3D12_RANGE upload_written{0, static_cast<SIZE_T>(copy.allocation_bytes)};
+        copy.upload->Unmap(0, &upload_written);
+        const D3D12_TEXTURE_COPY_LOCATION upload_location{.pResource = copy.upload.Get(),
+            .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, .PlacedFootprint = copy.footprint};
+        const D3D12_TEXTURE_COPY_LOCATION source_location{.pResource = copy.source.Get(),
+            .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, .SubresourceIndex = 0};
+        const D3D12_TEXTURE_COPY_LOCATION readback_location{.pResource = copy.readback.Get(),
+            .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, .PlacedFootprint = copy.footprint};
+        const D3D12_TEXTURE_COPY_LOCATION destination_location{.pResource = copy.destination.Get(),
+            .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, .SubresourceIndex = 0};
+        gpu.list->CopyTextureRegion(&source_location, 0, 0, 0, &upload_location, nullptr);
+        gpu.Transition(copy.source.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        gpu.list->CopyResource(copy.destination.Get(), copy.source.Get());
+        gpu.Transition(copy.destination.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        gpu.list->CopyTextureRegion(&readback_location, 0, 0, 0, &destination_location, nullptr);
+        frame_result["resources"][copy.name] = {{"output_file", nullptr}, {"format", copy.format_name}, {"bytes", bytes},
+            {"bitwise_equal", false}, {"row_pitch", copy.footprint.Footprint.RowPitch},
+            {"row_bytes", row_bytes}, {"footprint_bytes", copy.allocation_bytes}};
+      }
+      gpu.Submit();
+      const auto completed = gpu.fence->GetCompletedValue();
+      Check(completed != UINT64_MAX && completed >= gpu.serial && SUCCEEDED(gpu.device->GetDeviceRemovedReason()),
+            "GPU copy completion not proven");
+      frame_result["completion"] = {{"gpu_completed", true}, {"fence_value", completed}, {"submitted_fence_value", gpu.serial},
+          {"source", "Gpu::Submit + ID3D12Fence::GetCompletedValue"}};
+      frame_result["evidence"] = (selected_adapter == "warp" ? "WARP" : "NATIVE_GPU");
+      if (info != nullptr) {
+        for (UINT64 message_index = 0; message_index < info->GetNumStoredMessages(); ++message_index) {
+          SIZE_T bytes = 0;
+          Check(SUCCEEDED(info->GetMessage(message_index, nullptr, &bytes)), "debug message size");
+          std::vector<uint8_t> message_buffer(bytes);
+          auto* message = reinterpret_cast<D3D12_MESSAGE*>(message_buffer.data());
+          Check(SUCCEEDED(info->GetMessage(message_index, message, &bytes)), "debug message read");
+          Check(message->Severity > D3D12_MESSAGE_SEVERITY_ERROR, "D3D12 debug layer error");
+        }
+        info->ClearStoredMessages();
+      }
+      for (auto& copy : copies) {
+        uint8_t* mapped = nullptr;
+        const D3D12_RANGE read_range{0, static_cast<SIZE_T>(copy.allocation_bytes)};
+        Check(SUCCEEDED(copy.readback->Map(0, &read_range, reinterpret_cast<void**>(&mapped))), "readback map");
+        std::vector<uint8_t> pixels(copy.input.size());
+        const auto row_bytes = static_cast<size_t>(width) * copy.stride;
+        for (uint32_t y = 0; y < height; ++y) {
+          std::memcpy(pixels.data() + static_cast<size_t>(y) * row_bytes,
+                      mapped + copy.footprint.Offset + static_cast<size_t>(y) * copy.footprint.Footprint.RowPitch, row_bytes);
+        }
+        const D3D12_RANGE no_writes{0, 0};
+        copy.readback->Unmap(0, &no_writes);
+        const auto filename = std::to_string(index) + "-" + copy.name + ".f32";
+        write_new(output / filename, pixels.data(), pixels.size());
+        auto& resource_result = frame_result["resources"][copy.name];
+        resource_result["output_file"] = filename;
+        resource_result["bitwise_equal"] = (pixels == copy.input);
+        Check(pixels == copy.input, "GPU copy readback differs from uploaded input");
+      }
+      frame_result["status"] = "passed";
+      result["evidence"] = (selected_adapter == "warp" ? "WARP" : "NATIVE_GPU");
+    }
+    result["status"] = "passed";
+  } catch (const std::exception& error) {
+    // Filesystem diagnostics can disclose private paths; keep their category only.
+    result["error"] = (dynamic_cast<const fs::filesystem_error*>(&error) != nullptr ? "filesystem_error" : error.what());
+    exit_code = 1;
+  }
+  try {
+    if (owns_output) {
+      const auto serialized = result.dump(2) + "\n";
+      write_new(output / "replay-backend-result.json", serialized.data(), serialized.size());
+    }
+  } catch (const std::exception&) {
+    std::cerr << "Replay result write failed\n";
+    return 1;
+  }
+  std::cout << result.dump() << '\n';
+  return exit_code;
+}
