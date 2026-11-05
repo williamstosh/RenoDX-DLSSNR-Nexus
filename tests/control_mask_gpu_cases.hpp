@@ -395,6 +395,7 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   gpu.queue->ExecuteCommandLists(1, queued);
   auto* queued_mask = addon::worksets.at(key).control_mask;
   try {
+    Check(!submission::HasUnprovenSubmissions(), "valid delayed Fence is not an unknown submission");
     const auto saved_list = gpu.list;
     gpu.list = other_list;
     addon::ProcessInline(gpu.list.Get(), owner, &parameters);
@@ -442,6 +443,7 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
       Check(SUCCEEDED(gpu.list->Reset(gpu.allocator.Get(), nullptr)), "Reset in-flight list without resetting allocator");
       submission::OnCommandListReset(gpu.list.Get());
       submission::PruneCompletedGenerations();
+      Check(submission::HasUnprovenSubmissions(), "allocation or Signal fault is a device admission barrier");
       Check(!submission::ResourceReleasable(mask), "failed bookkeeping or Signal retains actual in-flight mask");
       const auto failed_calls = model_calls;
       Check(!addon::ProcessInline(gpu.list.Get(), owner, &parameters) && model_calls == failed_calls,
@@ -459,6 +461,49 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
           "test-owned GPU completion does not repair production unknown proof");
     addon::teardown_pending = false;
     addon::teardown_other_device_waiting = false;
+    const auto* replacement_owner = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xC04A8});
+    addon::RegisterCreatedFeatureLocked(replacement_owner, addon::kFeatureDlss, &parameters);
+    const auto assert_bounded = [&](const NVSDK_NGX_Handle* candidate) {
+      const auto creates = addon::worksets_created;
+      const auto models = next_handle;
+      const auto calls = model_calls;
+      const auto dispatches = mask_dispatches;
+      const auto active = addon::worksets.size();
+      const auto retired = addon::retired_final_resources.size();
+      const auto retired_models = addon::retired_nr_features.size();
+      uint64_t retained_bytes = 0;
+      for (const auto& entry : addon::retired_final_resources) retained_bytes += entry.resources.allocated_bytes;
+      for (uint32_t attempt = 0; attempt != 16; ++attempt) {
+        ++addon::present_generation;
+        // Turning the option off cannot make the old unknown work disappear.
+        addon::control_mask_enabled = (attempt % 2 == 0);
+        parameters.Set(NVSDK_NGX_Parameter_Output, (attempt % 2 == 0 ? output.Get() : output_b.Get()));
+        addon::ProcessInline(gpu.list.Get(), candidate, &parameters);
+      }
+      addon::control_mask_enabled = true;
+      parameters.Set(NVSDK_NGX_Parameter_Output, output.Get());
+      uint64_t final_bytes = 0;
+      for (const auto& entry : addon::retired_final_resources) final_bytes += entry.resources.allocated_bytes;
+      Check(addon::worksets_created == creates && next_handle == models && model_calls == calls
+                && mask_dispatches == dispatches && addon::worksets.size() == active
+                && addon::retired_final_resources.size() == retired
+                && addon::retired_nr_features.size() == retired_models && final_bytes == retained_bytes,
+            "unknown submission blocks device-wide Owner/output/option churn without new GPU resources");
+    };
+    assert_bounded(replacement_owner);
+    addon::ForgetSourceHandleLocked(owner);
+    addon::RegisterCreatedFeatureLocked(owner, addon::kFeatureDlss, &parameters);
+    Check(!submission::ResourceReleasable(mask), "source release retains unknown mask");
+    assert_bounded(owner);
+    assert_bounded(replacement_owner);
+    const auto retained_count = addon::retired_final_resources.size();
+    Check(addon::EnsureWorkset(gpu.device.Get(), replacement_owner, output_b.Get(), 8, 8, 8, 8,
+              DXGI_FORMAT_R8G8B8A8_UNORM, 0, 1, 0, false, nullptr, nullptr, true) == nullptr
+              && addon::retired_final_resources.size() == retained_count,
+          "direct workset allocation cannot bypass retained unknown submission");
+    std::cout << "CASE location=unknown-owner-churn stage=" << stage
+              << " evidence=MOCK+GPU size=8x8 attempts=48 new_resources=0 resource=retained"
+                 " recovery=requires-production-proof-or-terminal-device-lifecycle\n";
     // Explicit isolated fixture reset after real GPU completion, never a product recovery.
     submission::ResetAll();
     addon::RetireWorkset(key);

@@ -525,6 +525,22 @@ enum class RecordedWork {
   kPending,
 };
 
+// A valid completion token may still be in flight. Only missing submission
+// proofs require admission to stop; an unsubmitted recording has no such fault.
+inline bool HasUnprovenSubmissions() {
+  std::lock_guard<std::mutex> lock(tracker_mutex);
+  for (const auto& [key, state] : tracked_lists) {
+    for (const auto& [id, generation] : state.generations) {
+      if (generation.uses.empty()) continue;
+      if (generation.unreserved_submissions != 0) return true;
+      for (const GenerationSubmission& submission : generation.submissions) {
+        if (submission.pending || submission.fence.empty()) return true;
+      }
+    }
+  }
+  return false;
+}
+
 inline RecordedWork RecordedWorkState() {
   std::lock_guard<std::mutex> lock(tracker_mutex);
   bool replayable = false;

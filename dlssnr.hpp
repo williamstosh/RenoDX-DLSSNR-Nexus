@@ -4574,6 +4574,33 @@ inline bool WorksetRecordingsComplete(const FinalResources& res) {
   return true;
 }
 
+// Caller holds runtime_mutex. The runtime serves one device at a time; changing
+// owners or retiring scratch must not bypass an unknown submission on it.
+inline bool ControlMaskSubmissionsUnproven() {
+  const auto has_control_mask = [](const FinalResources& resources) {
+    for (const FinalResources* current = &resources; current != nullptr; current = current->resolution_tail) {
+      if (current->control_mask != nullptr || current->control_mask_recording != nullptr) return true;
+    }
+    return false;
+  };
+  bool control_mask_retained = false;
+  for (const auto& [key, resources] : worksets) {
+    if (has_control_mask(resources)) {
+      control_mask_retained = true;
+      break;
+    }
+  }
+  if (!control_mask_retained) {
+    for (const auto& retired : retired_final_resources) {
+      if (has_control_mask(retired.resources)) {
+        control_mask_retained = true;
+        break;
+      }
+    }
+  }
+  return control_mask_retained && submission::HasUnprovenSubmissions();
+}
+
 // Registers the workset's GPU objects against the command list's current
 // recording generation: the exact submission-use proof retirement consumes
 // instead of the every-queue lease guess (issue 01).  Called once per
@@ -6229,6 +6256,7 @@ inline FinalResources* EnsureWorkset(
     const codec::SourceUnits* units_override = nullptr,
     FinalResources* stage_resources = nullptr,
     bool create_control_mask = false) {
+  if (ControlMaskSubmissionsUnproven()) return nullptr;
   if (device == nullptr || key == nullptr || input_width == 0 || input_height == 0
       || output_width == 0 || output_height == 0) {
     // Bounded by the caller's periodic failure retry, not per-frame.
@@ -10333,6 +10361,11 @@ inline bool ProcessInline(
     return false;
   }
 
+  if (ControlMaskSubmissionsUnproven()) {
+    CountNrDecline(NrDeclineReason::kWorksetSetupFailed);
+    return false;
+  }
+
   ID3D12Device* device = nullptr;
   if (FAILED(command_list->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr) {
     CountNrDecline(NrDeclineReason::kMalformedEvaluate);
@@ -12522,6 +12555,10 @@ inline bool ProcessInlinePreSR(
     // that already passed one, so counting there would double-count.  A
     // runtime waiting to switch device or face names its own terminal.
     CountNrDecline(runtime_decline);
+    return false;
+  }
+  if (ControlMaskSubmissionsUnproven()) {
+    CountNrDecline(NrDeclineReason::kWorksetSetupFailed);
     return false;
   }
   ID3D12Device* device = nullptr;
