@@ -3,7 +3,8 @@ param(
     [ValidateSet('all','backend','contracts','suites')][string]$TestSet = 'all',
     [string]$PythonPath,
     [string]$ReplayBackendExe,
-    [ValidateSet('warp','nvidia')][string]$Adapter = 'warp'
+    [ValidateSet('warp','nvidia')][string]$Adapter = 'warp',
+    [switch]$ResolveOnly
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -81,6 +82,10 @@ if ($null -eq $python) {
     throw "CPython $expectedVersion x64 was not found. Pass -PythonPath or set NR_NEXUS_PYTHON to its absolute path; PATH is not searched."
 }
 $pythonHash = (Get-FileHash -LiteralPath $python -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($ResolveOnly) {
+    Write-Output $python
+    exit 0
+}
 Write-Output "Python: $python ($($pythonInfo.implementation) $($pythonInfo.version), $($pythonInfo.bits)-bit, SHA-256 $pythonHash)"
 
 $backendRequired = $TestSet -in @('all','backend')
