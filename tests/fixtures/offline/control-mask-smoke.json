@@ -1,0 +1,14 @@
+{
+  "schema": "nr-nexus-offline-fixture/1",
+  "fixture_id": "control-mask-smoke-v1",
+  "description": "Production mask shader, odd and degenerate boundaries; model requests are MOCK contracts.",
+  "cases": [
+    {"id": "neutral", "width": 8, "height": 8, "mode": "neutral"},
+    {"id": "rgb", "width": 19, "height": 17, "mode": "rgb", "rgb": [0.25, 0.5, 0.75]},
+    {"id": "rgb-rect", "width": 19, "height": 17, "mode": "rect", "rect": [9, 8]},
+    {"id": "green-rect-A", "width": 19, "height": 17, "mode": "green_rect"},
+    {"id": "blue-rect-B", "width": 19, "height": 17, "mode": "blue_rect", "model": "B", "auto_mask": true, "blend_mode": 3},
+    {"id": "thin-green", "width": 1, "height": 3, "mode": "green_rect"},
+    {"id": "thin-blue", "width": 3, "height": 1, "mode": "blue_rect"}
+  ]
+}

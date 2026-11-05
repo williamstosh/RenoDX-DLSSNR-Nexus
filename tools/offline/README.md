@@ -1,6 +1,6 @@
 # NR Nexus 离线验证工具
 
-本目录提供通用 D3D12 E0 回放与既有 FG／XeFG suite adapter。它们不启动游戏，也不编译 ControlMask Shader。ControlMask 专项验证和 NGX Feature 18 探针仍由原平台分支维护。
+本目录提供通用 D3D12 E0 回放、既有 FG／XeFG suite adapter 与 ControlMask 专项验证，均无需启动游戏。Replay 构建不依赖 ControlMask Shader；GPU 专项后端单独编译当前源码中的 ControlMask Shader。
 
 通用 D3D12 helper 还提供可复用的 timestamp query、resolve、readback 与毫秒换算；E0 当前只报告资源传输／读回和 Fence 结果，不把 shader-only 计时扩展为 NR Evaluate 性能。
 
@@ -29,6 +29,23 @@ $python = & pwsh -File tools/offline/test.ps1 -ResolveOnly
 ~~~
 
 报告区分 STATIC、MOCK、WARP、NATIVE_GPU、NATIVE_NGX、IN_GAME 与 VISUAL；fake SDK 不视作真实 SDK 执行。输出目录必须是新目录，失败报告和原始证据保留在 tmp/offline/。
+
+## ControlMask 专项验证
+
+使用同一构建入口选择 `-Backend gpu`，指定已准备的固定宿主、未变 Shader 的生成头目录、FXC 和 embed_file。当前工作树产品头优先于宿主 addon 映射；当前 `control_mask.cs_5_1.hlsl` 在本次输出目录重新编译并生成嵌入头，不修改共享生成文件。
+
+~~~powershell
+pwsh -File tools/offline/build.ps1 -Backend gpu -HostRoot <固定宿主目录> -ShaderIncludeDirectory <已有生成头目录> -Fxc <fxc.exe> -EmbedFile <embed_file.exe> -OutputDirectory tmp/offline/control-mask-build
+$python = & pwsh -File tools/offline/test.ps1 -ResolveOnly
+& $python -B -S -m unittest discover -s tests -p 'test_control_mask_*.py' -v
+& $python -B -S tools/offline/control_mask.py tests/fixtures/offline/control-mask-smoke.json --backend-exe tmp/offline/control-mask-build/offline_gpu_tests.exe --adapter warp --output tmp/offline/control-mask-warp
+& $python -B -S tools/offline/control_mask.py --contracts --backend-exe tmp/offline/control-mask-build/offline_gpu_tests.exe --adapter warp --output tmp/offline/control-mask-contracts
+& $python -B -S tools/offline/control_mask.py tests/fixtures/offline/control-mask-smoke.json --backend-exe tmp/offline/control-mask-build/offline_gpu_tests.exe --adapter nvidia --output tmp/offline/control-mask-nvidia
+~~~
+
+7-case smoke 覆盖中性、固定 RGB、矩形、G/B 通道和退化边界，独立 CPU oracle 检查原始 RGBA8 读回、FLOAT→UNORM 容差、提交完成和原始 timestamp。Shader 执行分别记录 WARP／NATIVE_GPU；模型 A/B、AutoMask、BlendMode 仅为 MOCK 参数合同。`--contracts` 仅接受 WARP，复用已有失败与资源退休测试，不提供 NVIDIA 对称入口。计时范围为 ControlMask dispatch 和 UAV barrier，不是 NR Evaluate 或游戏性能。
+
+专项 CLI 复用通用输出路径、构建身份和设备核验，冻结专项及通用 Python 输入，并在执行后复核身份。每次使用新输出目录，保留 `result.json`、后端原始结果、读回与日志。专项 Python 文件命名为 `test_control_mask_*`，不加入通用 `test.ps1` 的 21 项回归。
 
 ## 自动回归
 
