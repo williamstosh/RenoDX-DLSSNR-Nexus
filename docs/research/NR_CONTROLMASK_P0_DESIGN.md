@@ -2,12 +2,12 @@
 
 ## P0 实施结果（截至2026-11-07）
 
-本节记录实现背景与历史验证；当前进度以本地状态文档 [NOW](../context/NOW.md) 为准。ControlMask 工程、离线语义／性能验证及既有 B 模型 GRect／BRect 动态画质和稳定性验收按各自证据范围保留；自动前台与采集流程也完成了一次 B-GRect 集成运行。**P0 仍未 PASS**：原始验收矩阵仍有未覆盖项，历史启动异常根因未明。用户已明确不再重复实机测试；不将自动流程运行误记为新的运行时或视觉验收。
+本节记录实现背景与历史验证；当前详细进度保存在本地状态记录中，公开源码只保留实现边界和可复核结论。ControlMask 工程、离线语义／性能验证及既有 B 模型 GRect／BRect 动态画质和稳定性验收按各自证据范围保留；自动前台与采集流程也完成了一次 B-GRect 集成运行。**P0 仍未 PASS**：原始验收矩阵仍有未覆盖项，历史启动异常根因未明。用户已明确不再重复实机测试；不将自动流程运行误记为新的运行时或视觉验收。
 
 - **Gate A 通过（证据核验）**：独立复核 GrimsVerk 研究页和公开研究补丁，确认社区报告中的 R/G/B/A 语义、BlendMode 0–3、ControlMaskSubrectBaseX/Y/Width/Height 参数名和完整纹理 Subrect 用法。来源仍是社区逆向研究及作者游戏观测，不是 NVIDIA 官方 API 契约。现有 DLL 四段文件版本识别可复用，门控只接受 310.9.16.0。工作集 command list、状态转换和 Fence 退休复用现有契约。
 - **Gate B 通过（原型代码）**：在 dlssnr.hpp 中新增默认关闭的本地配置开关 NRControlMaskEnabled，及 NRControlMaskMode、NRControlMaskRed/Green/Blue、NRControlMaskBlendMode 诊断键；没有新增 UI。只在 D3D12 Upscaled、非 mixed、单 Pass、slot 0 和精确 Runtime 条件下创建、派发及绑定遮罩。RGBA8 UAV 与 PSO 懒创建；shader 生成固定 RGB、全 1 或左上四分之一 RGB 置零的矩形测试遮罩，A 固定 255。Evaluate 参数包含资源、完整工作尺寸 Subrect 和 BlendMode，AutoMask 保持原配置；API 返回（含失败／异常）后清空 mask 资源与 Subrect，工作集仍依提交跟踪和 Fence 退休。生成 dispatch 计入现有每 Pass Evaluate GPU timer 区间。Setup 失败跳过本次 NR Evaluate、清理旧绑定并标记下一次 History reset，不在同帧重试。限频日志分别记录启用参数、拒绝、setup 失败和 Evaluate 返回／接受状态，模型标注为请求值。
 - **Gate C 通过（工程验证范围）**：Release 插件和 FXC 编译通过。复用未改动的版本门控 9 项、Stage Plan 407,557 项及既有 stage-resolution WARP 证据。本轮专项验证固定 RGB、全 1、矩形字节，NGX 资源/Subrect/BlendMode 与 AutoMask 保持；实际 ProcessInline 默认关闭零 mask dispatch、关闭／模式切换清理、非精确 Runtime 不派发；分配失败、NGX 返回失败及异常时保留游戏输出、清理参数且同帧不重试；已录制未提交的旧尺寸 mask 保留，提交完成后才释放。替身不执行 NVIDIA NR Runtime。D3D12 Debug Layer 当前不可用，验证层不记通过；PSO、Execute/Signal 和设备移除等每种失败分支尚未全部独立注入。
- - **历史实机状态（截至2026-11-05）**：旧冻结候选结果只绑定对应旧 SHA。候选 C6FE4107…3320E 在《巫师3》DX12／310.9.16.0／RTX 5090D 上完成 B-T1 与 B-GRect：请求模型、模块身份、Evaluate 返回和 GPU 完成按当时证据记录；B-T1 原始 GPU 采样 256/256 valid。B-BRect 的 retry6 未及时响应前台交接；retry7 有 Evaluate/API 返回和模型对，但 GPU 未核实；retry8／retry9 采集等待超时且没有有效 BRect Evaluate。后续运行和当前收尾状态见 NOW；本历史段落不代表最新矩阵或当前实机候选。
+- **历史实机状态（截至2026-11-05）**：旧冻结候选结果只绑定对应旧 SHA。候选 C6FE4107…3320E 在《巫师3》DX12／310.9.16.0／RTX 5090D 上完成 B-T1 与 B-GRect：请求模型、模块身份、Evaluate 返回和 GPU 完成按当时证据记录；B-T1 原始 GPU 采样 256/256 valid。B-BRect 的 retry6 未及时响应前台交接；retry7 有 Evaluate/API 返回和模型对，但 GPU 未核实；retry8／retry9 采集等待超时且没有有效 BRect Evaluate。后续运行和当前收尾状态见 NOW；本历史段落不代表最新矩阵或当前实机候选。
 
 ### 前台与采集自动化现状
 
@@ -49,7 +49,7 @@ GPU 原始出口复用 `gpu_timers.hpp` 已完成、未平均的 Stats，通过 
 
 ## 结论
 
-**CONDITIONAL GO；P0 未 PASS，P1 不启动。** 离线及历史运行结论按各自输入和证据范围保留；B 模型 GRect／BRect 动态画质与稳定性验收按原证据有效，自动化也完成一次集成流程运行。剩余未覆盖矩阵与启动异常根因未知，详见 [NOW](../context/NOW.md#controlmask-p0-收尾状态2026-11-07停止重复实机测试)。依用户决定不重复实机测试，也不把未执行项写成通过。
+**CONDITIONAL GO；P0 未 PASS，P1 不启动。** 离线及历史运行结论按各自输入和证据范围保留；B 模型 GRect／BRect 动态画质与稳定性验收按原证据有效，自动化也完成一次集成流程运行。剩余未覆盖矩阵与启动异常根因未知；详细范围保留在本地状态记录中。依用户决定不重复实机测试，也不把未执行项写成通过。
 
 ## Nexus 当前事实与适配位置
 
