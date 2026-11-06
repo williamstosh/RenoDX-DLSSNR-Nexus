@@ -124,6 +124,124 @@ class DesktopTests(unittest.TestCase):
         desktop.close(self.window)
         self.u.PostMessageW.assert_called_once_with(123, 0x10, 0, 0)
 
+    def test_move_camera_sends_only_bounded_relative_movement(self):
+        self.u.GetForegroundWindow.return_value = self.window['hwnd']
+        movements = []
+        def send(count, value, size):
+            movement = value._obj
+            movements.append((count, size, movement.type, movement.mi.dx, movement.mi.dy,
+                              movement.mi.mouseData, movement.mi.dwFlags, movement.mi.time,
+                              movement.mi.dwExtraInfo))
+            return 1
+        self.u.SendInput.side_effect = send
+        with mock.patch.object(desktop, 'activate') as activate:
+            for dx, dy in ((200, -200), (-200, 200), (0, 1), (1, 0)):
+                desktop.move_camera(self.window, dx, dy)
+        self.assertEqual(movements, [
+            (1, C.sizeof(desktop.INPUT), 0, dx, dy, 0, 0x0001, 0, 0)
+            for dx, dy in ((200, -200), (-200, 200), (0, 1), (1, 0))])
+        self.assertEqual(self.k.OpenProcess.call_count, 4)
+        activate.assert_not_called()
+        self.u.SetForegroundWindow.assert_not_called()
+        self.u.SetCursorPos.assert_not_called()
+
+    def test_move_camera_rejects_invalid_deltas_before_native_checks(self):
+        for value in (-201, 201, 2**64, 1.0, float('inf'), float('nan'), True, '1', None):
+            for dx, dy in ((value, 0), (0, value)):
+                with self.subTest(dx=dx, dy=dy), self.assertRaises(ValueError):
+                    desktop.move_camera(self.window, dx, dy)
+        self.k.OpenProcess.assert_not_called()
+        self.u.IsWindow.assert_not_called()
+        self.u.GetForegroundWindow.assert_not_called()
+        self.u.SendInput.assert_not_called()
+
+    def test_move_camera_rejects_lost_foreground_without_activation(self):
+        self.u.GetForegroundWindow.return_value = 999
+        with self.assertRaisesRegex(RuntimeError, 'not foreground'):
+            desktop.move_camera(self.window, 10, -10)
+        self.u.SendInput.assert_not_called()
+        self.u.SetForegroundWindow.assert_not_called()
+
+    def test_move_camera_rejects_dead_window_or_replaced_process(self):
+        self.u.GetForegroundWindow.return_value = self.window['hwnd']
+        self.u.IsWindow.return_value = False
+        with self.assertRaisesRegex(RuntimeError, 'identity changed'):
+            desktop.move_camera(self.window, 10, 0)
+        self.u.IsWindow.return_value = True
+        with self.assertRaisesRegex(RuntimeError, 'identity changed'):
+            desktop.move_camera(dict(self.window, created=99), 10, 0)
+        self.u.GetWindowThreadProcessId.side_effect = lambda hwnd, pid: (
+            setattr(pid._obj, 'value', 99) or 7)
+        with self.assertRaisesRegex(RuntimeError, 'identity changed'):
+            desktop.move_camera(self.window, 10, 0)
+        self.u.SendInput.assert_not_called()
+
+    def test_move_camera_checks_foreground_after_process_identity(self):
+        self.u.GetForegroundWindow.return_value = self.window['hwnd']
+        def lose_focus(*args):
+            self.u.GetForegroundWindow.return_value = 999
+            return self.path(*args)
+        self.k.QueryFullProcessImageNameW.side_effect = lose_focus
+        with self.assertRaisesRegex(RuntimeError, 'not foreground'):
+            desktop.move_camera(self.window, 10, 0)
+        self.u.SendInput.assert_not_called()
+
+    def test_move_camera_reports_sendinput_failure_without_retry(self):
+        self.u.GetForegroundWindow.return_value = self.window['hwnd']
+        self.u.SendInput.return_value = 0
+        with self.assertRaisesRegex(RuntimeError, 'Camera movement failed'):
+            desktop.move_camera(self.window, 10, -10)
+        self.u.SendInput.assert_called_once()
+
+    def test_park_cursor_moves_inside_window_without_mouse_buttons(self):
+        def rect(hwnd, value):
+            value._obj.right, value._obj.bottom = 3840, 2160
+            return True
+
+        def origin(hwnd, point):
+            point._obj.x -= 3840
+            point._obj.y += 40
+            return True
+
+        self.u.GetClientRect.side_effect = rect
+        self.u.ClientToScreen.side_effect = origin
+        self.u.GetSystemMetrics.side_effect = {76: -3840, 77: 40, 78: 7680, 79: 2160}.__getitem__
+        movements = []
+        self.u.SendInput.side_effect = lambda count, value, size: movements.append(
+            (value._obj.type, value._obj.mi.dx, value._obj.mi.dy, value._obj.mi.dwFlags)) or 1
+        with mock.patch.object(desktop, 'ensure_foreground') as activate, \
+                mock.patch.object(desktop.time, 'sleep') as sleep:
+            desktop.park_cursor(self.window)
+        activate.assert_called_once_with(self.window)
+        self.u.SetCursorPos.assert_not_called()
+        self.assertEqual(movements, [(0, 32763, 65535, 0xC001)])
+        sleep.assert_called_once_with(.12)
+
+    def test_park_cursor_movement_rejection_does_not_wait_for_frame(self):
+        self.u.GetClientRect.side_effect = lambda hwnd, rect: (
+            setattr(rect._obj, 'right', 3840), setattr(rect._obj, 'bottom', 2160))
+        self.u.GetSystemMetrics.side_effect = {76: 0, 77: 0, 78: 3840, 79: 2160}.__getitem__
+        self.u.SendInput.return_value = 0
+        with mock.patch.object(desktop, 'ensure_foreground'), mock.patch.object(desktop.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(RuntimeError, 'Cursor movement failed'):
+                desktop.park_cursor(self.window)
+        sleep.assert_not_called()
+        self.u.SetCursorPos.assert_not_called()
+
+    def test_park_cursor_rejects_unconfirmed_window_without_moving(self):
+        with mock.patch.object(desktop, 'ensure_foreground', side_effect=RuntimeError('unconfirmed')):
+            with self.assertRaisesRegex(RuntimeError, 'unconfirmed'):
+                desktop.park_cursor(self.window)
+        self.u.SetCursorPos.assert_not_called()
+        self.u.SendInput.assert_not_called()
+
+    def test_park_cursor_rejects_empty_window_without_moving(self):
+        with mock.patch.object(desktop, 'ensure_foreground'):
+            with self.assertRaisesRegex(ValueError, 'Empty client area'):
+                desktop.park_cursor(self.window)
+        self.u.SetCursorPos.assert_not_called()
+        self.u.SendInput.assert_not_called()
+
     def test_click_spans_a_render_poll_and_always_releases(self):
         self.u.GetClientRect.side_effect = lambda hwnd, rect: (
             setattr(rect._obj, 'right', 3840), setattr(rect._obj, 'bottom', 2160))
@@ -131,7 +249,7 @@ class DesktopTests(unittest.TestCase):
         self.u.SendInput.return_value = 1
         order = []
         self.u.SendInput.side_effect = lambda count, value, size: order.append(value._obj.mi.dwFlags) or 1
-        with mock.patch.object(desktop, 'activate'), \
+        with mock.patch.object(desktop, 'ensure_foreground'), \
                 mock.patch.object(desktop.time, 'sleep', side_effect=lambda seconds: order.append(seconds)):
             desktop.click(self.window, 100, 100)
         self.assertEqual(order[0], 2)
@@ -139,7 +257,7 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(order[2], 4)
 
         order.clear()
-        with mock.patch.object(desktop, 'activate'), \
+        with mock.patch.object(desktop, 'ensure_foreground'), \
                 mock.patch.object(desktop.time, 'sleep', side_effect=RuntimeError('interrupted')):
             with self.assertRaisesRegex(RuntimeError, 'interrupted'):
                 desktop.click(self.window, 100, 100)
@@ -148,7 +266,7 @@ class DesktopTests(unittest.TestCase):
     def test_default_menu_key_spans_render_polls(self):
         order = []
         self.u.SendInput.side_effect = lambda count, value, size: order.append(value._obj.ki.dwFlags) or 1
-        with mock.patch.object(desktop, 'activate'), \
+        with mock.patch.object(desktop, 'ensure_foreground'), \
                 mock.patch.object(desktop.time, 'sleep', side_effect=lambda seconds: order.append(seconds)):
             desktop.key(self.window, 'ENTER')
         self.assertEqual(order, [8, .2, 10])
@@ -174,29 +292,39 @@ class DesktopTests(unittest.TestCase):
         with mock.patch.object(C, 'get_last_error', return_value=5):
             self.assertEqual(desktop.grant_foreground_permission(88), dict(granted=False, error=5))
 
-    def test_activate_handoff_waits_only_for_verified_target_foreground(self):
-        on_handoff = mock.Mock()
-        with mock.patch.object(desktop, 'activate', side_effect=desktop.ForegroundActivationDenied()), \
-                mock.patch.object(desktop, 'wait_for_foreground') as wait:
-            desktop.activate_with_handoff(self.window, on_handoff, timeout=12)
-        on_handoff.assert_called_once_with()
-        wait.assert_called_once_with(self.window, 12)
+    def test_automatic_activation_restores_minimized_target_and_detaches_threads(self):
+        self.u.GetForegroundWindow.side_effect = [999, 123, 123]
+        self.u.IsIconic.return_value = True
+        self.k.GetCurrentThreadId.return_value = 8
+        self.u.AttachThreadInput.return_value = True
+        receipt = desktop.ensure_foreground(self.window)
+        self.assertEqual((receipt['hwnd'], receipt['pid'], receipt['created']), (123, 42, 100))
+        self.u.ShowWindow.assert_called_once_with(123, 9)
+        self.u.SetForegroundWindow.assert_called_once_with(123)
+        self.assertEqual(self.u.AttachThreadInput.call_args_list, [mock.call(8, 7, True), mock.call(8, 7, False)])
+        self.u.SendInput.assert_not_called()
 
-    def test_activate_handoff_does_not_hide_window_identity_failures(self):
-        on_handoff = mock.Mock()
-        with mock.patch.object(desktop, 'activate', side_effect=RuntimeError('window disappeared')):
-            with self.assertRaisesRegex(RuntimeError, 'window disappeared'):
-                desktop.activate_with_handoff(self.window, on_handoff)
-        on_handoff.assert_not_called()
+    def test_foreground_already_correct_does_not_wait_or_activate_again(self):
+        self.u.GetForegroundWindow.return_value = 123
+        with mock.patch.object(desktop.time, 'sleep') as sleep:
+            desktop.ensure_foreground(self.window)
+        self.u.SetForegroundWindow.assert_not_called()
+        sleep.assert_not_called()
 
-    def test_wait_for_foreground_rejects_identity_loss_and_timeout(self):
-        with mock.patch.object(desktop, 'window_alive', return_value=False):
-            with self.assertRaisesRegex(RuntimeError, 'identity changed'):
-                desktop.wait_for_foreground(self.window, timeout=0)
-        with mock.patch.object(desktop, 'window_alive', return_value=True), \
-                mock.patch.object(desktop.u, 'GetForegroundWindow', return_value=456):
-            with self.assertRaisesRegex(desktop.ForegroundHandoffTimeout, 'no input sent'):
-                desktop.wait_for_foreground(self.window, timeout=0)
+    def test_automatic_activation_denial_has_bounded_deadline(self):
+        self.u.GetForegroundWindow.return_value = 999
+        with mock.patch.object(desktop.time, 'monotonic', side_effect=[0, 0, 8, 8]), \
+                mock.patch.object(desktop.time, 'sleep'):
+            with self.assertRaisesRegex(desktop.ForegroundActivationDenied, 'no input sent'):
+                desktop.activate(self.window)
+        self.u.SendInput.assert_not_called()
+
+    def test_automatic_activation_rechecks_identity_and_focus_before_input(self):
+        with mock.patch.object(desktop, 'activate'), \
+                mock.patch.object(desktop, 'window_alive', return_value=False):
+            with self.assertRaisesRegex(desktop.ForegroundActivationDenied, 'identity'):
+                desktop.key(self.window, 'SPACE')
+        self.u.SendInput.assert_not_called()
 
     def test_terminate_waits_on_same_verified_handle(self):
         self.k.WaitForSingleObject.side_effect = [0x102, 0x102, 0x102, 0]

@@ -7,6 +7,7 @@ param(
     [string]$OutputRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) 'artifacts/game-tests'),
     [ValidateSet('smoke','menu')][string]$Scenario = 'smoke',
     [ValidateRange(0,900)][int]$CaptureHoldSeconds = 90,
+    [string]$CaptureScript,
     [switch]$GpuTimers,
     [ValidateRange(-1,3600)][int]$TelemetrySeconds = -1,
     [switch]$SdrGameOutput,
@@ -27,6 +28,9 @@ param(
     [ValidateRange(-1,3)][int]$NrPass3Stage = -1,
     [ValidateRange(-1,3)][int]$NrPass4Stage = -1,
     [ValidateSet('T0','T1','T2','T3','T4','T5','T6','GRect','BRect')][string]$ControlMaskCase,
+    [switch]$ControlMaskUseCoreContext,
+    [ValidateRange(-1,1)][int]$ControlMaskAutoMask = -1,
+    [ValidateRange(-1,3)][int]$ControlMaskBlendMode = -1,
     [ValidateRange(0,4096)][int]$ControlMaskGpuSamples = 0,
     [ValidateRange(1,300)][int]$ControlMaskGpuSeconds = 120,
     [ValidateRange(0,60)][int]$ControlMaskGpuWarmupSeconds = 6,
@@ -36,6 +40,23 @@ param(
     [switch]$AddonAbsentControl
 )
 $ErrorActionPreference = 'Stop'
+if ($CaptureScript) {
+    if ($CaptureHoldSeconds -eq 0 -or $ManualImeSession -or $InstallOnly) { throw '-CaptureScript requires an automatic capture hold, not ManualImeSession or InstallOnly.' }
+    $taskCapturePath = [IO.Path]::GetFullPath($CaptureScript)
+    $taskRepository = Split-Path $PSScriptRoot -Parent
+    if (-not (Test-Path -LiteralPath $taskCapturePath -PathType Leaf) -or [IO.Path]::GetExtension($taskCapturePath) -ne '.py' -or
+        -not (@('tools','tmp') | Where-Object { $taskCapturePath.StartsWith((Join-Path $taskRepository $_) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) })) {
+        throw 'Capture script must be a Python file below repository tools/ or tmp/.'
+    }
+    $CaptureScript = $taskCapturePath
+    $PSBoundParameters['CaptureScript'] = $taskCapturePath
+}
+if (($PSBoundParameters.ContainsKey('ControlMaskAutoMask') -or $PSBoundParameters.ContainsKey('ControlMaskBlendMode')) -and -not $ControlMaskCase) {
+    throw 'ControlMask parameter overrides require an explicit protected -ControlMaskCase.'
+}
+if ($ControlMaskUseCoreContext -and -not $ControlMaskCase) {
+    throw '-ControlMaskUseCoreContext requires an explicit protected -ControlMaskCase.'
+}
 if ($ControlMaskGpuSamples -gt 0 -and (-not $ControlMaskCase -or -not $GpuTimers)) {
     throw 'ControlMask raw capture requires an explicit protected ControlMask case and existing -GpuTimers.'
 }
@@ -241,6 +262,9 @@ $taskReceipt = [ordered]@{
     nr_model_test=@{runtime=$NrRuntimePath; main=$NrPreset; pass2=$NrPass2Preset; passes=$NrPasses}
     nr_stage_test=@{hook=$NrHookPoint; pass2=$NrPass2Stage; pass3=$NrPass3Stage; pass4=$NrPass4Stage}
     control_mask_case=$ControlMaskCase
+    requested_control_mask_use_core_context=[bool]$ControlMaskUseCoreContext
+    requested_control_mask_auto_mask=$ControlMaskAutoMask
+    requested_control_mask_blend_mode=$ControlMaskBlendMode
     control_mask_gpu_capture=@{target_valid_samples=$ControlMaskGpuSamples; seconds=$ControlMaskGpuSeconds; warmup_seconds=$ControlMaskGpuWarmupSeconds}
     temporary_game_sdr=[bool]$SdrGameOutput
     start_nr_disabled=[bool]$StartNrDisabled
@@ -342,6 +366,9 @@ try {
         foreach ($taskSetting in (Get-ControlMaskSettings $ControlMaskCase).GetEnumerator()) {
             $taskModelSettings[$taskSetting.Key] = $taskSetting.Value
         }
+        if ($ControlMaskUseCoreContext) { $taskModelSettings.NRControlMaskUseCoreContext = 1 }
+        if ($ControlMaskAutoMask -ge 0) { $taskModelSettings.NRAutoMask = $ControlMaskAutoMask }
+        if ($ControlMaskBlendMode -ge 0) { $taskModelSettings.NRControlMaskBlendMode = $ControlMaskBlendMode }
         $taskModelSettings.NRControlMaskGpuCaptureSamples = $ControlMaskGpuSamples
         $taskModelSettings.NRControlMaskGpuCaptureSeconds = $ControlMaskGpuSeconds
         $taskModelSettings.NRControlMaskGpuCaptureWarmupSeconds = $ControlMaskGpuWarmupSeconds
@@ -419,7 +446,7 @@ try {
     if ($InstallOnly) {
         $taskReceipt.test_exit_code = 0
     } else {
-        & (Join-Path $PSScriptRoot 'run-game-test.ps1') -Python $Python -TargetPath $TargetPath -OutputRoot $OutputRoot -Scenario $Scenario -CaptureHoldSeconds $CaptureHoldSeconds -Retries 0 -AddonAbsentControl:$AddonAbsentControl -ManualImeSession:$ManualImeSession
+        & (Join-Path $PSScriptRoot 'run-game-test.ps1') -Python $Python -TargetPath $TargetPath -OutputRoot $OutputRoot -Scenario $Scenario -CaptureHoldSeconds $CaptureHoldSeconds -CaptureScript $CaptureScript -Retries 0 -AddonAbsentControl:$AddonAbsentControl -ManualImeSession:$ManualImeSession
         $taskReceipt.test_exit_code = $LASTEXITCODE
     }
 } finally {

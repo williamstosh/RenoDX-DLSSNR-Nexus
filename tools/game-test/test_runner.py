@@ -17,6 +17,9 @@ class ExitTests(unittest.TestCase):
         self.out = Path(self.temp.name)
         self.session = runner.Session(dict(executable=str(self.out / 'game.exe'), logs=[]), self.out)
         self.session.window = dict(pid=123, created=1, hwnd=456, path='game.exe')
+        park_patch = mock.patch.object(runner.desktop, 'park_cursor')
+        self.park_cursor = park_patch.start()
+        self.addCleanup(park_patch.stop)
 
     def test_manual_menu_checks_module_without_automated_ui(self):
         self.session.cfg.update(manual_ime_session=True, capture_hold_seconds=900)
@@ -88,22 +91,235 @@ class ExitTests(unittest.TestCase):
         self.assertEqual(self.session.status['functionality'],
             'pause_and_resume_input_response_confirmed_mod_features_not_tested')
 
-    def test_visible_unique_save_can_gain_focus_after_keyboard_did_not_move(self):
+    def test_visible_unique_save_is_clicked_before_traversing_other_rows(self):
         self.session.cfg.update(save_modified='2026-10-14T01:08:30', save='manual.sav', save_sha256='hash')
         wrong = dict(timestamp='2026-10-14T01:35:49', y=100, selected=True, text='autosave')
         target = dict(timestamp='2026-10-14T01:08:30', y=200, selected=False, text='unique manual timestamp')
         selected = dict(target, selected=True)
         with mock.patch.object(self.session, 'observe', return_value={'lines': []}), \
-                mock.patch.object(runner, 'save_rows', side_effect=[[wrong, target], [wrong, target], [selected]]), \
+                mock.patch.object(runner, 'save_rows', side_effect=[[wrong, target], [selected]]), \
                 mock.patch.object(self.session, 'key') as key, \
                 mock.patch.object(self.session, 'click_text') as click, \
                 mock.patch.object(self.session, 'evidence'), \
                 mock.patch.object(runner.time, 'sleep'):
             self.session.load_save()
-        self.assertEqual(key.call_args_list, [mock.call('DOWN'), mock.call('ENTER')])
+        self.assertEqual(key.call_args_list, [mock.call('ENTER')])
         click.assert_called_once_with({'lines': []}, 'uniquemanualtimestamp')
         receipt = json.loads((self.out / 'save-selection.json').read_text(encoding='utf-8'))
         self.assertEqual(receipt['timestamp'], '2026-10-14T01:08:30')
+
+    def test_unparsed_focused_save_can_click_unique_target_then_reobserve(self):
+        # A focused 10:33:13 row may be read as 10:3:13,
+        # while the next row's target timestamp remained intact.
+        self.session.cfg.update(save_modified='2026-10-14T01:08:30',
+                                save='manual.sav', save_sha256='hash')
+        image = Image.new('RGB', (1920, 1080), 'black')
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((557, 544, 1610, 610), outline='white', width=2)
+        image.save(self.out / 'latest.png')
+        obs = dict(scale=1, lines=[dict(text=text, words=[dict(x=570, y=y, width=440, height=23)])
+            for text, y in [('其他存档 - 2026年11月1日 10：3：13', 566),
+                            ('目标存档 - 2026年10月14日 1：08：30', 629)]])
+        rows = runner.save_rows(self.out / 'latest.png', obs)
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]['selected'])
+        selected = dict(rows[0], selected=True)
+        with mock.patch.object(self.session, 'observe', return_value=obs) as observe, \
+                mock.patch.object(runner, 'save_rows', side_effect=[rows, [selected]]), \
+                mock.patch.object(self.session, 'click_text') as click, \
+                mock.patch.object(self.session, 'key') as key, \
+                mock.patch.object(self.session, 'evidence'), mock.patch.object(runner.time, 'sleep'):
+            self.session.load_save()
+        self.assertEqual(observe.call_count, 2)
+        click.assert_called_once_with(obs, runner.compact(rows[0]['text']))
+        key.assert_called_once_with('ENTER')
+
+    def test_target_click_without_observed_focus_never_loads_or_repeats_click(self):
+        self.session.cfg.update(save_modified='2026-10-14T01:08:30', max_save_steps=3)
+        target = dict(timestamp='2026-10-14T01:08:30', y=640.5, selected=False, text='target')
+        with mock.patch.object(self.session, 'observe', return_value={}), \
+                mock.patch.object(runner, 'save_rows', return_value=[target]), \
+                mock.patch.object(self.session, 'click_text') as click, \
+                mock.patch.object(self.session, 'key') as key, mock.patch.object(runner.time, 'sleep'):
+            with self.assertRaisesRegex(TimeoutError, 'save_selection_timeout'):
+                self.session.load_save()
+        click.assert_called_once()
+        key.assert_not_called()
+        self.assertFalse((self.out / 'save-selection.json').exists())
+
+    def test_duplicate_target_timestamp_rejected_even_if_one_has_focus(self):
+        self.session.cfg.update(save_modified='2026-10-14T01:08:30')
+        target = dict(timestamp='2026-10-14T01:08:30', y=640.5, selected=True, text='target')
+        with mock.patch.object(self.session, 'observe', return_value={}), \
+                mock.patch.object(runner, 'save_rows', return_value=[target, dict(target, selected=False)]), \
+                mock.patch.object(self.session, 'click_text') as click, \
+                mock.patch.object(self.session, 'key') as key:
+            with self.assertRaisesRegex(RuntimeError, 'ambiguous_ui_save_timestamp'):
+                self.session.load_save()
+        click.assert_not_called()
+        key.assert_not_called()
+
+    def test_save_click_direct_load_confirms_scene_without_enter(self):
+        self.session.cfg.update(save_modified='2026-10-14T01:08:30', save='manual.sav',
+                                save_sha256='hash', scene_patterns=['expected.*quest'], load_timeout=120)
+        self.session.ui_state = 'load_menu'
+        target = dict(timestamp='2026-10-14T01:08:30', selected=False, text='target', y=640)
+        observations = [dict(text='target'), dict(text='loading tip'),
+                        dict(text='wrong quest'), dict(text=''), dict(text='expected quest'),
+                        dict(text='expected quest'), dict(text='expected quest')]
+        with mock.patch.object(self.session, 'observe', side_effect=observations) as observe, \
+                mock.patch.object(runner, 'save_rows', side_effect=[[target], [], []]), \
+                mock.patch.object(self.session, 'click_text') as click, \
+                mock.patch.object(self.session, 'key') as key, \
+                mock.patch.object(self.session, 'evidence'), mock.patch.object(runner.time, 'sleep'):
+            self.session.load_save()
+        click.assert_called_once()
+        key.assert_not_called()
+        self.assertEqual(self.session.ui_state, 'scene')
+        self.assertIn(mock.call('save-click-scene', region_state='scene'), observe.call_args_list)
+        self.assertEqual(json.loads((self.out / 'save-selection.json').read_text())['timestamp'],
+                         target['timestamp'])
+        with mock.patch.object(runner.desktop, 'same_process', side_effect=[True, False]), \
+                mock.patch.object(self.session, 'key') as exit_key, \
+                mock.patch.object(self.session, 'request_exit') as request_exit:
+            self.session.shutdown()
+        exit_key.assert_called_once_with('ESC')
+        request_exit.assert_called_once()
+
+    def test_save_click_unknown_or_wrong_scene_never_passes_or_sends_more_input(self):
+        for scene in ('', 'loading tip', 'other quest'):
+            with self.subTest(scene=scene):
+                self.session.cfg.update(save_modified='2026-10-14T01:08:30', max_save_steps=3,
+                                        scene_patterns=['expected.*quest'])
+                self.session.ui_state = 'load_menu'
+                target = dict(timestamp='2026-10-14T01:08:30', selected=False, text='target', y=640)
+                with mock.patch.object(self.session, 'observe', return_value=dict(text=scene)), \
+                        mock.patch.object(runner, 'save_rows', side_effect=[[target], [], []]), \
+                        mock.patch.object(self.session, 'click_text') as click, \
+                        mock.patch.object(self.session, 'key') as key, \
+                        mock.patch.object(self.session, 'wait_scene') as wait_scene, \
+                        mock.patch.object(runner.time, 'sleep'):
+                    with self.assertRaisesRegex(TimeoutError, 'save_selection_timeout'):
+                        self.session.load_save()
+                click.assert_called_once()
+                key.assert_not_called()
+                wait_scene.assert_not_called()
+                self.assertEqual(self.session.ui_state, 'save_click_pending')
+                self.assertFalse((self.out / 'save-selection.json').exists())
+
+    def test_unknown_timestamp_does_not_click_or_enter(self):
+        self.session.cfg.update(save_modified='2026-10-14T01:08:30', max_save_steps=2)
+        with mock.patch.object(self.session, 'observe', return_value=dict(text='unknown')), \
+                mock.patch.object(runner, 'save_rows', return_value=[]), \
+                mock.patch.object(self.session, 'click_text') as click, \
+                mock.patch.object(self.session, 'key') as key, mock.patch.object(runner.time, 'sleep'):
+            with self.assertRaises(TimeoutError):
+                self.session.load_save()
+        click.assert_not_called()
+        key.assert_not_called()
+
+    def test_scene_probe_uses_scene_crop_without_changing_pending_state(self):
+        self.session.ui_state = 'save_click_pending'
+        self.session.cfg['ocr_executable'] = 'unused-mocked-ocr'
+        Image.new('RGB', (3840, 2160)).save(self.out / 'latest.png')
+        result = mock.Mock(returncode=0, stdout=b'{"text":"quest","lines":[]}')
+        with mock.patch.object(runner.desktop, 'same_process', return_value=True), \
+                mock.patch.object(self.session, 'activate'), \
+                mock.patch.object(runner.desktop, 'capture', return_value={}), \
+                mock.patch.object(runner.subprocess, 'run', return_value=result):
+            obs = self.session.observe('save-click-scene', region_state='scene')
+        self.assertEqual(obs['scale'], 1)
+        with Image.open(self.out / 'ocr.png') as image:
+            self.assertEqual(image.size, (826, 259))
+        self.assertEqual(self.session.ui_state, 'save_click_pending')
+
+    def test_save_list_parks_cursor_before_capture_without_clicking(self):
+        self.session.ui_state = 'load_menu'
+        self.session.cfg['ocr_executable'] = 'unused-mocked-ocr'
+        Image.new('RGB', (3840, 2160)).save(self.out / 'latest.png')
+        order = []
+        self.park_cursor.side_effect = lambda *a, **k: order.append('park')
+        result = mock.Mock(returncode=0, stdout=b'{"text":"target","lines":[]}')
+        with mock.patch.object(runner.desktop, 'same_process', return_value=True), \
+                mock.patch.object(self.session, 'activate'), \
+                mock.patch.object(runner.desktop, 'capture', side_effect=lambda *a: order.append('capture') or {}), \
+                mock.patch.object(runner.subprocess, 'run', return_value=result), \
+                mock.patch.object(runner.desktop, 'click') as click:
+            obs = self.session.observe('save-list')
+        self.assertEqual(order, ['park', 'capture'])
+        self.assertEqual(obs['scale'], .5)
+        click.assert_not_called()
+        self.assertEqual(self.session.ui_state, 'load_menu')
+
+    def test_cursor_park_failure_blocks_capture_and_further_game_input(self):
+        self.session.ui_state = 'load_menu'
+        self.park_cursor.side_effect = RuntimeError('focus changed')
+        with mock.patch.object(self.session, 'activate'), \
+                mock.patch.object(runner.desktop, 'same_process', return_value=True), \
+                mock.patch.object(runner.desktop, 'capture') as capture, \
+                mock.patch.object(self.session, 'key') as key:
+            with self.assertRaisesRegex(RuntimeError, 'focus changed'):
+                self.session.observe('save-list')
+            self.session.shutdown()
+        capture.assert_not_called()
+        key.assert_not_called()
+        self.assertTrue(self.session.automation_input_blocked)
+
+    def test_post_click_menu_probe_never_moves_cursor_even_after_menu_frame(self):
+        self.session.ui_state = 'load_menu'
+        self.session.cfg['ocr_executable'] = 'unused-mocked-ocr'
+        Image.new('RGB', (1920, 1080)).save(self.out / 'latest.png')
+        result = mock.Mock(returncode=0, stdout=b'{"text":"","lines":[]}')
+        with mock.patch.object(self.session, 'activate'), \
+                mock.patch.object(runner.desktop, 'same_process', return_value=True), \
+                mock.patch.object(runner.desktop, 'capture', return_value={}), \
+                mock.patch.object(runner.subprocess, 'run', return_value=result):
+            self.session.observe('save-list', region_state='load_menu')
+        self.park_cursor.assert_not_called()
+
+    def test_save_click_remaining_menu_does_not_start_scene_wait(self):
+        self.session.cfg.update(save_modified='2026-10-14T01:08:30', max_save_steps=3,
+                                scene_patterns=['expected.*quest'])
+        target = dict(timestamp='2026-10-14T01:08:30', y=640, selected=False, text='target')
+        with mock.patch.object(self.session, 'observe', return_value=dict(text='expected quest')), \
+                mock.patch.object(runner, 'save_rows', return_value=[target]), \
+                mock.patch.object(self.session, 'click_text'), \
+                mock.patch.object(self.session, 'key') as key, \
+                mock.patch.object(self.session, 'wait_scene') as wait_scene, \
+                mock.patch.object(runner.time, 'sleep'):
+            with self.assertRaisesRegex(TimeoutError, 'save_selection_timeout'):
+                self.session.load_save()
+        key.assert_not_called()
+        wait_scene.assert_not_called()
+        self.assertEqual(self.session.ui_state, 'load_menu')
+
+    def test_save_click_single_scene_match_cannot_bypass_wait_scene(self):
+        self.session.cfg.update(save_modified='2026-10-14T01:08:30',
+                                scene_patterns=['expected.*quest'])
+        target = dict(timestamp='2026-10-14T01:08:30', y=640, selected=False, text='target')
+        clock = iter(range(10, 1000, 10))
+        observations = [dict(text='target'), dict(text=''), dict(text='expected quest'),
+                        dict(text='other quest'), dict(text='other quest')]
+        with mock.patch.object(self.session, 'observe', side_effect=observations), \
+                mock.patch.object(runner, 'save_rows', side_effect=[[target], []]), \
+                mock.patch.object(self.session, 'click_text'), \
+                mock.patch.object(self.session, 'key') as key, \
+                mock.patch.object(runner.time, 'monotonic', side_effect=lambda: next(clock)), \
+                mock.patch.object(runner.time, 'sleep'):
+            with self.assertRaisesRegex(TimeoutError, 'scene_load_timeout'):
+                self.session.load_save()
+        key.assert_not_called()
+        self.assertNotEqual(self.session.ui_state, 'scene')
+        self.assertFalse((self.out / 'save-selection.json').exists())
+
+    def test_pending_save_click_shutdown_does_not_send_menu_escape(self):
+        self.session.ui_state = 'save_click_pending'
+        with mock.patch.object(runner.desktop, 'same_process', side_effect=[True, False]), \
+                mock.patch.object(self.session, 'observe', return_value=dict(text='unknown')), \
+                mock.patch.object(self.session, 'key') as key:
+            with self.assertRaisesRegex(RuntimeError, 'No commissioned exit route'):
+                self.session.shutdown()
+        key.assert_not_called()
 
     def test_calibration_load_and_pause_keep_exit_route_without_claiming_scene_acceptance(self):
         commands = iter([{'action': 'load_menu'}, {'action': 'load_save'},
@@ -166,6 +382,7 @@ class ExitTests(unittest.TestCase):
 
     def test_capture_hold_requires_strict_matching_pid_completion_signal(self):
         self.session.cfg.update(scenario='smoke', capture_hold_seconds=10)
+        foreground = dict(hwnd=456, pid=123, created=1, elapsed_ms=12)
         signal = self.out / 'capture-complete.json'
         for contents in ('[]', '{"pid":123,"pid":123,"completed":true}',
                          '{"pid":123,"completed":1}', '{"pid":123,"completed":NaN}'):
@@ -176,21 +393,27 @@ class ExitTests(unittest.TestCase):
         def write_matching_signal(_seconds):
             runner.dump(signal, dict(pid=123, completed=True))
 
-        with mock.patch.object(runner.desktop, 'same_process', return_value=True) as same_process, \
+        with mock.patch.object(runner.desktop, 'ensure_foreground', return_value=foreground) as activate, \
+                mock.patch.object(runner.desktop, 'same_process', return_value=True) as same_process, \
                 mock.patch.object(runner.time, 'monotonic', side_effect=[0, 0]), \
                 mock.patch.object(runner.time, 'sleep', side_effect=write_matching_signal) as sleep:
             self.session.capture_hold()
+        activate.assert_called_once_with(self.session.window)
         self.assertEqual(same_process.call_count, 2)
         sleep.assert_called_once_with(1)
         ready = json.loads((self.out / 'capture-ready.json').read_text(encoding='utf-8'))
         self.assertEqual(ready['pid'], 123)
         self.assertEqual(ready['identity'], self.session.window)
+        self.assertIs(ready['automatic_foreground'], True)
+        self.assertEqual(ready['foreground'], foreground)
+        self.assertFalse(self.session.automation_input_blocked)
         self.assertTrue(ready['time'])
         self.assertEqual(self.session.status['capture_hold'], 'completed_by_signal')
 
     def test_capture_hold_process_exit_fails(self):
         self.session.cfg.update(scenario='smoke', capture_hold_seconds=10)
-        with mock.patch.object(runner.desktop, 'same_process', return_value=False), \
+        with mock.patch.object(runner.desktop, 'ensure_foreground', return_value={}), \
+                mock.patch.object(runner.desktop, 'same_process', return_value=False), \
                 mock.patch.object(runner.time, 'sleep') as sleep:
             with self.assertRaisesRegex(RuntimeError, 'capture_hold_process_exited'):
                 self.session.capture_hold()
@@ -199,16 +422,115 @@ class ExitTests(unittest.TestCase):
         events = [json.loads(line) for line in (self.out / 'events.jsonl').read_text(encoding='utf-8').splitlines()]
         self.assertIn('capture_hold_process_exit', [event['kind'] for event in events])
 
-    def test_capture_hold_expiry_is_recorded_without_failing_smoke(self):
+    def test_automatic_capture_completion_releases_hold_without_human_confirmation(self):
+        import fg_acceptance
+
         self.session.cfg.update(scenario='smoke', capture_hold_seconds=10)
-        with mock.patch.object(runner.desktop, 'same_process', return_value=True), \
+        runner.dump(self.out / 'owned-process.json', self.session.window)
+        receipt = dict(hwnd=456, pid=123, created=1, elapsed_ms=12)
+
+        def collect_when_ready(_seconds):
+            self.assertTrue(self.session.automation_input_blocked)
+            self.assertTrue((self.out / 'capture-ready.json').exists())
+            with mock.patch.object(fg_acceptance.time, 'sleep'):
+                fg_acceptance.capture(self.out, nr_off_control=True)
+
+        with mock.patch.object(runner.desktop, 'ensure_foreground', return_value=receipt), \
+                mock.patch.object(runner.desktop, 'same_process', return_value=True), \
+                mock.patch.object(runner.desktop, 'modules', return_value=[]), \
+                mock.patch.object(runner.desktop, 'capture') as capture, \
+                mock.patch.object(runner.desktop, 'key') as key, \
+                mock.patch.object(runner.time, 'monotonic', return_value=0), \
+                mock.patch.object(runner.time, 'sleep', side_effect=collect_when_ready) as sleep:
+            self.session.capture_hold()
+        sleep.assert_called_once_with(1)
+        capture.assert_called_once()
+        key.assert_not_called()
+        self.assertTrue(runner.capture_complete(self.out, 123))
+        self.assertEqual(self.session.status['capture_hold'], 'completed_by_signal')
+        self.assertFalse(self.session.automation_input_blocked)
+        self.assertFalse((self.out / 'capture-failed.json').exists())
+        self.assertFalse(list(self.out.glob('computer-use-*.json')))
+
+    def test_early_completion_keeps_input_blocked_until_strict_parent_script_ack(self):
+        self.session.cfg.update(scenario='smoke', capture_hold_seconds=10, capture_script='fixture.py')
+        runner.dump(self.out / 'capture-complete.json', dict(pid=123, completed=True))
+        invalid = [
+            '[]', '{', '{"pid":999,"exit_code":0}',
+            '{"pid":true,"exit_code":0}', '{"pid":"123","exit_code":0}',
+            '{"pid":123,"exit_code":1}', '{"pid":123,"exit_code":false}',
+            '{"pid":123,"exit_code":0.0}', '{"pid":123,"exit_code":"0"}',
+            '{"pid":123,"exit_code":0,"exit_code":0}',
+            '{"pid":123,"exit_code":NaN}',
+        ]
+        pending = iter(invalid + ['{"pid":123,"exit_code":0}'])
+
+        def parent_progress(_seconds):
+            self.assertTrue(self.session.automation_input_blocked)
+            self.assertEqual(self.session.status['capture_hold'], 'waiting')
+            self.assertTrue(runner.capture_complete(self.out, 123))
+            self.assertFalse(runner.capture_script_complete(self.out, 123))
+            (self.out / 'capture-script-result.json').write_text(next(pending), encoding='utf-8')
+
+        with mock.patch.object(runner.desktop, 'ensure_foreground', return_value={}), \
+                mock.patch.object(runner.desktop, 'same_process', return_value=True), \
+                mock.patch.object(runner.desktop, 'key') as key, \
+                mock.patch.object(runner.time, 'monotonic', return_value=0), \
+                mock.patch.object(runner.time, 'sleep', side_effect=parent_progress) as sleep:
+            self.session.capture_hold()
+        self.assertEqual(sleep.call_count, len(invalid) + 1)
+        key.assert_not_called()
+        self.assertTrue(runner.capture_script_complete(self.out, 123))
+        self.assertEqual(self.session.status['capture_hold'], 'completed_by_signal')
+        self.assertFalse(self.session.automation_input_blocked)
+
+    def test_capture_hold_expiry_blocks_game_input_and_fails_closed(self):
+        self.session.cfg.update(scenario='smoke', capture_hold_seconds=10)
+        with mock.patch.object(runner.desktop, 'ensure_foreground', return_value={}), \
+                mock.patch.object(runner.desktop, 'same_process', return_value=True), \
                 mock.patch.object(runner.time, 'monotonic', side_effect=[0, 0, 10]), \
                 mock.patch.object(runner.time, 'sleep'):
-            self.session.capture_hold()
+            with self.assertRaisesRegex(TimeoutError, 'capture_hold_timeout'):
+                self.session.capture_hold()
         self.assertEqual(self.session.status['capture_hold'], 'timeout_not_mod_acceptance')
+        self.assertTrue(self.session.automation_input_blocked)
         events = [json.loads(line) for line in (self.out / 'events.jsonl').read_text(encoding='utf-8').splitlines()]
         self.assertEqual(events[-1]['kind'], 'capture_hold_timeout')
-        self.assertEqual(events[-1]['result'], 'timeout_not_mod_acceptance')
+        self.assertEqual(events[-1]['result'], 'timeout_not_mod_acceptance_no_game_input')
+        with mock.patch.object(runner.desktop, 'same_process', return_value=True), \
+                mock.patch.object(self.session, 'key', side_effect=AssertionError('No automatic game input')):
+            self.session.shutdown()
+        self.assertEqual(self.session.status['safe_exit'], 'protected_recovery_required_no_game_input')
+
+    def test_invalid_capture_failure_receipt_still_blocks_game_input(self):
+        self.session.cfg.update(scenario='smoke', capture_hold_seconds=10)
+        (self.out / 'capture-failed.json').write_text('[]', encoding='utf-8')
+        with mock.patch.object(runner.desktop, 'ensure_foreground', return_value={}), \
+                mock.patch.object(runner.desktop, 'same_process', return_value=True):
+            with self.assertRaisesRegex(RuntimeError, 'capture_automatic_failed'):
+                self.session.capture_hold()
+        self.assertTrue(self.session.automation_input_blocked)
+        with mock.patch.object(self.session, 'key', side_effect=AssertionError('No automatic game input')):
+            self.session.shutdown()
+        self.assertEqual(self.session.status['safe_exit'], 'protected_recovery_required_no_game_input')
+
+    def test_capture_automatic_activation_failure_keeps_gate_without_ready_or_input(self):
+        self.session.cfg.update(scenario='smoke', capture_hold_seconds=60)
+        with mock.patch.object(runner.desktop, 'ensure_foreground',
+                               side_effect=RuntimeError('automatic activation failed')) as activate, \
+                mock.patch.object(runner.desktop, 'key') as key, \
+                mock.patch.object(runner.desktop, 'capture') as capture:
+            with self.assertRaisesRegex(RuntimeError, 'automatic activation failed'):
+                self.session.capture_hold()
+        activate.assert_called_once_with(self.session.window)
+        key.assert_not_called()
+        capture.assert_not_called()
+        self.assertTrue(self.session.automation_input_blocked)
+        failure = json.loads((self.out / 'capture-failed.json').read_text(encoding='utf-8'))
+        self.assertEqual(failure['stage'], 'automatic_foreground_activation')
+        self.assertTrue(failure['no_game_input_sent'])
+        self.assertFalse((self.out / 'capture-complete.json').exists())
+        self.assertFalse((self.out / 'capture-ready.json').exists())
 
     def test_requested_exit_waits_without_capture_or_close(self):
         self.session.exit_requested = True
@@ -223,7 +545,9 @@ class ExitTests(unittest.TestCase):
 
     def test_manual_ime_deadline_keeps_waiting_until_matching_completion(self):
         self.session.cfg.update(scenario='menu', capture_hold_seconds=10, manual_ime_session=True)
-        with mock.patch.object(runner.desktop, 'same_process', return_value=True), \
+        with mock.patch.object(runner.desktop, 'ensure_foreground',
+                               side_effect=AssertionError('No automatic activation')), \
+                mock.patch.object(runner.desktop, 'same_process', return_value=True), \
                 mock.patch.object(runner, 'capture_complete', side_effect=[False, False, True]), \
                 mock.patch.object(runner.time, 'monotonic', side_effect=[0, 10, 11]), \
                 mock.patch.object(runner.time, 'sleep'), \
@@ -381,24 +705,87 @@ class ExitTests(unittest.TestCase):
 
     def test_foreground_denial_is_not_retried(self):
         cfg = dict(executable='game.exe', scenario='smoke')
-        failure = dict(result='failed', guard='verified_original_hashes_and_released',
-                       error='Target cannot acquire foreground; no input sent')
-        with mock.patch.object(runner, 'process_inventory', return_value=[]), \
-                mock.patch.object(runner, 'run_attempt', return_value=failure) as attempt, \
-                mock.patch('builtins.print'):
-            self.assertEqual(runner.run_trials(cfg, self.out, 2), 1)
-        attempt.assert_called_once()
+        for error in ('Target cannot acquire foreground; no input sent',
+                      'automatic_foreground_activation_failed', 'capture_automatic_failed', 'capture_hold_timeout'):
+            failure = dict(result='failed', guard='verified_original_hashes_and_released', error=error)
+            with self.subTest(error=error), \
+                    mock.patch.object(runner, 'process_inventory', return_value=[]), \
+                    mock.patch.object(runner, 'run_attempt', return_value=failure) as attempt, \
+                    mock.patch('builtins.print'):
+                self.assertEqual(runner.run_trials(cfg, self.out, 2), 1)
+            attempt.assert_called_once()
 
-    def test_session_foreground_handoff_writes_target_identity(self):
-        self.session.request_foreground_handoff()
-        handoff = json.loads((self.out / 'foreground-handoff.json').read_text(encoding='utf-8'))
-        self.assertEqual((handoff['hwnd'], handoff['pid'], handoff['timeout_seconds']), (456, 123, 90))
+    def test_automatic_activation_records_verified_target_identity(self):
+        receipt = dict(hwnd=456, pid=123, created=1, elapsed_ms=12)
+        with mock.patch.object(runner.desktop, 'ensure_foreground', return_value=receipt) as activate:
+            self.session.activate()
+        activate.assert_called_once_with(self.session.window)
         events = [json.loads(line) for line in (self.out / 'events.jsonl').read_text(encoding='utf-8').splitlines()]
         self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]['kind'], 'foreground_handoff_required')
-        self.assertEqual((events[0]['hwnd'], events[0]['pid'], events[0]['timeout_seconds']), (456, 123, 90))
-        self.assertIn('time', handoff)
+        self.assertEqual(events[0]['kind'], 'automatic_foreground_confirmed')
+        self.assertEqual(events[0]['phase'], 'runner_input')
+        for field, value in receipt.items():
+            self.assertEqual(events[0][field], value)
         self.assertIn('time', events[0])
+        self.assertFalse(list(self.out.glob('computer-use-*.json')))
+
+    def test_background_launch_automatically_activates_before_observation(self):
+        self.session.cfg.update(steam='steam.exe', launch_args=['-applaunch', 'fixture'],
+                                startup_timeout=10, ocr_executable='fixture-ocr.exe')
+        self.session.window = None
+        window = dict(hwnd=456, pid=123, created=1, path='game.exe')
+        order = []
+
+        def capture_fixture(target, path):
+            order.append(('capture', target))
+            Image.new('RGB', (1920, 1080)).save(path)
+            return dict(width=1920, height=1080)
+
+        with mock.patch.object(runner.subprocess, 'Popen') as launch, \
+                mock.patch.object(runner.desktop, 'windows', return_value=[window]), \
+                mock.patch.object(runner.desktop, 'modules', return_value=[]), \
+                mock.patch.object(runner.desktop, 'same_process', return_value=True), \
+                mock.patch.object(runner.desktop, 'ensure_foreground',
+                    side_effect=lambda target: order.append(('activate', target)) or
+                        dict(hwnd=456, pid=123, created=1, elapsed_ms=12)), \
+                mock.patch.object(runner.desktop, 'capture', side_effect=capture_fixture), \
+                mock.patch.object(runner.subprocess, 'run', return_value=mock.Mock(
+                    returncode=0, stdout=b'{"text":"fixture","lines":[]}')):
+            self.session.launch()
+            self.session.observe('startup')
+        launch.assert_called_once()
+        self.assertEqual(order, [('activate', window), ('capture', window)])
+        self.assertEqual(json.loads((self.out / 'owned-process.json').read_text()), window)
+
+    def test_automatic_activation_failure_blocks_observation_without_input(self):
+        with mock.patch.object(runner.desktop, 'same_process', return_value=True), \
+                mock.patch.object(runner.desktop, 'ensure_foreground',
+                    side_effect=RuntimeError('automatic activation failed')) as activate, \
+                mock.patch.object(runner.desktop, 'capture') as capture, \
+                mock.patch.object(runner.desktop, 'key') as key:
+            with self.assertRaisesRegex(RuntimeError, 'automatic activation failed'):
+                self.session.observe('startup')
+            self.session.shutdown()
+        activate.assert_called_once_with(self.session.window)
+        capture.assert_not_called()
+        key.assert_not_called()
+        self.assertTrue(self.session.automation_input_blocked)
+        self.assertEqual(self.session.status['safe_exit'], 'protected_recovery_required_no_game_input')
+
+    def test_automatic_capture_failure_blocks_game_input_and_requests_protected_recovery(self):
+        self.session.cfg.update(capture_hold_seconds=60, scenario='menu')
+        (self.out / 'capture-failed.json').write_text(json.dumps(dict(
+            error='automatic capture failed')))
+        with mock.patch.object(runner.desktop, 'ensure_foreground', return_value={}), \
+                mock.patch.object(runner.desktop, 'same_process', return_value=True):
+            with self.assertRaisesRegex(RuntimeError, 'capture_automatic_failed'):
+                self.session.capture_hold()
+        self.assertTrue(self.session.automation_input_blocked)
+        with mock.patch.object(runner.desktop, 'same_process', return_value=True), \
+                mock.patch.object(runner.desktop, 'key') as key:
+            self.session.shutdown()
+        key.assert_not_called()
+        self.assertEqual(self.session.status['safe_exit'], 'protected_recovery_required_no_game_input')
 
     def test_workspace_lock_rejects_second_runner_and_releases_on_error(self):
         with mock.patch.object(runner, 'ROOT', self.out):

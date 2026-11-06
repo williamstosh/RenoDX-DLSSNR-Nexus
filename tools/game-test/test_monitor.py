@@ -271,6 +271,304 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(final['result'], 'failed')
         self.assert_recovered_under_guard()
 
+    def configure_automatic_capture(self, exit_code=0, complete=True, finish_worker=True):
+        script = self.root / 'capture.py'
+        script.write_text('# synthetic capture script; never executed\n', encoding='utf-8')
+        self.cfg.update(capture_script=str(script), capture_script_sha256=self.runner.sha(script),
+                        capture_hold_seconds=10, run_timeout=100 if finish_worker else 5)
+        self.publish_owned = True
+        self.child.returncode = None
+        capture = mock.Mock(name='automatic_capture', pid=424244, returncode=exit_code)
+        capture.poll.side_effect = lambda: capture.returncode
+        capture.terminate.side_effect = lambda: self.events.append(('stop_capture', self.locked))
+        capture.kill.side_effect = lambda: self.events.append(('kill_capture', self.locked))
+
+        def wait_capture(timeout=None):
+            self.assertTrue(self.locked)
+            cancel = json.loads((self.out / 'capture-cancel.json').read_text())
+            self.assertEqual(cancel['reason'], 'protected_runner_stopping')
+            self.events.append(('wait_capture', self.locked))
+            capture.returncode = -1
+            return capture.returncode
+
+        capture.wait.side_effect = wait_capture
+
+        def launch(command, **kwargs):
+            if '--worker' in command:
+                worker = self.launch_worker(command, **kwargs)
+                self.runner.dump(self.out / 'capture-ready.json', dict(
+                    pid=self.owner['pid'], identity=self.owner, automatic_foreground=True))
+                return worker
+            self.events.append(('capture_launch', self.locked))
+            self.assertEqual(command, [sys.executable, '-B', str(script), str(self.out)])
+            self.assertEqual(kwargs['creationflags'], 0x08000000)
+            self.assertIs(kwargs['stdout'], kwargs['stderr'])
+            if complete:
+                self.runner.dump(self.out / 'capture-complete.json',
+                                 dict(pid=self.owner['pid'], completed=True))
+            return capture
+
+        sleeps = 0
+
+        def worker_progress(seconds):
+            nonlocal sleeps
+            sleeps += 1
+            if finish_worker and sleeps == 3:
+                # Model the worker consuming the parent's durable capture receipt.
+                if (self.out / 'capture-failed.json').exists():
+                    self.runner.dump(self.out / 'result.json',
+                                     dict(result='failed', error='capture_automatic_failed'))
+                self.child.returncode = 0
+                self.alive = False
+
+        self.popen.side_effect = launch
+        self.runner.time.sleep.side_effect = worker_progress
+        return script, capture
+
+    def test_ready_launches_automatic_capture_once_without_confirmation(self):
+        script, capture = self.configure_automatic_capture()
+        final = self.run_and_read()
+        self.assertEqual(final['result'], 'passed')
+        self.assertEqual(self.popen.call_count, 2)
+        self.assertEqual(self.events.count(('capture_launch', True)), 1)
+        receipt = json.loads((self.out / 'automatic-capture-process.json').read_text())
+        self.assertEqual(receipt['pid'], capture.pid)
+        self.assertEqual(receipt['script'], str(script))
+        self.assertEqual(receipt['sha256'], self.cfg['capture_script_sha256'])
+        self.assertEqual(self.desktop.grant_foreground_permission.call_args_list,
+                         [mock.call(self.child.pid), mock.call(capture.pid)])
+        self.assertFalse((self.out / 'capture-failed.json').exists())
+        result = json.loads((self.out / 'capture-script-result.json').read_text())
+        self.assertEqual((result['pid'], result['exit_code']), (self.owner['pid'], 0))
+        self.assertFalse(list(self.out.glob('computer-use-*.json')))
+        capture.terminate.assert_not_called()
+        self.assertTrue(self.popen.call_args.kwargs['stdout'].closed)
+
+    def test_changed_capture_script_writes_failure_without_launch_or_retry(self):
+        script, capture = self.configure_automatic_capture()
+        script.write_text('# changed after preflight\n', encoding='utf-8')
+        final = self.run_and_read()
+        self.assertEqual(final['result'], 'failed')
+        self.assertEqual(self.popen.call_count, 1)
+        failure = json.loads((self.out / 'capture-failed.json').read_text())
+        self.assertEqual(failure['stage'], 'automatic_capture_start')
+        self.assertIn('changed after preflight', failure['error'])
+        self.assertFalse((self.out / 'automatic-capture-process.json').exists())
+        self.assertFalse((self.out / 'capture-complete.json').exists())
+        capture.poll.assert_not_called()
+
+    def assert_capture_exit_failed(self, exit_code, complete):
+        self.configure_automatic_capture(exit_code=exit_code, complete=complete)
+        final = self.run_and_read()
+        self.assertEqual(final['result'], 'failed')
+        self.assertEqual(self.popen.call_count, 2)
+        failure = json.loads((self.out / 'capture-failed.json').read_text())
+        self.assertEqual(failure['stage'], 'automatic_capture_exit')
+        self.assertEqual(failure['exit_code'], exit_code)
+        self.assertFalse((self.out / 'capture-script-result.json').exists())
+        self.assertEqual(self.events.count(('capture_launch', True)), 1)
+
+    def test_nonzero_capture_exit_rejects_even_an_existing_completion(self):
+        self.assert_capture_exit_failed(exit_code=3, complete=True)
+
+    def test_zero_capture_exit_without_completion_writes_failure(self):
+        self.assert_capture_exit_failed(exit_code=0, complete=False)
+
+    def test_early_completion_does_not_ack_a_running_capture_script(self):
+        _, capture = self.configure_automatic_capture(
+            exit_code=None, complete=True, finish_worker=False)
+        self.cfg['run_timeout'] = 100
+        sleeps = 0
+
+        def script_progress(_seconds):
+            nonlocal sleeps
+            sleeps += 1
+            self.assertTrue(self.locked)
+            self.assertTrue(self.runner.capture_complete(self.out, self.owner['pid']))
+            if sleeps <= 2:
+                self.assertFalse((self.out / 'capture-script-result.json').exists())
+                self.assertFalse(self.runner.capture_script_complete(self.out, self.owner['pid']))
+                self.assertIsNone(capture.returncode)
+                if sleeps == 2:
+                    capture.returncode = 0
+            else:
+                self.assertTrue(self.runner.capture_script_complete(self.out, self.owner['pid']))
+                self.child.returncode = 0
+                self.alive = False
+
+        self.runner.time.sleep.side_effect = script_progress
+        final = self.run_and_read()
+        self.assertEqual(final['result'], 'passed')
+        self.assertEqual(sleeps, 3)
+        self.assertEqual(self.popen.call_count, 2)
+        capture.terminate.assert_not_called()
+        self.assertFalse((self.out / 'capture-cancel.json').exists())
+
+    def test_recovery_cancels_and_waits_for_capture_before_worker_and_owned_process(self):
+        _, capture = self.configure_automatic_capture(
+            exit_code=None, complete=False, finish_worker=False)
+        final = self.run_and_read()
+        self.assertEqual(final['result'], 'failed')
+        self.assertEqual(final['parent_problem'], 'run_timeout')
+        capture.terminate.assert_not_called()
+        capture.wait.assert_called_once_with(timeout=5)
+        capture.kill.assert_not_called()
+        self.assertLess(self.events.index(('wait_capture', True)),
+                        self.events.index(('stop_worker', True)))
+        self.assertLess(self.events.index(('wait_capture', True)),
+                        self.events.index(('stop_owned', True)))
+        self.assertTrue(self.popen.call_args.kwargs['stdout'].closed)
+        self.assert_recovered_under_guard()
+
+    def assert_capture_stop_escalation(self, timeouts):
+        _, capture = self.configure_automatic_capture(
+            exit_code=None, complete=False, finish_worker=False)
+        order = []
+
+        def wait_capture(timeout=None):
+            self.assertTrue(self.locked)
+            self.assertTrue((self.out / 'capture-cancel.json').exists())
+            order.append(('wait', timeout))
+            if capture.wait.call_count <= timeouts:
+                raise subprocess.TimeoutExpired('synthetic capture', timeout)
+            capture.returncode = -1
+            self.events.append(('capture_stopped', self.locked))
+            return capture.returncode
+
+        def stop_capture(action):
+            self.assertTrue(self.locked)
+            self.assertTrue((self.out / 'capture-cancel.json').exists())
+            order.append((action, None))
+
+        capture.wait.side_effect = wait_capture
+        capture.terminate.side_effect = lambda: stop_capture('terminate')
+        capture.kill.side_effect = lambda: stop_capture('kill')
+        final = self.run_and_read()
+        self.assertEqual(final['result'], 'failed')
+        self.assertEqual(final['parent_problem'], 'run_timeout')
+        expected = [('wait', 5), ('terminate', None), ('wait', 5)]
+        if timeouts == 2:
+            expected += [('kill', None), ('wait', 5)]
+        self.assertEqual(order, expected)
+        self.assertLess(self.events.index(('capture_stopped', True)),
+                        self.events.index(('stop_worker', True)))
+        self.assertLess(self.events.index(('capture_stopped', True)),
+                        self.events.index(('stop_owned', True)))
+        self.assertTrue(self.popen.call_args.kwargs['stdout'].closed)
+        self.assert_recovered_under_guard()
+
+    def test_capture_cancel_timeout_terminates_then_waits_before_recovery(self):
+        self.assert_capture_stop_escalation(timeouts=1)
+
+    def test_capture_terminate_timeout_kills_then_waits_before_recovery(self):
+        self.assert_capture_stop_escalation(timeouts=2)
+
+    def assert_failed_capture_stop_holds_protection(self, stage, failed_dump=None):
+        _, capture = self.configure_automatic_capture(
+            exit_code=None, complete=False, finish_worker=False)
+
+        def failed_wait(timeout=None):
+            if stage == 'initial_wait':
+                raise OSError('synthetic capture wait failure')
+            if stage == 'terminate_wait' and capture.wait.call_count == 2:
+                raise OSError('synthetic capture wait failure')
+            raise subprocess.TimeoutExpired('synthetic capture', timeout)
+
+        capture.wait.side_effect = failed_wait
+        if stage == 'terminate':
+            capture.terminate.side_effect = PermissionError('synthetic capture terminate failure')
+        if stage == 'kill':
+            capture.kill.side_effect = PermissionError('synthetic capture kill failure')
+        waiting = 0
+        required_write_attempted = False
+        real_dump = self.runner.dump
+
+        def dump_with_optional_failure(path, value):
+            nonlocal required_write_attempted
+            name = Path(path).name
+            if name == 'capture-intervention-required.json':
+                required_write_attempted = True
+            if name == failed_dump:
+                raise OSError('synthetic diagnostic write failure')
+            return real_dump(path, value)
+
+        dump_patch = mock.patch.object(self.runner, 'dump', side_effect=dump_with_optional_failure)
+        dump_patch.start()
+        self.addCleanup(dump_patch.stop)
+
+        def manual_capture_exit(_seconds):
+            nonlocal waiting
+            required = self.out / 'capture-intervention-required.json'
+            if not required_write_attempted:
+                self.assertFalse((self.out / 'worker-intervention-required.json').exists(),
+                                 'Worker recovery started before capture exit was confirmed')
+                return
+            waiting += 1
+            self.assertTrue(self.locked, 'File protection ended with capture still alive')
+            self.assertIsNone(capture.returncode)
+            self.child.terminate.assert_not_called()
+            self.desktop.terminate.assert_not_called()
+            self.assertFalse((self.out / 'recovery.json').exists())
+            self.assertFalse((self.out / 'guard-complete.json').exists())
+            self.assertFalse(any(isinstance(event, tuple) and event[0] == 'guard_exit'
+                                 for event in self.events))
+            if failed_dump != 'capture-stop-error.json':
+                error = json.loads((self.out / 'capture-stop-error.json').read_text())
+                self.assertEqual(error['capture_pid'], capture.pid)
+                self.assertTrue(error['errors'])
+            if failed_dump != 'capture-intervention-required.json':
+                intervention = json.loads(required.read_text())
+                self.assertEqual(intervention['capture_pid'], capture.pid)
+                self.assertEqual(intervention['state'], 'waiting_with_original_file_locks_held')
+            if waiting == 2:
+                self.events.append(('capture_manual_exit', self.locked))
+                capture.returncode = -1
+
+        self.runner.time.sleep.side_effect = manual_capture_exit
+        final = self.run_and_read()
+        self.assertEqual(final['result'], 'failed')
+        self.assertEqual(final['parent_problem'], 'capture_stop_failed')
+        self.assertFalse(self.runner.should_retry(final, self.cfg['scenario']))
+        self.assertEqual(waiting, 2)
+        if failed_dump:
+            self.assertFalse((self.out / failed_dump).exists())
+        else:
+            self.assertTrue((self.out / 'capture-stop-error.json').exists())
+            self.assertTrue((self.out / 'capture-intervention-required.json').exists())
+        self.assertLessEqual(capture.terminate.call_count, 1)
+        self.assertLessEqual(capture.kill.call_count, 1)
+        self.assertLessEqual(capture.wait.call_count, 3)
+        self.assertTrue(all(call.kwargs == dict(timeout=5) for call in capture.wait.call_args_list))
+        self.assertTrue(json.loads((self.out / 'capture-intervention-resolved.json').read_text())
+                        ['capture_process_exited'])
+        self.assertLess(self.events.index(('capture_manual_exit', True)),
+                        self.events.index(('stop_worker', True)))
+        self.assertLess(self.events.index(('capture_manual_exit', True)),
+                        self.events.index(('stop_owned', True)))
+        self.assertTrue(self.popen.call_args.kwargs['stdout'].closed)
+        self.assert_recovered_under_guard()
+
+    def test_capture_initial_wait_error_holds_guard_until_capture_exits(self):
+        self.assert_failed_capture_stop_holds_protection('initial_wait')
+
+    def test_capture_terminate_denial_holds_guard_until_capture_exits(self):
+        self.assert_failed_capture_stop_holds_protection('terminate')
+
+    def test_capture_terminate_wait_error_holds_guard_until_capture_exits(self):
+        self.assert_failed_capture_stop_holds_protection('terminate_wait')
+
+    def test_capture_kill_denial_holds_guard_until_capture_exits(self):
+        self.assert_failed_capture_stop_holds_protection('kill')
+
+    def test_capture_final_wait_timeout_holds_guard_until_capture_exits(self):
+        self.assert_failed_capture_stop_holds_protection('final_wait')
+
+    def test_capture_stop_error_receipt_write_failure_still_waits_before_recovery(self):
+        self.assert_failed_capture_stop_holds_protection('terminate', 'capture-stop-error.json')
+
+    def test_capture_intervention_receipt_write_failure_still_waits_before_recovery(self):
+        self.assert_failed_capture_stop_holds_protection('terminate', 'capture-intervention-required.json')
+
 
 if __name__ == "__main__":
     unittest.main()

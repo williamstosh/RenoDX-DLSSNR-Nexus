@@ -109,6 +109,7 @@
 #include "ui/runtime_monitor.hpp"
 #include "ui/text_input.hpp"
 #include "submission_tracker.hpp"
+#include "control_mask_execution.hpp"
 #include "fg_xefg.hpp"
 #include "fg_native_options.hpp"
 #include "screenshot.hpp"
@@ -268,6 +269,7 @@ using DestroyParametersFn =
     NVSDK_NGX_Result(NVSDK_CONV*)(NVSDK_NGX_Parameter*);
 
 struct DirectApi {
+  bool borrowed_core_context = false;
   HMODULE module = nullptr;
   AllocateParametersFn allocate = nullptr;
   DestroyParametersFn destroy = nullptr;
@@ -340,6 +342,7 @@ struct NrFeatureSlot {
   NVSDK_NGX_Parameter* parameters = nullptr;  // Owned through the initialized NGX core.
   bool via_core = false;
   bool control_mask_bound = false;
+  bool jitter_bound = false;
   uint8_t nr_hdr_mode = 0;  // hdr_mode the NR feature was created with
   uint32_t nr_create_flags = 0;  // effective flags sent when this handle was created
   uint32_t nr_preset = 0;  // Resolved creation request, not a runtime confirmation.
@@ -436,6 +439,7 @@ struct NrPassResolutionContract {
 struct FeatureState {
   // Outlives workset eviction: discarded commands also invalidate NGX History.
   std::shared_ptr<submission::RecordingStatus> control_mask_recording;
+  std::shared_ptr<control_mask_execution::Stream> control_mask_stream;
   uint64_t source_generation = 0;
   bool mixed_recording_discarded = false;
   // Stage-local dimensions, normalization and slots must not alternate
@@ -1275,6 +1279,16 @@ inline uint64_t StreamlineStreamKey(sl::Feature feature, uint32_t viewport) {
   return (static_cast<uint64_t>(feature) << 32) | viewport;
 }
 inline std::mutex runtime_mutex;
+
+// Cumulative, runtime_mutex-guarded. Early unknown-submission declines do not
+// enter this denominator. Admitted means this gate passed, not NR Evaluate success.
+struct ControlMaskReuseStats {
+  uint64_t checks = 0;
+  uint64_t admitted = 0;
+};
+inline ControlMaskReuseStats control_mask_reuse_stats;
+inline std::atomic_uint64_t control_mask_order_failures = 0;
+inline std::atomic_uint64_t control_mask_history_order_changes = 0;
 inline bool hooks_installed = false;
 // Hook policy, [RenoDX.DLSS5] EnableHooks in ReShade.ini:
 //   0 = fully inert (safe mode: no NGX/Streamline hooks, no NR pass)
@@ -2228,6 +2242,28 @@ inline constexpr uint32_t kControlMaskRect = 2;
 inline constexpr uint32_t kControlMaskGreenRect = 3;
 inline constexpr uint32_t kControlMaskBlueRect = 4;
 inline std::atomic_bool control_mask_enabled = false;
+inline std::atomic_bool control_mask_use_core_context = false;
+// Valid only in the after-path of a successful, classified host SR evaluate.
+// The exact device face matters: NGX records in the world of the host list.
+inline thread_local ID3D12Device* successful_sr_device = nullptr;
+struct SuccessfulSrCoreScope {
+  ID3D12Device* previous = successful_sr_device;
+  ID3D12Device* device = nullptr;
+
+  explicit SuccessfulSrCoreScope(ID3D12GraphicsCommandList* list) {
+    if (list != nullptr && FAILED(list->GetDevice(IID_PPV_ARGS(&device)))) {
+      if (device != nullptr) device->Release();
+      device = nullptr;
+    }
+    successful_sr_device = device;
+  }
+  ~SuccessfulSrCoreScope() {
+    successful_sr_device = previous;
+    if (device != nullptr) device->Release();
+  }
+  SuccessfulSrCoreScope(const SuccessfulSrCoreScope&) = delete;
+  SuccessfulSrCoreScope& operator=(const SuccessfulSrCoreScope&) = delete;
+};
 inline std::atomic_uint32_t control_mask_mode = kControlMaskRgb;
 inline std::atomic<float> control_mask_red = 1.f;
 inline std::atomic<float> control_mask_green = 1.f;
@@ -4402,6 +4438,14 @@ inline void ReleaseNgxLoaderSymbols(HMODULE unload) {
 // is only the session where there is no runtime to find.
 inline bool LoadDirectApi() {
   if (direct_load_state == DirectLoadState::Ready && direct_api.module != nullptr) {
+    if (direct_api.borrowed_core_context != control_mask_use_core_context.load()) return false;
+    if (direct_api.borrowed_core_context) {
+      const auto& symbols = NgxLoaderView();
+      return successful_sr_device != nullptr && symbols.nr_ready && symbols.core_ready
+          && symbols.core != nullptr && symbols.core_allocate != nullptr && symbols.core_destroy != nullptr
+          && symbols.core_create != nullptr && symbols.core_evaluate != nullptr && symbols.core_release != nullptr
+          && nr_model::SupportsControlMask(symbols.nr_requirements.file_version);
+    }
     return true;
   }
   if (direct_load_state == DirectLoadState::Failed) return false;
@@ -4415,6 +4459,16 @@ inline bool LoadDirectApi() {
     return false;
   }
   if (!symbols.nr_ready) return false;
+  const bool borrow_core = control_mask_use_core_context.load();
+  if (borrow_core
+      && (successful_sr_device == nullptr || !symbols.core_ready || symbols.core == nullptr
+          || !nr_model::SupportsControlMask(symbols.nr_requirements.file_version)
+          || symbols.core_allocate == nullptr || symbols.core_destroy == nullptr
+          || symbols.core_create == nullptr || symbols.core_evaluate == nullptr
+          || symbols.core_release == nullptr)) {
+    return false;
+  }
+  direct_api.borrowed_core_context = borrow_core;
   direct_api.module = symbols.nr_module;
   direct_api.init = symbols.init;
   direct_api.allocate = symbols.allocate;
@@ -4423,6 +4477,15 @@ inline bool LoadDirectApi() {
   direct_api.evaluate = symbols.evaluate;
   direct_api.release = symbols.release;
   direct_api.shutdown = symbols.shutdown;
+  if (borrow_core) {
+    direct_api.init = nullptr;
+    direct_api.shutdown = nullptr;
+    direct_api.allocate = symbols.core_allocate;
+    direct_api.destroy = symbols.core_destroy;
+    direct_api.create = symbols.core_create;
+    direct_api.evaluate = symbols.core_evaluate;
+    direct_api.release = symbols.core_release;
+  }
   direct_runtime_sha256 = symbols.nr_sha256;
   direct_runtime_reference_match = direct_runtime_sha256 == kExpectedNrSha256;
   direct_runtime_requirements = symbols.nr_requirements;
@@ -4463,7 +4526,7 @@ inline bool LoadDirectApi() {
   // module.  Shutdown unmaps it; a mapped-but-unused NVIDIA runtime is the
   // cheaper of the two mistakes, and the existing "loaded but never
   // initialized; leaving it mapped" path already makes that trade.
-  if (!InstallCallerIdentity()) {
+  if (!borrow_core && !InstallCallerIdentity()) {
     direct_api = {};
     last_result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
     direct_load_state = DirectLoadState::Failed;
@@ -4472,6 +4535,10 @@ inline bool LoadDirectApi() {
     return false;
   }
   direct_load_state = DirectLoadState::Ready;
+  if (borrow_core) {
+    Log(reshade::log::level::warning,
+        "NRControlMaskUseCoreContext: borrowing the successful host SR Core context; no Init/Shutdown or caller identity patch");
+  }
   return true;
 }
 
@@ -4839,6 +4906,7 @@ inline void ReleaseNrSlot(
   NrFeatureSlot& slot = state.slots[slot_index];
   if (slot.handle == nullptr && slot.parameters == nullptr) {
     slot.control_mask_bound = false;
+    slot.jitter_bound = false;
     return;
   }
   if (slot.handle != nullptr) {
@@ -4871,6 +4939,7 @@ inline void ReleaseNrSlot(
   slot.handle = nullptr;
   slot.parameters = nullptr;
   slot.control_mask_bound = false;
+  slot.jitter_bound = false;
   slot.via_core = false;
   slot.tracked_since_create = false;
   slot.recording.reset();
@@ -4959,6 +5028,7 @@ inline void PruneCompletedSubmissionUses() {
     PreserveNativePreFgProof(marker, receipts);
     gpu_timers::PreserveSubmissionProof(marker, receipts);
   });
+  control_mask_execution::Prune();
 }
 
 // Requires runtime_mutex. Releases only entries with a positive completion
@@ -5190,6 +5260,16 @@ inline bool WaitForTrackedQueues() {
 // left as the caller set it for every other failure.
 inline bool EnsureDirectRuntime(ID3D12GraphicsCommandList* command_list,
                                 NrDeclineReason* decline = nullptr) {
+  if (control_mask_use_core_context.load() || direct_api.borrowed_core_context) {
+    if (!control_mask_use_core_context.load()
+        || hook_point.load() != kHookUpscaled || stack_passes.load() != 1
+        || successful_sr_device == nullptr || command_list == nullptr || InsideDirectCall()) return false;
+    ID3D12Device* device = nullptr;
+    const HRESULT result = command_list->GetDevice(IID_PPV_ARGS(&device));
+    const bool matches = SUCCEEDED(result) && device != nullptr && device == successful_sr_device;
+    ReleaseCom(device);
+    if (!matches) return false;
+  }
   if (command_list == nullptr || !LoadDirectApi()) return false;
   if (direct_runtime_failed && direct_device == nullptr) return false;
   if (!parameter_runtime_ready) {
@@ -5200,7 +5280,8 @@ inline bool EnsureDirectRuntime(ID3D12GraphicsCommandList* command_list,
     // arrives later is still picked up.
     const NgxLoaderSymbols& symbols = NgxLoaderView();
     const bool core_ready = symbols.core_ready
-                            && !bridge_force_snippet.load(std::memory_order_acquire);
+                            && (direct_api.borrowed_core_context
+                                || !bridge_force_snippet.load(std::memory_order_acquire));
     HMODULE core = core_ready ? symbols.core : nullptr;
     const auto allocate = core_ready ? symbols.core_allocate : nullptr;
     const auto destroy = core_ready ? symbols.core_destroy : nullptr;
@@ -5390,7 +5471,7 @@ inline bool EnsureDirectRuntime(ID3D12GraphicsCommandList* command_list,
     // runtime_mutex, and if the signed runtime called back into a detoured
     // NGX export the wrapper would try to re-lock the (non-recursive) mutex
     // on this thread and deadlock.
-    {
+    if (!direct_api.borrowed_core_context) {
       DirectCallScope ngx_direct_call;
       direct_api.shutdown(direct_device);
     }
@@ -5406,6 +5487,18 @@ inline bool EnsureDirectRuntime(ID3D12GraphicsCommandList* command_list,
   runtime_face_candidate = nullptr;
   runtime_face_run = 0;
   runtime_switch_target = nullptr;
+
+  if (direct_api.borrowed_core_context) {
+    // Adoption is not an SDK Init result; leave last_result at its real API value.
+    direct_device = device;
+    direct_device_native = device;
+    renodx::utils::directx::NativeFromReShadeProxy(&direct_device_native);
+    last_nr_device_native = direct_device_native;
+    direct_runtime_failed = false;
+    Log(reshade::log::level::info,
+        "NR adopted the current successful SR device Core context (no Init/Shutdown)");
+    return true;
+  }
 
   const auto data_path = AddonDirectory();
   NVSDK_NGX_Result result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
@@ -7147,7 +7240,12 @@ inline bool EnsureNrFeature(
     uint32_t output_width,
     uint32_t output_height) {
   NrFeatureSlot& slot = state.slots[slot_index];
-  if (slot.handle != nullptr) return true;
+  if (slot.handle != nullptr) {
+    if (control_mask_use_core_context.load() || direct_api.borrowed_core_context) {
+      return EnsureDirectRuntime(command_list);
+    }
+    return true;
+  }
   if (command_list == nullptr || slot.failed) return false;
   if (!EnsureDirectRuntime(command_list)) return false;
 
@@ -7198,7 +7296,7 @@ inline bool EnsureNrFeature(
             &slot.handle);
         slot.via_core = NVSDK_NGX_SUCCEED(result) && slot.handle != nullptr;
       }
-      if (!slot.via_core) {
+      if (!slot.via_core && !direct_api.borrowed_core_context) {
         slot.handle = nullptr;
         result = direct_api.create(
             command_list,
@@ -7225,6 +7323,7 @@ inline bool EnsureNrFeature(
       slot.parameters = nullptr;
     }
     slot.control_mask_bound = false;
+    slot.jitter_bound = false;
     std::ostringstream message;
     message << "feature 18 create failed with 0x" << std::hex
             << static_cast<uint32_t>(result)
@@ -7376,17 +7475,13 @@ inline void SetEvaluationParameters(
       parameters,
       "DLSSNR.MVecScaleY",
       frame.motion_scale_y * motion_scale_y_multiplier.load());
-  // Jitter is forwarded only when the game actually supplied one this frame:
-  // presence, not value - an absent jitter stays unset rather than pinned to
-  // zero (Streamline carries it per frame via Constants; native NGX titles
-  // set Jitter_Offset_X/Y on the evaluate block when they jitter at all).
-  // Unknown-name tolerance is the runtime's documented behavior.  Runtime
-  // 310.8 names no jitter key at all (see EnsureNrFeature's contract note),
-  // so on the after path, whose input DLSS already de-jittered, it cannot
-  // misplace the image.
-  if (frame.has_jitter) {
-    NVSDK_NGX_Parameter_SetF(parameters, "DLSSNR.JitterOffsetX", frame.jitter_x);
-    NVSDK_NGX_Parameter_SetF(parameters, "DLSSNR.JitterOffsetY", frame.jitter_y);
+  // Parameter blocks persist across frames, and NGX cannot erase one key.
+  // Leave never-supplied jitter unset, but neutralize a previous pair once
+  // when the complete source pair disappears, including a partial pair.
+  if (frame.has_jitter || slot.jitter_bound) {
+    NVSDK_NGX_Parameter_SetF(parameters, "DLSSNR.JitterOffsetX", (frame.has_jitter ? frame.jitter_x : 0.f));
+    NVSDK_NGX_Parameter_SetF(parameters, "DLSSNR.JitterOffsetY", (frame.has_jitter ? frame.jitter_y : 0.f));
+    slot.jitter_bound = frame.has_jitter;
   }
   SetModelParameters(slot, slot_index, chain_reset_epoch, frame.create_flags,
                      frame.frame_reset, frame.ui_correction, frame.diagnostic_model_ui);
@@ -10263,6 +10358,8 @@ inline bool ProcessInline(
   const auto group = (plan.mixed ? plan.At(execution_stage)
                                 : stage_plan::Group{.stage = execution_stage, .count = plan.pass_count});
   if (group.count == 0) return false;
+  if ((control_mask_use_core_context.load() || direct_api.borrowed_core_context)
+      && (present != nullptr || plan.mixed || group.count != 1 || prepare_models_only)) return false;
   auto& stage_stats = stage_telemetry[static_cast<size_t>(execution_stage)];
   ++stage_stats.groups;
   stage_stats.pass_begin = group.begin;
@@ -10378,7 +10475,7 @@ inline bool ProcessInline(
   }
 
   if (ControlMaskSubmissionsUnproven()) {
-    CountNrDecline(NrDeclineReason::kWorksetSetupFailed);
+    CountNrDecline(NrDeclineReason::kControlMaskSubmissionsUnproven);
     return false;
   }
 
@@ -10627,51 +10724,89 @@ inline bool ProcessInline(
     };
     bool ready = queue_tracking_active.load(std::memory_order_relaxed)
         && SUCCEEDED(device->GetDeviceRemovedReason());
-    for (const auto& slot : feature.slots) {
-      if (slot.handle == nullptr) continue;
-      if (slot.recording != nullptr) {
-        ready &= slot.tracked_since_create && reusable(
-            {slot.handle, slot.look_history.buffers[0], slot.look_history.buffers[1]}, slot.recording);
-      } else {
-        // Off -> on: old NR has no ControlMask provenance. Only reconstruct
-        // after every exact tracked reference has ended; never reuse it.
-        ready &= slot.tracked_since_create && submission::ResourceReleasable(slot.handle);
-        for (const auto* history : slot.look_history.buffers) {
-          ready &= submission::ResourceReleasable(history);
+    const bool ordered_source = control_mask_use_core_context.load(std::memory_order_relaxed)
+        && successful_sr_device == device;
+    const bool rebuild_ordered_history = feature.control_mask_stream != nullptr
+        && control_mask_execution::GetStatus(feature.control_mask_stream).history_invalidated;
+    if (feature.control_mask_stream == nullptr || rebuild_ordered_history) {
+      for (const auto& slot : feature.slots) {
+        if (slot.handle == nullptr) continue;
+        if (slot.recording != nullptr) {
+          ready &= slot.tracked_since_create && reusable(
+              {slot.handle, slot.look_history.buffers[0], slot.look_history.buffers[1]}, slot.recording);
+        } else {
+          // Off -> on: old NR has no ControlMask provenance. Only reconstruct
+          // after every exact tracked reference has ended; never reuse it.
+          ready &= slot.tracked_since_create && submission::ResourceReleasable(slot.handle);
+          for (const auto* history : slot.look_history.buffers) {
+            ready &= submission::ResourceReleasable(history);
+          }
+        }
+      }
+      if (feature.slots[0].recording != nullptr && feature.slots[0].recording->closed.load()
+          && !feature.slots[0].recording->submitted.load()) {
+        feature.control_mask_recording = feature.slots[0].recording;
+      }
+      // Output keys share their owner's NR History and normalization texel.
+      // Check every owner workset before any contract mutation or pool re-key.
+      for (auto& [key, resources] : worksets) {
+        if (key.handle != handle) continue;
+        ready &= resources.recording != nullptr
+            ? reusable(CollectWorksetGpuObjects(resources), resources.recording)
+            : resources.tracked_recording && WorksetRecordingsComplete(resources);
+        if (resources.recording != nullptr && resources.recording->closed.load()
+            && !resources.recording->submitted.load()) {
+          resources.control_mask_recording = resources.recording;
+        }
+      }
+      // Retired worksets can still share the stream's norm_commit; retirement
+      // keeps it alive but does not serialize a new writer.
+      for (const auto& retired : retired_final_resources) {
+        if (retired.resources.owner == handle) {
+          ready &= retired.resources.recording != nullptr
+              ? reusable(CollectWorksetGpuObjects(retired.resources), retired.resources.recording)
+              : retired.resources.tracked_recording && WorksetRecordingsComplete(retired.resources);
         }
       }
     }
-    if (feature.slots[0].recording != nullptr && feature.slots[0].recording->closed.load()
-        && !feature.slots[0].recording->submitted.load()) {
-      feature.control_mask_recording = feature.slots[0].recording;
-    }
-    // Output keys share their owner's NR History and normalization texel.
-    // Check every owner workset before any contract mutation or pool re-key.
-    for (auto& [key, resources] : worksets) {
-      if (key.handle != handle) continue;
-      ready &= resources.recording != nullptr
-          ? reusable(CollectWorksetGpuObjects(resources), resources.recording)
-          : resources.tracked_recording && WorksetRecordingsComplete(resources);
-      if (resources.recording != nullptr && resources.recording->closed.load()
-          && !resources.recording->submitted.load()) {
-        resources.control_mask_recording = resources.recording;
+    if (ready && rebuild_ordered_history) {
+      // An older recording changed the executed History order. Reconstruct
+      // only after its original lifetime proofs have ended every old use.
+      for (auto existing = worksets.begin(); existing != worksets.end();) {
+        if (existing->first.handle != handle) {
+          ++existing;
+          continue;
+        }
+        const auto key = existing->first;
+        ++existing;
+        RetireWorkset(key);
       }
+      ReleaseNrSlot(feature, 0, true);
+      feature.slots[0].pending_reset = true;
+      feature.slots[0].pending_reset_reasons |= kResetRecovery;
+      feature.control_mask_recording.reset();
+      feature.control_mask_stream.reset();
     }
-    // Retired worksets can still share the stream's norm_commit; retirement
-    // keeps it alive but does not serialize a new writer.
-    for (const auto& retired : retired_final_resources) {
-      if (retired.resources.owner == handle) {
-        ready &= retired.resources.recording != nullptr
-            ? reusable(CollectWorksetGpuObjects(retired.resources), retired.resources.recording)
-            : retired.resources.tracked_recording && WorksetRecordingsComplete(retired.resources);
-      }
+    if (feature.control_mask_stream != nullptr) {
+      // Lifetime proofs still retain replayable recordings. Execution ordering
+      // is established on the actual submitting queues, without waiting for Reset.
+      ready &= ordered_source
+          && control_mask_execution::BeginRecording(feature.control_mask_stream, command_list);
+    } else if (ready && ordered_source && control_mask_eligible) {
+      // Adopt only after the old path's exact provenance has settled. This
+      // also prevents enabling the mask from borrowing untracked old History.
+      feature.control_mask_stream = control_mask_execution::CreateStream(device);
+      ready = feature.control_mask_stream != nullptr
+          && control_mask_execution::BeginRecording(feature.control_mask_stream, command_list);
     }
+    ++control_mask_reuse_stats.checks;
     if (!ready) {
       ClearControlMaskBinding(feature.slots[0]);
-      CountNrDecline(NrDeclineReason::kWorksetSetupFailed);
+      CountNrDecline(NrDeclineReason::kControlMaskReuseNotReady);
       device->Release();
       return false;
     }
+    ++control_mask_reuse_stats.admitted;
     for (uint32_t pass = 0; pass < kMaxNrPasses; ++pass) {
       if (feature.slots[pass].handle != nullptr && feature.slots[pass].recording == nullptr) {
         ReleaseNrSlot(feature, pass, true);
@@ -12606,7 +12741,7 @@ inline bool ProcessInlinePreSR(
     return false;
   }
   if (ControlMaskSubmissionsUnproven()) {
-    CountNrDecline(NrDeclineReason::kWorksetSetupFailed);
+    CountNrDecline(NrDeclineReason::kControlMaskSubmissionsUnproven);
     return false;
   }
   ID3D12Device* device = nullptr;
@@ -14039,6 +14174,15 @@ inline bool KnownHandleFeature(
     return true;
   }
   return false;
+}
+
+// Borrowing Core requires an observed host Create, not the legacy late-hook
+// classification that can adopt an unseen handle from its evaluate block.
+// Caller holds runtime_mutex, like every created_feature_ids reader.
+inline bool CreatedSrHandle(const NVSDK_NGX_Handle* handle) {
+  const auto created = created_feature_ids.find(handle);
+  return created != created_feature_ids.end()
+      && (created->second == kFeatureDlss || created->second == kFeatureDlssd);
 }
 
 // A DLSSG.* resource of an evaluate's block (DLSS-G, nvsdk_ngx_defs_dlssg.h),
@@ -16059,8 +16203,18 @@ inline void STDMETHODCALLTYPE HookedQueueExecuteCommandLists(
       pending_submissions = submission::BeginSubmission(count, command_lists);
     }
   });
-  reinterpret_cast<QueueExecuteCommandListsFn>(
-      real_queue_execute_command_lists)(queue, count, command_lists);
+  const auto ordered = control_mask_execution::ExecuteOrdered(queue, count, command_lists,
+      reinterpret_cast<QueueExecuteCommandListsFn>(real_queue_execute_command_lists));
+  if (ordered.unsafe_lists != 0
+      && control_mask_order_failures.fetch_add(ordered.unsafe_lists, std::memory_order_relaxed) == 0) {
+    Log(reshade::log::level::warning,
+        "ControlMask queue ordering failed; affected streams stop admitting NR and retain their objects");
+  }
+  if (ordered.recording_order_deviations != 0
+      && control_mask_history_order_changes.fetch_add(ordered.recording_order_deviations, std::memory_order_relaxed) == 0) {
+    Log(reshade::log::level::warning,
+        "ControlMask recorded History order changed; new NR waits for the old uses to settle before reconstruction");
+  }
   // Guarded: everything below is the addon's own bookkeeping, and the
   // game's submit has already been made.  A throw here costs a proof,
   // never the frame.
@@ -16834,7 +16988,11 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureSlot(
       (!nested_in_c_wrapper && !InsideDirectCall()) ? command_list : nullptr);
   const NVSDK_NGX_Result result = [&] {
     const NgxRuntimeCommandScope runtime_scope;
-    return real(command_list, handle, parameters, callback);
+    const bool outer = inside_game_evaluate_wrapper;
+    if (control_mask_use_core_context.load()) inside_game_evaluate_wrapper = true;
+    const auto result = real(command_list, handle, parameters, callback);
+    inside_game_evaluate_wrapper = outer;
+    return result;
   }();
   state_envelope.StopCapture();
   RestorePreSrColor(parameters, pre_sr);
@@ -16878,6 +17036,9 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureSlot(
     CountNrDecline(NrDeclineReason::kNgxNotDlssEvaluation);
     return result;
   }
+  const SuccessfulSrCoreScope core_scope(
+      control_mask_use_core_context.load() && CreatedSrHandle(handle) && !EvaluationStagePlan(handle).mixed
+          ? command_list : nullptr);
   ObservePresentDlssEvaluate(parameters);
   ngx_dlss_evaluate_seen.store(true, std::memory_order_relaxed);
   // Both insertion modes: the pre-SR block above skipped its pass silently.
@@ -16940,6 +17101,10 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureCSlot(
   const auto real = ngx_serial::Serialized(
       reinterpret_cast<decltype(&NVSDK_NGX_D3D12_EvaluateFeature_C)>(
           ngx_slot_real[Slot].evaluate_c));
+  if (control_mask_use_core_context.load() && inside_game_evaluate_wrapper) {
+    const NgxRuntimeCommandScope runtime_scope;
+    return real(command_list, handle, parameters, callback);
+  }
   CallbackScope callback_scope;
   if (!callback_scope) {
     ResumeTeardownFromDrain(command_list);
@@ -17084,6 +17249,9 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureCSlot(
     CountNrDecline(NrDeclineReason::kNgxNotDlssEvaluation);
     return result;
   }
+  const SuccessfulSrCoreScope core_scope(
+      control_mask_use_core_context.load() && CreatedSrHandle(handle) && !EvaluationStagePlan(handle).mixed
+          ? command_list : nullptr);
   ObservePresentDlssEvaluate(parameters);
   ngx_dlss_evaluate_seen.store(true, std::memory_order_relaxed);
   if (NrYieldsToForeign()) {
@@ -19014,6 +19182,8 @@ inline constexpr const char* kSkipReasonText[] = {
     "Warm-up after a start or a settings change",
     ui::text::kStageResolutionBlocked,
     ui::text::kResolutionBackend,
+    "NR could not set up its working images",
+    "NR could not set up its working images",
 };
 // i18n: end
 // A new eligible decline without a player phrase fails the build: the panel
@@ -21140,6 +21310,10 @@ inline void EmitTelemetry(int64_t now_ns, bool force = false) {
          << ") resets=" << game_window.resets << " bursts=" << game_window.bursts
          << " alternations=" << game_window.alternations << ']';
   }
+  line << " control_mask[reuse_checks=" << control_mask_reuse_stats.checks
+       << " reuse_admitted=" << control_mask_reuse_stats.admitted << ']';
+  line << " control_mask_order[failures=" << control_mask_order_failures.load(std::memory_order_relaxed)
+       << " history_changes=" << control_mask_history_order_changes.load(std::memory_order_relaxed) << ']';
   Log(reshade::log::level::info, line.str());
   // The settings that decide what NR does, on their own line whenever they
   // differ from the last one logged (section 7): a support log then says
@@ -26807,6 +26981,7 @@ inline void ReadIniRawValues() {
       {"NRExperimentalPresentChain", IniKind::kBool},
       {"NRExperimentalNativePreFgResolution", IniKind::kBool},
       {"NRControlMaskEnabled", IniKind::kBool},
+      {"NRControlMaskUseCoreContext", IniKind::kBool},
       {"NRControlMaskMode", IniKind::kUint},
       {"NRControlMaskBlendMode", IniKind::kUint},
       {"NRControlMaskRed", IniKind::kFloat},
@@ -27454,6 +27629,13 @@ inline void LoadConfiguration() {
   float saved_control_mask_green = 1.f;
   float saved_control_mask_blue = 1.f;
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskEnabled", saved_control_mask_enabled);
+  bool saved_control_mask_use_core_context = false;
+  reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskUseCoreContext", saved_control_mask_use_core_context);
+  control_mask_use_core_context.store(saved_control_mask_use_core_context);
+  if (saved_control_mask_use_core_context) {
+    Log(reshade::log::level::warning,
+        "NRControlMaskUseCoreContext enabled: diagnostic Upscaled P0 only; requires current successful SR, no Init/Shutdown");
+  }
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskMode", saved_control_mask_mode);
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskBlendMode", saved_control_mask_blend_mode);
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskRed", saved_control_mask_red);
@@ -28639,6 +28821,7 @@ inline bool Shutdown(bool proof_gated) {
     // proves is released here, and re-arms at the end of this function.
     queue_tracking_active.store(false, std::memory_order_release);
     ReleaseFeatureStates();
+    control_mask_execution::ReleaseIfIdle();
     // After the tracked queues' wait above, which covers the present ring's
     // own submissions.
     ReleasePresentPath();
@@ -28657,15 +28840,17 @@ inline bool Shutdown(bool proof_gated) {
     telemetry::ReleaseAdapter();
     telemetry_probe_lease = GpuLease{};
     telemetry_probe_taken = false;
-    if (direct_device != nullptr && direct_api.shutdown != nullptr) {
-      direct_api.shutdown(direct_device);
+    if (direct_device != nullptr) {
+      if (!direct_api.borrowed_core_context && direct_api.shutdown != nullptr) {
+        direct_api.shutdown(direct_device);
+      }
       direct_device->Release();
       direct_device = nullptr;
       direct_device_native = nullptr;
     }
-    RestoreCallerIdentity();
+    if (!direct_api.borrowed_core_context) RestoreCallerIdentity();
     if (direct_api.module != nullptr) {
-      if (runtime_was_initialized) {
+      if (runtime_was_initialized && !direct_api.borrowed_core_context) {
         unload = direct_api.module;
       } else {
         // The runtime was loaded but never initialized: boot probe devices can
@@ -28675,7 +28860,7 @@ inline bool Shutdown(bool proof_gated) {
         // it mapped for the process lifetime; a later load just bumps the
         // module refcount.
         Log(reshade::log::level::info,
-            "nvngx_dlssnr.dll was loaded but never initialized; leaving it mapped");
+            "nvngx_dlssnr.dll was not initialized by this backend; leaving it mapped");
       }
     }
     direct_api = {};

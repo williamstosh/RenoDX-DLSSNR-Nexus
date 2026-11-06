@@ -12,6 +12,129 @@ import fg_acceptance
 
 
 class ModelInstallationTests(unittest.TestCase):
+    def test_control_mask_overrides_reject_before_installation(self):
+        script = fg_acceptance.ROOT / 'tools' / 'run-fg-acceptance.ps1'
+        cases = []
+        for option, maximum in (('-ControlMaskAutoMask', 1), ('-ControlMaskBlendMode', 3)):
+            for value in (-1, 0, maximum):
+                cases.append(([option, str(value)], 'require an explicit protected -ControlMaskCase'))
+            for value in (-2, maximum + 1, 'invalid'):
+                cases.append(([option, str(value), '-ControlMaskCase', 'T1'], option[1:]))
+        protected = ['-ControlMaskCase', 'BRect', '-ControlMaskAutoMask', '1',
+                     '-ControlMaskBlendMode', '3']
+        for options in ([], ['-RestoreInstallation'], ['-RestoreInstallation', '-SrOnly'],
+                        ['-RestoreInstallation', '-SrOnly', '-NrRuntimePath', 'missing-runtime'],
+                        ['-RestoreInstallation', '-SrOnly', '-NrRuntimePath', 'missing-runtime',
+                         '-NrPreset', '2', '-InstallOnly']):
+            cases.append((protected + options, 'ControlMask requires -RestoreInstallation'))
+        cases.append(([], 'Provide -Python containing Pillow'))
+        cases.append((protected + ['-RestoreInstallation', '-SrOnly', '-NrRuntimePath',
+                                  'missing-runtime', '-NrPreset', '2'],
+                      'Provide -Python containing Pillow'))
+        with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
+            root = Path(directory)
+            output = root / 'output'
+            base = ['pwsh.exe', '-NoProfile', '-File', str(script),
+                    '-CandidateManifest', str(root / 'missing-manifest'),
+                    '-GameBinaryDirectory', str(root / 'missing-game'),
+                    '-Python', str(root / 'missing-python'), '-OutputRoot', str(output)]
+            for overrides, message in cases:
+                with self.subTest(overrides=overrides):
+                    result = subprocess.run(base + overrides, capture_output=True, text=True,
+                                            encoding='utf-8', timeout=15)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual(list(root.iterdir()), [])
+
+    def test_control_mask_override_mapping_and_receipt_in_actual_powershell(self):
+        script = fg_acceptance.ROOT / 'tools' / 'run-fg-acceptance.ps1'
+        # Evaluate only the actual mapping and receipt AST nodes, never installation code.
+        command = r'''
+$tokens = $null; $errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($args[0], [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw 'Wrapper parse failed' }
+$function = $ast.Find({param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -eq 'Get-ControlMaskSettings'
+}, $true)
+. ([scriptblock]::Create($function.Extent.Text))
+$mapping = $ast.Find({param($node)
+    $node -is [System.Management.Automation.Language.IfStatementAst] -and
+    $node.Extent.Text.Contains('foreach ($taskSetting in (Get-ControlMaskSettings $ControlMaskCase)')
+}, $true)
+$receipt = $ast.Find({param($node)
+    $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $node.Left.Extent.Text -eq '$taskReceipt'
+}, $true)
+$defaults = @{}
+foreach ($parameter in $ast.ParamBlock.Parameters) {
+    if ($parameter.Name.VariablePath.UserPath -in @('ControlMaskAutoMask','ControlMaskBlendMode')) {
+        $defaults[$parameter.Name.VariablePath.UserPath] = $parameter.DefaultValue.SafeGetValue()
+    }
+}
+$rows = @(foreach ($ControlMaskCase in @('T0','T1','T2','T3','T4','T5','T6','GRect','BRect')) {
+    foreach ($ControlMaskAutoMask in -1,0,1) {
+        foreach ($ControlMaskBlendMode in -1,0,1,2,3) {
+            $taskModelSettings = @{}
+            . ([scriptblock]::Create($mapping.Extent.Text))
+            . ([scriptblock]::Create($receipt.Extent.Text))
+            @{case=$ControlMaskCase; auto=$ControlMaskAutoMask; blend=$ControlMaskBlendMode
+              settings=$taskModelSettings; receipt_auto=$taskReceipt.requested_control_mask_auto_mask
+              receipt_blend=$taskReceipt.requested_control_mask_blend_mode}
+        }
+    }
+})
+@{defaults=$defaults; rows=$rows} | ConvertTo-Json -Depth 6 -Compress
+'''
+        with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
+            driver = Path(directory) / 'mapping.ps1'
+            driver.write_text(command, encoding='utf-8')
+            result = subprocess.run(['pwsh.exe', '-NoProfile', '-File', str(driver), str(script)],
+                                    capture_output=True, text=True, encoding='utf-8', timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload['defaults'], dict(ControlMaskAutoMask=-1, ControlMaskBlendMode=-1))
+        rows = payload['rows']
+        self.assertEqual(len(rows), 135)
+        defaults = {row['case']: row['settings'] for row in rows
+                    if row['auto'] == -1 and row['blend'] == -1}
+        for row in rows:
+            with self.subTest(case=row['case'], auto=row['auto'], blend=row['blend']):
+                expected = dict(defaults[row['case']])
+                self.assertEqual(expected['NRAutoMask'], 0)
+                self.assertEqual(expected['NRControlMaskBlendMode'], 0)
+                if row['auto'] >= 0:
+                    expected['NRAutoMask'] = row['auto']
+                if row['blend'] >= 0:
+                    expected['NRControlMaskBlendMode'] = row['blend']
+                self.assertEqual(row['settings'], expected)
+                self.assertEqual(row['receipt_auto'], row['auto'])
+                self.assertEqual(row['receipt_blend'], row['blend'])
+        self.assertIn('-Parameters $PSBoundParameters', script.read_text(encoding='utf-8'))
+
+    def test_core_context_requires_protected_control_mask_case(self):
+        script = fg_acceptance.ROOT / 'tools' / 'run-fg-acceptance.ps1'
+        base = ['pwsh.exe', '-NoProfile', '-File', str(script),
+                '-CandidateManifest', 'missing-test-manifest', '-GameBinaryDirectory', 'missing-test-game',
+                '-Python', 'missing-test-python', '-ControlMaskUseCoreContext']
+        for overrides, message in (([], 'requires an explicit protected -ControlMaskCase'),
+                (['-ControlMaskCase', 'T0'], 'ControlMask requires -RestoreInstallation'),
+                (['-ControlMaskCase', 'T0', '-RestoreInstallation', '-SrOnly',
+                  '-NrRuntimePath', 'runtime', '-NrPreset', '1', '-NrPasses', '2'],
+                 'ControlMask requires -RestoreInstallation')):
+            with self.subTest(overrides=overrides):
+                result = subprocess.run(base + overrides, capture_output=True, text=True,
+                                        encoding='utf-8', timeout=15)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+
+    def test_core_context_static_request_and_restart_contract(self):
+        script = (fg_acceptance.ROOT / 'tools' / 'run-fg-acceptance.ps1').read_text(encoding='utf-8')
+        self.assertIn('if ($ControlMaskUseCoreContext) { $taskModelSettings.NRControlMaskUseCoreContext = 1 }', script)
+        self.assertIn('requested_control_mask_use_core_context=[bool]$ControlMaskUseCoreContext', script)
+        self.assertIn('-Parameters $PSBoundParameters', script)
+        self.assertEqual(script.count('$taskModelSettings.NRControlMaskUseCoreContext'), 1)
+
     def test_model_overrides_require_full_restoration_before_input_access(self):
         script = fg_acceptance.ROOT / 'tools' / 'run-fg-acceptance.ps1'
         for overrides in (['-NrPreset', '2'], ['-NrPasses', '2'],
@@ -180,6 +303,13 @@ class HdrTargetTests(unittest.TestCase):
 
 
 class CaptureTests(unittest.TestCase):
+    def write_capture_ready(self, run):
+        window = dict(hwnd=456, pid=123, created=1, path='game.exe', title='The Witcher 3')
+        (run / 'capture-ready.json').write_text(json.dumps(dict(
+            pid=window['pid'], identity=window, automatic_foreground=True)))
+        (run / 'owned-process.json').write_text(json.dumps(window))
+        return window
+
     def test_composition_override_requires_restore_before_launch(self):
         arguments = ['fg_acceptance.py', '--candidate-manifest', 'absent.json',
             '--game-binary-directory', 'absent-game', '--xefg-ui-composition', '0']
@@ -199,7 +329,9 @@ class CaptureTests(unittest.TestCase):
             manifest.write_text('{}', encoding='utf-8')
             game.mkdir()
             tool.touch()
-            child = mock.Mock(stdout=['FOREGROUND_HANDOFF={"pid":123,"hwnd":456}\n'], returncode=0)
+            run = root / 'run'
+            run.mkdir()
+            child = mock.Mock(stdout=[f'CAPTURE_READY={run}\n'], returncode=0)
             query = mock.Mock(stdout=json.dumps(dict(targets=[dict(active=True,
                 monitorFriendlyDeviceName='fixture monitor', highDynamicRangeUserEnabled=True)])))
             arguments = ['fg_acceptance.py', '--candidate-manifest', str(manifest),
@@ -212,9 +344,12 @@ class CaptureTests(unittest.TestCase):
             self.addCleanup(print_output.stop)
             with mock.patch.object(fg_acceptance.sys, 'argv', arguments), \
                     mock.patch.object(fg_acceptance.subprocess, 'run', return_value=query), \
-                    mock.patch.object(fg_acceptance.subprocess, 'Popen', return_value=child) as launch:
+                    mock.patch.object(fg_acceptance.subprocess, 'Popen', return_value=child) as launch, \
+                    mock.patch.object(fg_acceptance, 'capture') as capture:
                 self.assertEqual(fg_acceptance.main(), 1)  # No fake routing/acceptance claim.
-            printed.assert_any_call('FOREGROUND_HANDOFF={"pid":123,"hwnd":456}', flush=True)
+            capture.assert_called_once_with(run, True, False)
+            printed.assert_any_call('CAPTURE_STARTED=' + str(run), flush=True)
+            printed.assert_any_call('CAPTURE_FINISHED; valid completion recorded; protected worker resumes', flush=True)
             command = launch.call_args.args[0]
             self.assertIn('-RestoreInstallation', command)
             self.assertEqual(command[command.index('-NrHookPoint') + 1], '0')
@@ -231,8 +366,8 @@ class CaptureTests(unittest.TestCase):
     def test_addon_menu_capture_error_closes_menu_and_releases_hold(self):
         with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
             run = Path(directory)
-            (run / 'capture-ready.json').write_text(json.dumps(dict(pid=123, identity=dict(hwnd=456))))
-            with mock.patch.object(fg_acceptance.desktop, 'activate'), \
+            self.write_capture_ready(run)
+            with mock.patch.object(fg_acceptance.desktop, 'ensure_foreground', return_value={}), \
                     mock.patch.object(fg_acceptance.desktop, 'modules', return_value=[]), \
                     mock.patch.object(fg_acceptance.desktop, 'same_process', return_value=True), \
                     mock.patch.object(fg_acceptance.desktop.u, 'GetForegroundWindow', return_value=456), \
@@ -243,13 +378,17 @@ class CaptureTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'menu capture failed'):
                     fg_acceptance.capture(run, check_addon_menu=True)
             self.assertEqual([call.args[1] for call in key.call_args_list], ['F6', 'F6', 'D', 'HOME', 'HOME'])
-            self.assertTrue(json.loads((run / 'capture-complete.json').read_text())['completed'])
+            self.assertFalse((run / 'capture-complete.json').exists())
+            failure = json.loads((run / 'capture-failed.json').read_text())
+            self.assertFalse(failure['no_game_input_sent'])
+            self.assertTrue(failure['game_input_may_have_been_sent'])
 
     def test_nr_off_control_never_toggles_nr_or_moves_camera(self):
         with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
             run = Path(directory)
-            (run / 'capture-ready.json').write_text(json.dumps(dict(pid=123, identity=dict(hwnd=456))))
-            with mock.patch.object(fg_acceptance.desktop, 'activate'), \
+            window = self.write_capture_ready(run)
+            receipt = dict(hwnd=456, pid=123, created=1, elapsed_ms=12)
+            with mock.patch.object(fg_acceptance.desktop, 'ensure_foreground', return_value=receipt) as activate, \
                     mock.patch.object(fg_acceptance.desktop, 'modules', return_value=[]), \
                     mock.patch.object(fg_acceptance.desktop, 'same_process', return_value=True), \
                     mock.patch.object(fg_acceptance.desktop.u, 'GetForegroundWindow', return_value=456), \
@@ -259,22 +398,75 @@ class CaptureTests(unittest.TestCase):
                 fg_acceptance.capture(run, nr_off_control=True)
             key.assert_not_called()
             capture.assert_called_once()
+            self.assertTrue(all(call == mock.call(window) for call in activate.call_args_list))
+            self.assertGreaterEqual(activate.call_count, 1)
+            events = json.loads((run / 'nr-toggle-captures.json').read_text())
+            self.assertEqual(events[0]['action'], 'automatic_foreground_confirmed')
+            for field, value in receipt.items():
+                self.assertEqual(events[0][field], value)
+            self.assertFalse(list(run.glob('computer-use-*.json')))
             self.assertEqual(json.loads((run / 'capture-complete.json').read_text()),
                 dict(pid=123, completed=True))
 
-    def test_failed_foreground_check_releases_owned_worker_hold(self):
+    def test_failed_foreground_check_never_releases_capture_hold(self):
         with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
             run = Path(directory)
-            (run / 'capture-ready.json').write_text(json.dumps(dict(pid=123, identity=dict(hwnd=456))))
-            with mock.patch.object(fg_acceptance.desktop, 'activate'), \
+            self.write_capture_ready(run)
+            with mock.patch.object(fg_acceptance.desktop, 'ensure_foreground') as activate, \
                     mock.patch.object(fg_acceptance.desktop, 'modules', return_value=[]), \
                     mock.patch.object(fg_acceptance.desktop, 'same_process', return_value=False), \
                     mock.patch.object(fg_acceptance.desktop, 'key') as key, \
                     mock.patch.object(fg_acceptance.time, 'sleep'):
-                with self.assertRaisesRegex(RuntimeError, 'identity or foreground changed'):
+                with self.assertRaisesRegex(RuntimeError, 'identity changed'):
                     fg_acceptance.capture(run, nr_off_control=True)
             key.assert_not_called()
-            self.assertTrue(json.loads((run / 'capture-complete.json').read_text())['completed'])
+            activate.assert_not_called()
+            self.assertFalse((run / 'capture-complete.json').exists())
+
+    def test_automatic_activation_failure_sends_no_input_and_keeps_worker_gated(self):
+        with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
+            run = Path(directory)
+            window = self.write_capture_ready(run)
+            with mock.patch.object(fg_acceptance.desktop, 'same_process', return_value=True), \
+                    mock.patch.object(fg_acceptance.desktop, 'ensure_foreground',
+                                      side_effect=RuntimeError('automatic activation failed')) as activate, \
+                    mock.patch.object(fg_acceptance.desktop, 'capture') as capture, \
+                    mock.patch.object(fg_acceptance.desktop, 'key') as key, \
+                    mock.patch('builtins.print'):
+                with self.assertRaisesRegex(RuntimeError, 'automatic activation failed'):
+                    fg_acceptance.capture(run, nr_off_control=True)
+            capture.assert_not_called()
+            activate.assert_called_once_with(window)
+            key.assert_not_called()
+            self.assertFalse((run / 'capture-complete.json').exists())
+            failure = json.loads((run / 'capture-failed.json').read_text())
+            self.assertTrue(failure['no_game_input_sent'])
+            self.assertFalse(failure['game_input_may_have_been_sent'])
+
+    def test_capture_rejects_mismatched_owned_identity_before_activation(self):
+        for field, value in (('hwnd', 457), ('pid', 124), ('created', 2), ('path', 'other.exe'),
+                             ('ready_pid', 124), ('automatic_foreground', False), ('missing_owned', None)):
+            with self.subTest(field=field), tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
+                run = Path(directory)
+                window = self.write_capture_ready(run)
+                if field == 'missing_owned':
+                    (run / 'owned-process.json').unlink()
+                elif field in ('ready_pid', 'automatic_foreground'):
+                    ready = json.loads((run / 'capture-ready.json').read_text())
+                    ready['pid' if field == 'ready_pid' else field] = value
+                    fg_acceptance.dump(run / 'capture-ready.json', ready)
+                else:
+                    fg_acceptance.dump(run / 'owned-process.json', window | {field: value})
+                with mock.patch.object(fg_acceptance.desktop, 'ensure_foreground') as activate, \
+                        mock.patch.object(fg_acceptance.desktop, 'capture') as capture, \
+                        mock.patch.object(fg_acceptance.desktop, 'key') as key:
+                    with self.assertRaises((RuntimeError, FileNotFoundError)):
+                        fg_acceptance.capture(run, nr_off_control=True)
+                activate.assert_not_called()
+                capture.assert_not_called()
+                key.assert_not_called()
+                self.assertFalse((run / 'capture-complete.json').exists())
+                self.assertTrue(json.loads((run / 'capture-failed.json').read_text())['no_game_input_sent'])
 
 
 if __name__ == '__main__':

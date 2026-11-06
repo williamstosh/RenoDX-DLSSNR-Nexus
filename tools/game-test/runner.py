@@ -48,6 +48,13 @@ def validate_capture_hold_scenario(scenario, seconds):
     if seconds and scenario not in ('smoke', 'menu'):
         raise ValueError('--capture-hold-seconds is only supported for smoke or menu scenarios')
 
+def capture_script_path(path):
+    path = Path(path).resolve(strict=True)
+    if (not path.is_file() or path.suffix.lower() != '.py'
+            or not any(path.is_relative_to((ROOT / name).resolve()) for name in ('tools', 'tmp'))):
+        raise ValueError('Capture script must be a Python file below repository tools/ or tmp/')
+    return path
+
 def _unique_json_object(pairs):
     result = {}
     for key, value in pairs:
@@ -67,6 +74,15 @@ def capture_complete(out, pid):
         return False
     return (isinstance(signal, dict) and type(signal.get('pid')) is int
             and signal['pid'] == pid and signal.get('completed') is True)
+
+def capture_script_complete(out, pid):
+    try:
+        result = json.loads((out / 'capture-script-result.json').read_text(encoding='utf-8'),
+                            object_pairs_hook=_unique_json_object, parse_constant=_reject_json_constant)
+    except (OSError, UnicodeError, ValueError):
+        return False
+    return (isinstance(result, dict) and type(result.get('pid')) is int and result['pid'] == pid
+            and type(result.get('exit_code')) is int and result['exit_code'] == 0)
 
 def dump(path, value):
     temp = Path(str(path) + '.tmp')
@@ -192,6 +208,7 @@ class Session:
         self.cfg, self.out, self.window, self.number = cfg, out, None, 0
         self.crashes_before = crash_reports()
         self.exit_requested = False
+        self.automation_input_blocked = False
         self.ui_state = 'starting'
         crash_log = Path(cfg['executable']).parent / 'RenoDX-DLSS5-crash.log'
         self.log_offset = crash_log.stat().st_size if crash_log.exists() else 0
@@ -202,30 +219,36 @@ class Session:
         with (self.out / 'events.jsonl').open('a', encoding='utf-8') as stream:
             stream.write(json.dumps(dict(time=stamp(), kind=kind, **data), ensure_ascii=False) + '\n')
 
-    def request_foreground_handoff(self):
-        handoff = dict(hwnd=self.window['hwnd'], pid=self.window['pid'],
-                       title=self.window.get('title', ''), timeout_seconds=90)
-        dump(self.out / 'foreground-handoff.json', dict(time=stamp(), **handoff))
-        self.event('foreground_handoff_required', **handoff)
-
     def activate(self):
-        desktop.activate_with_handoff(self.window, self.request_foreground_handoff, timeout=90)
+        try:
+            receipt = desktop.ensure_foreground(self.window)
+            self.event('automatic_foreground_confirmed', phase='runner_input', **receipt)
+        except Exception:
+            self.automation_input_blocked = True
+            raise
 
-    def observe(self, label='observe'):
+    def observe(self, label='observe', *, region_state=None):
         if not desktop.same_process(self.window):
             raise RuntimeError('unexpected_exit')
         self.activate()
         self.number += 1
         path = self.out / 'latest.png'
+        if region_state is None and self.ui_state == 'load_menu':
+            try:
+                desktop.park_cursor(self.window)
+            except Exception:
+                self.automation_input_blocked = True
+                raise
+        region_state = region_state or self.ui_state
         metrics = desktop.capture(self.window, path)
         region = {
             'main_menu': (.08, .31, .27, .73), 'pause_menu': (.08, .31, .27, .73),
             'load_menu': (.29, .15, .84, .80), 'scene': (.78, .25, .995, .37),
             'loading': (.78, .25, .995, .37), 'exit_confirm': (.35, .35, .65, .50),
-        }.get(self.ui_state)
+        }.get(region_state)
         with Image.open(path) as img:
             # Preserve text detail in small UI crops; full-screen OCR remains bounded to 1920 pixels.
-            scale = min(1, 1920 / (img.width * (region[2]-region[0]) if self.ui_state in ('scene', 'loading') else img.width))
+            scale = min(1, 1920 / (img.width * (region[2]-region[0]) if region_state in ('scene', 'loading') else img.width))
             ocr_image = img.resize((round(img.width * scale), round(img.height * scale)))
         offset_x = offset_y = 0
         if region:
@@ -252,7 +275,11 @@ class Session:
         shutil.copyfile(self.out / 'observation.json', self.out / f'{label}.json')
 
     def key(self, name, seconds=.2):
-        desktop.key(self.window, name, seconds, on_handoff=self.request_foreground_handoff)
+        try:
+            desktop.key(self.window, name, seconds)
+        except Exception:
+            self.automation_input_blocked = True
+            raise
         self.event('key', key=name, seconds=seconds, state=self.ui_state)
 
     def main_menu(self, timeout=None):
@@ -375,7 +402,11 @@ class Session:
         words = candidates[0]['words']
         x = (min(w['x'] for w in words) + max(w['x']+w['width'] for w in words))/2/obs['scale']
         y = (min(w['y'] for w in words) + max(w['y']+w['height'] for w in words))/2/obs['scale']
-        desktop.click(self.window, x, y, on_handoff=self.request_foreground_handoff)
+        try:
+            desktop.click(self.window, x, y)
+        except Exception:
+            self.automation_input_blocked = True
+            raise
         self.event('click_text', text=text, x=x, y=y)
 
     def launch(self):
@@ -436,7 +467,8 @@ class Session:
                     raise ValueError('Calibration save loading requires the observed load menu')
                 self.check_mod()
                 self.load_save()
-                self.ui_state = 'loading'
+                if self.ui_state != 'scene':
+                    self.ui_state = 'loading'
             elif action == 'pause_menu':
                 if self.ui_state not in ('loading', 'scene'):
                     raise ValueError('Calibration pause requires a requested scene load')
@@ -459,8 +491,9 @@ class Session:
         self.key('ENTER')
         self.ui_state = 'load_menu'
         self.load_save()
-        self.ui_state = 'loading'
-        self.wait_scene()
+        if self.ui_state != 'scene':
+            self.ui_state = 'loading'
+            self.wait_scene()
         self.status['save_load'] = 'unique_file_timestamp_selected_and_scene_confirmed'
         self.status['visual_quality'] = 'not_tested_screenshots_only'
         self.evidence('scene-loaded')
@@ -482,19 +515,47 @@ class Session:
         if not seconds:
             return
         validate_capture_hold_scenario(self.cfg.get('scenario'), seconds)
+        # Until this hold receives a valid completion receipt, every failure
+        # path must leave shutdown to protected recovery instead of game keys.
+        self.automation_input_blocked = True
         identity = dict(self.window)
-        dump(self.out / 'capture-ready.json', dict(time=stamp(), pid=self.window['pid'], identity=identity))
+        ready = dict(time=stamp(), pid=self.window['pid'], identity=identity)
+        if not self.cfg.get('manual_ime_session'):
+            try:
+                foreground = desktop.ensure_foreground(self.window)
+            except Exception as error:
+                self.status['capture_hold'] = 'automatic_foreground_activation_failed'
+                dump(self.out / 'capture-failed.json', dict(time=stamp(), phase='capture_ready',
+                    stage='automatic_foreground_activation', error=repr(error), no_game_input_sent=True))
+                raise
+            ready.update(automatic_foreground=True, foreground=foreground)
+        dump(self.out / 'capture-ready.json', ready)
         self.status['capture_hold'] = 'waiting'
-        self.event('capture_hold_ready', pid=self.window['pid'], seconds=seconds, identity=identity)
+        self.event('capture_hold_ready', pid=self.window['pid'], seconds=seconds, identity=identity,
+                   foreground='automatic')
         deadline = time.monotonic() + seconds
         while True:
             if not desktop.same_process(self.window):
                 self.status['capture_hold'] = 'process_exited'
                 self.event('capture_hold_process_exit', pid=self.window['pid'])
                 raise RuntimeError('capture_hold_process_exited')
-            if capture_complete(self.out, self.window['pid']):
+            capture_failure = self.out / 'capture-failed.json'
+            if capture_failure.exists():
+                try:
+                    details = json.loads(capture_failure.read_text(encoding='utf-8'))
+                except (OSError, UnicodeError, ValueError):
+                    details = {}
+                if not isinstance(details, dict):
+                    details = {}
+                self.status['capture_hold'] = 'automatic_capture_failed'
+                self.event('capture_hold_capture_failed', error=details.get('error', 'invalid_failure_receipt'))
+                raise RuntimeError('capture_automatic_failed')
+            if (capture_complete(self.out, self.window['pid'])
+                    and (not self.cfg.get('capture_script')
+                         or capture_script_complete(self.out, self.window['pid']))):
                 self.status['capture_hold'] = 'completed_by_signal'
                 self.event('capture_hold_complete', pid=self.window['pid'])
+                self.automation_input_blocked = False
                 return
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -508,8 +569,8 @@ class Session:
                     continue
                 self.status['capture_hold'] = 'timeout_not_mod_acceptance'
                 self.event('capture_hold_timeout', pid=self.window['pid'], seconds=seconds,
-                           result='timeout_not_mod_acceptance')
-                return
+                           result='timeout_not_mod_acceptance_no_game_input')
+                raise TimeoutError('capture_hold_timeout')
             time.sleep(min(1, remaining))
 
     def load_save(self):
@@ -520,9 +581,44 @@ class Session:
         for _ in range(self.cfg.get('max_save_steps', 40)):
             if time.monotonic() > deadline:
                 break
-            obs = self.observe('save-list')
+            obs = (self.observe('save-list', region_state='load_menu') if clicked_target
+                   else self.observe('save-list'))
             rows = save_rows(self.out / 'latest.png', obs)
+            if clicked_target:
+                # A row click can activate loading directly, rather than just
+                # focus the row. Missing menu text alone proves neither state.
+                self.ui_state = 'load_menu' if rows else 'save_click_pending'
+                if not rows:
+                    scene = self.observe('save-click-scene', region_state='scene')
+                    patterns = self.cfg.get('scene_patterns', [])
+                    if patterns and all(re.search(pattern, compact(scene['text'])) for pattern in patterns):
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        self.ui_state = 'loading'
+                        self.wait_scene(timeout=remaining)
+                        dump(self.out / 'save-selection.json', dict(
+                            time=stamp(), filename=self.cfg['save'], sha256=self.cfg['save_sha256'],
+                            timestamp=expected, clicked=clicked_row,
+                            basis='unique original-file mtime, unique UI timestamp click, expected scene confirmed'))
+                        return
+                    time.sleep(.5)
+                    continue
+            target = [row for row in rows if row['timestamp'] == expected]
+            if len(target) > 1:
+                raise RuntimeError('ambiguous_ui_save_timestamp')
             selected = [row for row in rows if row['selected']]
+            if target and not clicked_target and (not selected or
+                    (len(selected) == 1 and selected[0]['timestamp'] != expected)):
+                # Navigate directly to the unique visible target. An intervening
+                # focused row may have an unreadable timestamp and be absent
+                # from rows. Reobserve focus or confirm the expected scene.
+                self.click_text(obs, compact(target[0]['text']))
+                clicked_target = True
+                clicked_row = target[0]
+                self.ui_state = 'save_click_pending'
+                time.sleep(.5)
+                continue
             if len(selected) != 1:
                 time.sleep(.5)
                 continue
@@ -534,18 +630,7 @@ class Session:
                                                            timestamp=expected, selected=selected[0], basis='unique original-file mtime, UI timestamp, observed focus frame'))
                 self.key('ENTER')
                 return
-            target = [row for row in rows if row['timestamp'] == expected]
-            if len(target) > 1:
-                raise RuntimeError('ambiguous_ui_save_timestamp')
             if current in seen:
-                if target and not clicked_target:
-                    # Mouse focus can remain on the left main menu while
-                    # the save panel is visible. Re-observe its selected
-                    # timestamp after one unique-row click before loading.
-                    self.click_text(obs, re.sub(r'\s+', '', target[0]['text']))
-                    clicked_target = True
-                    time.sleep(.5)
-                    continue
                 raise RuntimeError('save_selection_did_not_move')
             seen.add(current)
             self.key('UP' if target and target[0]['y'] < selected[0]['y'] else 'DOWN')
@@ -596,6 +681,11 @@ class Session:
     def shutdown(self):
         if not self.window:
             self.status['safe_exit'] = 'no_owned_window'
+            return
+        if self.automation_input_blocked:
+            self.status['safe_exit'] = 'protected_recovery_required_no_game_input'
+            self.event('shutdown_deferred_to_protected_recovery', pid=self.window['pid'],
+                       reason='Automatic foreground or capture verification failed')
             return
         if self.exit_requested:
             self.wait_exit()
@@ -802,7 +892,8 @@ def run_attempt(cfg, out):
     protected = [p for p in (profile / cfg['save_dir']).iterdir() if p.is_file()]
     protected += list(profile.glob('*.settings*'))
     protected += list(Path(cfg['executable']).parent.glob('*.ini'))
-    child, owned, problem, guard_ok = None, None, None, False
+    child, capture_child, capture_log, owned, problem, guard_ok = None, None, None, None, None, False
+    capture_started = False
     crashes_before = crash_reports()
     final = dict(result='failed', started=stamp())
     try:
@@ -819,17 +910,39 @@ def run_attempt(cfg, out):
                                                              **foreground_permission))
                     started, hung_since = time.monotonic(), None
                     capture_ready_announced = False
-                    foreground_handoff_announced = False
                     while child.poll() is None:
-                        handoff_path = out / 'foreground-handoff.json'
-                        if handoff_path.exists() and not foreground_handoff_announced:
-                            handoff = json.loads(handoff_path.read_text(encoding='utf-8'))
-                            print('FOREGROUND_HANDOFF=' + json.dumps(handoff, ensure_ascii=False), flush=True)
-                            foreground_handoff_announced = True
                         if (cfg.get('capture_hold_seconds', 0) and not capture_ready_announced
                                 and (out / 'capture-ready.json').exists()):
                             print('CAPTURE_READY=' + str(out), flush=True)
                             capture_ready_announced = True
+                        if (cfg.get('capture_script') and not capture_started
+                                and (out / 'capture-ready.json').exists()
+                                and not (out / 'capture-failed.json').exists()):
+                            capture_started = True
+                            try:
+                                script = capture_script_path(cfg['capture_script'])
+                                if sha(script) != cfg['capture_script_sha256']:
+                                    raise RuntimeError('Capture script changed after preflight')
+                                capture_log = (out / 'automatic-capture.log').open('w', encoding='utf-8')
+                                capture_child = subprocess.Popen([sys.executable, '-B', str(script), str(out)],
+                                    stdout=capture_log, stderr=capture_log, creationflags=0x08000000)
+                                dump(out / 'automatic-capture-process.json', dict(time=stamp(),
+                                    pid=capture_child.pid, script=str(script), sha256=cfg['capture_script_sha256']))
+                                desktop.grant_foreground_permission(capture_child.pid)
+                            except Exception as error:
+                                dump(out / 'capture-failed.json', dict(time=stamp(),
+                                    stage='automatic_capture_start', error=repr(error)))
+                        if capture_child is not None and capture_child.poll() is not None:
+                            capture_result = capture_child.returncode
+                            capture_pid = json.loads((out / 'owned-process.json').read_text(encoding='utf-8'))['pid']
+                            if capture_result != 0 or not capture_complete(out, capture_pid):
+                                dump(out / 'capture-failed.json', dict(time=stamp(),
+                                    stage='automatic_capture_exit', exit_code=capture_result,
+                                    error='Automatic capture failed or omitted its completion receipt'))
+                            else:
+                                dump(out / 'capture-script-result.json', dict(time=stamp(),
+                                    pid=capture_pid, exit_code=capture_result))
+                            capture_child = None
                         ownership = out / 'owned-process.json'
                         if ownership.exists():
                             owned = json.loads(ownership.read_text(encoding='utf-8'))
@@ -846,10 +959,75 @@ def run_attempt(cfg, out):
                             freeze_logs(cfg, out / 'watchdog-logs')
                             dump(out / 'watchdog.json', dict(time=stamp(), reason=problem))
                             break
-                        time.sleep(2)
+                        time.sleep(.2 if cfg.get('capture_script') else 2)
             finally:
                 # Keep file locks held through recovery, even if the worker or monitor raises.
                 try:
+                    if capture_child is not None:
+                        capture_stop_errors = []
+
+                        def note_capture_stop_error(stage, error):
+                            nonlocal problem
+                            problem = 'capture_stop_failed'
+                            capture_stop_errors.append(dict(stage=stage, error=repr(error)))
+
+                        def capture_is_alive():
+                            try:
+                                return capture_child.poll() is None
+                            except Exception as error:
+                                note_capture_stop_error('poll', error)
+                                return True
+
+                        def wait_for_capture(timeout, stage):
+                            try:
+                                capture_child.wait(timeout=timeout)
+                            except subprocess.TimeoutExpired:
+                                return False
+                            except Exception as error:
+                                note_capture_stop_error(stage, error)
+                                return False
+                            return not capture_is_alive()
+
+                        def best_effort_capture_receipt(name, receipt):
+                            try:
+                                dump(out / name, receipt)
+                            except Exception as error:
+                                note_capture_stop_error('write_' + name, error)
+
+                        if capture_is_alive():
+                            best_effort_capture_receipt('capture-cancel.json',
+                                dict(time=stamp(), reason='protected_runner_stopping'))
+                            if not wait_for_capture(5, 'cancel_wait') and capture_is_alive():
+                                try:
+                                    capture_child.terminate()
+                                except Exception as error:
+                                    note_capture_stop_error('terminate', error)
+                                if not wait_for_capture(5, 'terminate_wait') and capture_is_alive():
+                                    try:
+                                        capture_child.kill()
+                                    except Exception as error:
+                                        note_capture_stop_error('kill', error)
+                                    if not wait_for_capture(5, 'kill_wait') and capture_is_alive():
+                                        note_capture_stop_error('exit_unconfirmed',
+                                            RuntimeError('Capture process remained alive after bounded stop'))
+
+                            if capture_stop_errors:
+                                best_effort_capture_receipt('capture-stop-error.json', dict(
+                                    time=stamp(), capture_pid=capture_child.pid, errors=capture_stop_errors))
+                            if capture_is_alive():
+                                best_effort_capture_receipt('capture-intervention-required.json', dict(
+                                    time=stamp(), capture_pid=capture_child.pid,
+                                    state='waiting_with_original_file_locks_held'))
+                                print('HUMAN_INTERVENTION_REQUIRED=' + str(out), flush=True)
+                                while capture_is_alive():
+                                    time.sleep(2)
+                                best_effort_capture_receipt('capture-intervention-resolved.json', dict(
+                                    time=stamp(), capture_pid=capture_child.pid, capture_process_exited=True))
+                        elif capture_stop_errors:
+                            best_effort_capture_receipt('capture-stop-error.json', dict(
+                                time=stamp(), capture_pid=capture_child.pid, errors=capture_stop_errors))
+                    if capture_log is not None:
+                        capture_log.close()
                     if child and child.poll() is None:
                         try:
                             child.terminate()
@@ -982,6 +1160,8 @@ def main():
     parser.add_argument('--output-root', type=Path, default=ROOT / 'artifacts/game-tests')
     parser.add_argument('--scenario', default='smoke', choices=['smoke', 'menu', 'calibrate'])
     parser.add_argument('--capture-hold-seconds', type=parse_capture_hold_seconds, default=0)
+    parser.add_argument('--capture-script', type=Path,
+                        help='Run a local capture script automatically when capture-ready is published')
     parser.add_argument('--manual-ime-session', action='store_true')
     parser.add_argument('--save')
     parser.add_argument('--preflight', action='store_true')
@@ -998,12 +1178,17 @@ def main():
         return worker(args.worker)
     if args.manual_ime_session and (args.scenario != 'menu' or not args.capture_hold_seconds or args.retries != 0):
         parser.error('--manual-ime-session requires menu, nonzero capture hold and --retries 0')
+    if args.capture_script and (not args.capture_hold_seconds or args.manual_ime_session):
+        parser.error('--capture-script requires nonzero capture hold and cannot use --manual-ime-session')
+    script = capture_script_path(args.capture_script) if args.capture_script else None
     output_root = local_output_root(args.output_root)
     cfg = resolve_target(args.game, args.platform, args.save, args.addon_absent_control, args.target)
     cfg['scenario'] = args.scenario
     cfg['capture_hold_seconds'] = args.capture_hold_seconds
     cfg['manual_ime_session'] = args.manual_ime_session
     cfg['filesystem_context'] = filesystem_context
+    if script:
+        cfg.update(capture_script=str(script), capture_script_sha256=sha(script))
     if process_inventory(cfg['executable']):
         raise RuntimeError('A game session already exists; refusing to adopt or stop it')
     if process_inventory(Path(cfg['executable']).parent / 'crashreporter/CrashReporter.exe'):

@@ -27,6 +27,7 @@ u.IsWindow.argtypes = [W.HWND]
 u.ShowWindow.argtypes = [W.HWND, C.c_int]
 u.IsIconic.argtypes = [W.HWND]
 u.AttachThreadInput.argtypes = [W.DWORD, W.DWORD, W.BOOL]
+u.BringWindowToTop.argtypes = [W.HWND]
 k.GetProcessTimes.argtypes = [W.HANDLE] + [C.POINTER(W.FILETIME)] * 4
 k.WaitForSingleObject.argtypes = [W.HANDLE, W.DWORD]
 k.WaitForSingleObject.restype = W.DWORD
@@ -34,9 +35,6 @@ k.TerminateProcess.argtypes = [W.HANDLE, W.UINT]
 QUERY_SYNC = 0x1000 | 0x100000
 
 class ForegroundActivationDenied(RuntimeError):
-    pass
-
-class ForegroundHandoffTimeout(RuntimeError):
     pass
 
 def _running(handle):
@@ -138,7 +136,7 @@ def windows(exe=None):
     return result
 
 def activate(window):
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         if not window_alive(window):
             raise RuntimeError('Target window disappeared or process identity changed')
@@ -151,14 +149,24 @@ def activate(window):
         try:
             if u.IsIconic(window['hwnd']):
                 u.ShowWindow(window['hwnd'], 9)
+            u.BringWindowToTop(window['hwnd'])
             u.SetForegroundWindow(window['hwnd'])
         finally:
             if attached:
                 u.AttachThreadInput(current, thread, False)
         if u.GetForegroundWindow() == window['hwnd'] and window_alive(window):
             return
-        time.sleep(.2)
+        time.sleep(min(.05, max(0, deadline - time.monotonic())))
     raise ForegroundActivationDenied('Target cannot acquire foreground; no input sent')
+
+def ensure_foreground(window):
+    """Acquire and verify the exact target window without a human handoff."""
+    started = time.monotonic()
+    activate(window)
+    if not window_alive(window) or u.GetForegroundWindow() != window['hwnd']:
+        raise ForegroundActivationDenied('Target lost foreground or identity after activation; no input sent')
+    return dict(hwnd=window['hwnd'], pid=window['pid'], created=window['created'],
+                elapsed_ms=round((time.monotonic() - started) * 1000, 3))
 
 def grant_foreground_permission(pid):
     """Ask Windows to let this test worker activate its owned game window."""
@@ -168,39 +176,16 @@ def grant_foreground_permission(pid):
     granted = bool(u.AllowSetForegroundWindow(pid))
     return dict(granted=granted, error=None if granted else C.get_last_error())
 
-def wait_for_foreground(window, timeout=90):
-    if not 0 <= timeout <= 600:
-        raise ValueError('Foreground handoff timeout must be between 0 and 600 seconds')
-    deadline = time.monotonic() + timeout
-    while True:
-        if not window_alive(window):
-            raise RuntimeError('Target window disappeared or process identity changed during foreground handoff')
-        if u.GetForegroundWindow() == window['hwnd']:
-            if not window_alive(window):
-                raise RuntimeError('Target window disappeared or process identity changed during foreground handoff')
-            return
-        if time.monotonic() >= deadline:
-            raise ForegroundHandoffTimeout('Foreground handoff timed out; no input sent')
-        time.sleep(.2)
-
-def activate_with_handoff(window, on_handoff, timeout=90):
-    try:
-        activate(window)
-    except ForegroundActivationDenied:
-        on_handoff()
-        wait_for_foreground(window, timeout)
-
 def capture(window, destination):
-    if u.GetForegroundWindow() != window['hwnd']:
-        raise RuntimeError('Target is not foreground; desktop capture rejected')
+    ensure_foreground(window)
     rect, point = W.RECT(), W.POINT()
     if not u.GetClientRect(window['hwnd'], C.byref(rect)) or not u.ClientToScreen(window['hwnd'], C.byref(point)):
         raise C.WinError(C.get_last_error())
     if rect.right < 64 or rect.bottom < 64:
         raise RuntimeError('Target window is minimized or too small')
     img = ImageGrab.grab(bbox=(point.x, point.y, point.x + rect.right, point.y + rect.bottom), all_screens=True)
-    if u.GetForegroundWindow() != window['hwnd']:
-        raise RuntimeError('Foreground changed during capture')
+    if not window_alive(window) or u.GetForegroundWindow() != window['hwnd']:
+        raise RuntimeError('Target identity or foreground changed during capture')
     img.save(destination)
     thumb = img.resize((64, 36)).convert('L')
     stat = ImageStat.Stat(thumb)
@@ -221,11 +206,8 @@ u.SendInput.argtypes = [W.UINT, C.POINTER(INPUT), C.c_int]
 u.SendInput.restype = W.UINT
 KEYS = dict(ENTER=0x1C, ESC=0x01, SPACE=0x39, UP=0x48, DOWN=0x50, LEFT=0x4B, RIGHT=0x4D, HOME=0x47, W=0x11, A=0x1E, S=0x1F, D=0x20, E=0x12)
 
-def key(window, name, seconds=.2, on_handoff=None, handoff_timeout=90):
-    if on_handoff:
-        activate_with_handoff(window, on_handoff, handoff_timeout)
-    else:
-        activate(window)
+def key(window, name, seconds=.2):
+    ensure_foreground(window)
     if name not in KEYS or not 0 < seconds <= 2:
         raise ValueError('Unsupported key or hold duration')
     scan = KEYS[name]
@@ -241,11 +223,47 @@ def key(window, name, seconds=.2, on_handoff=None, handoff_timeout=90):
         if u.SendInput(1, C.byref(up), C.sizeof(INPUT)) != 1:
             raise RuntimeError('Key release failed')
 
-def click(window, x, y, on_handoff=None, handoff_timeout=90):
-    if on_handoff:
-        activate_with_handoff(window, on_handoff, handoff_timeout)
-    else:
-        activate(window)
+def move_camera(window, dx, dy):
+    """Send bounded relative movement to the verified active capture window."""
+    if any(type(delta) is not int or not -200 <= delta <= 200 for delta in (dx, dy)):
+        raise ValueError('Camera deltas must be integers between -200 and 200')
+    movement = INPUT(type=0, mi=MOUSEINPUT(dx, dy, 0, 0x0001, 0, 0))
+    if not window_alive(window):
+        raise RuntimeError('Target window disappeared or process identity changed; no input sent')
+    if u.GetForegroundWindow() != window['hwnd']:
+        raise RuntimeError('Target is not foreground; no camera input sent')
+    if u.SendInput(1, C.byref(movement), C.sizeof(INPUT)) != 1:
+        raise RuntimeError('Camera movement failed')
+
+
+def park_cursor(window):
+    """Keep the rendered menu cursor outside the text without clicking."""
+    ensure_foreground(window)
+    rect = W.RECT()
+    if not u.GetClientRect(window['hwnd'], C.byref(rect)):
+        raise C.WinError(C.get_last_error())
+    if rect.right <= 0 or rect.bottom <= 0:
+        raise ValueError('Empty client area')
+    point = W.POINT(rect.right - 1, rect.bottom - 1)
+    if not u.ClientToScreen(window['hwnd'], C.byref(point)):
+        raise C.WinError(C.get_last_error())
+    left, top = u.GetSystemMetrics(76), u.GetSystemMetrics(77)
+    width, height = u.GetSystemMetrics(78), u.GetSystemMetrics(79)
+    if width <= 1 or height <= 1 or not (left <= point.x < left + width and top <= point.y < top + height):
+        raise ValueError('Cursor target outside virtual desktop')
+    # SetCursorPos alone did not move the rendered game cursor. Send a real
+    # movement event; VIRTUALDESK also supports windows on a secondary display.
+    movement = INPUT(type=0, mi=MOUSEINPUT(
+        round((point.x - left) * 65535 / (width - 1)),
+        round((point.y - top) * 65535 / (height - 1)), 0, 0xC001, 0, 0))
+    if u.SendInput(1, C.byref(movement), C.sizeof(INPUT)) != 1:
+        raise RuntimeError('Cursor movement failed')
+    # The game renders its cursor; let the next frame consume the movement.
+    time.sleep(.12)
+
+
+def click(window, x, y):
+    ensure_foreground(window)
     rect, p = W.RECT(), W.POINT()
     u.GetClientRect(window['hwnd'], C.byref(rect))
     u.ClientToScreen(window['hwnd'], C.byref(p))

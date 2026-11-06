@@ -73,8 +73,18 @@ def capture(run, nr_off_control=False, check_addon_menu=False):
     window = ready['identity']
     events = []
     menu_open = False
+    game_input_attempted = False
+    failure = None
     try:
-        desktop.activate(window)
+        owned = json.loads((run / 'owned-process.json').read_text(encoding='utf-8'))
+        keys = ('hwnd', 'pid', 'created', 'path')
+        if (ready.get('pid') != window['pid'] or ready.get('automatic_foreground') is not True
+                or any(owned.get(key) != window[key] for key in keys)):
+            raise RuntimeError('capture-ready automatic foreground identity mismatch')
+        if not desktop.same_process(window):
+            raise RuntimeError('Game identity changed after automatic foreground activation')
+        foreground = desktop.ensure_foreground(window)
+        events.append(dict(time=stamp(), action='automatic_foreground_confirmed', **foreground))
         paths = desktop.modules(window)
         rejected = [p for p in paths if 'rtsshooks' in p.lower()
             or (p.lower().endswith(('.addon', '.addon64')) and Path(p).name.lower() != 'renodx-dlss5.addon64')]
@@ -87,38 +97,54 @@ def capture(run, nr_off_control=False, check_addon_menu=False):
             [('hdr-nr-on', 15, 'off'), ('hdr-nr-off', 22, 'on'), ('hdr-nr-on-restored', 18, None)])
         for label, seconds, next_state in stages:
             time.sleep(seconds)
-            if not desktop.same_process(window) or desktop.u.GetForegroundWindow() != window['hwnd']:
-                raise RuntimeError('Game identity or foreground changed; comparison stopped')
+            if not desktop.same_process(window):
+                raise RuntimeError('Game identity changed; comparison stopped')
+            desktop.ensure_foreground(window)
             desktop.capture(window, run / (label + '.png'))
             events.append(dict(time=stamp(), action='capture', name=label))
             if next_state:
+                game_input_attempted = True
                 desktop.key(window, 'F6', .25)
                 events.append(dict(time=stamp(), action='F6', intended_state=next_state))
         if not nr_off_control:
+            game_input_attempted = True
             desktop.key(window, 'D', .3)
             time.sleep(2)
             desktop.capture(window, run / 'hdr-short-move.png')
             events.append(dict(time=stamp(), action='capture', name='hdr-short-move'))
         if check_addon_menu:
+            game_input_attempted = True
             desktop.key(window, 'HOME')
             menu_open = True
             events.append(dict(time=stamp(), action='HOME', intended_state='open_addon_menu'))
             for index in (1, 2):
                 time.sleep(6)
-                if not desktop.same_process(window) or desktop.u.GetForegroundWindow() != window['hwnd']:
-                    raise RuntimeError('Game identity or foreground changed during addon menu check')
+                if not desktop.same_process(window):
+                    raise RuntimeError('Game identity changed during addon menu check')
+                desktop.ensure_foreground(window)
                 desktop.capture(window, run / f'addon-menu-{index}.png')
                 events.append(dict(time=stamp(), action='capture', name=f'addon-menu-{index}'))
+    except Exception as error:
+        failure = error
     finally:
         try:
             if menu_open and desktop.same_process(window) and desktop.u.GetForegroundWindow() == window['hwnd']:
+                game_input_attempted = True
                 desktop.key(window, 'HOME')
                 events.append(dict(time=stamp(), action='HOME', intended_state='close_addon_menu'))
-        finally:
+        except Exception as error:
+            failure = failure or error
+        try:
             dump(run / 'nr-toggle-captures.json', events)
-            # The existing worker owns pause/resume, menu exit and file protection.
-            # Releasing the hold on failure lets that worker recover promptly.
-            dump(run / 'capture-complete.json', dict(pid=ready['pid'], completed=True))
+        except Exception as error:
+            failure = failure or error
+    if failure:
+        dump(run / 'capture-failed.json', dict(time=stamp(), phase='capture_ready',
+            stage='capture_actions', error=repr(failure),
+            no_game_input_sent=not game_input_attempted,
+            game_input_may_have_been_sent=game_input_attempted))
+        raise failure
+    dump(run / 'capture-complete.json', dict(pid=ready['pid'], completed=True))
 
 
 def verify(run, acceptance, block_hudless, nr_hook_point, nr_off_control=False, addon_absent_control=False):
@@ -408,8 +434,6 @@ def main():
                 acceptance = Path(text.split('=', 1)[1]).parent
             elif text.startswith('RUN_DIRECTORY='):
                 run = Path(text.split('=', 1)[1])
-            elif text.startswith('FOREGROUND_HANDOFF='):
-                print(text, flush=True)
             elif text.startswith('CAPTURE_READY='):
                 run = Path(text.split('=', 1)[1])
                 print('CAPTURE_STARTED=' + str(run), flush=True)
@@ -418,7 +442,9 @@ def main():
                 except Exception as error:
                     capture_error = repr(error)
                     dump(out / 'capture-error.json', dict(time=stamp(), error=capture_error))
-                print('CAPTURE_FINISHED; existing worker continues menu exit and restoration', flush=True)
+                    print('CAPTURE_FAILED; automatic game input is blocked; protected recovery will restore', flush=True)
+                else:
+                    print('CAPTURE_FINISHED; valid completion recorded; protected worker resumes', flush=True)
     child.wait()
     summary = dict(time=stamp(), exit_code=child.returncode, acceptance=str(acceptance), run=str(run),
         capture_error=capture_error)

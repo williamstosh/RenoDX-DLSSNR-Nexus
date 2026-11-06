@@ -36,6 +36,8 @@ inline RemovedFn real_removed = nullptr;
 inline ID3D12Device* removed_device = nullptr;
 inline uint32_t runtime_initializations = 0;
 inline uint32_t runtime_shutdowns = 0;
+inline uint32_t source_evaluate_calls = 0;
+inline uint32_t source_evaluate_c_calls = 0;
 enum class Fault { NONE, ROOT, PSO, HEAP };
 inline Fault fault = Fault::NONE;
 inline uint32_t injected_failures = 0;
@@ -88,6 +90,16 @@ UINT64 STDMETHODCALLTYPE Completed(ID3D12Fence* fence) {
 HRESULT STDMETHODCALLTYPE RemovedReason(ID3D12Device* device) {
   return device == removed_device ? DXGI_ERROR_DEVICE_REMOVED : real_removed(device);
 }
+NVSDK_NGX_Result NVSDK_CONV SourceEvaluate(ID3D12GraphicsCommandList*, const NVSDK_NGX_Handle*,
+    const NVSDK_NGX_Parameter*, PFN_NVSDK_NGX_ProgressCallback) {
+  ++source_evaluate_calls;
+  return NVSDK_NGX_Result_Success;
+}
+NVSDK_NGX_Result NVSDK_CONV SourceEvaluateC(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Handle* handle,
+    const NVSDK_NGX_Parameter* parameters, PFN_NVSDK_NGX_ProgressCallback_C) {
+  ++source_evaluate_c_calls;
+  return addon::HookedEvaluateFeatureSlot<0>(list, handle, parameters, nullptr);
+}
 NVSDK_NGX_Result NVSDK_CONV InitializeRuntime(unsigned long long, const wchar_t*, ID3D12Device*,
                                              NVSDK_NGX_Version, const NVSDK_NGX_Parameter*) {
   ++runtime_initializations;
@@ -103,6 +115,244 @@ void ReservationFault(unsigned stage) {
     ++injected_failures;
     throw std::bad_alloc();
   }
+}
+
+inline bool wrapper_returned = false;
+inline uint32_t wrapper_post_reads = 0;
+inline bool wrapper_credential_seen = false;
+inline bool wrapper_probe_adoption = false;
+inline bool wrapper_adopted = false;
+inline ID3D12GraphicsCommandList* wrapper_list = nullptr;
+inline uint32_t failed_core_creates = 0;
+inline uint32_t forbidden_fallback_creates = 0;
+
+struct CredentialParameters : NVSDK_NGX_Parameter {
+  renodx::addons::dlss5::bridge::OwnedParameters values;
+
+  // Observe the production after-path through its ordinary Output query,
+  // after the real-export substitute has returned Success.
+#define NR_CREDENTIAL_PARAMETER(type) \
+  void Set(const char* key, type value) override { values.Set(key, value); } \
+  NVSDK_NGX_Result Get(const char* key, type* value) const override { \
+    if (wrapper_returned && std::strcmp(key, NVSDK_NGX_Parameter_Output) == 0) { \
+      ++wrapper_post_reads; \
+      wrapper_credential_seen |= addon::successful_sr_device != nullptr; \
+      if (wrapper_probe_adoption) { \
+        wrapper_adopted |= addon::EnsureDirectRuntime(wrapper_list); \
+      } \
+    } \
+    return values.Get(key, value); \
+  }
+  NR_CREDENTIAL_PARAMETER(unsigned long long)
+  NR_CREDENTIAL_PARAMETER(float)
+  NR_CREDENTIAL_PARAMETER(double)
+  NR_CREDENTIAL_PARAMETER(unsigned int)
+  NR_CREDENTIAL_PARAMETER(int)
+  NR_CREDENTIAL_PARAMETER(ID3D11Resource*)
+  NR_CREDENTIAL_PARAMETER(ID3D12Resource*)
+  NR_CREDENTIAL_PARAMETER(void*)
+#undef NR_CREDENTIAL_PARAMETER
+  void Reset() override { values.Reset(); }
+};
+
+NVSDK_NGX_Result NVSDK_CONV SuccessfulHostEvaluate(ID3D12GraphicsCommandList*, const NVSDK_NGX_Handle*,
+    const NVSDK_NGX_Parameter*, PFN_NVSDK_NGX_ProgressCallback) {
+  wrapper_returned = true;
+  return NVSDK_NGX_Result_Success;
+}
+NVSDK_NGX_Result NVSDK_CONV SuccessfulHostEvaluateC(ID3D12GraphicsCommandList*, const NVSDK_NGX_Handle*,
+    const NVSDK_NGX_Parameter*, PFN_NVSDK_NGX_ProgressCallback_C) {
+  wrapper_returned = true;
+  return NVSDK_NGX_Result_Success;
+}
+NVSDK_NGX_Result NVSDK_CONV FailCoreCreate(ID3D12GraphicsCommandList*, NVSDK_NGX_Feature,
+    const NVSDK_NGX_Parameter*, NVSDK_NGX_Handle** handle) {
+  ++failed_core_creates;
+  *handle = nullptr;
+  return NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
+}
+NVSDK_NGX_Result NVSDK_CONV ForbiddenFallbackCreate(ID3D12GraphicsCommandList*, NVSDK_NGX_Feature,
+    const NVSDK_NGX_Parameter*, NVSDK_NGX_Handle** handle) {
+  ++forbidden_fallback_creates;
+  *handle = nullptr;
+  return NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
+}
+
+void RunBorrowedWrapperClassification(Gpu& gpu) {
+  const auto slot = addon::ngx_slot_real[0];
+  const bool enabled = addon::enabled.exchange(true);
+  const bool device_seen = addon::d3d12_device_seen.exchange(true);
+  const bool foreign_seen = addon::foreign_nr_seen.exchange(true);
+  const bool foreign_yield = addon::foreign_nr_yield.exchange(true);
+  addon::ngx_slot_real[0].evaluate = reinterpret_cast<void*>(SuccessfulHostEvaluate);
+  addon::ngx_slot_real[0].evaluate_c = reinterpret_cast<void*>(SuccessfulHostEvaluateC);
+  wrapper_list = gpu.list.Get();
+  CredentialParameters parameters;
+  const auto* handle = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xC0BE001});
+  for (const bool c_export : {false, true}) {
+    // Unknown, guessed DLSS, guessed RR, observed non-SR, observed SR/RR.
+    for (unsigned source = 0; source < 6; ++source) {
+      if (source == 1 || source == 2) {
+        addon::features[handle].source_feature = (source == 1 ? addon::kFeatureDlss : addon::kFeatureDlssd);
+        addon::features[handle].source_type_confirmed = true;
+      } else if (source >= 3) {
+        addon::created_feature_ids[handle] = (source == 3 ? NVSDK_NGX_Feature_FrameGeneration
+            : source == 4 ? addon::kFeatureDlss : addon::kFeatureDlssd);
+      }
+      wrapper_returned = wrapper_credential_seen = wrapper_adopted = false;
+      wrapper_post_reads = 0;
+      wrapper_probe_adoption = source < 3;
+      addon::last_present_steady_ns = addon::SteadyNowNs();
+      const auto result = (c_export
+          ? addon::HookedEvaluateFeatureCSlot<0>(gpu.list.Get(), handle, &parameters, nullptr)
+          : addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), handle, &parameters, nullptr));
+      Check(NVSDK_NGX_SUCCEED(result) && wrapper_returned, "wrapper preserves successful unknown/known Evaluate");
+      if (source < 3) {
+        Check(wrapper_post_reads != 0 && !wrapper_credential_seen && !wrapper_adopted
+                  && addon::direct_device == nullptr && addon::direct_load_state == addon::DirectLoadState::Unknown,
+              "successful unknown or guessed SR Evaluate cannot lend Core through either wrapper");
+      } else {
+        Check(wrapper_credential_seen == (source >= 4), "only observed SR/RR Create can grant wrapper credential");
+      }
+      Check(addon::successful_sr_device == nullptr, "wrapper credential ends with callback");
+      addon::ForgetSourceHandleLocked(handle);
+    }
+  }
+  wrapper_list = nullptr;
+  wrapper_probe_adoption = false;
+  addon::ngx_slot_real[0] = slot;
+  addon::enabled = enabled;
+  addon::d3d12_device_seen = device_seen;
+  addon::foreign_nr_seen = foreign_seen;
+  addon::foreign_nr_yield = foreign_yield;
+  std::cout << "PASS borrowed Core C++/C successful unknown/guessed/non-SR/observed SR classification evidence=MOCK+GPU\n";
+}
+
+void RunBorrowedCore(Gpu& gpu, bool hardware, bool second_adapter) {
+  Check(!addon::control_mask_use_core_context.load(), "Core diagnostic defaults off");
+  const auto* published = addon::ngx_loader_published.load();
+  addon::NgxLoaderSymbols symbols;
+  symbols.nr_ready = symbols.core_ready = true;
+  symbols.nr_module = symbols.core = GetModuleHandleW(nullptr);
+  symbols.init = InitializeRuntime;
+  symbols.shutdown = ShutdownRuntime;
+  symbols.core_allocate = renodx::addons::dlss5::bridge::AllocateOwnedParameters;
+  symbols.core_destroy = renodx::addons::dlss5::bridge::DestroyOwnedParameters;
+  symbols.core_create = CreateModel;
+  symbols.core_evaluate = EvaluateModel;
+  symbols.core_release = ReleaseModel;
+  symbols.nr_requirements.file_version = "310.9.16.0";
+  addon::ngx_loader_published.store(&symbols);
+  addon::control_mask_use_core_context = true;
+  addon::hook_point = addon::kHookUpscaled;
+  addon::stack_passes = 1;
+  addon::control_mask_enabled = false;
+  RunBorrowedWrapperClassification(gpu);
+  addon::last_result = NVSDK_NGX_Result_FAIL_InvalidParameter;
+  const auto last = addon::last_result.load();
+  Check(!addon::EnsureDirectRuntime(gpu.list.Get()) && !addon::LoadDirectApi()
+            && addon::direct_load_state == addon::DirectLoadState::Unknown,
+        "resolved exports without successful SR cannot adopt Core");
+  {
+    addon::SuccessfulSrCoreScope sr(gpu.list.Get());
+    for (unsigned missing = 0; missing < 7; ++missing) {
+      const auto complete = symbols;
+      switch (missing) {
+        case 0: symbols.core_allocate = nullptr; break;
+        case 1: symbols.core_destroy = nullptr; break;
+        case 2: symbols.core_create = nullptr; break;
+        case 3: symbols.core_evaluate = nullptr; break;
+        case 4: symbols.core_release = nullptr; break;
+        case 5: symbols.core_ready = false; break;
+        case 6: symbols.nr_requirements.file_version = "310.9.16.1"; break;
+      }
+      Check(!addon::EnsureDirectRuntime(gpu.list.Get())
+                && addon::direct_load_state == addon::DirectLoadState::Unknown
+                && addon::get_module_filename_iat == nullptr,
+            "incomplete Core or wrong runtime cannot touch identity or adopt");
+      symbols = complete;
+    }
+    Check(addon::EnsureDirectRuntime(gpu.list.Get()) && addon::direct_api.borrowed_core_context
+              && addon::parameter_runtime_via_core && addon::direct_device == gpu.device.Get()
+              && addon::direct_api.init == nullptr && addon::direct_api.shutdown == nullptr
+              && addon::last_result.load() == last,
+          "none baseline adopts exact SR device without fabricating Init result");
+    {
+      addon::SuccessfulSrCoreScope invalid(nullptr);
+      Check(!addon::EnsureDirectRuntime(gpu.list.Get()), "nested empty credential shadows ready device");
+    }
+    Check(addon::successful_sr_device == gpu.device.Get()
+              && addon::EnsureDirectRuntime(gpu.list.Get()), "nested credential restores outer SR");
+    {
+      renodx::addons::dlss5::DirectCallScope own;
+      Check(!addon::EnsureDirectRuntime(gpu.list.Get()), "own NGX reentry cannot borrow inherited credential");
+    }
+    for (unsigned missing = 0; missing < 5; ++missing) {
+      const auto complete = symbols;
+      switch (missing) {
+        case 0: symbols.core_allocate = nullptr; break;
+        case 1: symbols.core_destroy = nullptr; break;
+        case 2: symbols.core_create = nullptr; break;
+        case 3: symbols.core_evaluate = nullptr; break;
+        case 4: symbols.core_release = nullptr; break;
+      }
+      Check(!addon::EnsureDirectRuntime(gpu.list.Get()), "ready fast path still requires every Core export");
+      symbols = complete;
+    }
+    addon::control_mask_use_core_context = false;
+    Check(!addon::EnsureDirectRuntime(gpu.list.Get()) && !addon::LoadDirectApi(),
+          "borrowed ready backend cannot hot-switch to legacy");
+    addon::control_mask_use_core_context = true;
+    addon::direct_api.borrowed_core_context = false;
+    Check(!addon::EnsureDirectRuntime(gpu.list.Get()), "legacy ready backend cannot hot-switch to borrowed");
+    addon::direct_api.borrowed_core_context = true;
+    addon::hook_point = addon::kHookPresent;
+    Check(!addon::EnsureDirectRuntime(gpu.list.Get()), "Present cannot borrow current SR context");
+    addon::hook_point = addon::kHookUpscaled;
+    addon::stack_passes = 2;
+    Check(!addon::EnsureDirectRuntime(gpu.list.Get()), "stack cannot borrow P0 context");
+    addon::stack_passes = 1;
+    if (second_adapter) {
+      Gpu other(!hardware);
+      Check(other.device.Get() != gpu.device.Get(), "distinct adapter device");
+      Check(!addon::EnsureDirectRuntime(other.list.Get()), "SR credential cannot lend another device");
+      {
+        addon::SuccessfulSrCoreScope nested(other.list.Get());
+        Check(!addon::EnsureDirectRuntime(gpu.list.Get()), "nested SR cannot borrow outer device");
+        Check(addon::EnsureDirectRuntime(other.list.Get()), "device change adopts only nested successful SR face");
+      }
+      Check(addon::EnsureDirectRuntime(gpu.list.Get()), "outer credential restored after device change");
+    }
+    addon::FeatureState state;
+    addon::FinalResources resources;
+    Check(addon::InstallQueueCompletionHooks(gpu.queue.Get()), "borrowed Core production queue tracking");
+    Check(addon::EnsureNrFeature(gpu.list.Get(), state, 0, resources, 8, 8, 8, 8)
+              && state.slots[0].via_core, "borrow creates plugin NR through Core");
+    Check(!addon::Shutdown(false) && addon::direct_device == gpu.device.Get(),
+          "borrowed teardown still retains unsubmitted feature recording");
+    // Complete and Reset the real recording before releasing its mock feature.
+    gpu.Submit();
+    const auto releases = model_released_handles.size();
+    addon::ReleaseNrSlot(state, 0, false);
+    Check(state.slots[0].handle == nullptr && state.slots[0].parameters == nullptr
+              && model_released_handles.size() == releases + 1, "borrow releases plugin feature and parameters");
+    addon::core_create_feature = FailCoreCreate;
+    addon::direct_api.create = ForbiddenFallbackCreate;
+    addon::FeatureState rejected;
+    Check(!addon::EnsureNrFeature(gpu.list.Get(), rejected, 0, resources, 8, 8, 8, 8)
+              && rejected.slots[0].failed && rejected.slots[0].parameters == nullptr
+              && failed_core_creates == 1 && forbidden_fallback_creates == 0
+              && runtime_initializations == 0 && addon::get_module_filename_iat == nullptr,
+          "borrowed Core Create failure releases parameters without fallback/identity/Init");
+  }
+  Check(!addon::EnsureDirectRuntime(gpu.list.Get()), "ready Core cannot serve unscoped fallback");
+  Check(addon::Shutdown(false) && addon::direct_device == nullptr
+            && runtime_initializations == 0 && runtime_shutdowns == 0
+            && addon::get_module_filename_iat == nullptr,
+        "full borrowed teardown makes no SDK Init/Shutdown or identity calls");
+  addon::control_mask_use_core_context = false;
+  addon::ngx_loader_published.store(published);
+  std::cout << "PASS borrowed Core credential/exports/backend/teardown evidence=MOCK+GPU no real NGX\n";
 }
 
 void STDMETHODCALLTYPE ObservePipeline(ID3D12GraphicsCommandList* list, ID3D12PipelineState* pipeline) {
@@ -131,6 +381,14 @@ HRESULT STDMETHODCALLTYPE Allocate(ID3D12Device* device, const D3D12_HEAP_PROPER
 }
 
 void RunInline(Gpu& gpu, bool hardware, bool safety) {
+  using renodx::addons::dlss5::NrDeclineReason;
+  using renodx::addons::dlss5::kNrDeclineTags;
+  Check(static_cast<size_t>(NrDeclineReason::kControlMaskSubmissionsUnproven)
+                == static_cast<size_t>(NrDeclineReason::kStageResolutionBackend) + 1
+            && std::strcmp(kNrDeclineTags[static_cast<size_t>(NrDeclineReason::kWorksetSetupFailed)], "setup_failed") == 0
+            && std::strcmp(kNrDeclineTags[static_cast<size_t>(NrDeclineReason::kControlMaskSubmissionsUnproven)], "control_mask_unproven") == 0
+            && std::strcmp(kNrDeclineTags[static_cast<size_t>(NrDeclineReason::kControlMaskReuseNotReady)], "control_mask_reuse_not_ready") == 0,
+        "ControlMask decline tags append to the taxonomy and preserve setup_failed");
   model_gpu = &gpu;
   addon::enabled = true;
   addon::hooks_enabled = true;
@@ -221,7 +479,12 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
             && DetourTransactionCommit() == NO_ERROR, "ControlMask observers attached");
   const auto record = [&] {
     const auto before = model_calls;
+    const auto gate_before = addon::control_mask_reuse_stats;
     addon::ProcessInline(gpu.list.Get(), owner, &parameters);
+    Check(addon::control_mask_reuse_stats.checks - gate_before.checks <= 1
+              && addon::control_mask_reuse_stats.admitted - gate_before.admitted
+                  <= addon::control_mask_reuse_stats.checks - gate_before.checks,
+          "one ProcessInline contributes at most one coherent reuse check and admission");
     gpu.Submit();
     addon::DrainRetiredResources(true);
     Check(model_calls <= before + 1, "at most one NR Evaluate per frame, including failures");
@@ -236,6 +499,8 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   addon::control_mask_enabled = false;
   mature();
   Check(mask_dispatches == 0, "default-off ProcessInline records zero ControlMask dispatches");
+  Check(addon::control_mask_reuse_stats.checks == 0 && addon::control_mask_reuse_stats.admitted == 0,
+        "default-off without old mask objects contributes no reuse checks or admissions");
   Check(addon::worksets.at({owner, output.Get(), false}).control_mask == nullptr,
         "default-off production path allocates no mask");
   Check(addon::worksets.at({owner, output.Get(), false}).recording == nullptr
@@ -248,6 +513,38 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   };
   mature();
   Check(saw_mask && mask_dispatches > 0, "production Evaluate receives generated mask");
+  const auto previous_evaluate = addon::ngx_slot_real[0].evaluate;
+  const auto previous_evaluate_c = addon::ngx_slot_real[0].evaluate_c;
+  addon::ngx_slot_real[0].evaluate = reinterpret_cast<void*>(SourceEvaluate);
+  addon::ngx_slot_real[0].evaluate_c = reinterpret_cast<void*>(SourceEvaluateC);
+  const auto exercise_hook = [&](bool c_export) {
+    const auto source_before = source_evaluate_calls;
+    const auto source_c_before = source_evaluate_c_calls;
+    const auto model_before = model_calls;
+    const auto dispatch_before = mask_dispatches;
+    gpu.list->ClearState(nullptr);
+    const auto result = c_export
+        ? addon::HookedEvaluateFeatureCSlot<0>(gpu.list.Get(), owner, &parameters, nullptr)
+        : addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), owner, &parameters, nullptr);
+    Check(NVSDK_NGX_SUCCEED(result), "production NGX evaluate wrapper preserves a successful source result");
+    Check(source_evaluate_calls == source_before + 1
+              && source_evaluate_c_calls == source_c_before + (c_export ? 1u : 0u),
+          "production evaluate wrapper calls its source once, including C-to-C++ delegation");
+    gpu.Submit();
+    addon::DrainRetiredResources(true);
+    Check(model_calls == model_before + 1 && mask_dispatches == dispatch_before + 1,
+          "production evaluate wrapper records one real NR path and one ControlMask dispatch");
+    const auto& wrapper_slot = addon::features.at(owner).slots[0];
+    Check(!wrapper_slot.control_mask_bound
+              && addon::GetD3D12Resource(wrapper_slot.parameters, "DLSSNR.ControlMask") == nullptr,
+          "production evaluate wrapper clears the transient mask binding");
+    std::cout << "CASE source=MOCK wrapper=" << (c_export ? "C+Ex/C++" : "Ex/C++")
+              << " inner_ngx=MOCK completion=Fence" << std::endl;
+  };
+  exercise_hook(false);
+  exercise_hook(true);
+  addon::ngx_slot_real[0].evaluate = previous_evaluate;
+  addon::ngx_slot_real[0].evaluate_c = previous_evaluate_c;
   auto& slot = addon::features.at(owner).slots[0];
   Check(!slot.control_mask_bound
             && addon::GetD3D12Resource(slot.parameters, "DLSSNR.ControlMask") == nullptr,
@@ -304,7 +601,11 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   fail_call = model_calls + 1;
   const auto before_evaluate_failure = stage_execution_cases::Capture(gpu, output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   gpu.Submit();
+  const auto gate_before_failure = addon::control_mask_reuse_stats;
   Check(record() == 1, "NGX failure has exactly one Evaluate attempt");
+  Check(addon::control_mask_reuse_stats.checks == gate_before_failure.checks + 1
+            && addon::control_mask_reuse_stats.admitted == gate_before_failure.admitted + 1,
+        "reuse gate admission is counted even when the subsequent NGX Evaluate fails");
   const auto after_evaluate_failure = stage_execution_cases::Capture(gpu, output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   gpu.Submit();
   Check(before_evaluate_failure.Pixels() == after_evaluate_failure.Pixels()
@@ -347,6 +648,17 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   Check(SUCCEEDED(gpu.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
       other_allocator.Get(), nullptr, IID_PPV_ARGS(&other_list))), "second list");
   const addon::WorksetKey key{owner, output.Get(), false};
+  const auto assert_gate = [&](ID3D12GraphicsCommandList* list, bool admitted) {
+    const auto before = addon::control_mask_reuse_stats;
+    const auto declines = renodx::addons::dlss5::nr_decline_counts[static_cast<size_t>(
+        renodx::addons::dlss5::NrDeclineReason::kControlMaskReuseNotReady)].load();
+    addon::ProcessInline(list, owner, &parameters);
+    Check(addon::control_mask_reuse_stats.checks == before.checks + 1
+              && addon::control_mask_reuse_stats.admitted == before.admitted + (admitted ? 1 : 0)
+              && renodx::addons::dlss5::nr_decline_counts[static_cast<size_t>(
+                  renodx::addons::dlss5::NrDeclineReason::kControlMaskReuseNotReady)].load() == declines + (admitted ? 0 : 1),
+          "actual reuse gate counts one check and exactly one admission or classified rejection");
+  };
   const auto before_parked = model_calls;
   addon::ProcessInline(gpu.list.Get(), owner, &parameters);
   Check(model_calls == before_parked + 1, "first parked recording evaluates");
@@ -412,12 +724,12 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
     Check(!submission::HasUnprovenSubmissions(), "valid delayed Fence is not an unknown submission");
     const auto saved_list = gpu.list;
     gpu.list = other_list;
-    addon::ProcessInline(gpu.list.Get(), owner, &parameters);
+    assert_gate(gpu.list.Get(), false);
     gpu.list = saved_list;
     Check(model_calls == queued_before + 1 && addon::worksets.at(key).control_mask == queued_mask,
-          "unknown final queue rejects reuse while a healthy prior submission is pending");
+          "healthy pending submission rejects reuse without being classified unknown");
     parameters.Set(NVSDK_NGX_Parameter_Output, output_b.Get());
-    addon::ProcessInline(other_list.Get(), owner, &parameters);
+    assert_gate(other_list.Get(), false);
     parameters.Set(NVSDK_NGX_Parameter_Output, output.Get());
     Check(model_calls == queued_before + 1,
           "rotating output cannot bypass shared owner NR History completion gate");
@@ -430,7 +742,7 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   wait_real();
   Check(SUCCEEDED(other_list->Reset(other_allocator.Get(), nullptr)), "open empty rejected list");
   const auto before_replayable = model_calls;
-  addon::ProcessInline(other_list.Get(), owner, &parameters);
+  assert_gate(other_list.Get(), false);
   Check(model_calls == before_replayable,
         "Fence completion without Reset still rejects replayable prior recording");
   Check(SUCCEEDED(other_list->Close()), "close replayability probe without addon work");
@@ -440,8 +752,12 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   submission::OnCommandListReset(other_list.Get());
   addon::DrainRetiredResources(true);
   Check(submission::ResourceReleasable(queued_mask), "real delayed fence then Reset releases use");
+  const auto gate_before_reset_recovery = addon::control_mask_reuse_stats;
   Check(record() == 1 && addon::worksets.at(key).control_mask == queued_mask,
         "healthy completion plus Reset permits next recording without rebuilding");
+  Check(addon::control_mask_reuse_stats.checks == gate_before_reset_recovery.checks + 1
+            && addon::control_mask_reuse_stats.admitted == gate_before_reset_recovery.admitted + 1,
+        "Reset recovery contributes exactly one admitted reuse check");
   std::cout << "CASE location=healthy-queued evidence=GPU+MOCK size=8x8 pending=declined replayable=declined complete-closed=reused resource=retained no_cpu_wait=1\n";
 
   // Exercise the actual detour's exception boundary, not manual null receipts.
@@ -473,8 +789,25 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
       Check(submission::HasUnprovenSubmissions(), "allocation or Signal fault is a device admission barrier");
       Check(!submission::ResourceReleasable(mask), "failed bookkeeping or Signal retains actual in-flight mask");
       const auto failed_calls = model_calls;
+      const auto gate_before_unknown = addon::control_mask_reuse_stats;
+      const auto unknown_before = renodx::addons::dlss5::nr_decline_counts[static_cast<size_t>(
+          renodx::addons::dlss5::NrDeclineReason::kControlMaskSubmissionsUnproven)].load();
       Check(!addon::ProcessInline(gpu.list.Get(), owner, &parameters) && model_calls == failed_calls,
             "unknown submit proof forbids reusing mask and model");
+      Check(addon::control_mask_reuse_stats.checks == gate_before_unknown.checks
+                && addon::control_mask_reuse_stats.admitted == gate_before_unknown.admitted
+                && renodx::addons::dlss5::nr_decline_counts[static_cast<size_t>(
+                    renodx::addons::dlss5::NrDeclineReason::kControlMaskSubmissionsUnproven)].load() == unknown_before + 1,
+            "early unknown decline counts once and is excluded from the later reuse denominator");
+      addon::hook_point = addon::kHookRender;
+      addon::PreSrSwap swap;
+      Check(!addon::ProcessInlinePreSR(gpu.list.Get(), owner, &parameters, swap)
+                && addon::control_mask_reuse_stats.checks == gate_before_unknown.checks
+                && addon::control_mask_reuse_stats.admitted == gate_before_unknown.admitted
+                && renodx::addons::dlss5::nr_decline_counts[static_cast<size_t>(
+                    renodx::addons::dlss5::NrDeclineReason::kControlMaskSubmissionsUnproven)].load() == unknown_before + 2,
+            "PreSR unknown rejection shares the classification and never enters the Upscaled reuse denominator");
+      addon::hook_point = addon::kHookUpscaled;
       addon::teardown_pending = true;
       addon::teardown_other_device_waiting = true;
       addon::teardown_pending_since_ns = addon::SteadyNowNs() - 60'000'000'000LL;
@@ -700,12 +1033,133 @@ void Dispatch(Gpu& gpu, ID3D12Resource* texture, ID3D12DescriptorHeap* heap,
   gpu.list->ResourceBarrier(1, &barrier);
 }
 
+void RunJitterBoundaryContract() {
+  renodx::addons::dlss5::bridge::OwnedParameters parameters;
+  addon::FeatureState feature{};
+  auto& slot = feature.slots[0];
+  addon::FinalResources resources{};
+  slot.parameters = &parameters;
+  struct JitterCase {
+    const char* name;
+    bool source_x;
+    bool source_y;
+    float x;
+    float y;
+  };
+  bool contract_ok = true;
+  bool ever_present = false;
+  // Reuse one NR block without Reset, as consecutive evaluations do.
+  for (const auto& test : std::array{
+           JitterCase{"never-present", false, false, 0.f, 0.f},
+           JitterCase{"never-partial-x", true, false, 0.25f, 0.f},
+           JitterCase{"never-partial-y", false, true, 0.f, -0.5f},
+           JitterCase{"present", true, true, 0.375f, -0.25f},
+           JitterCase{"absent", false, false, 0.f, 0.f},
+           JitterCase{"absent-again", false, false, 0.f, 0.f},
+           JitterCase{"partial-source-x", true, false, -0.125f, 0.f},
+           JitterCase{"partial-source-x-again", true, false, 0.75f, 0.f},
+           JitterCase{"partial-source-y", false, true, 0.f, 0.625f},
+           JitterCase{"explicit-zero", true, true, 0.f, 0.f},
+           JitterCase{"absent-after-zero", false, false, 0.f, 0.f},
+           JitterCase{"present-again", true, true, -0.625f, 0.125f},
+           JitterCase{"present-to-partial-x", true, false, 0.25f, 0.f},
+           JitterCase{"present-before-partial-y", true, true, 0.375f, -0.5f},
+           JitterCase{"present-to-partial-y", false, true, 0.f, -0.25f}}) {
+    renodx::addons::dlss5::bridge::OwnedParameters source;
+    if (test.source_x) {
+      source.Set(NVSDK_NGX_Parameter_Jitter_Offset_X, test.x);
+    }
+    if (test.source_y) {
+      source.Set(NVSDK_NGX_Parameter_Jitter_Offset_Y, test.y);
+    }
+    const auto current = addon::DeriveFeatureState(&source);
+    addon::EvaluationContract frame{};
+    frame.has_jitter = current.has_jitter;
+    frame.jitter_x = current.jitter_x;
+    frame.jitter_y = current.jitter_y;
+    addon::SetEvaluationParameters(feature, slot, 0, 0, resources, frame, 8, 8, 8, 8, false, 0);
+    float x = 0.f;
+    float y = 0.f;
+    const bool has_x = NVSDK_NGX_SUCCEED(parameters.Get("DLSSNR.JitterOffsetX", &x));
+    const bool has_y = NVSDK_NGX_SUCCEED(parameters.Get("DLSSNR.JitterOffsetY", &y));
+    bool stage_ok = current.has_jitter == (test.source_x && test.source_y)
+        && slot.jitter_bound == current.has_jitter;
+    if (current.has_jitter) {
+      stage_ok &= has_x && has_y && x == test.x && y == test.y;
+      ever_present = true;
+    } else if (!ever_present) {
+      stage_ok &= !has_x && !has_y;
+    } else {
+      stage_ok &= (!has_x || x == 0.f) && (!has_y || y == 0.f);
+    }
+    std::cout << "JITTER evidence=MOCK stage=" << test.name << " has_jitter=" << current.has_jitter
+              << " has_x=" << has_x << " x=" << x << " has_y=" << has_y << " y=" << y
+              << " contract=" << (stage_ok ? "PASS" : "FAIL") << '\n';
+    contract_ok &= stage_ok;
+  }
+  // Mask binding and jitter belong to each parameter slot independently.
+  renodx::addons::dlss5::bridge::OwnedParameters other_parameters;
+  auto& other_slot = feature.slots[1];
+  other_slot.parameters = &other_parameters;
+  addon::EvaluationContract frame{};
+  addon::SetEvaluationParameters(feature, other_slot, 1, 0, resources, frame, 8, 8, 8, 8, true, 0);
+  float x = 0.f;
+  float y = 0.f;
+  const bool other_never_present = !NVSDK_NGX_SUCCEED(other_parameters.Get("DLSSNR.JitterOffsetX", &x))
+      && !NVSDK_NGX_SUCCEED(other_parameters.Get("DLSSNR.JitterOffsetY", &y));
+  frame.has_jitter = true;
+  frame.jitter_x = 0.5f;
+  frame.jitter_y = -0.75f;
+  addon::SetEvaluationParameters(feature, other_slot, 1, 0, resources, frame, 8, 8, 8, 8, true, 0);
+  frame.has_jitter = false;
+  addon::SetEvaluationParameters(feature, slot, 0, 0, resources, frame, 8, 8, 8, 8, false, 0);
+  const bool isolated = other_never_present && other_slot.control_mask_bound && !slot.control_mask_bound
+      && other_slot.jitter_bound && !slot.jitter_bound
+      && NVSDK_NGX_SUCCEED(other_parameters.Get("DLSSNR.JitterOffsetX", &x)) && x == 0.5f
+      && NVSDK_NGX_SUCCEED(other_parameters.Get("DLSSNR.JitterOffsetY", &y)) && y == -0.75f;
+  std::cout << "JITTER evidence=MOCK stage=mask-slot-isolation contract=" << (isolated ? "PASS" : "FAIL") << '\n';
+  contract_ok &= isolated;
+  // The ordinary release destroys its owned block. The empty release must
+  // also discard binding state before a fresh block is attached to that slot.
+  const auto saved_destroy = addon::core_destroy_parameters;
+  addon::core_destroy_parameters = renodx::addons::dlss5::bridge::DestroyOwnedParameters;
+  for (const bool empty_release : {false, true}) {
+    auto& released_slot = feature.slots[2];
+    Check(NVSDK_NGX_SUCCEED(renodx::addons::dlss5::bridge::AllocateOwnedParameters(&released_slot.parameters)),
+          "allocate jitter release fixture");
+    frame.has_jitter = true;
+    addon::SetEvaluationParameters(feature, released_slot, 2, 0, resources, frame, 8, 8, 8, 8, false, 0);
+    if (empty_release) {
+      renodx::addons::dlss5::bridge::DestroyOwnedParameters(released_slot.parameters);
+      released_slot.parameters = nullptr;
+    }
+    addon::ReleaseNrSlot(feature, 2, false);
+    const bool released_clean = !released_slot.jitter_bound && released_slot.parameters == nullptr;
+    Check(NVSDK_NGX_SUCCEED(renodx::addons::dlss5::bridge::AllocateOwnedParameters(&released_slot.parameters)),
+          "allocate fresh jitter release fixture");
+    frame.has_jitter = false;
+    addon::SetEvaluationParameters(feature, released_slot, 2, 0, resources, frame, 8, 8, 8, 8, false, 0);
+    const bool fresh_unset = released_clean && !released_slot.jitter_bound
+        && !NVSDK_NGX_SUCCEED(released_slot.parameters->Get("DLSSNR.JitterOffsetX", &x))
+        && !NVSDK_NGX_SUCCEED(released_slot.parameters->Get("DLSSNR.JitterOffsetY", &y));
+    std::cout << "JITTER evidence=MOCK stage=" << (empty_release ? "empty-release" : "normal-release")
+              << " contract=" << (fresh_unset ? "PASS" : "FAIL") << '\n';
+    contract_ok &= fresh_unset;
+    addon::ReleaseNrSlot(feature, 2, false);
+  }
+  addon::core_destroy_parameters = saved_destroy;
+  other_slot.parameters = nullptr;
+  Check(contract_ok, "reused NR parameter block must not retain nonzero jitter after source becomes absent or partial");
+}
+
 int RunSafety(bool hardware, bool safety = true) {
   try {
+    RunJitterBoundaryContract();
     reshade::internal::get_reshade_module_handle(GetModuleHandleW(nullptr));
     ComPtr<ID3D12Debug> debug;
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) debug->EnableDebugLayer();
     Gpu gpu(hardware);
+    RunBorrowedCore(gpu, hardware, safety);
     ComPtr<ID3D12InfoQueue> info;
     gpu.device.As(&info);
     std::cout << "ControlMask WARP debug_layer=" << (debug != nullptr) << '\n';

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('all','report','branding','ui','presets','unicode-input','native','sdr-policy','hdr-policy','scope','config','constants','control-mask','fg-xefg','fg-native','lifecycle','bridge-motion','stage-plan','copy-slots')]
+    [ValidateSet('all','report','branding','ui','presets','unicode-input','native','sdr-policy','hdr-policy','scope','config','constants','control-mask','control-mask-execution','fg-xefg','fg-native','lifecycle','bridge-motion','stage-plan','copy-slots')]
     [string[]]$Suite = @('all'),
     [string]$SourceRoot = (Split-Path $PSScriptRoot -Parent),
     [string]$HostRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) '.local/renodx'),
@@ -43,6 +43,7 @@ $sources = [ordered]@{
     'hdr-policy'='present_hdr_pedestal_policy_tests'; scope='present_restore_scope_tests'
     config='present_restore_configuration_tests'; constants='present_hdr_runtime_constants_tests'
     'control-mask'='control_mask_contract_tests'
+    'control-mask-execution'='control_mask_execution_tests'
     'fg-xefg'='fg_xefg_tests'; 'fg-native'='fg_native_tests'
     lifecycle='fg_lifecycle_tests'; 'bridge-motion'='d3d11_bridge_motion_tests'
     'stage-plan'='stage_plan_tests'
@@ -98,6 +99,9 @@ foreach ($item in $Suite) {
     $name = $sources[$item]
     $exe = Join-Path $directory "$name.exe"
     $arguments = $common + @($includes | ForEach-Object { "/I$_" })
+    if ($item -eq 'control-mask-execution') {
+        $arguments += "/I$HostRoot/external/reshade/include"
+    }
     $link = $libraries
     if ($item -in @('branding','sdr-policy','hdr-policy','scope','stage-plan','control-mask')) { $link = @() }
     if ($item -in @('fg-native','bridge-motion')) {

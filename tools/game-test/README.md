@@ -2,11 +2,15 @@
 
 这里只迁入既有 Steam／巫师3 自动化：原存档保护、唯一时间戳选档、焦点核验、所属进程监控、菜单退出、恢复与有界重试。没有新增游戏适配，不包含悟空无人选档。
 
-自动 menu／smoke 启动时，外层进程会尝试通过 Windows AllowSetForegroundWindow 将前台资格交给隔离 worker；系统拒绝时保留错误码。若 worker 的标准激活仍失败，它会在发送输入前写入 foreground-handoff.json 并等待最多 90 秒，外层入口输出 FOREGROUND_HANDOFF。已连接的 Computer Use 操作器只需将唯一匹配的游戏窗口设为前台；焦点核验通过后，OCR、跳过 CG、选档及后续游戏按键由原脚本继续执行。操作器不发送游戏按键。交接超时、进程身份变化或窗口消失均安全失败，前台拒绝不会触发自动重启。
+自动 menu／smoke 在首次 OCR／输入及采集边界自动取得本次游戏前台，不需要人工截图确认或交接令牌。每次核对 HWND、PID、进程创建时间和路径；已在前台立即继续，后台启动或最小化时自动恢复窗口。激活失败／身份变化时阻断输入并进入受保护恢复。AllowSetForegroundWindow 的返回只作诊断，真实前台核验通过才可输入；场景继续使用原 OCR 条件确认。
 
-前台交接回归须调用真实的 Session.event 并读取 events.jsonl，核对交接文件与事件均包含目标身份及时间；不能用 mock 替换事件写入，否则重复 time 字段等序列化错误会漏测。实机核对交接信号后原脚本继续选档、场景确认、菜单退出及原文件恢复；仅激活窗口不记作完整流程通过。
+两个 PowerShell 入口接受 `-CaptureScript <本仓库 tools/ 或 tmp/ 下的 .py>`，同时指定非零 `-CaptureHoldSeconds`。入口在安装前校验参数，普通桌面上下文重启保留该绝对路径。runner 预检记录脚本 SHA256，在 `CAPTURE_READY` 后复核并仅启动一次，调用形式为同一 Python 的 `-B <脚本> <本次运行目录>`，输出写 `automatic-capture.log`。该选项不能与 `ManualImeSession` 或 `InstallOnly` 搭配。
 
-迁入后已完成语法检查、游戏预检和 120 项 Python 单测（119 项通过、1 项符号链接权限跳过）。新候选已完成巫师3加载、NR 开关、短移动、插件菜单与安全退出／完整恢复；原配置下的 NR 可见效果和 HUD 获用户确认。性能与视觉结论仅适用于实际配置及已测场景，自动化通过不等于完整画质验收。
+采集器读取 `capture-ready.json` 的 `automatic_foreground=true` 和本次 `owned-process.json`，核对唯一进程／窗口身份并自动激活。动态采样与转镜期间持续核验前台和几何，失焦即停止，不在采样中反复激活。收到 `capture-cancel.json` 应停止输入并结束自己的采样子进程；异常写 `capture-failed.json`，成功收尾才写匹配 PID 的 `capture-complete.json`。使用 CaptureScript 时还必须由父进程观察到脚本零码退出并写 `capture-script-result.json`，worker 才恢复菜单退出输入。提前完成、失败／损坏凭据或超时不能释放门禁。恢复前先结束采集器和 worker，文件保护保持到本次游戏退出并恢复完成。
+
+回归覆盖后台激活、最小化恢复、身份变化拒绝、失败门禁、脚本单次启动、完成与退出顺序及保护恢复。单测属于 MOCK／本地文件合同；独立 Windows 窗口探针验证前台 API 路径，IN_GAME／VISUAL 和长时稳定性另行验收。
+
+选档前在已知存档菜单内用不带按钮的移动事件将光标停在窗口右下角，避免游戏光标遮挡日期；仍核验本次身份与前台，多显示器坐标基于虚拟桌面计算。仅SetCursorPos在实机未改变游戏渲染光标，SendInput版已完成指定场景的严格选档、采集边界和正常退出。选档优先点击唯一可见的目标时间戳，随后重新确认选中行；点击直接触发加载时，改用场景区域匹配全部目标条件并连续确认，再进入场景流程。目标重复、未知时间戳或场景未确认时不会盲发确认键。保留原选档截止时间；实机已验证重新选中后确认载入路径，点击直接载入分支仍只有离线回放证据。
 
 ## 本地配置与依赖
 
@@ -32,6 +36,14 @@ Windows 入口会在替换安装文件前，通过合成文件的最终句柄路
 
 单测包含真实 Windows 文件共享锁检查和 mock 编排检查，不启动游戏。符号链接用例可能因系统权限跳过。
 
+真实 Windows 后台／最小化激活探针使用两个短命独立测试窗口，不启动游戏、不发送键鼠输入：
+
+```powershell
+& $pythonPath -B ./tools/game-test/probe_foreground.py --output-root tmp/automatic-foreground-probe
+```
+
+普通桌面上下文可通过 `normal_process.py --run <Python绝对路径> -B <probe_foreground.py绝对路径> --output-root <本仓库tmp绝对路径>` 运行同一探针。核对 result.json 的各场景和 cleanup，不能将请求激活当作实际成功。
+
 ## 后续获授权的实机入口
 
 下列步骤会写本地输出；完整入口还会临时替换游戏文件并启动游戏。执行前核对进程、候选 manifest、目标安装和存档，并取得本轮实机授权。
@@ -53,7 +65,7 @@ Windows 入口会在替换安装文件前，通过合成文件的最终句柄路
 
 `--restore-installation` 只透传 wrapper 原有的 `-RestoreInstallation`，使其在游戏退出后恢复原 DLL 和完整配置；原存档保护及恢复校验由既有 runner 承担。进程仍存活时保留 `restore_pending`，不能将该状态报告为已恢复。默认留装分支仍为旧逻辑，因此本轮禁止省略该开关。
 
-直接 wrapper 入口同样可使用 `-Python $pythonPath -TargetPath <配置> -OutputRoot <目录> -RestoreInstallation`。普通 smoke／menu／calibrate 入口为 `tools/run-game-test.ps1`，继续接受原 `-Game/-Platform/-Scenario/-Save/-CaptureHoldSeconds/-Retries/-Preflight` 参数。`-Preflight` 会构建 OCR 并写自检产物，不能与只读语法检查混淆。
+直接 wrapper 入口同样可使用 `-Python $pythonPath -TargetPath <配置> -OutputRoot <目录> -RestoreInstallation`。普通 smoke／menu／calibrate 入口为 `tools/run-game-test.ps1`，继续接受原 `-Game/-Platform/-Scenario/-Save/-CaptureHoldSeconds/-Retries/-Preflight` 参数，需要自动采集时附加 `-CaptureScript <本仓库 tools/ 或 tmp/ 下的 .py>`。`-Preflight` 会构建 OCR 并写自检产物，不能与只读语法检查混淆。
 
 若游戏将 Home 绑定为切换 HUD，直接 wrapper 可加 `-IsolateOverlayKey`，仅在本次备份保护的 ReShade 配置中将叠加层热键设为 F7；调用方须先确认 F7 无冲突并使用 F7 开关叠加层。测试结束完整恢复原配置。默认菜单按键保持 200 ms、鼠标保持 120 ms，以避免按帧采样的界面漏掉瞬时输入；释放采集等待前须确认叠加层已关闭，不能将等待结束视为菜单状态已确认。
 
@@ -76,6 +88,9 @@ XeFG 和 FSR FG；保持 HDR／分辨率。退出后完整恢复，日志须另�
 仅指定的键会临时变化；Runtime 替换前核对版本，并将游戏原 Runtime 加入既有
 备份／哈希核对和退出恢复清单。必须同时使用 `-RestoreInstallation`，不以创建
 参数日志代替实际网络确认或画质／性能验收。
+
+受保护的 `-ControlMaskCase` 可显式添加 `-ControlMaskUseCoreContext`，临时请求 Core context 诊断；仍须满足 `-SrOnly`、`-RestoreInstallation`、单 Pass Upscaled 和精确 Runtime 等现有门禁。省略此开关时不修改该配置键，receipt 记录开关请求值。
+`-ControlMaskAutoMask 0|1` 与 `-ControlMaskBlendMode 0..3` 可在同一受保护 case 上覆盖对应测试参数；省略保留 case 默认值。无显式 case 时提前拒绝，receipt 记录请求值，实际采用仍须核对运行日志。
 
 完整 FG 入口保持原 HDR 显示条件检查、NR 开关／移动及退出流程；显示器名称和性能目标来自本地 target。测试通过仅覆盖相应保护与编排合同，截图仍需单独判断。
 
