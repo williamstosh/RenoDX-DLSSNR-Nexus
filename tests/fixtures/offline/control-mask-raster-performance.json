@@ -1,0 +1,31 @@
+{
+  "schema": "nr-nexus-offline-fixture/1",
+  "fixture_id": "control-mask-raster-performance-20261105",
+  "description": "NVIDIA-only shader dispatch and UAV barrier sampling at common raster resolutions; no NGX or NR Evaluate.",
+  "cases": [
+    {
+      "id": "1080p",
+      "width": 1920,
+      "height": 1080,
+      "mode": "neutral",
+      "frames": 1008,
+      "warmup": 8
+    },
+    {
+      "id": "1440p",
+      "width": 2560,
+      "height": 1440,
+      "mode": "neutral",
+      "frames": 1008,
+      "warmup": 8
+    },
+    {
+      "id": "2160p",
+      "width": 3840,
+      "height": 2160,
+      "mode": "neutral",
+      "frames": 1008,
+      "warmup": 8
+    }
+  ]
+}

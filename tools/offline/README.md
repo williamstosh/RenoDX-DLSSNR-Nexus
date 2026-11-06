@@ -1,75 +1,198 @@
 # NR Nexus 离线验证工具
 
-本目录提供通用 D3D12 E0 回放、既有 FG／XeFG suite adapter 与 ControlMask 专项验证，均无需启动游戏。Replay 构建不依赖 ControlMask Shader；GPU 专项后端单独编译当前源码中的 ControlMask Shader。
+独立命令行验证入口，复用现有 CPU、D3D12、Shader、提交与资源合同，不需要游戏、
+窗口、ReShade 菜单、Steam、OCR 或快捷键。生产算法、配置键与产品功能保持原实现。
 
-通用 D3D12 helper 还提供可复用的 timestamp query、resolve、readback 与毫秒换算；E0 当前只报告资源传输／读回和 Fence 结果，不把 shader-only 计时扩展为 NR Evaluate 性能。
+## 环境与构建
 
-固定宿主及 MSVC／Windows SDK 以 host/lock.json 和项目构建说明为准。此工作树可以显式使用已准备的宿主目录：
-
-~~~powershell
-pwsh -File tools/offline/build.ps1 -Backend replay -HostRoot <固定宿主目录> -OutputDirectory tmp/offline/replay-build
-~~~
-
-回放支持固定尺寸 sequence/1 和逐帧尺寸 sequence/2。先生成或校验合成 Color／Depth／Motion 序列，再显式选择 WARP 或 NVIDIA：
-
-~~~powershell
-$python = & pwsh -File tools/offline/test.ps1 -ResolveOnly
-& $python -S tools/offline/run.py prepare --output tmp/offline/sequence --width 64 --height 36 --frames 8 --seed 7
-& $python -S tools/offline/run.py verify-sequence tmp/offline/sequence/inputs
-& $python -S tools/offline/run.py replay --sequence tmp/offline/sequence/inputs --backend-exe tmp/offline/replay-build/offline_replay_tests.exe --adapter warp --timeout 60 --output tmp/offline/replay-warp
-~~~
-
-Runner 核对序列、构建、输入和原始 float32 读回身份，并要求每帧具有递增 Fence 完成证明。后续帧输入损坏时，已完成帧的读回／Fence 留存，失败帧标记未完成，整体结果失败。Reset、Jitter、Motion Scale 与 Subrect 只验证 STATIC 元数据；回放只执行真实 D3D12 upload／copy／readback，不调用 NGX，也不重建网络 History。WARP 与 NVIDIA 资源执行分别标记 WARP／NATIVE_GPU。
-
-既有 FG／XeFG 合同通过 suite adapter 运行，不复制 GPU 调度实现：
+沿用[项目构建前提](../../README.md#zh-build)中的固定宿主、MSVC 与 Windows SDK。
+Python 工具仅用标准库。`gpu` 后端复用既有生成 Shader 头和 embed_file 工具，并在
+每个隔离构建目录重新用 FXC 编译当前 ControlMask Shader，通过预包含头绑定该字节码；
+不改共享生成目录。`replay` 仅复用通用 D3D12 测试助手，不生成或包含 ControlMask Shader。
+NGX 探针只用已有 SDK 头，不链接或打包第三方 Runtime。
 
 ~~~powershell
-$python = & pwsh -File tools/offline/test.ps1 -ResolveOnly
-& $python -S tools/offline/suites.py tests/fixtures/offline/fg-contracts.json --output tmp/offline/fg-contracts-run
+pwsh -File tools/offline/build.ps1 -Backend gpu -OutputDirectory tmp/offline/gpu-build
+pwsh -File tools/offline/build.ps1 -Backend replay -OutputDirectory tmp/offline/replay-build
+pwsh -File tools/offline/build.ps1 -Backend ngx -OutputDirectory tmp/offline/ngx-build
 ~~~
 
-报告区分 STATIC、MOCK、WARP、NATIVE_GPU、NATIVE_NGX、IN_GAME 与 VISUAL；fake SDK 不视作真实 SDK 执行。输出目录必须是新目录，失败报告和原始证据保留在 tmp/offline/。
+HostRoot、ShaderIncludeDirectory、Fxc、EmbedFile 参数可显式指定已有输入。
+脚本复用 tests/test-support.ps1，记录实际编译依赖、源码与 EXE 的 SHA-256、固定宿主、
+编译器和 SDK 身份，默认 Standard 成功后仅清理登记的 obj/lib/exp；构建不是运行通过。
+构建／运行目录使用本仓库 tmp/ 或 artifacts/ 下的新目录，不覆盖历史。
 
-## ControlMask 专项验证
+## Fixture、合成序列与原始数据
 
-使用同一构建入口选择 `-Backend gpu`，指定已准备的固定宿主、未变 Shader 的生成头目录、FXC 和 embed_file。当前工作树产品头优先于宿主 addon 映射；当前 `control_mask.cs_5_1.hlsl` 在本次输出目录重新编译并生成嵌入头，不修改共享生成文件。
+nr-nexus-offline-fixture/1 的 ControlMask case 规范化及验证以 control_mask_contracts.py 为准；
+contracts.py 维护通用 JSON、数值、文件身份与 Color／Depth／Motion 序列契约；ControlMask 的 Fixture schema 与 CLI 保持原版本和参数。
+顶层为 schema、fixture_id、可选 description 和 cases；case 必须有
+id、width、height，其他默认如下。未知字段、重复 ID（含 Windows 大小写冲突）、
+重复 JSON 键、非有限值及不支持的 schema 均拒绝。
+
+| 字段 | 默认／允许值 |
+| --- | --- |
+| mode | neutral；也支持 rgb、rect、green_rect、blue_rect |
+| rgb | [1,1,1]，各分量 0–1；Alpha 固定 1 |
+| rect | [0,0]，左上半开矩形；GRect/BRect 使用尺寸向下取半、忽略 RGB/rect |
+| model | A；支持 B，仅验证实际生产参数 setter 的创建请求 |
+| auto_mask、blend_mode | false、0；BlendMode 允许 0–3 |
+| frames、warmup | 8、2；帧数 1–4096，预热必须小于总帧数 |
 
 ~~~powershell
-pwsh -File tools/offline/build.ps1 -Backend gpu -HostRoot <固定宿主目录> -ShaderIncludeDirectory <已有生成头目录> -Fxc <fxc.exe> -EmbedFile <embed_file.exe> -OutputDirectory tmp/offline/control-mask-build
-$python = & pwsh -File tools/offline/test.ps1 -ResolveOnly
-& $python -B -S -m unittest discover -s tests -p 'test_control_mask_*.py' -v
-& $python -B -S tools/offline/control_mask.py tests/fixtures/offline/control-mask-smoke.json --backend-exe tmp/offline/control-mask-build/offline_gpu_tests.exe --adapter warp --output tmp/offline/control-mask-warp
-& $python -B -S tools/offline/control_mask.py --contracts --backend-exe tmp/offline/control-mask-build/offline_gpu_tests.exe --adapter warp --output tmp/offline/control-mask-contracts
-& $python -B -S tools/offline/control_mask.py tests/fixtures/offline/control-mask-smoke.json --backend-exe tmp/offline/control-mask-build/offline_gpu_tests.exe --adapter nvidia --output tmp/offline/control-mask-nvidia
+python tools/offline/run.py validate tests/fixtures/offline/control-mask-smoke.json
+python tools/offline/run.py matrix --output tmp/offline/matrix.json
+python tools/offline/run.py prepare --output tmp/offline/sequence --width 64 --height 36 --frames 8 --seed 7
+python tools/offline/run.py prepare --output tmp/offline/resize-sequence --width 64 --height 36 --frames 8 --resize-cycle 64x36 96x54 128x72 --subrect 8,4,40,24
+python tools/offline/run.py verify-sequence tmp/offline/sequence/inputs
 ~~~
 
-7-case smoke 覆盖中性、固定 RGB、矩形、G/B 通道和退化边界，独立 CPU oracle 检查原始 RGBA8 读回、FLOAT→UNORM 容差、提交完成和原始 timestamp。Shader 执行分别记录 WARP／NATIVE_GPU；模型 A/B、AutoMask、BlendMode 仅为 MOCK 参数合同。`--contracts` 仅接受 WARP，复用已有失败与资源退休测试，不提供 NVIDIA 对称入口。计时范围为 ControlMask dispatch 和 UAV barrier，不是 NR Evaluate 或游戏性能。
+矩阵覆盖 96 个 case：模型 A/B × AutoMask × 4 种 BlendMode × 5 种 mask，另含薄纹理、
+线程组边界及 R/G/B 对照。matrix --frames 1008 --warmup 8 可声明较长采样；是否适合
+正式性能比较还取决于测量 scope、设备、负载与输入身份。
 
-专项 CLI 复用通用输出路径、构建身份和设备核验，冻结专项及通用 Python 输入，并在执行后复核身份。每次使用新输出目录，保留 `result.json`、后端原始结果、读回与日志。专项 Python 文件命名为 `test_control_mask_*`，不加入通用 `test.ps1` 的 21 项回归。
-
-生产失败恢复通过已有 `fg-native` 夹具执行：
+真实尺寸 ControlMask Shader-only Fixture：
 
 ~~~powershell
-./tools/run-tests.ps1 -Suite fg-native -NativeCase @('control-mask-safety','control-mask-safety-hardware') -HostRoot <固定宿主目录> -ShaderIncludeDirectory <当前生成头目录> -UiPreview None -OutputDirectory tmp/tests/control-mask-safety
+pwsh -File tools/offline/build.ps1 -Backend gpu -OutputDirectory tmp/offline/gpu-build
+python tools/offline/run.py run --fixture tests/fixtures/offline/control-mask-raster-performance.json --backend-exe tmp/offline/gpu-build/offline_gpu_tests.exe --adapter nvidia --performance --timeout 300 --output tmp/offline/raster-nvidia
 ~~~
 
-两个 case 分别使用 WARP／NVIDIA，复用同一编译目标和真实 command list／queue／Fence。日志中每项 `CASE` 记录故障位置、8×8 输入、资源保留／重建状态和恢复条件。覆盖 Root Signature／PSO／Descriptor／资源分配失败、Evaluate 替身失败、未提交录制的 Reset 丢弃、池换 key／跨 owner 驱逐、健康在飞／完成后的复用准入、提交预约分配异常及 Signal 失败。三种提交故障还检查换 owner、输出轮换、选项关闭及 owner 释放／再注册后的资源数量，确认活跃或退休 ControlMask 资源仍存在时，未知提交会阻止继续分配。保守完成门禁另检查未知对象拒绝、同 recording 排他复用、健康 Fence 尚未完成时拒绝、同 owner 换输出不能绕过共享 History、Fence 完成但仍可 replay 时拒绝，以及完成并 Reset 后复用。旧的同 Queue 在飞连续 Evaluate 期望已改为跳过：Upscaled 录制时没有最终 Queue 保证。未知提交不以超时或测试独立 Fence 变成生产成功，pending／可重放录制保持保活。`control-mask` 保留为 WARP 入口。
+`--performance` 在同一生产 Dispatch helper 和同一 ControlMask Shader 下批量记录 D3D12 timestamp，稳态样本各自在最后一次 readback／Fence 后核实。Scope 明确为 Shader Dispatch 加其 UAV Barrier；结果另记设备／队列和生产管线初始化、每 case 资源／descriptor／query 分配估计、CPU 资源准备／命令录制／case wall time，以及可用时 `nvidia-smi` 前后时钟／负载快照。D3D12 timestamp frequency 是队列 tick 频率，不是核心频率；没有 GPU clock lock。WARP 只作功能回归，不将其运行时间作为硬件性能结论。该批处理用于重复采样而复用生产 Dispatch 和 Barrier，不代表产品 NR 多 Pass 调度；不包含 NR Evaluate、NGX、FG、输入生成、游戏或端到端成本。
 
-故障返回、NGX Runtime 和设备移除观察均为 MOCK；真实 GPU 证据只覆盖资源、Shader、提交与完成。移除观察在本次实际 GPU 工作独立完成后注入，验证旧设备拒绝处理、生产退休／计时消费者及独立新设备重建；不会主动移除真实设备。Upscaled 的 NGX 入口只提供 command list，最终 Queue 到提交拦截时才确定。ControlMask 相关路径复用全部 workset 对象、共享 NR handle／Look History 前，要求当前 recording 排他，或旧 recordings 均已不可 replay 且健康提交凭据全部完成；未满足时跳过注入，不新增 CPU 等待。完成对象的正证据仅保留所持 recording 的对象快照；未知／未追踪对象不能借用其他对象的凭据。默认关闭的旧 NR 不分配这些 observation；off→on 时等待旧精确追踪引用结束，再重建没有 ControlMask 正证据的 Feature／workset。DIRECT／COMPUTE 的共享状态规则与 Fence 串行共同构成资源合同，不以本门禁证明任意 Queue 类型、NGX 私有资源行为或所有 replay 序列。跨 Queue 原生 NGX、真实驱动故障、游戏接入与画质仍须分别验证。
+合成序列保存 little-endian 原始 Color R32G32B32A32_FLOAT、Depth R32_FLOAT、
+Motion R32G32_FLOAT，逐帧明确 Reset、Jitter、Motion Scale、Subrect、格式、长度与
+SHA-256。当前 moving-ramp/1 为周期水平平移、普通深度、零 jitter、首帧 reset；这是
+可重建的 CPU Fixture，可由 E0 后端上传到真实 D3D12 资源并完成 GPU copy／读回；
+生成阶段本身仅为 STATIC，GPU 传输验证不执行 NGX History。sequence/2 支持逐帧 Width／Height、资源重建及变化的 Subrect 边界；sequence/1 固定尺寸仍可读取。
+生成数据有 256 MiB 预算，不纳入 Git。
 
-## 自动回归
+## E0：float32 GPU 输入回放
 
-使用固定版本的 64 位 CPython 3.12.14；测试脚本验证解释器实际版本和架构，显式使用绝对路径，不依赖当前 shell 的 PATH。发现顺序为显式 -PythonPath／NR_NEXUS_PYTHON、Worktree .venv、用户 uv 托管安装和 Python 3.12 用户安装路径。测试只用 Python 标准库。运行 all 或 backend 测试集必须提供已构建 Replay EXE，防止真实后端测试被静默跳过。
+使用上面的 `-Backend replay` 构建得到 `offline_replay_tests.exe`。该目标与
+`tests/fg_xefg_tests.cpp` 共用 `tests/d3d12_test_gpu.hpp` 中的设备／Adapter、Queue／Command List、资源上传／读回、Barrier、Fence 及通用 timestamp 助手；
+不包含 ControlMask GPU harness，也不需要编译 ControlMask HLSL、FXC 或 embed_file。可直接运行或交由
+统一 runner 校验。`--sequence` 指向包含 `sequence.json` 和原始文件的目录，而非 JSON
+文件本身；`prepare` 示例对应 `tmp/offline/sequence/inputs`。
 
 ~~~powershell
-pwsh -File tools/offline/test.ps1 -ReplayBackendExe tmp/offline/replay-build/offline_replay_tests.exe -Adapter warp
-pwsh -File tools/offline/test.ps1 -TestSet all -ReplayBackendExe tmp/offline/replay-build/offline_replay_tests.exe -Adapter nvidia
+tmp/offline/replay-build/offline_replay_tests.exe --sequence tmp/offline/sequence/inputs --output tmp/offline/replay-direct-warp --adapter warp
+python tools/offline/run.py replay --sequence tmp/offline/sequence/inputs --backend-exe tmp/offline/replay-build/offline_replay_tests.exe --adapter nvidia --output tmp/offline/replay-nvidia
 ~~~
 
-TestSet 可选 all、backend、contracts 或 suites。all 运行全部 offline Python 测试；backend、contracts、suites 分别运行对应文件。`-ResolveOnly` 只输出同一发现逻辑核验过的 CPython 绝对路径，供 run.py／suites.py 等命令复用。解释器可由 PythonPath 参数或 NR_NEXUS_PYTHON 指定；uv 可由 NR_NEXUS_UV 指定。脚本不自动下载、安装或修改系统环境。
+可显式选择 `warp` 或 `nvidia`；NVIDIA 不可用时失败，不回退 WARP。每帧分别消费
+Color `R32G32B32A32_FLOAT`、Depth `R32_FLOAT`、Motion `R32G32_FLOAT`，按实际
+row pitch 完成 upload → 输入纹理 → 第二张 GPU 纹理 copy → readback，再导出紧排的
+float32 原始文件并逐字节核对。完成证据使用真实提交／Fence，逐帧完成序号递增；
+帧级证据为 WARP 或 NATIVE_GPU，不包含 NGX 执行或游戏画质结论。
 
-Windows CI 通过 `tools/offline/setup-python.ps1` 准备独立的 CPython 3.12.14 x64。归档来自 [Astral python-build-standalone 20260929](https://github.com/astral-sh/python-build-standalone/releases/tag/20260929)，URL 与 SHA-256 固定在 `host/tools.lock.json`；解压前核对归档哈希，之后复用 `test.ps1` 核验解释器版本和架构，不依赖 WindowsApps 或 PATH。脚本拒绝覆盖已有目录；本地可传 `-PythonRoot <新目录>`，标准输出为经过核验的解释器绝对路径。
+后端输出 `replay-backend-result.json`，schema 为 `nr-nexus-offline-replay-backend/1`，
+记录逐帧 resources 的格式、字节数、output_file、bitwise_equal 和 GPU completion。
+controls 中 Reset、Jitter、Motion Scale、Subrect 仅转录输入，标记 STATIC、
+`history_evaluated=false`；不会应用这些值、调用 SDK 或重建 NGX History。
 
-同一 Windows job 复用 Release 构建准备的固定宿主，通过 `build.ps1 -Backend replay` 构建真实 E0 EXE，再以 `test.ps1 -TestSet all -Adapter warp` 运行 21 项测试：7 项通用契约、7 项 suite adapter 合成合同和 7 项真实 Replay 后端回归。真实回放包括奇数行跨度、单像素宽度、动态 Resize／Subrect、失败帧保留及输出／路径保护。已有 FG／XeFG／生命周期执行仍由原 `tools/run-tests.ps1 -Suite all -SoftwareOnly` 覆盖，不再通过 suite adapter 重跑。缺少解释器或 Replay EXE 会失败；NVIDIA 硬件验证保留为本地入口。
+`run.py replay` 另行核验构建身份和输入 SHA-256，运行后再次核对输入，并独立检查
+全部读回资源与完成序号。统一输出为 `result.json`，原始后端结果与 float32 文件
+保留在 `backend/`。直接执行 EXE 不替代 runner 的输入 SHA-256 校验。
+后续帧输入损坏时，后端仍保留此前已完成帧的原始读回和 Fence 记录；失败帧保持
+`status=failed`、`gpu_completed=false`，整个结果为 failed，不覆盖已有输出。
 
-每次 CI 的 `offline-warp-<attempt>` artifact 在成功或失败时保留 `tmp/offline/` 下的编译日志、输入身份、Python 测试日志和原始回放结果，保存 14 天；解释器准备失败时可直接查看该步骤日志。该 artifact 仅供工程验证，不进入插件安装包。
+## 既有 FG／XeFG／生命周期套件统一入口
+
+用版本化 Fixture 将现有生产测试入口接入统一结果，不实现第二套 GPU 调度：
+
+~~~powershell
+python tools/offline/suites.py tests/fixtures/offline/fg-contracts.json --output tmp/offline/fg-contracts-run
+~~~
+
+Runner 调用 `tools/run-tests.ps1` 一次构建并运行 Fixture 指定的 `fg-native`、
+`fg-xefg`、`lifecycle` 用例，GPU case 仍由原测试二进制执行。`result.json` 逐 case
+核对原始日志／生命周期退出码和 suite 的 `result.json`，记录原始产物 SHA-256、
+Fixture 身份及执行前后源码身份；源码变化、缺失产物、错误 suite 结果、非零退出或
+超时均为失败，日志与部分产物保留。测试 suite 的输出放在本次报告目录下独立的
+`test-run/`，避免覆盖保护拒绝非空目录。
+
+Windows 上 Runner 将既有测试入口放入独立 Job Object；超时会终止并核对本次 Job
+中的进程树，再收集 stdout／stderr、部分 suite 产物和失败报告。Job 创建／分配、进程树
+回收或管道关闭无法核实都会保留失败状态，不把根进程退出误记作整个进程树已停止。
+
+版本化 Fixture 当前登记 17 项：同 Stage、跨 Stage、Render、Present 双 Pass 的同尺寸／独立尺寸及 WARP／NVIDIA 用例，另含 A/B 模型请求、Feature Switch、Present Chain、XeFG 资源合同与 DLL 生命周期。报告分别列出 STATIC、MOCK、WARP、NATIVE_GPU、NATIVE_NGX、IN_GAME、VISUAL。当前
+Fixture 中 FG 模型／SDK 为替身：`same-stage-model-pair`、`same-stage-mixed-pair`、
+`present-chain` 与 `feature-switch` 的资源／Shader／提交证据按 WARP 或硬件 case
+分别标记，参数与模型请求标 MOCK；XeFG resource lifecycle 是 WARP＋fake SDK MOCK，
+DLL 生命周期为 MOCK。NVIDIA GPU 资源通过不表示 NVIDIA NGX／XeFG SDK 已运行。
+
+## 真实 Shader 与参数矩阵
+
+~~~powershell
+python tools/offline/run.py run --fixture tests/fixtures/offline/control-mask-smoke.json --backend-exe tmp/offline/gpu-build/offline_gpu_tests.exe --adapter warp --output tmp/offline/smoke-warp
+python tools/offline/run.py run --matrix --backend-exe tmp/offline/gpu-build/offline_gpu_tests.exe --adapter nvidia --output tmp/offline/matrix-nvidia
+~~~
+
+设备选择明确，NVIDIA 不可用时失败，不回退 WARP。每帧执行生产 mask Shader、真实
+Barrier、提交／Fence、GPU timestamp 与读回；最后一帧保存紧凑 RGBA8，所有帧逐分量
+检查。FLOAT→UNORM 分数值遵循 D3D12 的 0.6 ULP 转换容差，0/1、Alpha和矩形边界严格
+验证；精确参考字节差异仍保留，不把合法量化差异写成 bitwise identical。
+Python 再独立核验最后一帧、全部原始 timestamp、完成序号与参数记录。
+run-start.json 只有开始凭据，只有完整 result.json 且 status=passed 才表示本次
+声明范围通过。超时会终止并等待本次独立后端，保留 failed 结果／日志；没有自动重试。
+
+结果 schema 为 nr-nexus-offline-result/1，原生后端为 nr-nexus-offline-backend/1：
+
+- 每个 case 的 checks 分开标记 Shader／完成／计时的 WARP 或 NATIVE_GPU，
+  以及模型请求／AutoMask／BlendMode 的 MOCK。参数写入通过不是 NVIDIA 网络执行。
+- build／fixture_sha256／runner_inputs 绑定实际源码、工具、依赖与可执行文件，runner/ 冻结本次 Python 源文件；
+  运行前后核对。environment 记录真实适配器、LUID、驱动查询、debug layer 可用性，
+  backend-result.json 保留原始 tick、频率、GPU 毫秒、预热和完成序号。
+- statistics 对真实有效稳态样本计算均值、范围、最近秩 P50/P95。scope 仅为
+  control-mask-dispatch，不含 NR Evaluate，不用于推断游戏帧率或网络性能。
+- not_evaluated 明确保留 NATIVE_NGX、IN_GAME、VISUAL。实际内部模型、网络对
+  mask 的因果、完整 History 回放、真实 FG SDK、动态拖影／闪烁不是本入口的通过项。
+
+已有失败注入、mask 生命周期、尺寸退休和失败保护由相同二进制复用，不重写：
+
+~~~powershell
+tmp/offline/gpu-build/offline_gpu_tests.exe --contracts --adapter warp --output tmp/offline/contracts
+~~~
+
+此入口返回独立 contracts 结果（MOCK＋WARP），不计入 96-case Shader 矩阵。已有
+tools/run-tests.ps1 的 fg-native suite 可定向执行 gpu-pass-diagnostics、control-mask-capture
+合同回归，不需要游戏。
+
+## NGX 可行性与输出对照
+
+~~~powershell
+tmp/offline/ngx-build/offline_ngx_tests.exe --runtime-dir <已有本地Runtime目录> --output tmp/offline/ngx-probe
+python tools/offline/run.py compare <原始输出1> <原始输出2> --storage f32le --data-range 1
+~~~
+
+探针详情、官方来源和阶段语义见 [ngx_probe.md](ngx_probe.md)。退出码 2 是保留证据的
+blocked，不是 Feature18 PASS；不能仅凭设备创建、导出名或成功 API 返回宣称原生
+Evaluate／GPU 完成。没有满足公开契约的原生路由时，其余离线能力仍可独立运行。
+
+原始对照支持 u8／f32le、exact、MAE、RMSE、PSNR；拒绝不匹配长度与非有限分量。
+data-range 必须按实际数据口径指定（例如 RGBA8 为 255）。相同图像的 PSNR 为 null、
+identical=true，避免不可移植的 JSON Infinity。比较工具只测给定数组，不推定来源或
+自动认定两个序列具有相同 History。
+
+## 自动回归与证据保存
+
+~~~powershell
+python -m unittest discover -s tests -p 'test_offline_*.py' -v
+~~~
+
+真实 EXE 边界测试通过 NR_NEXUS_OFFLINE_GPU_EXE、NR_NEXUS_REPLAY_BACKEND_EXE、
+NR_NEXUS_NGX_PROBE_EXE 指定已构建二进制。Replay 测试默认使用 WARP，可选设置
+NR_NEXUS_REPLAY_TEST_ADAPTER 为 `warp` 或 `nvidia`；NGX 本地 Runtime 核对另需
+NR_NEXUS_NGX_RUNTIME_DIR。缺输入明确跳过，不计为设备／Runtime 已测。三类后端的
+回归产物保留在 `tmp/offline/` 下每轮唯一的证据目录，测试输出实际目录，不自动清理。
+原有配置、预设、UI、Feature／History、FG／XeFG 和多尺寸 suite 按相关改动定向复用，
+不附带运行全量或游戏矩阵。
+
+原始 JSON、编译依赖、日志、Runtime 身份与捕获留在本地忽略目录。当前工具没有
+上传、游戏部署、驱动修改或发布动作；不要把本地结果、第三方 Runtime、模型和大型
+输入加入公开提交。公开仓库只保留代码、合成单测与小型 Fixture 定义。
+
+FLOAT→UNORM 依据：[Microsoft D3D12 constants](https://learn.microsoft.com/en-us/windows/win32/direct3d12/constants)
+中的 D3D12_FLOAT32_TO_INTEGER_TOLERANCE_IN_ULP，以及
+[Direct3D functional spec §3.2.3.6](https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm#FLOATtoUNORM)。

@@ -105,8 +105,8 @@ if (-not [string]::IsNullOrWhiteSpace($ReplayBackendExe)) {
 
 $patterns = switch ($TestSet) {
     'all' { @('test_offline_*.py') }
-    'backend' { @('test_offline_replay_backend.py') }
-    'contracts' { @('test_offline_replay_contracts.py') }
+    'backend' { @('test_offline_replay_backend.py', 'test_offline_gpu_backend.py', 'test_offline_ngx_probe.py') }
+    'contracts' { @('test_offline_contracts.py', 'test_offline_replay_contracts.py') }
     'suites' { @('test_offline_suites.py') }
 }
 $oldBackendExe = $env:NR_NEXUS_REPLAY_BACKEND_EXE
