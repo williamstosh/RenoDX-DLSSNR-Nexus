@@ -3457,6 +3457,9 @@ inline void Unhook() {
 }
 
 inline void OnInitDevice(reshade::api::device* device) {
+  // Prime outside the NGX evaluate detour: LoadLibrary can run the runtime's
+  // DllMain, whose NGX callback would re-enter the prime and deadlock.
+  PreloadNrRuntime(nullptr);
   {
     std::lock_guard lock(context_mutex);
     api_devices[reinterpret_cast<VkDevice>(device->get_native())] = device;
