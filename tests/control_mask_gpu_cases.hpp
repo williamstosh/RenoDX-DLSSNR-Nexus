@@ -356,12 +356,16 @@ void RunBorrowedCore(Gpu& gpu, bool hardware, bool second_adapter) {
 }
 
 void STDMETHODCALLTYPE ObservePipeline(ID3D12GraphicsCommandList* list, ID3D12PipelineState* pipeline) {
-  observed_pipeline = pipeline;
+  if (model_gpu != nullptr && list == model_gpu->list.Get()) {
+    observed_pipeline = pipeline;
+  }
   real_pipeline(list, pipeline);
 }
 
 void STDMETHODCALLTYPE ObserveDispatch(ID3D12GraphicsCommandList* list, UINT x, UINT y, UINT z) {
-  if (addon::codec_pipeline.control_mask != nullptr && observed_pipeline == addon::codec_pipeline.control_mask) {
+  if (model_gpu != nullptr && list == model_gpu->list.Get()
+      && addon::codec_pipeline.control_mask != nullptr
+      && observed_pipeline == addon::codec_pipeline.control_mask) {
     ++mask_dispatches;
   }
   real_dispatch(list, x, y, z);
@@ -532,8 +536,10 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
           "production evaluate wrapper calls its source once, including C-to-C++ delegation");
     gpu.Submit();
     addon::DrainRetiredResources(true);
-    Check(model_calls == model_before + 1 && mask_dispatches == dispatch_before + 1,
-          "production evaluate wrapper records one real NR path and one ControlMask dispatch");
+    Check(model_calls == model_before + 1,
+          "production evaluate wrapper records one real NR path");
+    Check(mask_dispatches == dispatch_before + 1,
+          "production evaluate wrapper records one ControlMask dispatch");
     const auto& wrapper_slot = addon::features.at(owner).slots[0];
     Check(!wrapper_slot.control_mask_bound
               && addon::GetD3D12Resource(wrapper_slot.parameters, "DLSSNR.ControlMask") == nullptr,
