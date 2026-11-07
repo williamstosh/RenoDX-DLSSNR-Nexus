@@ -129,7 +129,11 @@ NVSDK_NGX_Result NVSDK_CONV EvaluateModel(ID3D12GraphicsCommandList* list, const
   model_evaluated_handles.push_back(handle);
   if (++model_calls == fail_call) return NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
   auto* output = native::GetD3D12Resource(parameters, "DLSSNR.Output");
-  Check(output != nullptr && list == model_gpu->list.Get(), "model gets real output and game list");
+  ComPtr<ID3D12Device> evaluate_device;
+  const bool same_device = list != nullptr
+      && SUCCEEDED(list->GetDevice(IID_PPV_ARGS(&evaluate_device)))
+      && renodx::utils::directx::SameNativeObject(evaluate_device.Get(), model_gpu->device.Get());
+  Check(output != nullptr && same_device, "model gets real output and a command list from the test device");
   const auto desc = output->GetDesc();
   D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
   uint64_t bytes = 0;
@@ -3764,7 +3768,9 @@ int RunNativeOptionsResumeTest(bool delayed_options) {
 
 int RunPresentGuideModelsTest() {
   try {
-    reshade::internal::get_reshade_module_handle(GetModuleHandleW(nullptr));
+    const HMODULE test_module = GetModuleHandleW(nullptr);
+    reshade::internal::get_reshade_module_handle(test_module);
+    native::addon_module = test_module;
     ComPtr<ID3D12Debug> debug;
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) debug->EnableDebugLayer();
     Gpu gpu;
@@ -3860,6 +3866,7 @@ int RunPresentGuideModelsTest() {
     struct ConsumedMask {
       const NVSDK_NGX_Handle* model = nullptr;
       ID3D12Resource* depth = nullptr;
+      ID3D12Resource* motion = nullptr;
       ID3D12Resource* mask = nullptr;
     };
     std::array<ConsumedMask, 2> consumed_masks{};
@@ -3875,6 +3882,7 @@ int RunPresentGuideModelsTest() {
         consumed_masks[consumed_mask_count++] = {
             .model = model,
             .depth = native::GetD3D12Resource(block, "DLSSNR.Depth"),
+            .motion = native::GetD3D12Resource(block, "DLSSNR.MVec"),
             .mask = native::GetD3D12Resource(block, "DLSSNR.ControlMask")};
       };
       original_with_mask = native::RunNativePreFg(gpu.list.Get(), &fg_parameters, fg_handle);
@@ -3892,7 +3900,8 @@ int RunPresentGuideModelsTest() {
         const auto observed = std::find_if(consumed_masks.begin(), consumed_masks.end(),
             [model](const ConsumedMask& entry) { return entry.model == model; });
         Check(model != nullptr && observed != consumed_masks.end()
-                  && observed->depth == guides[3].Get() && observed->mask != nullptr,
+                  && observed->depth == guides[3].Get() && observed->motion == guides[2].Get()
+                  && observed->mask != nullptr,
             "native FG Backbuffer/HUDLess role consumes its mask with the current depth guide");
       }
       Check(consumed_masks[0].mask != consumed_masks[1].mask,
@@ -3902,6 +3911,87 @@ int RunPresentGuideModelsTest() {
     Check(original_with_mask == hudless.Get(), "native FG depth ControlMask reaches a completed two-color frame");
     native::RestoreNativePreFg(gpu.list.Get(), &fg_parameters, original_with_mask, true, fg_handle);
     submit();
+
+    native::direct_api = {};
+    native::direct_api.module = test_module;
+    native::direct_api.create = CreateModel;
+    native::direct_api.evaluate = EvaluateModel;
+    native::direct_api.release = ReleaseModel;
+    native::direct_load_state = native::DirectLoadState::Ready;
+    if (native::direct_device == nullptr) {
+      native::direct_device = gpu.device.Get();
+      native::direct_device->AddRef();
+    } else {
+      Check(native::direct_device == gpu.device.Get(), "XeFG mock runtime retains the test D3D12 device");
+    }
+    native::direct_device_native = gpu.device.Get();
+    native::parameter_runtime_ready = true;
+    native::parameter_runtime_via_core = false;
+    native::core_allocate_parameters = renodx::addons::dlss5::bridge::AllocateOwnedParameters;
+    native::core_destroy_parameters = renodx::addons::dlss5::bridge::DestroyOwnedParameters;
+    native::direct_runtime_requirements.file_version = "310.9.16.0";
+
+    adapter::modules[0].complete = true;
+    adapter::modules[0].real[0] = reinterpret_cast<void*>(&FakeInit);
+    adapter::modules[0].real[3] = reinterpret_cast<void*>(&FakeResource);
+    adapter::modules[0].real[4] = reinterpret_cast<void*>(&FakeConstants);
+    adapter::modules[0].real[5] = reinterpret_cast<void*>(&FakeId);
+    adapter::proxies[0].real[0] = reinterpret_cast<void*>(&FakePresent);
+    adapter::proxies[0].real[1] = reinterpret_cast<void*>(&FakePresent1);
+    xefg::Configure(&native::fg_service::Service, &Prepare, nullptr, &Requested);
+    uintptr_t xefg_context = 0;
+    fg::Result xefg_result = fg::Result::NOT_SERVED;
+    {
+      Session xefg_session(&gpu);
+      xefg_session.context->ui_composition = false;
+      xefg_context = reinterpret_cast<uintptr_t>(xefg_session.handle);
+      for (uint32_t frame = 0; frame < native::kContractDebounceFrames + 3
+           && xefg_result != fg::Result::SUBMITTED; ++frame) {
+        consumed_masks = {};
+        consumed_mask_count = 0;
+        const auto calls_before = model_calls;
+        model_parameter_observer = [&](const NVSDK_NGX_Handle* model, const NVSDK_NGX_Parameter* block) {
+          if (consumed_mask_count >= consumed_masks.size()) return;
+          consumed_masks[consumed_mask_count++] = {
+              .model = model,
+              .depth = native::GetD3D12Resource(block, "DLSSNR.Depth"),
+              .motion = native::GetD3D12Resource(block, "DLSSNR.MVec"),
+              .mask = native::GetD3D12Resource(block, "DLSSNR.ControlMask")};
+        };
+        const uint32_t present_id = 120u + frame;
+        xefg_session.Guides(present_id, guides[3].Get(), guides[2].Get());
+        xefg_session.Tag(present_id, HUDLESS, hudless.Get());
+        xefg_session.Present(present_id);
+        xefg_result = xefg::CurrentResult();
+        submit();
+        if (xefg_result != fg::Result::SUBMITTED) continue;
+
+        Check(model_calls == calls_before + 2 && consumed_mask_count == consumed_masks.size(),
+            "XeFG service submission evaluates both color roles with ControlMask enabled");
+        const auto& stream = native::fg_service::streams.at({false, xefg_context});
+        for (const auto& role : stream.roles) {
+          const auto model = native::features.at(role.Handle()).slots[0].handle;
+          const auto observed = std::find_if(consumed_masks.begin(), consumed_masks.end(),
+              [model](const ConsumedMask& entry) { return entry.model == model; });
+          Check(model != nullptr && observed != consumed_masks.end()
+                    && observed->depth == guides[3].Get() && observed->motion == guides[2].Get()
+                    && observed->mask != nullptr,
+              "XeFG Backbuffer/HUDLess role consumes the paired current guides and ControlMask");
+        }
+        Check(consumed_masks[0].mask != consumed_masks[1].mask,
+            "XeFG color roles own distinct ControlMask images");
+      }
+      model_parameter_observer = {};
+      Check(xefg_result == fg::Result::SUBMITTED,
+          "XeFG adapter reaches a submitted ControlMask frame with both colors");
+    }
+    xefg::Configure(&Service, &Prepare, nullptr, &Requested);
+    if (auto stream = native::fg_service::streams.find({false, xefg_context});
+        stream != native::fg_service::streams.end()) {
+      native::fg_service::Release(&stream->second);
+      native::fg_service::streams.erase(stream);
+    }
+    std::cout << "CASE path=XeFG-service roles=Backbuffer+HUDLess evidence=WARP+MOCK mask=bound+distinct" << std::endl;
     native::control_mask_enabled.store(saved_control_mask_enabled);
     native::control_mask_mode.store(saved_control_mask_mode);
     native::direct_runtime_requirements.file_version = saved_control_mask_runtime_version;
