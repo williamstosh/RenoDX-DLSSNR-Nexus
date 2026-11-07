@@ -708,6 +708,35 @@ int RunNativeRequiredMenuTest() {
 #include "control_mask_capture_cases.hpp"
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--vulkan-recorded-use-contract") == 0) {
+    try {
+      constexpr uint64_t use_id = 0xFFFFFFFFFFFFFFF0ull;
+      constexpr uint64_t second_use_id = 0xFFFFFFFFFFFFFFF1ull;
+      auto* const recording_a = reinterpret_cast<reshade::api::command_list*>(uintptr_t{0xC010});
+      auto* const recording_b = reinterpret_cast<reshade::api::command_list*>(uintptr_t{0xC020});
+
+      Check(native::vk::RecordedUseComplete(use_id), "unrecorded Vulkan use is retired");
+      native::vk::TrackRecordedUse(recording_a, use_id);
+      native::vk::TrackRecordedUse(recording_a, use_id);
+      native::vk::TrackRecordedUse(recording_b, use_id);
+      native::vk::TrackRecordedUse(recording_a, second_use_id);
+      Check(!native::vk::RecordedUseComplete(use_id),
+          "multiple Vulkan command-buffer recordings retain their shared resource use");
+
+      native::vk::ForgetRecordedUses(recording_a);
+      Check(!native::vk::RecordedUseComplete(use_id) && native::vk::RecordedUseComplete(second_use_id),
+          "resetting one Vulkan recording retires only uses exclusive to that recording");
+      native::vk::ForgetRecordedUses(recording_b);
+      native::vk::ForgetRecordedUses(recording_b);
+      Check(native::vk::RecordedUseComplete(use_id),
+          "shared Vulkan use retires after every recording is reset or freed");
+      std::cout << "PASS Vulkan recorded-use ledger: duplicate references deduplicate; retirement waits for every recording" << std::endl;
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << "FAIL Vulkan recorded-use ledger: " << error.what() << std::endl;
+      return 1;
+    }
+  }
   if (argc == 2 && std::strcmp(argv[1], "--control-mask-safety") == 0) return control_mask_gpu_cases::RunSafety(false);
   if (argc == 2 && std::strcmp(argv[1], "--control-mask-safety-hardware") == 0) return control_mask_gpu_cases::RunSafety(true);
   if (argc == 2 && std::strcmp(argv[1], "--control-mask-capture") == 0) return control_mask_capture_cases::Run();
