@@ -102,6 +102,8 @@ struct ModelObservation {
   uint32_t evaluation;
   uint32_t width;
   uint32_t height;
+  ID3D12Resource* depth;
+  ID3D12Resource* control_mask;
 };
 std::vector<ModelObservation> model_observations;
 uint32_t fail_model_call = 0;
@@ -134,7 +136,9 @@ NVSDK_NGX_Result NVSDK_CONV MotionEvaluateModel(ID3D12GraphicsCommandList* list,
       native::GetFloat(parameters, "DLSSNR.Intensity"), native::GetUInt(parameters, "DLSSNR.Style"),
       native::GetFloat(parameters, "DLSSNR.LocalToneStrength"), model->id, ++model->evaluations,
       static_cast<uint32_t>(native::GetD3D12Resource(parameters, "DLSSNR.Color")->GetDesc().Width),
-      native::GetD3D12Resource(parameters, "DLSSNR.Color")->GetDesc().Height});
+      native::GetD3D12Resource(parameters, "DLSSNR.Color")->GetDesc().Height,
+      native::GetD3D12Resource(parameters, "DLSSNR.Depth"),
+      native::GetD3D12Resource(parameters, "DLSSNR.ControlMask")});
   if (model_calls == fail_model_call) return NVSDK_NGX_Result_Fail;
   auto* output = native::GetD3D12Resource(parameters, "DLSSNR.Output");
   Check(output != nullptr, "model output is a real D3D12 resource");
@@ -570,6 +574,12 @@ int main(int argc, char** argv) {
     Check(SUCCEEDED(device->CreateClassLinkage(&linkage)), "sentinel linkage");
     Check(SUCCEEDED(device->CreateComputeShader(bytecode->GetBufferPointer(), bytecode->GetBufferSize(), linkage.Get(), &saved_shader)), "sentinel shader");
     Check(SUCCEEDED(linkage->CreateClassInstance("MotionSentinel", 0, 0, 0, 0, &saved_instance)), "sentinel class instance");
+    const bool saved_control_mask_enabled = native::control_mask_enabled.exchange(true);
+    const uint32_t saved_control_mask_mode = native::control_mask_mode.exchange(native::kControlMaskDepthFar);
+    const std::string saved_control_mask_runtime_version = native::direct_runtime_requirements.file_version;
+    const bool saved_d3d11_swapchain_seen = native::d3d11_swapchain_seen.exchange(true);
+    const uint8_t saved_dx11_route = native::dx11_route.exchange(native::kDx11RouteNative);
+    native::direct_runtime_requirements.file_version = "310.9.16.0";
     for (bool pre : {false, true}) {
       if (dlaa_only) break;
       for (int variant = 0; variant < 3; ++variant) {
@@ -629,6 +639,31 @@ int main(int argc, char** argv) {
         }
         Check(delivered && model_calls > calls_before, "real RunBridge delivers model GPU output");
         auto& set = native::bridge_sets.at(handle)[pre ? 1 : 0];
+        Check(model_calls == calls_before + 1, "bridge evaluation records one ControlMask consumer");
+        auto& mask_workset = native::worksets.at({handle, pre ? set.color12 : set.output12, pre});
+        const auto& observed = model_observations[calls_before];
+        Check(observed.depth == set.depth12 && observed.control_mask != nullptr
+                  && observed.control_mask == mask_workset.control_mask,
+            "D3D11 Bridge binds its converted depth twin and generated ControlMask to NGX");
+        auto& owner_feature = native::features.at(handle);
+        auto* execution_feature = pre && owner_feature.render_session != nullptr
+            ? owner_feature.render_session.get() : &owner_feature;
+        Check(execution_feature->control_mask_stream != nullptr,
+            "D3D11 Bridge owns an ordered ControlMask submission stream");
+        const auto execution_status = renodx::addons::dlss5::control_mask_execution::GetStatus(
+            execution_feature->control_mask_stream);
+        Check(execution_status.recording_submitted && !execution_status.poisoned
+                  && !execution_status.history_invalidated,
+            "D3D11 Bridge queue submission completed in ControlMask history order");
+        const auto mask_desc = mask_workset.control_mask->GetDesc();
+        const auto mask_pixels = Read12(mask_workset.control_mask, 4, mask_workset.control_mask_state);
+        const auto expected_mask_desc = (pre ? set.color12 : set.output12)->GetDesc();
+        bool near_depth_mask = mask_desc.Width == expected_mask_desc.Width
+            && mask_desc.Height == expected_mask_desc.Height
+            && mask_pixels.size() == mask_desc.Width * mask_desc.Height * 4;
+        for (const auto pixel : mask_pixels) near_depth_mask &= pixel == 255;
+        Check(near_depth_mask,
+            "D3D11 Bridge depth-far mask readback is full-size and white for near depth");
         Check(set.usable && set.motion_convert == convert && set.depth_convert == depth_convert, "selected conversion paths");
         Check(pre ? (set.color11 && !set.output11) : (!set.color11 && set.output11), "Render/Upscaled twin selection");
         Check(set.color12->GetDesc().Width == width && set.output12->GetDesc().Width == 17, "distinct input/output geometry");
@@ -720,6 +755,11 @@ int main(int argc, char** argv) {
             pre ? "Render" : "Upscaled", convert ? "RG32 fallback" : "RG16 direct", depth_convert ? "converted" : "direct");
       }
     }
+    native::control_mask_mode.store(saved_control_mask_mode);
+    native::control_mask_enabled.store(saved_control_mask_enabled);
+    native::direct_runtime_requirements.file_version = saved_control_mask_runtime_version;
+    native::d3d11_swapchain_seen.store(saved_d3d11_swapchain_seen);
+    native::dx11_route.store(saved_dx11_route);
     for (uint32_t fixture = (dlaa_only ? 1u : 0u); fixture < (sr_only ? 1u : 3u); ++fixture) {
       const UINT output_width = (fixture == 0 ? 17u : width);
       const UINT output_height = (fixture == 0 ? 11u : height);

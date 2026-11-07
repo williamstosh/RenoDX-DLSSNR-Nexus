@@ -76,6 +76,7 @@ typedef struct VkBufferMemoryBarrier {
 } VkBufferMemoryBarrier;
 typedef enum VkFormat {
   VK_FORMAT_UNDEFINED = 0,
+  VK_FORMAT_R8G8B8A8_UNORM = 37,
   VK_FORMAT_R16_SFLOAT = 76,
   VK_FORMAT_R16G16_SFLOAT = 83,
   VK_FORMAT_R16G16B16A16_SFLOAT = 97,
@@ -83,6 +84,12 @@ typedef enum VkFormat {
   VK_FORMAT_R32G32_SFLOAT = 103,
   VK_FORMAT_R32G32B32A32_SFLOAT = 109,
   VK_FORMAT_B10G11R11_UFLOAT_PACK32 = 122,
+  VK_FORMAT_D16_UNORM = 124,
+  VK_FORMAT_X8_D24_UNORM_PACK32 = 125,
+  VK_FORMAT_D32_SFLOAT = 126,
+  VK_FORMAT_D16_UNORM_S8_UINT = 128,
+  VK_FORMAT_D24_UNORM_S8_UINT = 129,
+  VK_FORMAT_D32_SFLOAT_S8_UINT = 130,
   VK_FORMAT_MAX_ENUM = 0x7FFFFFFF
 } VkFormat;
 typedef enum VkImageAspectFlagBits {
@@ -312,6 +319,7 @@ enum Surface : uint32_t {
   kBandMaxA,
   kBandMaxB,
   kLookScratch,
+  kControlMask,
   kSurfaceCount,
 };
 struct Workset {
@@ -865,6 +873,29 @@ enum Program : uint32_t {
 inline reshade::api::pipeline_layout codec_layout = {};
 inline reshade::api::pipeline codec_programs[kProgramCount] = {};
 inline bool codec_failed = false;
+inline reshade::api::pipeline_layout control_mask_layout = {};
+inline reshade::api::pipeline control_mask_program = {};
+inline bool control_mask_pipeline_failed = false;
+inline std::atomic_bool control_mask_pipeline_logged{false};
+inline std::atomic_bool control_mask_version_logged{false};
+inline std::atomic_bool control_mask_resource_logged{false};
+inline std::atomic_bool control_mask_depth_logged{false};
+inline std::atomic_bool control_mask_active_logged{false};
+inline bool ControlMaskDepthFormat(VkFormat format) {
+  switch (format) {
+    case VK_FORMAT_R16_SFLOAT:
+    case VK_FORMAT_R32_SFLOAT:
+    case VK_FORMAT_D16_UNORM:
+    case VK_FORMAT_X8_D24_UNORM_PACK32:
+    case VK_FORMAT_D32_SFLOAT:
+    case VK_FORMAT_D16_UNORM_S8_UINT:
+    case VK_FORMAT_D24_UNORM_S8_UINT:
+    case VK_FORMAT_D32_SFLOAT_S8_UINT:
+      return true;
+    default:
+      return false;
+  }
+}
 // The look stage's two programs (the D3D12 look_band and look_compose, as
 // vk_look_*.comp.slang) on their own layout: t0..t4 = bindings 0..4, u0..u8
 // = 5..13 (u7 a storage buffer), the history images = 14/15, 35 constants.
@@ -1578,6 +1609,39 @@ inline bool EnsureCodec(reshade::api::device* device) {
   return true;
 }
 
+// ControlMask is optional to the Vulkan codec. Keep its pipeline separate so
+// a driver or shader failure disables only the mask and leaves NR available.
+inline bool EnsureControlMaskPipeline(reshade::api::device* device) {
+  if (control_mask_program.handle != 0) return true;
+  if (control_mask_pipeline_failed) return false;
+  using namespace reshade::api;
+  const descriptor_range ranges[] = {
+      {0, 0, 0, 1, shader_stage::all_compute, 1, descriptor_type::texture_shader_resource_view},
+      {4, 0, 0, 1, shader_stage::all_compute, 1, descriptor_type::texture_unordered_access_view},
+  };
+  pipeline_layout_param params[2];
+  params[0].type = pipeline_layout_param_type::push_descriptors_with_ranges;
+  params[0].descriptor_table = {2, ranges};
+  params[1] = constant_range{0, 0, 0, 16, shader_stage::all_compute};
+  bool made = device->create_pipeline_layout(2, params, &control_mask_layout);
+  if (made) {
+    shader_desc shader = {__vk_control_mask.data(), __vk_control_mask.size(), "main"};
+    const pipeline_subobject subobject = {pipeline_subobject_type::compute_shader, 1, &shader};
+    made = device->create_pipeline(control_mask_layout, 1, &subobject, &control_mask_program);
+  }
+  if (made) return true;
+  if (control_mask_program.handle != 0) device->destroy_pipeline(control_mask_program);
+  control_mask_program = {};
+  if (control_mask_layout.handle != 0) device->destroy_pipeline_layout(control_mask_layout);
+  control_mask_layout = {};
+  control_mask_pipeline_failed = true;
+  if (!control_mask_pipeline_logged.exchange(true, std::memory_order_relaxed)) {
+    Log(reshade::log::level::warning,
+        "ControlMask is unavailable on Vulkan because its pipeline could not be created; NR continues unmasked");
+  }
+  return false;
+}
+
 inline void DestroyWorkset(reshade::api::device* device, const Workset& workset) {
   for (const auto view : workset.views) {
     if (view.handle != 0) device->destroy_resource_view(view);
@@ -1693,13 +1757,14 @@ inline void FreeFeatureNr(Feature* feature, bool release_nr = true) {
 
 inline NVSDK_NGX_Resource_VK ImageResource(reshade::api::resource_view view,
                                            reshade::api::resource image, uint32_t width,
-                                           uint32_t height, bool read_write) {
+                                           uint32_t height, bool read_write,
+                                           VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT) {
   NVSDK_NGX_Resource_VK resource = {};
   resource.Type = NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW;
   resource.ReadWrite = read_write;
   resource.Resource.ImageViewInfo = {
       reinterpret_cast<VkImageView>(view.handle), reinterpret_cast<VkImage>(image.handle),
-      {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, VK_FORMAT_R16G16B16A16_SFLOAT, width, height};
+      {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, format, width, height};
   return resource;
 }
 
@@ -2131,6 +2196,9 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
         image_width = image_height = 1;
         image_format = format::r32g32b32a32_uint;
         break;
+      case kControlMask:
+        image_format = format::r8g8b8a8_unorm;
+        break;
       case kBandA:
       case kBandB:
       case kBandMaxA:
@@ -2186,6 +2254,22 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
   } else {
     // Legacy: pass p < last writes stack[p & 1], the last pass the output.
     made = made && (passes < 2 || ensure(kStack0)) && (passes < 3 || ensure(kStack1));
+  }
+  const bool control_mask_requested = control_mask_enabled.load(std::memory_order_relaxed);
+  const bool control_mask_version_supported = control_mask_requested
+      && nr_model::SupportsControlMask(direct_runtime_requirements.file_version);
+  bool control_mask_surface_ready = false;
+  if (made && control_mask_version_supported && EnsureControlMaskPipeline(api_device)) {
+    control_mask_surface_ready = ensure(kControlMask);
+    if (!control_mask_surface_ready
+        && !control_mask_resource_logged.exchange(true, std::memory_order_relaxed)) {
+      Log(reshade::log::level::warning,
+          "ControlMask is unavailable on Vulkan because its image or view could not be created; NR continues unmasked");
+    }
+  } else if (control_mask_requested && !control_mask_version_supported
+             && !control_mask_version_logged.exchange(true, std::memory_order_relaxed)) {
+    Log(reshade::log::level::warning,
+        "ControlMask is unavailable on Vulkan because the active NR runtime is not the validated 310.9.16.0 build");
   }
   if (!made) {
     static std::atomic_bool logged{false};
@@ -2435,6 +2519,35 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
   const uint32_t render_height =
       GetUInt(parameters, NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height,
               depth->Resource.ImageViewInfo.Height);
+  const uint32_t depth_base_x =
+      GetUInt(parameters, NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X);
+  const uint32_t depth_base_y =
+      GetUInt(parameters, NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y);
+  const uint32_t control_mask_mode_snapshot = control_mask_mode.load(std::memory_order_relaxed);
+  const NVSDK_NGX_ImageViewInfo_VK& depth_info = depth->Resource.ImageViewInfo;
+  const bool control_mask_depth_usable = ControlMaskDepthFormat(depth_info.Format)
+      && depth_info.Width != 0 && depth_info.Height != 0
+      && depth_base_x <= depth_info.Width && render_width <= depth_info.Width - depth_base_x
+      && depth_base_y <= depth_info.Height && render_height <= depth_info.Height - depth_base_y;
+  if (control_mask_requested && control_mask_mode_snapshot == kControlMaskDepthFar
+      && !control_mask_depth_usable
+      && !control_mask_depth_logged.exchange(true, std::memory_order_relaxed)) {
+    Log(reshade::log::level::warning,
+        "ControlMask depth-far is skipped on Vulkan because the current depth format or subrect is unsupported");
+  }
+  std::array<float, 3> control_mask_rgb{1.f, 1.f, 1.f};
+  if (control_mask_mode_snapshot == kControlMaskRgb
+      || control_mask_mode_snapshot == kControlMaskRect
+      || control_mask_mode_snapshot == kControlMaskDepthFar) {
+    control_mask_rgb = {
+        std::clamp(control_mask_red.load(std::memory_order_relaxed), 0.f, 1.f),
+        std::clamp(control_mask_green.load(std::memory_order_relaxed), 0.f, 1.f),
+        std::clamp(control_mask_blue.load(std::memory_order_relaxed), 0.f, 1.f)};
+  }
+  const uint32_t control_mask_blend = control_mask_blend_mode.load(std::memory_order_relaxed);
+  const bool control_mask_eligible = control_mask_requested && control_mask_version_supported
+      && control_mask_surface_ready
+      && (control_mask_mode_snapshot != kControlMaskDepthFar || control_mask_depth_usable);
   const uint32_t motion_x = GetUInt(parameters, NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X);
   const uint32_t motion_y = GetUInt(parameters, NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y);
   // The shared contract helper uses only Width/Height from this description.
@@ -2458,6 +2571,38 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
   // Every pass of this frame resets against the same epoch (ProcessInline).
   const uint64_t chain_reset_epoch = history_reset_epoch.load(std::memory_order_relaxed);
   const resource_view output_view = {reinterpret_cast<uint64_t>(out.ImageView)};
+  const auto dispatch_control_mask = [&] {
+    transition(kControlMask, resource_usage::unordered_access);
+    struct ControlMaskConstants {
+      uint32_t width, height, mode, rect_width, rect_height;
+      float red, green, blue;
+      uint32_t depth_base_x, depth_base_y, depth_width, depth_height;
+      uint32_t depth_inverted;
+      float depth_near, depth_far;
+      uint32_t padding;
+    } constants{
+        width, height, control_mask_mode_snapshot, width / 2, height / 2,
+        control_mask_rgb[0], control_mask_rgb[1], control_mask_rgb[2],
+        depth_base_x, depth_base_y, render_width, render_height,
+        ResolveDepthInverted(feature.create_flags) ? 1u : 0u,
+        control_mask_depth_near.load(std::memory_order_relaxed),
+        control_mask_depth_far.load(std::memory_order_relaxed), 0};
+    static_assert(sizeof(ControlMaskConstants) == 16 * sizeof(uint32_t));
+    const resource_view depth_view{reinterpret_cast<uint64_t>(depth_info.ImageView)};
+    {
+      const SampledInputScope sampled_depth(cmd, depth);
+      cmd->bind_pipeline(pipeline_stage::all_compute, control_mask_program);
+      cmd->push_descriptors(
+          shader_stage::all_compute, control_mask_layout, 0,
+          {{}, 0, 0, 1, descriptor_type::texture_shader_resource_view, &depth_view});
+      cmd->push_descriptors(
+          shader_stage::all_compute, control_mask_layout, 0,
+          {{}, 4, 0, 1, descriptor_type::texture_unordered_access_view, &views[kControlMask]});
+      cmd->push_constants(shader_stage::all_compute, control_mask_layout, 1, 0, 16, &constants);
+      cmd->dispatch((width + 15) / 16, (height + 15) / 16, 1);
+    }
+    transition(kControlMask, resource_usage::shader_resource);
+  };
   float final_transfer = 0.f;
   float final_color = 0.f;
   bool any_look_shaped = false;
@@ -2505,6 +2650,31 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
     // 3. Feature 18: proxy -> neural, with the game's own guides.
     NrFeatureSlot& slot = feature.slots[pass];
     NVSDK_NGX_Parameter* const nr = slot.parameters;
+    NVSDK_NGX_Resource_VK control_mask_vk{};
+    bool pass_control_mask_eligible = control_mask_eligible;
+    if (pass_control_mask_eligible) {
+      dispatch_control_mask();
+      control_mask_vk = ImageResource(views[kControlMask], images[kControlMask], width, height, false,
+                                      VK_FORMAT_R8G8B8A8_UNORM);
+      nr->Set("DLSSNR.ControlMask", static_cast<void*>(&control_mask_vk));
+      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectBaseX", 0);
+      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectBaseY", 0);
+      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectWidth", width);
+      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectHeight", height);
+      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.MaskBlendMode", control_mask_blend);
+      slot.control_mask_bound = true;
+      if (!control_mask_active_logged.exchange(true, std::memory_order_relaxed)) {
+        Log(reshade::log::level::info,
+            "ControlMask active on Vulkan: Feature 18 receives the generated per-pass RGBA8 image");
+      }
+    } else {
+      nr->Set("DLSSNR.ControlMask", static_cast<void*>(nullptr));
+      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectBaseX", 0);
+      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectBaseY", 0);
+      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectWidth", 0);
+      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectHeight", 0);
+      slot.control_mask_bound = false;
+    }
     nr->Set("DLSSNR.Color", static_cast<void*>(&proxy_vk));
     nr->Set("DLSSNR.Output", static_cast<void*>(&neural_vk));
     nr->Set("DLSSNR.MVec", static_cast<void*>(motion));
@@ -2557,6 +2727,15 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
       }
     }
     last_result = static_cast<uint32_t>(result);
+    nr->Set("DLSSNR.ControlMask", static_cast<void*>(nullptr));
+    NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectBaseX", 0);
+    NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectBaseY", 0);
+    NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectWidth", 0);
+    NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectHeight", 0);
+    slot.control_mask_bound = false;
+    if (pass_control_mask_eligible) {
+      transition(kControlMask, resource_usage::unordered_access);
+    }
     transition(kNeural, resource_usage::shader_resource);
     if (NVSDK_NGX_FAILED(result)) {
       // The output is untouched (the passes before this one wrote only
@@ -2838,6 +3017,11 @@ inline void OnDestroyGameDevice() {
   }
   if (codec_layout.handle != 0) device->destroy_pipeline_layout(codec_layout);
   codec_layout = {};
+  if (control_mask_program.handle != 0) device->destroy_pipeline(control_mask_program);
+  control_mask_program = {};
+  if (control_mask_layout.handle != 0) device->destroy_pipeline_layout(control_mask_layout);
+  control_mask_layout = {};
+  control_mask_pipeline_failed = false;
   for (reshade::api::pipeline* program : {&look_band, &look_compose}) {
     if (program->handle != 0) device->destroy_pipeline(*program);
     *program = {};

@@ -556,6 +556,116 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   exercise_hook(false);
   exercise_hook(true);
   {
+    const auto* present_owner = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xC04AA});
+    addon::RegisterCreatedFeatureLocked(present_owner, addon::kFeatureDlss, &parameters);
+    const uint32_t saved_control_mask_mode = addon::control_mask_mode.exchange(addon::kControlMaskDepthFar);
+    auto present_output = texture(DXGI_FORMAT_R8G8B8A8_UNORM, true);
+    gpu.Write(present_output.Get(), 96);
+    parameters.Set(NVSDK_NGX_Parameter_Output, present_output.Get());
+    addon::PresentTarget target{};
+    target.workset_key = source.Get();
+    target.domain = renodx::addons::dlss5::present_restore_scope::Domain::FINAL_PRESENT;
+    target.guide_serial = 1;
+    const auto saved_parameter_observer = model_parameter_observer;
+    ID3D12Resource* present_mask = nullptr;
+    model_parameter_observer = [&](const NVSDK_NGX_Handle*, const NVSDK_NGX_Parameter* block) {
+      present_mask = addon::GetD3D12Resource(block, "DLSSNR.ControlMask");
+    };
+    bool present_ready = false;
+    for (uint32_t attempt = 0; attempt < addon::kContractDebounceFrames + 32; ++attempt) {
+      const auto model_before = model_calls;
+      bool touched = false;
+      const bool ran = addon::ProcessInline(gpu.list.Get(), present_owner, &parameters, &touched, &target);
+      gpu.Submit();
+      addon::DrainRetiredResources(true);
+      if (!ran || model_calls != model_before + 1) continue;
+      Check(touched && present_mask != nullptr,
+            "ordinary final-Present production evaluation binds its generated ControlMask");
+      present_ready = true;
+      break;
+    }
+    Check(present_ready, "ordinary final-Present ControlMask route matures within bounded attempts");
+    auto& feature = addon::features.at(present_owner);
+    Check(!feature.slots[0].control_mask_bound
+              && addon::GetD3D12Resource(feature.slots[0].parameters, "DLSSNR.ControlMask") == nullptr,
+          "ordinary final-Present evaluation clears its transient ControlMask binding");
+    Check(addon::worksets.at({present_owner, source.Get(), false}).control_mask == present_mask,
+          "ordinary final-Present mask workset remains owned after Fence completion");
+    std::cout << "CASE path=D3D12-final-Present gpu=" << (hardware ? "NATIVE_GPU" : "WARP")
+              << " ngx=MOCK completion=Fence mask=bound+cleared" << std::endl;
+    target.guide_serial = 0;
+    for (uint32_t attempt = 0; attempt < addon::kContractDebounceFrames + 32; ++attempt) {
+      const auto model_before = model_calls;
+      bool touched = false;
+      present_mask = nullptr;
+      addon::ProcessInline(gpu.list.Get(), present_owner, &parameters, &touched, &target);
+      gpu.Submit();
+      addon::DrainRetiredResources(true);
+      if (model_calls == model_before + 1) {
+        Check(present_mask == nullptr,
+              "final Present without a real depth-guide serial evaluates without ControlMask");
+        break;
+      }
+    }
+    Check(present_mask == nullptr && !feature.slots[0].control_mask_bound
+              && addon::GetD3D12Resource(feature.slots[0].parameters, "DLSSNR.ControlMask") == nullptr,
+          "final Present without guide provenance is refused or evaluated with no ControlMask binding");
+    const std::array pre_fg_roles{
+        std::pair{renodx::addons::dlss5::present_restore_scope::Domain::PRE_FG_BACKBUFFER, uintptr_t{0xC04AB}},
+        std::pair{renodx::addons::dlss5::present_restore_scope::Domain::PRE_FG_HUDLESS, uintptr_t{0xC04AC}}};
+    for (const auto& [domain, owner_value] : pre_fg_roles) {
+      const auto* role_owner = reinterpret_cast<const NVSDK_NGX_Handle*>(owner_value);
+      addon::RegisterCreatedFeatureLocked(role_owner, addon::kFeatureDlss, &parameters);
+      auto role_output = texture(DXGI_FORMAT_R8G8B8A8_UNORM, true);
+      gpu.Write(role_output.Get(), 96);
+      parameters.Set(NVSDK_NGX_Parameter_Output, role_output.Get());
+      addon::PresentTarget role_target = target;
+      role_target.domain = domain;
+      role_target.guide_serial = 1;
+      bool role_ready = false;
+      for (uint32_t attempt = 0; attempt < addon::kContractDebounceFrames + 32; ++attempt) {
+        const auto model_before = model_calls;
+        bool touched = false;
+        present_mask = nullptr;
+        const bool ran = addon::ProcessInline(gpu.list.Get(), role_owner, &parameters, &touched, &role_target);
+        gpu.Submit();
+        addon::DrainRetiredResources(true);
+        if (!ran || model_calls != model_before + 1) continue;
+        Check(touched && present_mask != nullptr,
+              "pre-FG Backbuffer/HUDLess evaluation binds its generated depth ControlMask");
+        role_ready = true;
+        break;
+      }
+      Check(role_ready, "pre-FG Backbuffer/HUDLess ControlMask route matures within bounded attempts");
+      auto& role_feature = addon::features.at(role_owner);
+      Check(!role_feature.slots[0].control_mask_bound
+                && addon::GetD3D12Resource(role_feature.slots[0].parameters, "DLSSNR.ControlMask") == nullptr
+                && addon::worksets.at({role_owner, source.Get(), false}).control_mask == present_mask,
+            "pre-FG role clears its NGX binding while retaining the completed mask workset");
+      std::cout << "CASE path=FG-input-role domain=" << static_cast<uint32_t>(domain)
+                << " gpu=" << (hardware ? "NATIVE_GPU" : "WARP")
+                << " ngx=MOCK completion=Fence mask=bound+cleared" << std::endl;
+      role_target.guide_serial = 0;
+      present_mask = nullptr;
+      const auto model_before_missing_guide = model_calls;
+      addon::ProcessInline(gpu.list.Get(), role_owner, &parameters, nullptr, &role_target);
+      gpu.Submit();
+      addon::DrainRetiredResources(true);
+      Check(present_mask == nullptr && model_calls <= model_before_missing_guide + 1
+                && !role_feature.slots[0].control_mask_bound
+                && addon::GetD3D12Resource(role_feature.slots[0].parameters, "DLSSNR.ControlMask") == nullptr,
+            "pre-FG role without guide provenance cannot retain or consume a depth ControlMask");
+      parameters.Set(NVSDK_NGX_Parameter_Output, output.Get());
+      addon::ForgetSourceHandleLocked(role_owner);
+      addon::DrainRetiredResources(true);
+    }
+    parameters.Set(NVSDK_NGX_Parameter_Output, output.Get());
+    model_parameter_observer = saved_parameter_observer;
+    addon::control_mask_mode.store(saved_control_mask_mode);
+    addon::ForgetSourceHandleLocked(present_owner);
+    addon::DrainRetiredResources(true);
+  }
+  {
     const uint32_t saved_hook_point = addon::hook_point.exchange(addon::kHookRender);
     const uint32_t saved_stack_passes = addon::stack_passes.exchange(2);
     const uint32_t saved_second_stage = addon::pass_stage[0].exchange(2);

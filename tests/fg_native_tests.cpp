@@ -2,6 +2,7 @@
 #define NR_NEXUS_TEST_SUBMISSION_FAILURE
 #include <windows.h>
 #include <d3d12sdklayers.h>
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -3850,6 +3851,60 @@ int RunPresentGuideModelsTest() {
       gpu.Write(guides[i].Get(), 0);
       gpu.Transition(guides[i].Get(), D3D12_RESOURCE_STATE_COMMON, NATIVE_INPUT_STATE);
     }
+    const bool saved_control_mask_enabled = native::control_mask_enabled.exchange(true);
+    const uint32_t saved_control_mask_mode = native::control_mask_mode.exchange(native::kControlMaskDepthFar);
+    const std::string saved_control_mask_runtime_version = native::direct_runtime_requirements.file_version;
+    native::direct_runtime_requirements.file_version = "310.9.16.0";
+    fg_parameters.Set(NVSDK_NGX_DLSSG_Parameter_MVecs, guides[2].Get());
+    fg_parameters.Set(NVSDK_NGX_DLSSG_Parameter_Depth, guides[3].Get());
+    struct ConsumedMask {
+      const NVSDK_NGX_Handle* model = nullptr;
+      ID3D12Resource* depth = nullptr;
+      ID3D12Resource* mask = nullptr;
+    };
+    std::array<ConsumedMask, 2> consumed_masks{};
+    uint32_t consumed_mask_count = 0;
+    ID3D12Resource* original_with_mask = nullptr;
+    for (uint32_t attempt = 0;
+         attempt < native::kContractDebounceFrames + 2 && original_with_mask == nullptr; ++attempt) {
+      consumed_masks = {};
+      consumed_mask_count = 0;
+      const auto calls_before = model_calls;
+      model_parameter_observer = [&](const NVSDK_NGX_Handle* model, const NVSDK_NGX_Parameter* block) {
+        if (consumed_mask_count >= consumed_masks.size()) return;
+        consumed_masks[consumed_mask_count++] = {
+            .model = model,
+            .depth = native::GetD3D12Resource(block, "DLSSNR.Depth"),
+            .mask = native::GetD3D12Resource(block, "DLSSNR.ControlMask")};
+      };
+      original_with_mask = native::RunNativePreFg(gpu.list.Get(), &fg_parameters, fg_handle);
+      if (original_with_mask == nullptr) {
+        submit();
+        continue;
+      }
+      Check(original_with_mask == hudless.Get() && model_calls == calls_before + 2
+                && consumed_mask_count == consumed_masks.size(),
+            "real native FG input frame evaluates both color roles with depth ControlMask enabled");
+      const auto& native_stream = native::fg_service::streams.at(
+          {true, reinterpret_cast<uintptr_t>(&owner)});
+      for (const auto& role : native_stream.roles) {
+        const auto model = native::features.at(role.Handle()).slots[0].handle;
+        const auto observed = std::find_if(consumed_masks.begin(), consumed_masks.end(),
+            [model](const ConsumedMask& entry) { return entry.model == model; });
+        Check(model != nullptr && observed != consumed_masks.end()
+                  && observed->depth == guides[3].Get() && observed->mask != nullptr,
+            "native FG Backbuffer/HUDLess role consumes its mask with the current depth guide");
+      }
+      Check(consumed_masks[0].mask != consumed_masks[1].mask,
+            "native FG color roles own distinct ControlMask images");
+    }
+    model_parameter_observer = {};
+    Check(original_with_mask == hudless.Get(), "native FG depth ControlMask reaches a completed two-color frame");
+    native::RestoreNativePreFg(gpu.list.Get(), &fg_parameters, original_with_mask, true, fg_handle);
+    submit();
+    native::control_mask_enabled.store(saved_control_mask_enabled);
+    native::control_mask_mode.store(saved_control_mask_mode);
+    native::direct_runtime_requirements.file_version = saved_control_mask_runtime_version;
     std::array<native::FeatureState, 2> contracts;
     for (size_t i = 0; i < contracts.size(); ++i) {
       auto& contract = contracts[i];

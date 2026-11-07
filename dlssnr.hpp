@@ -10842,16 +10842,35 @@ inline bool ProcessInline(
       && plan.At(stage_plan::Stage::RENDER).count != 0
       && plan.At(stage_plan::Stage::UPSCALED).count != 0
       && evaluate_chain.render_complete;
-  const bool control_mask_route_eligible = present == nullptr
+  const bool control_mask_final_present_route = present != nullptr
+      && execution_stage == stage_plan::Stage::PRESENT
+      && present->domain == present_restore_scope::Domain::FINAL_PRESENT
+      && present->stage_execution_plan == nullptr && present->source_color == nullptr
+      && (!present->d3d11_bridge || Dx11NativeRoute()) && !plan.mixed;
+  const bool control_mask_pre_fg_route = present != nullptr
+      && execution_stage == stage_plan::Stage::PRESENT
+      && (present->domain == present_restore_scope::Domain::PRE_FG_BACKBUFFER
+          || present->domain == present_restore_scope::Domain::PRE_FG_HUDLESS)
+      && !present->native_prefg_resolution_pair && !plan.mixed;
+  const bool control_mask_present_route = control_mask_final_present_route || control_mask_pre_fg_route;
+  const bool control_mask_route_eligible = ((present == nullptr
       && execution_stage == stage_plan::Stage::UPSCALED
-      && (!plan.mixed || control_mask_render_upscaled_chain)
+      && (!plan.mixed || control_mask_render_upscaled_chain))
+      || control_mask_present_route)
       && nr_model::SupportsControlMask(direct_runtime_requirements.file_version);
   const bool control_mask_capture_route_eligible = present == nullptr
       && execution_stage == stage_plan::Stage::UPSCALED
       && !plan.mixed && group.begin == 0
       && nr_model::SupportsControlMask(direct_runtime_requirements.file_version);
+  const bool control_mask_depth_has_provenance = present == nullptr || present->guide_serial != 0;
+  if (control_mask_mode_snapshot == kControlMaskDepthFar && present != nullptr
+      && !control_mask_depth_has_provenance
+      && !control_mask_depth_refusal_logged.exchange(true, std::memory_order_relaxed)) {
+    Log(reshade::log::level::warning,
+        "ControlMask depth-far rule skipped: this Present has no real depth guide");
+  }
   const bool control_mask_mode_eligible = control_mask_mode_snapshot != kControlMaskDepthFar
-      || control_mask_depth_usable;
+      || (control_mask_depth_usable && control_mask_depth_has_provenance);
   const bool control_mask_capture_eligible = control_mask_capture::Enabled()
       && gpu_timers_enabled.load(std::memory_order_relaxed)
       && control_mask_capture_route_eligible && control_mask_mode_eligible;
@@ -10862,7 +10881,8 @@ inline bool ProcessInline(
       && !control_mask_refusal_logged.exchange(true, std::memory_order_relaxed)) {
     Log(reshade::log::level::warning,
         "ControlMask requested but declined: requires exact DLSSNR 310.9.16.0,"
-        " D3D12 Upscaled evaluation or completed Render-to-Upscaled chain");
+        " a supported D3D12 Upscaled, final-Present or FG input evaluation,"
+        " or a completed Render-to-Upscaled chain");
   }
   stage_stats.width = width;
   stage_stats.height = height;
@@ -10874,8 +10894,9 @@ inline bool ProcessInline(
     };
     bool ready = queue_tracking_active.load(std::memory_order_relaxed)
         && SUCCEEDED(device->GetDeviceRemovedReason());
-    const bool ordered_source = control_mask_use_core_context.load(std::memory_order_relaxed)
-        && successful_sr_device == device;
+    const bool ordered_source = (control_mask_use_core_context.load(std::memory_order_relaxed)
+        && successful_sr_device == device)
+        || present != nullptr || (D3D11OnlySession() && Dx11NativeRoute());
     const bool rebuild_ordered_history = feature.control_mask_stream != nullptr
         && control_mask_execution::GetStatus(feature.control_mask_stream).history_invalidated;
     if (feature.control_mask_stream == nullptr || rebuild_ordered_history) {
@@ -12992,39 +13013,68 @@ inline bool ProcessInlinePreSR(
     };
     bool ready = queue_tracking_active.load(std::memory_order_relaxed)
         && SUCCEEDED(device->GetDeviceRemovedReason());
-    for (const auto& slot : feature.slots) {
-      if (slot.handle == nullptr) continue;
-      if (slot.recording != nullptr) {
-        ready &= slot.tracked_since_create && reusable(
-            {slot.handle, slot.look_history.buffers[0], slot.look_history.buffers[1]}, slot.recording);
-      } else {
-        // Off-to-on reuse has no mask provenance; retire only after all exact
-        // references to the old feature and History have ended.
-        ready &= slot.tracked_since_create && submission::ResourceReleasable(slot.handle);
-        for (const auto* history : slot.look_history.buffers) {
-          ready &= submission::ResourceReleasable(history);
+    const bool rebuild_ordered_history = feature.control_mask_stream != nullptr
+        && control_mask_execution::GetStatus(feature.control_mask_stream).history_invalidated;
+    if (feature.control_mask_stream == nullptr || rebuild_ordered_history) {
+      for (const auto& slot : feature.slots) {
+        if (slot.handle == nullptr) continue;
+        if (slot.recording != nullptr) {
+          ready &= slot.tracked_since_create && reusable(
+              {slot.handle, slot.look_history.buffers[0], slot.look_history.buffers[1]}, slot.recording);
+        } else {
+          // Off-to-on reuse has no mask provenance; retire only after all exact
+          // references to the old feature and History have ended.
+          ready &= slot.tracked_since_create && submission::ResourceReleasable(slot.handle);
+          for (const auto* history : slot.look_history.buffers) {
+            ready &= submission::ResourceReleasable(history);
+          }
         }
       }
-    }
-    if (feature.slots[0].recording != nullptr && feature.slots[0].recording->closed.load()
-        && !feature.slots[0].recording->submitted.load()) {
-      feature.control_mask_recording = feature.slots[0].recording;
-    }
-    for (auto& [key, resources] : worksets) {
-      if (key.handle != handle) continue;
-      ready &= resources.recording != nullptr
-          ? reusable(CollectWorksetGpuObjects(resources), resources.recording)
-          : resources.tracked_recording && WorksetRecordingsComplete(resources);
-      if (resources.recording != nullptr && resources.recording->closed.load()
-          && !resources.recording->submitted.load()) {
-        resources.control_mask_recording = resources.recording;
+      if (feature.slots[0].recording != nullptr && feature.slots[0].recording->closed.load()
+          && !feature.slots[0].recording->submitted.load()) {
+        feature.control_mask_recording = feature.slots[0].recording;
+      }
+      for (auto& [key, resources] : worksets) {
+        if (key.handle != handle) continue;
+        ready &= resources.recording != nullptr
+            ? reusable(CollectWorksetGpuObjects(resources), resources.recording)
+            : resources.tracked_recording && WorksetRecordingsComplete(resources);
+        if (resources.recording != nullptr && resources.recording->closed.load()
+            && !resources.recording->submitted.load()) {
+          resources.control_mask_recording = resources.recording;
+        }
+      }
+      for (const auto& retired : retired_final_resources) {
+        if (retired.resources.owner != handle) continue;
+        ready &= retired.resources.recording != nullptr
+            ? reusable(CollectWorksetGpuObjects(retired.resources), retired.resources.recording)
+            : retired.resources.tracked_recording && WorksetRecordingsComplete(retired.resources);
       }
     }
-    for (const auto& retired : retired_final_resources) {
-      if (retired.resources.owner != handle) continue;
-      ready &= retired.resources.recording != nullptr
-          ? reusable(CollectWorksetGpuObjects(retired.resources), retired.resources.recording)
-          : retired.resources.tracked_recording && WorksetRecordingsComplete(retired.resources);
+    if (ready && rebuild_ordered_history) {
+      for (auto existing = worksets.begin(); existing != worksets.end();) {
+        if (existing->first.handle != handle) {
+          ++existing;
+          continue;
+        }
+        const auto key = existing->first;
+        ++existing;
+        RetireWorkset(key);
+      }
+      ReleaseAllNrSlots(feature, true);
+      for (auto& slot : feature.slots) {
+        slot.pending_reset = true;
+        slot.pending_reset_reasons |= kResetRecovery;
+      }
+      feature.control_mask_recording.reset();
+      feature.control_mask_stream.reset();
+    }
+    if (feature.control_mask_stream != nullptr) {
+      ready &= control_mask_execution::BeginRecording(feature.control_mask_stream, command_list);
+    } else if (ready && control_mask_eligible) {
+      feature.control_mask_stream = control_mask_execution::CreateStream(device);
+      ready = feature.control_mask_stream != nullptr
+          && control_mask_execution::BeginRecording(feature.control_mask_stream, command_list);
     }
     ++control_mask_reuse_stats.checks;
     if (!ready) {
