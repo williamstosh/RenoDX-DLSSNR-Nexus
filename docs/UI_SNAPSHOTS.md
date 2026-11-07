@@ -47,6 +47,6 @@ README 的紧凑组合图可运行 `python tools/compose-readme-ui.py`，从已�
 
 仅完整成功且源码输入未变化的候选可进入 latest。失败保留 `.work-*`／`.pending-*` 和 `last-failure.json`；旧 latest 不受影响，部分渲染的总览标记 partial 并列出失败项。
 
-默认 Standard 成功后，登记的编译中间文件由现有测试 helper 清理；已退出且成功的本次预览工作目录在成品、日志和输入身份保存后按拥有权清单精确清理，原始 JSON／RGBA／可执行文件不进入长期成品。轮换只清理本系统拥有、未被修改的旧 Standard 成品；额外文件、哈希变化、重解析点、清理拒绝均保留并报告。Full／Acceptance 保留工作证据；Acceptance 不自动清理。失败证据或受保护的旧版本需按原项目归档规范人工选择，不自动扫描历史。
+Standard／Full／Acceptance 均由现有 helper 清理登记的编译中间文件；本次预览的成品、日志和输入身份保存后，自动清理已成功且退出的原始 JSON／RGBA／可执行工作目录。轮换同样覆盖三种模式，仅清理本系统拥有、未被修改的旧成品；额外文件、哈希变化、重解析点、清理拒绝均保留并报告。失败运行的登记项也自动清理，旧工作目录由容量维护收缩并留下异常样本。专项完整原始数据集仅在启动前显式设置 `NR_NEXUS_TEST_KEEP_RAW=1` 时保留，选择记录在生命周期及预览拥有权标记中。
 
 验证入口：`tests/test_capture_artifacts.py`、`tests/test_ui_snapshot_artifacts.py`、`tests/run-ui-preview-artifact-tests.ps1`，以及原有 `tools/run-tests.ps1 -Suite ui`。

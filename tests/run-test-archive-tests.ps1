@@ -96,9 +96,14 @@ Expect-Failure { & $tool -SourceDirectory $batch -ArchiveDirectory $destination 
 Expect-Failure { & $tool -ArchiveDirectory $destination -RestoreDirectory $restored } 'nonempty'
 
 $acceptance = New-Batch 'acceptance' 'Acceptance'
-Expect-Failure { & $tool -SourceDirectory $acceptance -ArchiveDirectory (Join-Path $archives 'acceptance-denied') -RemoveOriginals } 'Acceptance'
-Assert (Test-Path -LiteralPath (Join-Path $acceptance 'artifact-lifecycle.json')) 'Acceptance originals intact'
-& $tool -SourceDirectory $acceptance -ArchiveDirectory (Join-Path $archives 'acceptance-kept')
+Set-Content -LiteralPath (Join-Path $acceptance 'acceptance-report.json') -Value '{"status":"passed"}'
+& $tool -SourceDirectory $acceptance -ArchiveDirectory (Join-Path $archives 'acceptance-removed') -RemoveOriginals
+Assert (-not (Test-Path -LiteralPath $acceptance)) 'Explicit removal of completed Acceptance batch'
+& $tool -ArchiveDirectory (Join-Path $archives 'acceptance-removed') -VerifyOnly
+$acceptanceRestored = Join-Path $root 'acceptance-restored'
+& $tool -ArchiveDirectory (Join-Path $archives 'acceptance-removed') -RestoreDirectory $acceptanceRestored
+$restoredAcceptanceState = Get-Content (Join-Path $acceptanceRestored 'artifact-lifecycle.json') -Raw | ConvertFrom-Json
+Assert ($restoredAcceptanceState.mode -eq 'Acceptance') 'Acceptance lifecycle restored exactly'
 
 $active = New-Batch 'active'
 $activeMarker = Join-Path $active 'artifact-lifecycle.json'
@@ -126,8 +131,10 @@ $restoredState = Get-Content -LiteralPath (Join-Path $failedRestored 'artifact-l
 Assert ($restoredState.mode -eq 'Full' -and $restoredState.status -eq 'Failed') 'Failed lifecycle restored exactly'
 $parentBatch = New-Batch 'parent'
 $nestedAcceptance = New-Batch 'parent/acceptance' 'Acceptance'
-Expect-Failure { & $tool -SourceDirectory $parentBatch -ArchiveDirectory (Join-Path $archives 'nested-acceptance') -RemoveOriginals } 'Acceptance'
-Assert (Test-Path -LiteralPath (Join-Path $nestedAcceptance 'artifact-lifecycle.json')) 'Nested Acceptance retained'
+& $tool -SourceDirectory $parentBatch -ArchiveDirectory (Join-Path $archives 'nested-acceptance') -RemoveOriginals
+Assert (-not (Test-Path -LiteralPath $parentBatch)) 'Explicit removal of parent with completed nested Acceptance batch'
+$parentBatch = New-Batch 'parent-running'
+$nestedAcceptance = New-Batch 'parent-running/acceptance' 'Acceptance'
 & $tool -SourceDirectory $parentBatch -ArchiveDirectory (Join-Path $archives 'nested-kept')
 $nestedStatePath = Join-Path $nestedAcceptance 'artifact-lifecycle.json'
 $nestedState = Get-Content -LiteralPath $nestedStatePath -Raw | ConvertFrom-Json

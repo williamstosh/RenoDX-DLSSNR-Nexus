@@ -19,8 +19,17 @@ pwsh -File tools/offline/build.ps1 -Backend ngx -OutputDirectory tmp/offline/ngx
 
 HostRoot、ShaderIncludeDirectory、Fxc、EmbedFile 参数可显式指定已有输入。
 脚本复用 tests/test-support.ps1，记录实际编译依赖、源码与 EXE 的 SHA-256、固定宿主、
-编译器和 SDK 身份。Standard 会清理登记的 obj/lib/exp；离线运行器在统计完成后清理登记的 GPU 原始读回，Full／Acceptance 保留完整原始数据。构建不是运行通过。
+编译器和 SDK 身份。Standard／Full／Acceptance 都会清理登记的 obj/lib/exp；离线运行器在统计完成后清理 GPU 原始读回，失败时留下异常样本。留存模式不提供永久保留豁免。构建不是运行通过。
 构建／运行目录使用本仓库 tmp/ 或 artifacts/ 下的新目录，不覆盖历史。
+
+入口会自动维护同一测试根下已登记的结束运行。容量预算默认 10 GiB，可用
+`NR_NEXUS_TEST_BUDGET_BYTES` 指定字节数，设为 0 关闭预算收缩。超预算时按运行时间收缩旧目录，
+不依赖逐文件登记：保留报告、复现配置、关键日志、输入和异常样本，回收截图、原始读回、
+备份及其他大体积中间产物。仍在运行的 owner、嵌套活动任务和离线构建输入受到保护；
+保留资料本身超过预算时不会为满足数字而删除它们。
+
+专项确需完整原始数据集时，在启动前显式设置 `$env:NR_NEXUS_TEST_KEEP_RAW='1'`。
+工具将选择写入本次生命周期标记，后续维护继续尊重该选择；Full／Acceptance 本身不会开启它。
 
 ## Fixture、合成序列与原始数据
 
@@ -93,9 +102,9 @@ controls 中 Reset、Jitter、Motion Scale、Subrect 仅转录输入，标记 ST
 
 `run.py replay` 另行核验构建身份和输入 SHA-256，运行后再次核对输入，并独立检查
 全部读回资源与完成序号。统一输出为 `result.json`，原始后端结果与 float32 文件
-保留在 `backend/`。直接执行 EXE 不替代 runner 的输入 SHA-256 校验。
+记录在 `backend/`；统计核验后按生命周期收尾，删除记录可在 `artifact-lifecycle.json` 查看。直接执行 EXE 不替代 runner 的输入 SHA-256 校验。
 后续帧输入损坏时，后端在运行期间仍保留此前已完成帧的原始读回和 Fence 记录；失败帧保持
-`status=failed`、`gpu_completed=false`，整个结果为 failed，不覆盖已有输出。Standard 收尾后只保留报告、Fence／统计和一个异常样本；需要完整读回时使用 Full／Acceptance。
+`status=failed`、`gpu_completed=false`，整个结果为 failed，不覆盖已有输出。三种模式收尾后均保留报告、Fence／统计和一个异常样本；需要完整读回时显式设置 `NR_NEXUS_TEST_KEEP_RAW=1`。
 
 ## 既有 FG／XeFG／生命周期套件统一入口
 

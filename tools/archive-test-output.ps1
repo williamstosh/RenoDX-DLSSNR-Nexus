@@ -9,8 +9,9 @@ Restore: -ArchiveDirectory <archive> -RestoreDirectory <new tmp/artifacts direct
 Managed batches use artifact-lifecycle.json (nr-nexus-test-output/1): status
 Passed|Failed, mode Standard|Full|Acceptance, and an exited ownerPid. Running is refused.
 Legacy batches require result.json: Status=Completed, or build=passed and run=passed.
-Acceptance in either metadata file prohibits -RemoveOriginals. Irreplaceable evidence
-should be retained separately; deletion is always an explicit caller decision.
+All retention modes allow -RemoveOriginals after successful archive verification and
+owner checks. Irreplaceable evidence should be retained separately; deletion is an
+explicit caller decision.
 Preserves file bytes, relative names and empty directories, not ACLs, ADS or timestamps.
 Volumes contain ordinary Deflate ZIP entries with original relative names. VolumeBytes
 limits UNCOMPRESSED file bytes (default 1 GiB); a larger file occupies its own volume.
@@ -76,7 +77,7 @@ function Assert-Relative([string]$Path) {
         }).Count) { throw "Unsafe relative path: $Path" }
 }
 function Read-BatchState {
-    # A suite result inside an active/Acceptance managed batch is not a separate
+    # A suite result inside a managed batch is not a separate
     # legacy batch. Require the caller to select that managed batch's root.
     $parent = [IO.Path]::GetDirectoryName($source)
     while ((Test-Below $parent (Join-Path $repo 'tmp')) -or
@@ -94,15 +95,13 @@ function Read-BatchState {
         if ($data['Status'] -ne 'Completed' -and -not ($data['build'] -eq 'passed' -and $data['run'] -eq 'passed')) {
             throw 'Legacy batch requires a completed result.json.'
         }
-        if ($RemoveOriginals -and $data['mode'] -eq 'Acceptance') { throw 'Acceptance batches cannot remove originals.' }
     }
     # Inspect every nested managed batch as well: a completed parent must not hide
-    # an active child or permit deletion of Acceptance evidence.
+    # an active child.
     foreach ($marker in @(Get-Tree $source | Where-Object { $_.Name -eq 'artifact-lifecycle.json' })) {
         $data = Get-Content -LiteralPath $marker.FullName -Raw | ConvertFrom-Json -AsHashtable
         if ($data['schema'] -ne 'nr-nexus-test-output/1' -or
             $data['mode'] -notin @('Standard', 'Full', 'Acceptance')) { throw 'Invalid artifact lifecycle schema/mode.' }
-        if ($RemoveOriginals -and $data['mode'] -eq 'Acceptance') { throw 'Acceptance batches cannot remove originals.' }
         if ($data['status'] -notin @('Passed', 'Failed')) { throw 'Batch status must be Passed or Failed; Running is refused.' }
         $ownerId = 0
         if (-not [int]::TryParse([string]$data['ownerPid'], [ref]$ownerId) -or $ownerId -le 0) { throw 'Invalid lifecycle ownerPid.' }

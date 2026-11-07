@@ -2,6 +2,8 @@ param([string]$OutputDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) (
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'test-support.ps1')
+$env:NR_NEXUS_TEST_KEEP_RAW = '0'
+$env:NR_NEXUS_TEST_BUDGET_BYTES = '0'
 $OutputDirectory = Initialize-TestOutput $OutputDirectory
 $checks = 0
 function Assert-ArtifactTest([bool]$Condition, [string]$Message) {
@@ -20,8 +22,7 @@ foreach ($mode in @('Standard','Full','Acceptance')) {
         [IO.File]::WriteAllText((Join-Path $directory 'evidence.json'), '{"keep":true}')
         [IO.File]::WriteAllText((Join-Path $directory 'unregistered.obj'), 'not owned by compiler registration')
         Complete-TestOutput $directory -Outcome $outcome
-        $expected = $mode -ne 'Standard'
-        Assert-ArtifactTest ((Test-Path -LiteralPath $object) -eq $expected) "$mode/$outcome intermediate retention"
+        Assert-ArtifactTest (-not (Test-Path -LiteralPath $object)) "$mode/$outcome intermediate cleanup"
         Assert-ArtifactTest (Test-Path -LiteralPath (Join-Path $directory 'evidence.json')) 'Evidence removed'
         Assert-ArtifactTest (Test-Path -LiteralPath (Join-Path $directory 'unregistered.obj')) 'Unregistered file removed'
         $state = Get-Content -LiteralPath (Join-Path $directory 'artifact-lifecycle.json') -Raw | ConvertFrom-Json
@@ -34,7 +35,7 @@ Register-TestCompilerOutput $interrupted -ObjectPath $object
 [IO.File]::WriteAllText($object, 'unfinished')
 Assert-ArtifactTest (Test-Path -LiteralPath $object) 'Incomplete output remains until orphan maintenance'
 
-$orphaned = Initialize-TestOutput (Join-Path $OutputDirectory 'orphaned')
+$orphaned = Initialize-TestOutput ($OutputDirectory + '-orphaned')
 $orphanObject = Join-Path $orphaned 'orphan.obj'
 Register-TestDisposable -Directory $orphaned -Path $orphanObject -Kind 'raw-readback'
 [IO.File]::WriteAllText($orphanObject, 'orphaned intermediate')
@@ -42,7 +43,7 @@ $orphanMarkerPath = Join-Path $orphaned 'artifact-lifecycle.json'
 $orphanMarker = Get-Content -LiteralPath $orphanMarkerPath -Raw | ConvertFrom-Json
 $orphanMarker.ownerPid = 2147483647
 $orphanMarker | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $orphanMarkerPath -Encoding utf8
-Invoke-TestOutputMaintenance -Root $OutputDirectory
+Invoke-TestOutputMaintenance -Root $orphaned
 $orphanState = Get-Content -LiteralPath $orphanMarkerPath -Raw | ConvertFrom-Json
 Assert-ArtifactTest ($orphanState.status -eq 'Failed' -and -not (Test-Path -LiteralPath $orphanObject)) 'Orphaned output was safely cleaned'
 
@@ -88,6 +89,50 @@ Assert-ArtifactTest $timeoutObserved 'Timeout was not reported'
 Assert-ArtifactTest (-not (Test-Path -LiteralPath $timeoutObject)) 'Timed out intermediate was cleaned'
 $timeoutState = Get-Content -LiteralPath (Join-Path $timedOut 'artifact-lifecycle.json') -Raw | ConvertFrom-Json
 Assert-ArtifactTest ($timeoutState.status -eq 'Failed') 'Timeout did not mark incomplete run failed'
+$keepRawBefore = $env:NR_NEXUS_TEST_KEEP_RAW
+try {
+    $env:NR_NEXUS_TEST_KEEP_RAW = '1'
+    $kept = Initialize-TestOutput (Join-Path $OutputDirectory 'explicit-raw-retention') -RetentionMode Acceptance
+    $keptRaw = Join-Path $kept 'raw.bin'
+    Register-TestDisposable -Directory $kept -Path $keptRaw -Kind 'raw-readback'
+    [IO.File]::WriteAllText($keptRaw, 'explicitly retained raw data')
+    Complete-TestOutput $kept
+    Assert-ArtifactTest (Test-Path -LiteralPath $keptRaw) 'Explicit raw retention was ignored'
+    Assert-ArtifactTest ((Get-Content (Join-Path $kept 'artifact-lifecycle.json') -Raw | ConvertFrom-Json).keepRawArtifacts) 'Explicit raw retention was not recorded'
+} finally { $env:NR_NEXUS_TEST_KEEP_RAW = $keepRawBefore }
+$budgetRoot = Join-Path (Split-Path $OutputDirectory -Parent) ('budget-policy-' + [guid]::NewGuid().ToString('N'))
+foreach ($mode in @('Standard','Full','Acceptance')) {
+    $run = Initialize-TestOutput (Join-Path $budgetRoot $mode) -RetentionMode $mode
+    $bulk = Join-Path $run 'unregistered.png'
+    [IO.File]::WriteAllBytes($bulk, [byte[]]::new(1MB))
+    [IO.File]::WriteAllText((Join-Path $run 'critical.log'), 'keep log')
+    [IO.File]::WriteAllText((Join-Path $run 'repro.json'), '{"seed":7}')
+    Complete-TestOutput $run
+    $path = Join-Path $run 'artifact-lifecycle.json'
+    $s = Get-Content $path -Raw | ConvertFrom-Json -AsHashtable
+    $s.ownerPid = 2147483647
+    $s.Remove('keepRawArtifacts')
+    $s | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding utf8
+}
+$protectedRun = Initialize-TestOutput (Join-Path $budgetRoot 'active-parent')
+$protectedBulk = Join-Path $protectedRun 'parent.png'
+[IO.File]::WriteAllBytes($protectedBulk, [byte[]]::new(1024))
+$activeChild = Initialize-TestOutput (Join-Path $protectedRun 'active-child') -RetentionMode Full
+$activeBulk = Join-Path $activeChild 'raw.f32'
+[IO.File]::WriteAllText($activeBulk, 'active')
+Complete-TestOutput $protectedRun
+$parentMarker = Join-Path $protectedRun 'artifact-lifecycle.json'
+$s = Get-Content $parentMarker -Raw | ConvertFrom-Json -AsHashtable
+$s.ownerPid = 2147483647
+$s | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $parentMarker -Encoding utf8
+Invoke-TestOutputMaintenance -Root $budgetRoot -CapacityBudgetBytes 16384
+foreach ($mode in @('Standard','Full','Acceptance')) {
+    $run = Join-Path $budgetRoot $mode
+    Assert-ArtifactTest (-not (Test-Path -LiteralPath (Join-Path $run 'unregistered.png'))) "$mode budget did not reclaim unregistered bulk"
+    Assert-ArtifactTest (Test-Path -LiteralPath (Join-Path $run 'critical.log')) "$mode budget deleted key log"
+    Assert-ArtifactTest (Test-Path -LiteralPath (Join-Path $run 'repro.json')) "$mode budget deleted repro config"
+}
+Assert-ArtifactTest ((Test-Path -LiteralPath $protectedBulk) -and (Test-Path -LiteralPath $activeBulk)) 'Budget cleanup crossed an active child'
 $target = Join-Path $OutputDirectory 'outside'
 [void][IO.Directory]::CreateDirectory($target)
 $junction = Join-Path $OutputDirectory 'linked-output'

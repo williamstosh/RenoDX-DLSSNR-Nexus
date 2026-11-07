@@ -29,6 +29,8 @@ def finish_lifecycle(directory: Path, status: str, raw_files: list[Path]) -> Non
     if status == "passed":
         output_lifecycle.register_disposable(directory, raw_files)
     else:
+        if raw_files:
+            output_lifecycle.retain(directory, raw_files[:1])
         output_lifecycle.register_disposable(directory, raw_files[1:])
     output_lifecycle.finish(directory, "Passed" if status == "passed" else "Failed")
 
@@ -71,7 +73,7 @@ def freeze_runner(directory: Path, include_control_mask: bool = False) -> dict:
     snapshot = directory / "runner"
     snapshot.mkdir()
     inputs = {}
-    paths = [Path(__file__), Path(__file__).with_name("contracts.py")]
+    paths = [Path(__file__), Path(__file__).with_name("contracts.py"), Path(output_lifecycle.__file__)]
     if include_control_mask:
         paths.append(Path(__file__).with_name("control_mask_contracts.py"))
     for path in paths:

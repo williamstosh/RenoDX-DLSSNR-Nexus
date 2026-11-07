@@ -62,21 +62,23 @@ function Save-PreviewOwnership {
         Assert-TestArtifactPath $_.FullName
         @{path=[IO.Path]::GetRelativePath($Directory,$_.FullName); sha256=(Get-FileHash -LiteralPath $_.FullName).Hash}
     })
-    @{schema='nr-nexus-preview-owned/1';runId=$runId;status='Passed';mode=$RetentionMode;files=$files} |
+    @{schema='nr-nexus-preview-owned/1';runId=$runId;status='Passed';mode=$RetentionMode
+        keepRawArtifacts=($env:NR_NEXUS_TEST_KEEP_RAW -eq '1');files=$files} |
         ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $Directory 'snapshot-ownership.json') -Encoding utf8
 }
 
 function Remove-OwnedPreview {
     param([string]$Directory, [string]$Marker = 'snapshot-ownership.json')
-    # Only this system's completed, explicitly inventoried Standard outputs.
+    # Only this system's completed, explicitly inventoried outputs.
     Assert-TestArtifactPath $Directory
     $directoryPath = [IO.Path]::GetFullPath($Directory)
     if (-not $directoryPath.StartsWith($snapshotRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Preview cleanup target escapes snapshot root.'
     }
     $receiptPath = Join-Path $directoryPath $Marker
-    $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
-    if ($receipt.schema -ne 'nr-nexus-preview-owned/1' -or $receipt.status -ne 'Passed' -or $receipt.mode -ne 'Standard') {
+    $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json -AsHashtable
+    if ($receipt.schema -ne 'nr-nexus-preview-owned/1' -or $receipt.status -ne 'Passed' -or
+        $receipt.mode -notin @('Standard','Full','Acceptance') -or $receipt['keepRawArtifacts']) {
         throw 'Preview output is unowned, incomplete or protected.'
     }
     $items = @(Get-ChildItem -LiteralPath $directoryPath -Recurse -Force)
@@ -189,15 +191,13 @@ try {
     if (Test-Path -LiteralPath $retired) {
         try { Remove-OwnedPreview $retired } catch { Write-Warning "Old preview retained: $retired : $_" }
     }
-    if ($RetentionMode -eq 'Standard') {
-        # The fixture has exited, its Standard lifecycle succeeded, and final
-        # images/input identity/logs now live in latest. Raw meshes are disposable.
-        $lifecycle = Get-Content -LiteralPath (Join-Path $work 'artifact-lifecycle.json') -Raw | ConvertFrom-Json
-        if ($lifecycle.cleanupErrors.Count) { Write-Warning "Fixture cleanup was refused; work directory preserved: $work" }
-        elseif ($lifecycle.status -eq 'Passed' -and $lifecycle.ownerPid -eq $PID -and $lifecycle.mode -eq 'Standard') {
-            Save-PreviewOwnership $work
-            try { Remove-OwnedPreview $work } catch { Write-Warning "Current intermediate output retained: $work : $_" }
-        }
+    # Rendered images, input identity and logs are now in latest. All capture
+    # modes release their raw work directory unless explicitly pinned.
+    $lifecycle = Get-Content -LiteralPath (Join-Path $work 'artifact-lifecycle.json') -Raw | ConvertFrom-Json
+    if ($lifecycle.cleanupErrors.Count) { Write-Warning "Fixture cleanup was refused; work directory preserved: $work" }
+    elseif ($lifecycle.status -eq 'Passed' -and $lifecycle.ownerPid -eq $PID -and -not $lifecycle.keepRawArtifacts) {
+        Save-PreviewOwnership $work
+        try { Remove-OwnedPreview $work } catch { Write-Warning "Current intermediate output retained: $work : $_" }
     }
     Write-Host "UI Snapshot: $(Join-Path $latest 'index.html')"
     Write-Host "Images: $(Join-Path $latest 'images')"

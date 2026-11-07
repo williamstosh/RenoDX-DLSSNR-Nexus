@@ -31,7 +31,7 @@ function Initialize-TestBuild {
 }
 
 function Get-TestOutputBudget {
-    if ([string]::IsNullOrWhiteSpace($env:NR_NEXUS_TEST_BUDGET_BYTES)) { return [long](4GB) }
+    if ([string]::IsNullOrWhiteSpace($env:NR_NEXUS_TEST_BUDGET_BYTES)) { return [long](10GB) }
     [long]$budget = 0
     if (-not [long]::TryParse($env:NR_NEXUS_TEST_BUDGET_BYTES, [Globalization.NumberStyles]::Integer,
             [Globalization.CultureInfo]::InvariantCulture, [ref]$budget) -or $budget -lt 0) {
@@ -61,6 +61,8 @@ function Remove-TestRegisteredDisposables {
         @($State.intermediates | ForEach-Object { @{ path=[IO.Path]::GetRelativePath($directoryPath, $_); kind='compiler-intermediate' } })
     } else { @() }
     foreach ($record in $records) {
+        if (@($State['retainedPaths'] | Where-Object { $_ -and ($record.path -eq $_ -or
+            $record.path.Replace('\','/').StartsWith(([string]$_).Replace('\','/').TrimEnd('/') + '/', [StringComparison]::OrdinalIgnoreCase)) }).Count) { continue }
         $path = [IO.Path]::GetFullPath((Join-Path $directoryPath ([string]$record.path)))
         try {
             Assert-TestArtifactPath $path
@@ -88,15 +90,81 @@ function Remove-TestRegisteredDisposables {
     else { $State.disposables = $remaining }
 }
 
+function Compress-TestOutput {
+    param([string]$Directory, [Collections.IDictionary]$State)
+    # Compact an owned run, keeping evidence and reusable inputs at their original
+    # paths. This is deliberately independent of the disposable-file inventory.
+    Assert-TestArtifactPath $Directory
+    if ($State['keepRawArtifacts'] -or (Test-Path -LiteralPath (Join-Path $Directory 'build-manifest.json'))) { return }
+    $items = @(Get-ChildItem -LiteralPath $Directory -Recurse -Force -ErrorAction Stop)
+    foreach ($item in $items) { Assert-TestArtifactPath $item.FullName }
+    if (-not $State.Contains('disposables')) { $State['disposables'] = @() }
+    $captureRoots = @($items | Where-Object { $_.Name -eq 'captures.json' } | ForEach-Object { $_.DirectoryName })
+    $keep = @($State['retainedPaths'])
+    foreach ($marker in @($items | Where-Object { $_.Name -eq 'artifact-lifecycle.json' })) {
+        $nested = Get-Content -LiteralPath $marker.FullName -Raw | ConvertFrom-Json -AsHashtable
+        if ($nested.schema -ne 'nr-nexus-test-output/1' -or $nested['keepRawArtifacts'] -or
+            (Test-TestOutputOwnerActive ([int]$nested.ownerPid))) { return }
+        foreach ($path in @($nested['retainedPaths'])) {
+            if ($path) { $keep += [IO.Path]::GetRelativePath($Directory, (Join-Path $marker.DirectoryName $path)) }
+        }
+        if (Test-Path -LiteralPath (Join-Path $marker.DirectoryName 'build-manifest.json')) {
+            $keep += [IO.Path]::GetRelativePath($Directory, $marker.DirectoryName)
+        }
+    }
+    foreach ($failure in @($items | Where-Object { $_.Name -eq 'failure.json' })) {
+        $keep += [IO.Path]::GetRelativePath($Directory, $failure.FullName)
+        $capture = Get-Content -LiteralPath $failure.FullName -Raw | ConvertFrom-Json -AsHashtable
+        if ($capture['atlas_file']) { $keep += [IO.Path]::GetRelativePath($Directory, (Join-Path $failure.DirectoryName $capture.atlas_file)) }
+        $keep += [IO.Path]::GetRelativePath($Directory, [IO.Path]::ChangeExtension($failure.FullName, '.rgba'))
+    }
+    foreach ($item in @($items | Where-Object { -not $_.PSIsContainer })) {
+        $relative = [IO.Path]::GetRelativePath($Directory, $item.FullName).Replace('\','/')
+        $explicit = @($keep | Where-Object {
+            $_ -and ($relative -eq ([string]$_).Replace('\','/').TrimEnd('/') -or
+                $relative.StartsWith(([string]$_).Replace('\','/').TrimEnd('/') + '/', [StringComparison]::OrdinalIgnoreCase))
+        }).Count -gt 0
+        if ($explicit -or $relative -match '(^|/)(inputs|runner|source|failure-sample)/') { continue }
+        $mesh = $item.Extension -in @('.json','.rgba') -and $item.DirectoryName -in $captureRoots
+        if (-not $mesh -and $item.Extension -in @('.json','.jsonl','.log','.txt','.md','.csv','.ini','.xml','.settings','.py','.ps1','.cpp','.h','.hpp')) { continue }
+        if ($item.Name -eq 'artifact-lifecycle.json') { continue }
+        $State['disposables'] = @($State['disposables']) + @{ path=$relative; kind='budget-intermediate' }
+    }
+    Remove-TestRegisteredDisposables $Directory $State
+}
+
 function Invoke-TestOutputMaintenance {
     param([string]$Root, [long]$CapacityBudgetBytes = $(Get-TestOutputBudget))
     $rootPath = [IO.Path]::GetFullPath($Root)
     if (-not (Test-Path -LiteralPath $rootPath -PathType Container)) { return }
+    Assert-TestArtifactPath $rootPath
     $markers = @(Get-ChildItem -LiteralPath $rootPath -Filter 'artifact-lifecycle.json' -File -Recurse -Force -ErrorAction SilentlyContinue)
+    $ancestorMarkers = @()
+    $ancestor = [IO.Path]::GetDirectoryName($rootPath)
+    $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+    while ($ancestor -and $ancestor.StartsWith($repo + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        $ancestorMarker = Join-Path $ancestor 'artifact-lifecycle.json'
+        if (Test-Path -LiteralPath $ancestorMarker) { $ancestorMarkers += Get-Item -LiteralPath $ancestorMarker }
+        $ancestor = [IO.Path]::GetDirectoryName($ancestor)
+    }
+    $protected = @(@($markers) + @($ancestorMarkers) | ForEach-Object {
+        $candidate = $_
+        try {
+            Assert-TestArtifactPath $_.FullName
+            $metadata = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json -AsHashtable
+            if ($metadata.schema -ne 'nr-nexus-test-output/1' -or $metadata['keepRawArtifacts'] -or
+                (Test-TestOutputOwnerActive ([int]$metadata.ownerPid))) { $_.DirectoryName }
+        } catch { $candidate.DirectoryName }
+    })
+    $states = @()
     foreach ($markerFile in $markers) {
         try {
+            Assert-TestArtifactPath $markerFile.FullName
             $state = Get-Content -LiteralPath $markerFile.FullName -Raw | ConvertFrom-Json -AsHashtable
             if ($state.schema -ne 'nr-nexus-test-output/1') { continue }
+            $directory = $markerFile.DirectoryName
+            if (@($protected | Where-Object { $_ -and ($directory -eq $_ -or
+                $_.StartsWith($directory + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) }).Count) { continue }
             $ownerActive = Test-TestOutputOwnerActive ([int]$state.ownerPid)
             if ($state.status -eq 'Running') {
                 if ($ownerActive) { continue }
@@ -104,11 +172,14 @@ function Invoke-TestOutputMaintenance {
                 $state.orphanedUtc = [DateTime]::UtcNow.ToString('o')
                 $state.failureReason = 'owner process no longer exists'
             } elseif ($ownerActive) { continue }
-            if ($state.mode -eq 'Standard') {
+            if (-not $state['keepRawArtifacts']) {
                 Remove-TestRegisteredDisposables $markerFile.DirectoryName $state
             }
             $state.lastMaintenanceUtc = [DateTime]::UtcNow.ToString('o')
             $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $markerFile.FullName -Encoding utf8
+            if (-not $state['keepRawArtifacts'] -and $state.status -in @('Passed','Failed')) {
+                $states += [pscustomobject]@{ Marker=$markerFile; State=$state; SortKey=[string]$state.startedUtc }
+            }
         } catch {
             Write-Warning "Test output maintenance skipped $($markerFile.FullName): $($_.Exception.Message)"
         }
@@ -119,26 +190,22 @@ function Invoke-TestOutputMaintenance {
         if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $bytes += $item.Length }
     }
     if ($bytes -le $CapacityBudgetBytes) { return }
-    $states = foreach ($markerFile in @(Get-ChildItem -LiteralPath $rootPath -Filter 'artifact-lifecycle.json' -File -Recurse -Force -ErrorAction SilentlyContinue)) {
-        try {
-            $state = Get-Content -LiteralPath $markerFile.FullName -Raw | ConvertFrom-Json -AsHashtable
-            if ($state.mode -eq 'Standard' -and $state.status -in @('Passed','Failed') -and
-                -not (Test-TestOutputOwnerActive ([int]$state.ownerPid))) {
-                [pscustomobject]@{ Marker=$markerFile; State=$state; SortKey=[string]$state.finishedUtc }
-            }
-        } catch { }
-    }
     foreach ($entry in @($states | Sort-Object SortKey)) {
         if ($bytes -le $CapacityBudgetBytes) { break }
-        $before = $bytes
-        Remove-TestRegisteredDisposables $entry.Marker.DirectoryName $entry.State
-        $entry.State.budgetCleanupUtc = [DateTime]::UtcNow.ToString('o')
-        $entry.State | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $entry.Marker.FullName -Encoding utf8
-        $bytes = 0
-        foreach ($item in Get-ChildItem -LiteralPath $rootPath -File -Recurse -Force -ErrorAction SilentlyContinue) {
-            if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $bytes += $item.Length }
+        try {
+            $directory = $entry.Marker.DirectoryName
+            if (@($protected | Where-Object { $_ -and $directory.StartsWith($_ + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) }).Count) { continue }
+            $state = Get-Content -LiteralPath $entry.Marker.FullName -Raw | ConvertFrom-Json -AsHashtable
+            if ($state['keepRawArtifacts'] -or (Test-TestOutputOwnerActive ([int]$state.ownerPid))) { continue }
+            $before = (Get-TestOutputSize $entry.Marker.DirectoryName).bytes
+            Compress-TestOutput $entry.Marker.DirectoryName $state
+            $state.budgetCleanupUtc = [DateTime]::UtcNow.ToString('o')
+            $state.retained = Get-TestOutputSize $entry.Marker.DirectoryName
+            $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $entry.Marker.FullName -Encoding utf8
+            $bytes -= $before - $state.retained.bytes
+        } catch {
+            Write-Warning "Budget cleanup skipped $($entry.Marker.DirectoryName): $($_.Exception.Message)"
         }
-        if ($before -eq $bytes) { continue }
     }
 }
 
@@ -160,10 +227,11 @@ function Initialize-TestOutput {
     if (-not (Get-Variable -Name NexusTestOutputs -Scope Global -ErrorAction SilentlyContinue)) {
         $global:NexusTestOutputs = @{}
     }
+    $keepRawArtifacts = $env:NR_NEXUS_TEST_KEEP_RAW -eq '1'
     $state = [ordered]@{ schema='nr-nexus-test-output/1'; runId=[guid]::NewGuid().ToString('N')
         ownerPid=$PID; mode=$RetentionMode; status='Running'; startedUtc=[DateTime]::UtcNow.ToString('o')
-        entry=$MyInvocation.ScriptName; sourceCommit=(& git --no-optional-locks -C $root rev-parse HEAD)
-        budgetBytes=(Get-TestOutputBudget); disposables=@(); cleanup=@(); cleanupErrors=@() }
+        keepRawArtifacts=$keepRawArtifacts; entry=$MyInvocation.ScriptName; sourceCommit=(& git --no-optional-locks -C $root rev-parse HEAD)
+        budgetBytes=(Get-TestOutputBudget); retainedPaths=@(); disposables=@(); cleanup=@(); cleanupErrors=@() }
     $global:NexusTestOutputs[$resolved] = $state
     $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $resolved 'artifact-lifecycle.json') -Encoding utf8
     return $resolved
@@ -253,10 +321,11 @@ function Complete-TestOutput {
     }
     $state['generated'] = Get-TestOutputSize $directoryPath
     $state.status = $Outcome
-    if ($state.mode -eq 'Standard') { Remove-TestRegisteredDisposables $directoryPath $state }
+    if (-not $state.keepRawArtifacts) { Remove-TestRegisteredDisposables $directoryPath $state }
     $state['retained'] = Get-TestOutputSize $directoryPath
     $state['finishedUtc'] = [DateTime]::UtcNow.ToString('o')
     $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $directoryPath 'artifact-lifecycle.json') -Encoding utf8
+    Invoke-TestOutputMaintenance -Root ([IO.Path]::GetDirectoryName($directoryPath))
 }
 
 function Get-TestProjectInputs {
