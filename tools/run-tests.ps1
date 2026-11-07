@@ -27,6 +27,7 @@ Set-StrictMode -Version Latest
 $repositoryRoot = Split-Path $PSScriptRoot -Parent
 $testRoot = Join-Path $repositoryRoot 'tests'
 . (Join-Path $testRoot 'test-support.ps1')
+Invoke-TestWorkspaceMaintenance
 $SourceRoot = [IO.Path]::GetFullPath($SourceRoot)
 if ($SourceRoot.TrimEnd('\','/') -ne $repositoryRoot.TrimEnd('\','/') -and $UiPreview -in @('Quick','Full')) {
     throw 'Explicit UI preview requires this checkout as SourceRoot; run the preview entry in the target checkout.'
@@ -184,4 +185,5 @@ if ($Suite -contains 'ui' -and -not $BuildOnly -and $UiPreview -ne 'None') {
     throw
 } finally {
     $env:NR_NEXUS_TEST_RETENTION = $previousRetention
+    Invoke-TestWorkspaceMaintenance
 }

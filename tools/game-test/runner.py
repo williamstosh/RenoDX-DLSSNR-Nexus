@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import time
@@ -20,6 +21,13 @@ from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageStat
 import desktop
 import normal_process
 import crash_evidence
+try:
+    import output_lifecycle
+except ModuleNotFoundError:
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location("output_lifecycle", Path(__file__).resolve().parents[1] / 'offline/output_lifecycle.py')
+    output_lifecycle = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(output_lifecycle)
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -875,9 +883,93 @@ def recover_owned(cfg, out, owned):
     return True
 
 
+def summarize_motion(recording):
+    """Verify sampled JPEGs and their smaller playback before releasing source frames."""
+    record = json.loads(recording.read_text(encoding='utf-8'))
+    frames = record['frames']
+    if record['status'] != 'complete' or len(frames) < 2:
+        raise ValueError('Motion recording is incomplete; preserve source frames')
+    starts = [frame['capture_begin_ns'] for frame in frames]
+    intervals = [(b - a) / 1e6 for a, b in zip(starts, starts[1:])]
+    if any(value <= 0 for value in intervals):
+        raise ValueError('Motion timestamps must increase')
+    durations, elapsed, rounded = [], 0.0, 0
+    for duration in intervals + [statistics.median(intervals)]:
+        elapsed += duration
+        next_rounded = round(elapsed)
+        durations.append(max(1, next_rounded - rounded))
+        rounded = next_rounded
+    images, sources = [], []
+    preview = recording.parent / 'preview.webp'
+    try:
+        for index, frame in enumerate(frames):
+            _, source = output_lifecycle._relative_file(recording.parent, Path(frame['file']))
+            if frame['index'] != index or source.stat().st_size != frame['bytes'] or sha(source) != frame['sha256']:
+                raise ValueError(f'Motion source identity mismatch: {index}')
+            with Image.open(source) as image:
+                if image.size != (record['width'], record['height']) or image.mode != 'RGB':
+                    raise ValueError(f'Motion source format mismatch: {index}')
+                sample = image.copy()
+                sample.thumbnail((1280, 720), Image.Resampling.LANCZOS)
+                images.append(sample)
+            sources.append(source)
+        with preview.open('xb') as stream:
+            images[0].save(stream, format='WEBP', save_all=True, append_images=images[1:],
+                           duration=durations, loop=0, quality=90, method=4)
+        with Image.open(preview) as image:
+            if image.n_frames != len(frames):
+                raise ValueError('Motion preview frame count mismatch')
+            for index, duration in enumerate(durations):
+                image.seek(index)
+                image.load()
+                if image.info.get('duration') != duration:
+                    raise ValueError('Motion preview timing mismatch')
+        dump(recording.parent / 'preview-summary.json', dict(
+            source_recording=recording.name, source_sha256=sha(recording), source_hashes_verified=True,
+            preview=preview.name, preview_sha256=sha(preview), frame_count=len(frames),
+            duration_ms=durations, preview_size=list(images[0].size),
+            limitation='Reduced SDR sampling preview; original resolution and native game FPS are not preserved'))
+        return sources
+    finally:
+        for image in images:
+            image.close()
+
+
+def finish_artifacts(out, final, guard_ok):
+    """Release navigation captures and verified save copies after their consumers finish."""
+    retained = list(out.glob('hdr-*.png')) + list(out.glob('addon-menu-*.png'))
+    retained += [out / 'crash-evidence', out / 'model-pair']
+    if final['result'] == 'failed':
+        retained.append(out / 'latest.png')
+    disposables = [path for path in out.glob('*.png') if path not in retained]
+    if guard_ok:
+        for entry in json.loads((out / 'protected-files.json').read_text(encoding='utf-8')):
+            backup = Path(entry['backup_path'])
+            if Path(entry['path']).suffix.lower() in {'.ini', '.settings', '.bak'}:
+                retained.append(backup)
+            else:
+                disposables.append(backup)
+    else:
+        retained.append(out / 'protected')
+    for recording in out.glob('motion-*/recording.json'):
+        if output_lifecycle._read(out).get('keepRawArtifacts'):
+            continue
+        try:
+            frames = summarize_motion(recording)
+            retained += frames[:1] + frames[-1:]
+            retained.append(recording.parent / 'preview.webp')
+            disposables += frames[1:-1]
+        except (OSError, ValueError, KeyError) as error:
+            retained.append(recording.parent)
+            dump(recording.parent / 'preview-error.json', dict(error=str(error)))
+    output_lifecycle.retain(out, retained)
+    output_lifecycle.register_disposable(out, disposables)
+    output_lifecycle.finish(out, 'Failed' if final['result'] == 'failed' else 'Passed')
+
+
 def run_attempt(cfg, out):
     from guard import ProtectedFiles
-    out.mkdir(parents=True)
+    output_lifecycle.initialize(out)
     dump(out / 'target.json', cfg)
     source = out / 'source'
     source.mkdir()
@@ -885,6 +977,8 @@ def run_attempt(cfg, out):
     for name in ('runner.py', 'desktop.py', 'guard.py', 'normal_process.py', 'crash_evidence.py'):
         shutil.copyfile(HERE / name, source / name)
         sources.append(dict(name=name, sha256=sha(source / name)))
+    shutil.copyfile(Path(output_lifecycle.__file__), source / 'output_lifecycle.py')
+    sources.append(dict(name='output_lifecycle.py', sha256=sha(source / 'output_lifecycle.py')))
     dump(out / 'source-manifest.json', dict(files=sources, target_sha256=sha(out / 'target.json'),
                                           ocr_sha256=sha(cfg['ocr_executable']) if cfg.get('ocr_executable') else None))
     print('RUN_DIRECTORY=' + str(out), flush=True)
@@ -1095,6 +1189,7 @@ def run_attempt(cfg, out):
             final.update(result='failed', parent_problem=problem)
         dump(out / 'guard-complete.json', dict(time=stamp(), verified=guard_ok, owned_process_exited=not owned or not desktop.same_process(owned)))
         dump(out / 'result.json', final)
+        finish_artifacts(out, final, guard_ok)
     return final
 
 
@@ -1182,6 +1277,7 @@ def main():
         parser.error('--capture-script requires nonzero capture hold and cannot use --manual-ime-session')
     script = capture_script_path(args.capture_script) if args.capture_script else None
     output_root = local_output_root(args.output_root)
+    output_lifecycle.maintain_workspace(ROOT)
     cfg = resolve_target(args.game, args.platform, args.save, args.addon_absent_control, args.target)
     cfg['scenario'] = args.scenario
     cfg['capture_hold_seconds'] = args.capture_hold_seconds
@@ -1208,7 +1304,10 @@ def main():
         print(json.dumps(cfg, ensure_ascii=False, indent=2))
         return 0
     out = output_root / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + os.urandom(3).hex())
-    return run_trials(cfg, out, args.retries)
+    try:
+        return run_trials(cfg, out, args.retries)
+    finally:
+        output_lifecycle.maintain_workspace(ROOT)
 
 if __name__ == '__main__':
     if '--worker' in sys.argv:

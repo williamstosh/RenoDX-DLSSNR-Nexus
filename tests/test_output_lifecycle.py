@@ -72,6 +72,16 @@ class OutputLifecycleTests(unittest.TestCase):
             self.assertEqual(json.loads((active / "artifact-lifecycle.json").read_text())["status"], "Running")
             self.assertFalse(orphan_raw.exists())
             self.assertEqual(json.loads((orphaned / "artifact-lifecycle.json").read_text())["status"], "Failed")
+            child = active / "child"
+            output_lifecycle.initialize(child)
+            child_raw = child / "still-used.f32"
+            child_raw.write_bytes(b"used by active parent")
+            output_lifecycle.register_disposable(child, [child_raw])
+            state = output_lifecycle._read(child)
+            state["ownerPid"] = 2**31 - 1
+            output_lifecycle._write(child, state)
+            output_lifecycle.maintain(active, limit=1)
+            self.assertTrue(child_raw.exists())
 
     def test_explicit_raw_retention_keeps_registered_data(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -173,6 +183,42 @@ class OutputLifecycleTests(unittest.TestCase):
             self.assertTrue((menu / "atlas.rgba").exists())
             self.assertFalse((menu / "normal.json").exists())
             self.assertFalse((menu / "unused.rgba").exists())
+
+    def test_workspace_orphan_cleanup_does_not_require_a_capacity_limit(self):
+        for limit in ('0', '100000'):
+            with self.subTest(limit=limit), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                run = root / 'artifacts/run'
+                output_lifecycle.initialize(run)
+                raw = run / 'orphan.f32'
+                raw.write_bytes(b'orphaned')
+                output_lifecycle.register_disposable(run, [raw])
+                state = output_lifecycle._read(run)
+                state['ownerPid'] = 2**31 - 1
+                output_lifecycle._write(run, state)
+                with patch.dict(output_lifecycle.os.environ, {'NR_NEXUS_TEST_BUDGET_BYTES': limit}):
+                    output_lifecycle.maintain_workspace(root)
+                self.assertFalse(raw.exists())
+                self.assertEqual(output_lifecycle._read(run)['status'], 'Failed')
+
+    def test_workspace_budget_is_shared_across_tmp_and_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name in ('tmp', 'artifacts'):
+                run = root / name / 'run'
+                output_lifecycle.initialize(run)
+                (run / 'bulk.png').write_bytes(b'x' * 65536)
+                (run / 'backup').mkdir()
+                (run / 'backup/runtime.dll').write_bytes(b'recovery')
+                output_lifecycle.finish(run, 'Passed')
+                state = output_lifecycle._read(run)
+                state['ownerPid'] = 2**31 - 1
+                output_lifecycle._write(run, state)
+            with patch.dict(output_lifecycle.os.environ, {'NR_NEXUS_TEST_BUDGET_BYTES': '100000'}):
+                result = output_lifecycle.maintain_workspace(root)
+            self.assertLessEqual(result['bytes'], 100000)
+            self.assertTrue((root / 'tmp/run/backup/runtime.dll').exists())
+            self.assertTrue((root / 'artifacts/run/backup/runtime.dll').exists())
 
 
 if __name__ == "__main__":

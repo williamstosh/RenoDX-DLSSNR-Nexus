@@ -7,6 +7,7 @@ All receipts and fake profiles live in a disposable directory under project tmp/
 from contextlib import ExitStack
 import importlib.util
 import io
+import importlib
 import json
 from pathlib import Path
 import subprocess
@@ -15,6 +16,7 @@ import tempfile
 import types
 import unittest
 from unittest import mock
+from PIL import Image
 
 
 HERE = Path(__file__).resolve().parent
@@ -114,6 +116,84 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(final['guard'], 'verified_original_hashes_and_released')
         self.assertIn('synthetic failure', final['diagnostic_error'])
         self.assertFalse(self.locked)
+
+    def test_artifact_cleanup_keeps_failure_sample_and_recovery_configuration(self):
+        lifecycle = self.runner.output_lifecycle
+        with mock.patch.dict(lifecycle.os.environ, {'NR_NEXUS_TEST_BUDGET_BYTES': '0', 'NR_NEXUS_TEST_KEEP_RAW': '0'}):
+            lifecycle.initialize(self.out)
+            for name in ('ocr.png', 'menu.png', 'latest.png', 'hdr-nr-on.png'):
+                (self.out / name).write_bytes(b'image')
+            (self.out / 'protected').mkdir()
+            save, config = self.out / 'protected/save.bin', self.out / 'protected/config.bin'
+            save.write_bytes(b'save copy')
+            config.write_bytes(b'config copy')
+            self.runner.dump(self.out / 'protected-files.json', [
+                dict(path='original.sav', backup_path=str(save)),
+                dict(path='ReShade.ini', backup_path=str(config))])
+            self.runner.finish_artifacts(self.out, dict(result='failed'), True)
+            self.assertFalse((self.out / 'ocr.png').exists())
+            self.assertFalse((self.out / 'menu.png').exists())
+            self.assertFalse(save.exists())
+            for path in (config, self.out / 'latest.png', self.out / 'hdr-nr-on.png'):
+                self.assertTrue(path.exists(), path)
+
+    def test_motion_cleanup_without_budget_keeps_verified_preview_or_originals(self):
+        lifecycle = self.runner.output_lifecycle
+        for mode in ('normal', 'keep_raw', 'bad_hash'):
+            with self.subTest(mode=mode), mock.patch.dict(lifecycle.os.environ, {
+                    'NR_NEXUS_TEST_BUDGET_BYTES': '0',
+                    'NR_NEXUS_TEST_KEEP_RAW': '1' if mode == 'keep_raw' else '0'}):
+                out = self.root / mode
+                lifecycle.initialize(out)
+                motion = out / 'motion-off'
+                (motion / 'frames').mkdir(parents=True)
+                frames = []
+                for index, color in enumerate(('red', 'green', 'blue')):
+                    path = motion / f'frames/{index:04}.jpg'
+                    Image.new('RGB', (16, 9), color).save(path)
+                    frames.append(dict(index=index, file=f'frames/{index:04}.jpg',
+                        sha256=self.runner.sha(path), bytes=path.stat().st_size,
+                        capture_begin_ns=index * 200000000))
+                if mode == 'bad_hash':
+                    frames[1]['sha256'] = 'incorrect'
+                self.runner.dump(motion / 'recording.json', dict(
+                    status='complete', width=16, height=9, frames=frames))
+                self.runner.finish_artifacts(out, dict(result='passed'), False)
+                self.assertTrue((motion / 'frames/0000.jpg').exists())
+                self.assertTrue((motion / 'frames/0002.jpg').exists())
+                self.assertEqual((motion / 'frames/0001.jpg').exists(), mode != 'normal')
+                if mode == 'normal':
+                    summary = json.loads((motion / 'preview-summary.json').read_text())
+                    self.assertTrue(summary['source_hashes_verified'])
+                    self.assertEqual(summary['frame_count'], 3)
+                    state = lifecycle._read(out)
+                    state['ownerPid'] = 2**31 - 1
+                    lifecycle._write(out, state)
+                    lifecycle.maintain(out, limit=1)
+                    self.assertTrue((motion / 'preview.webp').exists())
+                elif mode == 'bad_hash':
+                    self.assertTrue((motion / 'preview-error.json').exists())
+
+    def test_legacy_cleanup_only_adopts_verified_finished_runs(self):
+        with mock.patch.dict(sys.modules, runner=self.runner):
+            spec = importlib.util.spec_from_file_location('_game_cleanup_under_test', HERE / 'cleanup_artifacts.py')
+            cleanup = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(cleanup)
+        lifecycle = self.runner.output_lifecycle
+        for name, verified in [('finished', True), ('unrecovered', False)]:
+            directory = self.root / name
+            directory.mkdir()
+            (directory / 'ocr.png').write_bytes(b'intermediate')
+            self.runner.dump(directory / 'guard-complete.json', dict(verified=verified, owned_process_exited=True))
+            self.runner.dump(directory / 'result.json', dict(result='failed', finished='2026-11-07',
+                guard='verified_original_hashes_and_released'))
+            self.runner.dump(directory / 'protected-files.json', [])
+        with mock.patch.dict(lifecycle.os.environ, {'NR_NEXUS_TEST_BUDGET_BYTES': '0', 'NR_NEXUS_TEST_KEEP_RAW': '0'}):
+            result = cleanup.adopt_completed(self.root)
+        self.assertEqual(len(result['adopted']), 1)
+        self.assertEqual(len(result['skipped']), 1)
+        self.assertFalse((self.root / 'finished/ocr.png').exists())
+        self.assertTrue((self.root / 'unrecovered/ocr.png').exists())
 
     def launch_worker(self, *args, **kwargs):
         self.events.append("worker_launch")

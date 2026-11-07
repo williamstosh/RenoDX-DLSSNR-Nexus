@@ -47,6 +47,7 @@ def new_output(path: Path) -> Path:
         if cursor.is_symlink() or (hasattr(cursor, "is_junction") and cursor.is_junction()):
             raise ContractError("Output crosses a reparse point")
         cursor = cursor.parent
+    output_lifecycle.maintain_workspace(ROOT)
     output_lifecycle.maintain(path.parent)
     path.mkdir(parents=True, exist_ok=False)
     output_lifecycle.initialize(path)

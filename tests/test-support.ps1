@@ -124,7 +124,7 @@ function Compress-TestOutput {
             $_ -and ($relative -eq ([string]$_).Replace('\','/').TrimEnd('/') -or
                 $relative.StartsWith(([string]$_).Replace('\','/').TrimEnd('/') + '/', [StringComparison]::OrdinalIgnoreCase))
         }).Count -gt 0
-        if ($explicit -or $relative -match '(^|/)(inputs|runner|source|failure-sample)/') { continue }
+        if ($explicit -or $relative -match '(^|/)(inputs|runner|source|failure-sample|backup|protected)/') { continue }
         $mesh = $item.Extension -in @('.json','.rgba') -and $item.DirectoryName -in $captureRoots
         if (-not $mesh -and $item.Extension -in @('.json','.jsonl','.log','.txt','.md','.csv','.ini','.xml','.settings','.py','.ps1','.cpp','.h','.hpp')) { continue }
         if ($item.Name -eq 'artifact-lifecycle.json') { continue }
@@ -164,6 +164,7 @@ function Invoke-TestOutputMaintenance {
             if ($state.schema -ne 'nr-nexus-test-output/1') { continue }
             $directory = $markerFile.DirectoryName
             if (@($protected | Where-Object { $_ -and ($directory -eq $_ -or
+                $directory.StartsWith($_ + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
                 $_.StartsWith($directory + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) }).Count) { continue }
             $ownerActive = Test-TestOutputOwnerActive ([int]$state.ownerPid)
             if ($state.status -eq 'Running') {
@@ -206,6 +207,24 @@ function Invoke-TestOutputMaintenance {
         } catch {
             Write-Warning "Budget cleanup skipped $($entry.Marker.DirectoryName): $($_.Exception.Message)"
         }
+    }
+}
+
+function Invoke-TestWorkspaceMaintenance {
+    param([string]$RepositoryRoot = (Join-Path $PSScriptRoot '..'), [long]$CapacityBudgetBytes = $(Get-TestOutputBudget))
+    $roots = @('tmp','artifacts') | ForEach-Object { Join-Path $RepositoryRoot $_ }
+    $sizes = @($roots | ForEach-Object { if (Test-Path -LiteralPath $_) { (Get-TestOutputSize $_).bytes } else { 0L } })
+    for ($index = 0; $index -lt $roots.Count; $index++) {
+        [long]$total = ($sizes | Measure-Object -Sum).Sum
+        $capacity = if ($CapacityBudgetBytes -gt 0 -and $total -gt $CapacityBudgetBytes) {
+            [Math]::Max(1L, $CapacityBudgetBytes - ($total - $sizes[$index]))
+        } else { 0L }
+        Invoke-TestOutputMaintenance -Root $roots[$index] -CapacityBudgetBytes $capacity
+        $sizes[$index] = if (Test-Path -LiteralPath $roots[$index]) { (Get-TestOutputSize $roots[$index]).bytes } else { 0L }
+    }
+    [long]$remaining = ($sizes | Measure-Object -Sum).Sum
+    if ($CapacityBudgetBytes -gt 0 -and $remaining -gt $CapacityBudgetBytes) {
+        Write-Warning "Test outputs remain above the shared budget: $remaining / $CapacityBudgetBytes bytes; active runs, recovery backups, retained evidence and unmanaged directories are protected."
     }
 }
 
@@ -298,7 +317,9 @@ function Get-TestOutputSize {
     $count = 0
     [long]$bytes = 0
     while ($pending.Count) {
-        foreach ($item in Get-ChildItem -LiteralPath $pending.Dequeue() -Force) {
+        try { $items = @(Get-ChildItem -LiteralPath $pending.Dequeue() -Force -ErrorAction Stop) }
+        catch [Management.Automation.ItemNotFoundException] { continue }
+        foreach ($item in $items) {
             if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
             if ($item.PSIsContainer) { $pending.Enqueue($item.FullName) }
             elseif ($item.Name -ne 'artifact-lifecycle.json') { $count++; $bytes += $item.Length }

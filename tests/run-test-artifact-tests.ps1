@@ -133,6 +133,58 @@ foreach ($mode in @('Standard','Full','Acceptance')) {
     Assert-ArtifactTest (Test-Path -LiteralPath (Join-Path $run 'repro.json')) "$mode budget deleted repro config"
 }
 Assert-ArtifactTest ((Test-Path -LiteralPath $protectedBulk) -and (Test-Path -LiteralPath $activeBulk)) 'Budget cleanup crossed an active child'
+$child = Initialize-TestOutput (Join-Path $active 'finished-child')
+$childRaw = Join-Path $child 'still-used.bin'
+Register-TestDisposable -Directory $child -Path $childRaw -Kind 'raw-readback'
+[IO.File]::WriteAllText($childRaw, 'parent still uses this output')
+$childMarker = Join-Path $child 'artifact-lifecycle.json'
+$s = Get-Content $childMarker -Raw | ConvertFrom-Json -AsHashtable
+$s.ownerPid = 2147483647
+$s | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $childMarker -Encoding utf8
+Invoke-TestOutputMaintenance -Root $active -CapacityBudgetBytes 1
+Assert-ArtifactTest (Test-Path -LiteralPath $childRaw) 'Maintenance crossed an active parent'
+$workspace = Join-Path $OutputDirectory 'shared-budget'
+foreach ($rootName in @('tmp','artifacts')) {
+    $run = Initialize-TestOutput (Join-Path $workspace "$rootName/run")
+    [IO.File]::WriteAllBytes((Join-Path $run 'bulk.png'), [byte[]]::new(65536))
+    [void][IO.Directory]::CreateDirectory((Join-Path $run 'backup'))
+    [IO.File]::WriteAllText((Join-Path $run 'backup/runtime.dll'), 'recovery')
+    Complete-TestOutput $run
+    $path = Join-Path $run 'artifact-lifecycle.json'
+    $s = Get-Content $path -Raw | ConvertFrom-Json -AsHashtable
+    $s.ownerPid = 2147483647
+    $s | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding utf8
+}
+# The enclosing synthetic run is active; isolate only its workspace markers.
+$workspaceMarker = Join-Path $OutputDirectory 'artifact-lifecycle.json'
+$workspaceState = Get-Content $workspaceMarker -Raw
+try {
+    $s = $workspaceState | ConvertFrom-Json -AsHashtable
+    $s.ownerPid = 2147483647
+    $s | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $workspaceMarker -Encoding utf8
+    Invoke-TestWorkspaceMaintenance -RepositoryRoot $workspace -CapacityBudgetBytes 100000
+} finally { [IO.File]::WriteAllText($workspaceMarker, $workspaceState) }
+Assert-ArtifactTest ((Get-TestOutputSize $workspace).bytes -le 100000) 'tmp/artifacts did not share a budget'
+foreach ($capacity in @(0L, 100000L)) {
+    $orphan = Join-Path $workspace 'artifacts/run'
+    $orphanRaw = Join-Path $orphan 'orphan.bin'
+    [IO.File]::WriteAllText($orphanRaw, 'orphaned')
+    $path = Join-Path $orphan 'artifact-lifecycle.json'
+    $s = Get-Content $path -Raw | ConvertFrom-Json -AsHashtable
+    $s.status = 'Running'
+    $s.disposables = @(@{path='orphan.bin';kind='raw-readback'})
+    $s | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding utf8
+    try {
+        $s = $workspaceState | ConvertFrom-Json -AsHashtable
+        $s.ownerPid = 2147483647
+        $s | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $workspaceMarker -Encoding utf8
+        Invoke-TestWorkspaceMaintenance -RepositoryRoot $workspace -CapacityBudgetBytes $capacity
+    } finally { [IO.File]::WriteAllText($workspaceMarker, $workspaceState) }
+    Assert-ArtifactTest (-not (Test-Path -LiteralPath $orphanRaw)) 'Orphan cleanup depended on exceeding the budget'
+}
+foreach ($rootName in @('tmp','artifacts')) {
+    Assert-ArtifactTest (Test-Path -LiteralPath (Join-Path $workspace "$rootName/run/backup/runtime.dll")) 'Budget removed a recovery backup'
+}
 $target = Join-Path $OutputDirectory 'outside'
 [void][IO.Directory]::CreateDirectory($target)
 $junction = Join-Path $OutputDirectory 'linked-output'

@@ -85,9 +85,15 @@ IME 等交互专项可在 `menu` 场景显式传 `-CaptureHoldSeconds 900`，只
 巫师3的 P0 SR 定向可加 `-SrOnly`，在完整备份的游戏配置中临时请求关闭 RR、DLSS FG、
 XeFG 和 FSR FG；保持 HDR／分辨率。退出后完整恢复，日志须另外确认真实源 Feature 与运行路径。
 `-TelemetrySeconds 1` 可为短场景临时请求逐秒性能／阶段遥测，沿用完整恢复保护；默认不覆盖游戏现有值。
-仅指定的键会临时变化；Runtime 替换前核对版本，并将游戏原 Runtime 加入既有
-备份／哈希核对和退出恢复清单。必须同时使用 `-RestoreInstallation`，不以创建
+仅指定的键会临时变化；Runtime 先核对版本和 SHA-256，与已安装文件相同则直接复用，
+不同才备份替换并在退出后恢复。恢复哈希核验完成且游戏／CrashReporter 已退出时自动删除冗余二进制备份，保留版本、哈希及回执；恢复未完成时继续保护备份。必须同时使用 `-RestoreInstallation`，不以创建
 参数日志代替实际网络确认或画质／性能验收。
+
+runner 与 wrapper 复用公共测试产物生命周期。结果写出后自动删除导航／OCR 截图；失败保留关键样本，恢复核验后释放存档副本，配置副本保留供验收使用。Full／Acceptance 与 Standard 同样收尾；显式 `NR_NEXUS_TEST_KEEP_RAW=1` 才保留完整数据。tmp/ 与 artifacts/ 共享默认 10 GiB 软预算（`NR_NEXUS_TEST_BUDGET_BYTES`），预算只用于额外收缩，设为 0 不影响正常收尾。活动任务、恢复材料及明确保留的证据不受预算删除。
+
+连续录制自动核验各原帧哈希，生成不超过 1280×720 的 WebP 回看预览并核验解码帧数／时间间隔；保留预览、摘要、录制记录及首尾原图，自动释放其余原帧。转换失败则保留整段原帧及错误记录。预览只用于采样回看；原分辨率画质分析或完整原帧专项须在启动前显式 KEEP_RAW。
+
+已授权的历史游戏产物清理可运行 `python tools/game-test/cleanup_artifacts.py --root artifacts`，只接入有完整 guard／恢复／退出证据的旧运行；游戏或 CrashReporter 仍在运行时拒绝执行。
 
 受保护的 `-ControlMaskCase` 可显式添加 `-ControlMaskUseCoreContext`，临时请求 Core context 诊断；仍须满足 `-SrOnly`、`-RestoreInstallation`、单 Pass Upscaled 和精确 Runtime 等现有门禁。省略此开关时不修改该配置键，receipt 记录开关请求值。
 `-ControlMaskAutoMask 0|1` 与 `-ControlMaskBlendMode 0..3` 可在同一受保护 case 上覆盖对应测试参数；省略保留 case 默认值。无显式 case 时提前拒绝，receipt 记录请求值，实际采用仍须核对运行日志。

@@ -184,6 +184,7 @@ def _new_output(requested: Path | None) -> Path:
         current = current.parent
     if path.exists():
         raise FileExistsError(f"Output already exists: {path}")
+    output_lifecycle.maintain_workspace(ROOT)
     output_lifecycle.maintain(path.parent)
     path.mkdir(parents=True, exist_ok=False)
     output_lifecycle.initialize(path)

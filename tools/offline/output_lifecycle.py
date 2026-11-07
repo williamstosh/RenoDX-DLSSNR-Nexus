@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -180,14 +181,32 @@ def finish(directory: Path, status: str) -> None:
 
 def _tree_bytes(root: Path) -> int:
     total = 0
-    for path in root.rglob("*"):
-        if path.is_symlink() or not path.is_file():
-            continue
-        try:
-            total += path.stat().st_size
-        except OSError:
-            continue
+    for directory, folders, files in os.walk(root, followlinks=False):
+        folders[:] = [name for name in folders if not _is_link(Path(directory) / name)]
+        for name in files:
+            path = Path(directory) / name
+            try:
+                if not _is_link(path):
+                    total += path.stat().st_size
+            except OSError:
+                continue
     return total
+
+
+def maintain_workspace(repository: Path) -> dict[str, int]:
+    """Share one capacity budget across tmp/ and artifacts/ at top-level entry points."""
+    roots = [repository / name for name in ("tmp", "artifacts")]
+    limit = budget_bytes()
+    sizes = [_tree_bytes(root) if root.is_dir() else 0 for root in roots]
+    for index, root in enumerate(roots):
+        capacity = max(1, limit - (sum(sizes) - sizes[index])) if limit > 0 and sum(sizes) > limit else 0
+        maintain(root, limit=capacity)
+        sizes[index] = _tree_bytes(root) if root.is_dir() else 0
+    if limit > 0 and sum(sizes) > limit:
+        print(f"Test outputs remain above the shared budget: {sum(sizes)} / {limit} bytes; "
+              "active runs, recovery backups, retained evidence and unmanaged directories are protected.",
+              file=sys.stderr)
+    return {"budgetBytes": limit, "bytes": sum(sizes)}
 
 
 def _is_link(path: Path) -> bool:
@@ -228,7 +247,8 @@ def _compact(directory: Path, state: dict[str, Any]) -> None:
         relative = path.relative_to(directory).as_posix()
         if any(relative == saved or relative.startswith(saved.rstrip("/") + "/") for saved in keep):
             continue
-        if any(part in {"inputs", "runner", "source", "failure-sample"} for part in path.relative_to(directory).parts[:-1]):
+        if any(part in {"inputs", "runner", "source", "failure-sample", "backup", "protected"}
+               for part in path.relative_to(directory).parts[:-1]):
             continue
         mesh = path.parent in captures and path.suffix in {".json", ".rgba"}
         if path.name == "artifact-lifecycle.json" or (not mesh and path.suffix.lower() in evidence):
@@ -259,7 +279,7 @@ def maintain(root: Path, limit: int | None = None) -> None:
         if marker.is_symlink() or not marker.is_file():
             continue
         directory = marker.parent
-        if any(saved.is_relative_to(directory) for saved in protected):
+        if any(saved.is_relative_to(directory) or directory.is_relative_to(saved) for saved in protected):
             continue
         if any(_is_link(path) for path in (directory, *directory.parents)):
             continue

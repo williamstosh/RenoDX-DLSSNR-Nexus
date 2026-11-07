@@ -82,6 +82,87 @@ if (($TelemetrySeconds -ge 0 -or $SrOnly -or $NrRuntimePath -or $NrPreset -ge 0 
     (-not $RestoreInstallation -or $InstallOnly)) {
     throw 'Model tests require a protected session and -RestoreInstallation; -InstallOnly is not supported.'
 }
+function Get-FgAcceptanceRuntimePlan {
+    param([string]$RuntimePath, [string]$InstalledPath)
+    $requestedHash = (Get-FileHash -LiteralPath $RuntimePath -Algorithm SHA256).Hash
+    $installedHash = (Get-FileHash -LiteralPath $InstalledPath -Algorithm SHA256).Hash
+    return [ordered]@{
+        requested_path=$RuntimePath; installed_path=$InstalledPath
+        sha256=$requestedHash; original_sha256=$installedHash
+        version=[string](Get-Item -LiteralPath $RuntimePath).VersionInfo.FileVersion
+        original_version=[string](Get-Item -LiteralPath $InstalledPath).VersionInfo.FileVersion
+        reused=($requestedHash -eq $installedHash)
+    }
+}
+function Remove-FgAcceptanceBinaryBackups {
+    param([Parameter(Mandatory)][string]$ReceiptPath, [switch]$CurrentRun, [switch]$LegacyProcessesStopped)
+    # Load test-support.ps1 before calling this function independently. A legacy
+    # receipt has no owner; its caller must also confirm the game has exited.
+    $receiptPath = [IO.Path]::GetFullPath($ReceiptPath)
+    $run = [IO.Path]::GetDirectoryName($receiptPath)
+    # AST-extracted callers have no PSScriptRoot; the shared helper retains its
+    # source location and therefore the actual repository boundary.
+    $supportDirectory = Split-Path -Parent (Get-Command Assert-TestArtifactPath).ScriptBlock.File
+    $repo = [IO.Path]::GetFullPath((Join-Path $supportDirectory '..'))
+    if ([IO.Path]::GetFileName($receiptPath) -ne 'receipt.json' -or
+        [IO.Path]::GetFileName($run) -notlike 'acceptance-*' -or
+        -not (@('tmp','artifacts') | Where-Object {
+            $run.StartsWith((Join-Path $repo $_) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+        })) { throw 'Backup cleanup requires a repository acceptance run receipt.' }
+    Assert-TestArtifactPath $receiptPath
+    $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json -AsHashtable
+    $result = [ordered]@{status='protected'; deleted_files=0; deleted_bytes=[long]0}
+    if ($env:NR_NEXUS_TEST_KEEP_RAW -eq '1' -or $receipt['keepRawArtifacts'] -or
+        $receipt['restored'] -isnot [bool] -or -not $receipt['restored'] -or
+        $receipt['restore_pending'] -or $receipt['candidate_retained']) { return $result }
+    if (@(Get-Process -Name witcher3,CrashReporter -ErrorAction SilentlyContinue).Count) { return $result }
+    $markerPath = Join-Path $run 'artifact-lifecycle.json'
+    $state = $null
+    if (Test-Path -LiteralPath $markerPath) {
+        Assert-TestArtifactPath $markerPath
+        $marker = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json -AsHashtable
+        if ($marker.schema -ne 'nr-nexus-test-output/1' -or $marker['keepRawArtifacts']) { return $result }
+        if ($CurrentRun) {
+            $state = $global:NexusTestOutputs[$run]
+            if (-not $state -or $state.ownerPid -ne $PID -or $marker.ownerPid -ne $PID -or
+                $state.runId -ne $marker.runId -or $state.status -ne 'Running') {
+                throw 'Backup cleanup ownership changed.'
+            }
+        } elseif (Test-TestOutputOwnerActive ([int]$marker.ownerPid)) { return $result }
+    } elseif ($CurrentRun -or -not $LegacyProcessesStopped) { return $result }
+    $backup = Join-Path $run 'backup'
+    Assert-TestArtifactPath $backup
+    if (-not (Test-Path -LiteralPath $backup -PathType Container)) { return $result }
+    $items = @(Get-ChildItem -LiteralPath $backup -Force)
+    foreach ($item in $items) { Assert-TestArtifactPath $item.FullName }
+    $binaries = @($items | Where-Object { -not $_.PSIsContainer -and $_.Extension -in @('.dll','.addon','.addon64','.exe') })
+    if ($CurrentRun) {
+        foreach ($item in $binaries) {
+            Register-TestDisposable -Directory $run -Path $item.FullName -Kind 'restored-game-binary-backup'
+        }
+        # Release only while disposing verified, redundant binary copies. Keep
+        # the backup directory protected from later generic budget compaction.
+        $retained = $state.retainedPaths
+        try {
+            $state.retainedPaths = @($retained | Where-Object { $_ -ne 'backup' })
+            Remove-TestRegisteredDisposables $run $state
+        } finally {
+            $state.retainedPaths = $retained
+            $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $markerPath -Encoding utf8
+        }
+    } else {
+        foreach ($item in $binaries) {
+            Remove-Item -LiteralPath $item.FullName -ErrorAction Stop
+        }
+    }
+    foreach ($item in $binaries) {
+        if (-not (Test-Path -LiteralPath $item.FullName)) {
+            $result.deleted_files++; $result.deleted_bytes += $item.Length
+        }
+    }
+    $result.status = if ($result.deleted_files -eq $binaries.Count) { 'cleaned' } else { 'incomplete' }
+    return $result
+}
 function Get-ControlMaskSettings([ValidateSet('T0','T1','T2','T3','T4','T5','T6','GRect','BRect')][string]$Case) {
     $settings = @{
         NRHookPoint=0; NRPasses=1; NRFollowInputRes=0; NRResolutionScale=1; NRScreenshotSource=2
@@ -203,13 +284,15 @@ $taskDll = Join-Path $taskGame 'renodx-dlss5.addon64'
 $taskConfig = Join-Path $taskGame 'ReShade.ini'
 $taskGameConfig = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'The Witcher 3/dx12user.settings'
 $taskBackupFiles = @($taskDll, $taskConfig)
+$taskRuntimePlan = $null
 if ($NrRuntimePath) {
     $taskRuntimeVersion = (Get-Item -LiteralPath $NrRuntimePath).VersionInfo
     if ($taskRuntimeVersion.FileMajorPart -ne 310 -or $taskRuntimeVersion.FileMinorPart -ne 9 -or
         $taskRuntimeVersion.FileBuildPart -ne 16 -or $taskRuntimeVersion.FilePrivatePart -ne 0) {
         throw 'The dual-model test requires the identified 310.9.16 runtime.'
     }
-    $taskBackupFiles += Join-Path $taskGame 'nvngx_dlssnr.dll'
+    $taskRuntimePlan = Get-FgAcceptanceRuntimePlan $NrRuntimePath (Join-Path $taskGame 'nvngx_dlssnr.dll')
+    if (-not $taskRuntimePlan.reused) { $taskBackupFiles += Join-Path $taskGame 'nvngx_dlssnr.dll' }
 }
 if ($CleanEnvironment -or $XeFGUiComposition -ge 0 -or $ControlMaskCase) {
     $taskBackupFiles += Join-Path $taskGame 'OptiScaler.ini'
@@ -241,7 +324,16 @@ if ((Get-FileHash -LiteralPath $taskCandidate.path).Hash -ne $taskCandidate.sha2
 $taskRunning = @(Get-Process -Name witcher3,CrashReporter -ErrorAction SilentlyContinue)
 if ($taskRunning.Count) { throw 'Game or crash reporter is already running; installation was not changed' }
 $taskRun = Join-Path $OutputRoot ('acceptance-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'))
-New-Item -ItemType Directory -Path $taskRun | Out-Null
+. (Join-Path $PSScriptRoot '../tests/test-support.ps1')
+Invoke-TestWorkspaceMaintenance
+$taskRun = Initialize-TestOutput $taskRun
+$taskOutputState = $global:NexusTestOutputs[$taskRun]
+# This protection survives wrapper failure and orphan/budget maintenance.
+$taskOutputState.retainedPaths = @('backup')
+$taskOutputState | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $taskRun 'artifact-lifecycle.json') -Encoding utf8
+$taskReceiptPath = Join-Path $taskRun 'receipt.json'
+$taskOutcome = 'Failed'
+try {
 $taskBackup = Join-Path $taskRun 'backup'
 New-Item -ItemType Directory -Path $taskBackup | Out-Null
 $taskOriginal = @()
@@ -260,6 +352,7 @@ $taskReceipt = [ordered]@{
     gpu_timers_requested=[bool]$GpuTimers
     requested_telemetry_seconds=$TelemetrySeconds
     nr_model_test=@{runtime=$NrRuntimePath; main=$NrPreset; pass2=$NrPass2Preset; passes=$NrPasses}
+    nr_runtime_test=$taskRuntimePlan
     nr_stage_test=@{hook=$NrHookPoint; pass2=$NrPass2Stage; pass3=$NrPass3Stage; pass4=$NrPass4Stage}
     control_mask_case=$ControlMaskCase
     requested_control_mask_use_core_context=[bool]$ControlMaskUseCoreContext
@@ -278,6 +371,7 @@ $taskReceipt = [ordered]@{
     install_only=[bool]$InstallOnly
     manual_ime_session=[bool]$ManualImeSession
     candidate_retained=$false; test_changes_restored=$false
+    keepRawArtifacts=($env:NR_NEXUS_TEST_KEEP_RAW -eq '1')
     isolated_addons=@()
 }
 $taskReceiptPath = Join-Path $taskRun 'receipt.json'
@@ -316,7 +410,7 @@ try {
         Copy-Item -LiteralPath $taskCandidate.path -Destination $taskDll
         if ((Get-FileHash -LiteralPath $taskDll).Hash -ne $taskCandidate.sha256) { throw 'Installed candidate hash mismatch' }
     }
-    if ($NrRuntimePath) {
+    if ($NrRuntimePath -and -not $taskRuntimePlan.reused) {
         Copy-Item -LiteralPath $NrRuntimePath -Destination (Join-Path $taskGame 'nvngx_dlssnr.dll')
         if ((Get-FileHash -LiteralPath $NrRuntimePath).Hash -ne
             (Get-FileHash -LiteralPath (Join-Path $taskGame 'nvngx_dlssnr.dll')).Hash) {
@@ -505,5 +599,18 @@ try {
     $taskReceipt.finished_utc = [DateTimeOffset]::UtcNow.ToString('o')
     $taskReceipt | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $taskReceiptPath -Encoding utf8
     Write-Output "ACCEPTANCE_RECEIPT=$taskReceiptPath"
+}
+if ($taskReceipt.test_exit_code -eq 0 -and ($taskReceipt.restored -or $taskReceipt.candidate_retained)) { $taskOutcome = 'Passed' }
+} finally {
+    try {
+        if (Test-Path -LiteralPath $taskReceiptPath -PathType Leaf) {
+            $taskCleanup = Remove-FgAcceptanceBinaryBackups -ReceiptPath $taskReceiptPath -CurrentRun
+            Write-Output ("ACCEPTANCE_BACKUP_CLEANUP=" + ($taskCleanup | ConvertTo-Json -Compress))
+        }
+    } catch {
+        Write-Warning "Acceptance backup cleanup stopped: $($_.Exception.Message)"
+    }
+    Complete-TestOutput -Directory $taskRun -Outcome $taskOutcome
+    Invoke-TestWorkspaceMaintenance
 }
 if ($taskReceipt.test_exit_code -ne 0) { exit 1 }
