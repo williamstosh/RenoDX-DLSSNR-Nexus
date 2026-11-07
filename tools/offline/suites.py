@@ -17,6 +17,14 @@ from datetime import datetime, timezone
 from typing import Any
 import uuid
 from ctypes import wintypes
+try:
+    import output_lifecycle
+except ModuleNotFoundError:  # Loaded by the repository's unit tests via a file spec.
+    import importlib.util
+    _lifecycle_spec = importlib.util.spec_from_file_location("output_lifecycle", Path(__file__).with_name("output_lifecycle.py"))
+    output_lifecycle = importlib.util.module_from_spec(_lifecycle_spec)
+    assert _lifecycle_spec.loader is not None
+    _lifecycle_spec.loader.exec_module(output_lifecycle)
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_SCHEMA = "nr-nexus-offline-suite-fixture/1"
@@ -137,7 +145,8 @@ def build_command(fixture: dict[str, Any], output: Path, powershell: str = "pwsh
     suite_array = "@(" + ",".join(quote(value) for value in suites) + ")"
     suite_output = output / RUN_OUTPUT_NAME
     script = ("$ErrorActionPreference='Stop'; & " + quote(ROOT / "tools" / "run-tests.ps1")
-              + " -Suite " + suite_array + " -OutputDirectory " + quote(suite_output) + " -UiPreview 'None'")
+              + " -Suite " + suite_array + " -OutputDirectory " + quote(suite_output)
+              + " -UiPreview 'None' -RetentionMode " + quote(output_lifecycle.retention_mode()))
     native_cases = [case["case"] for case in fixture["cases"] if case["suite"] == "fg-native"]
     if native_cases:
         native_array = "@(" + ",".join(quote(value) for value in native_cases) + ")"
@@ -175,7 +184,9 @@ def _new_output(requested: Path | None) -> Path:
         current = current.parent
     if path.exists():
         raise FileExistsError(f"Output already exists: {path}")
+    output_lifecycle.maintain(path.parent)
     path.mkdir(parents=True, exist_ok=False)
+    output_lifecycle.initialize(path)
     return path
 
 
@@ -523,6 +534,7 @@ def run(fixture_path: Path, output_path: Path | None = None, powershell: str = "
         "cases": cases, "raw_artifacts": raw_artifacts,
     }
     (output / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    output_lifecycle.finish(output, "Passed" if status == "passed" else "Failed")
     return result
 
 

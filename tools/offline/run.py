@@ -17,8 +17,20 @@ import uuid
 
 from contracts import (ContractError, RESULT_SCHEMA, artifact_path, compare_raw, digest, identity,
                        integer, prepare_sequence, read_json, sample_statistics, verify_sequence, write_json)
+import output_lifecycle
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def finish_lifecycle(directory: Path, status: str, raw_files: list[Path]) -> None:
+    marker = directory / "artifact-lifecycle.json"
+    if not marker.is_file():
+        return
+    if status == "passed":
+        output_lifecycle.register_disposable(directory, raw_files)
+    else:
+        output_lifecycle.register_disposable(directory, raw_files[1:])
+    output_lifecycle.finish(directory, "Passed" if status == "passed" else "Failed")
 
 
 def new_output(path: Path) -> Path:
@@ -33,7 +45,9 @@ def new_output(path: Path) -> Path:
         if cursor.is_symlink() or (hasattr(cursor, "is_junction") and cursor.is_junction()):
             raise ContractError("Output crosses a reparse point")
         cursor = cursor.parent
+    output_lifecycle.maintain(path.parent)
     path.mkdir(parents=True, exist_ok=False)
+    output_lifecycle.initialize(path)
     return path
 
 
@@ -345,6 +359,7 @@ def run_gpu(fixture: dict, executable: Path, directory: Path, adapter: str, time
             report["gpu_clock_snapshots"]["after"] = capture_gpu_clock()
         report["finished_utc"] = datetime.now(timezone.utc).isoformat()
         write_json(directory / "result.json", report)
+        finish_lifecycle(directory, report["status"], sorted((directory / "backend").glob("*.rgba8")))
     return report
 
 
@@ -388,6 +403,7 @@ def run_replay(source: Path, executable: Path, directory: Path, adapter: str, ti
     finally:
         report["finished_utc"] = datetime.now(timezone.utc).isoformat()
         write_json(directory / "result.json", report)
+        finish_lifecycle(directory, report["status"], sorted((directory / "backend").glob("*.f32")))
     return report
 
 

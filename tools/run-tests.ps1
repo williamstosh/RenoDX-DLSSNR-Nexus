@@ -177,6 +177,11 @@ if ($Suite -contains 'ui' -and -not $BuildOnly -and $UiPreview -ne 'None') {
     }
 }
 
+} catch {
+    if ($OutputDirectory -and (Test-Path -LiteralPath (Join-Path $OutputDirectory 'artifact-lifecycle.json'))) {
+        Complete-TestOutput $OutputDirectory -Outcome Failed
+    }
+    throw
 } finally {
     $env:NR_NEXUS_TEST_RETENTION = $previousRetention
 }

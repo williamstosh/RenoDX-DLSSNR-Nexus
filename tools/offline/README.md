@@ -19,7 +19,7 @@ pwsh -File tools/offline/build.ps1 -Backend ngx -OutputDirectory tmp/offline/ngx
 
 HostRoot、ShaderIncludeDirectory、Fxc、EmbedFile 参数可显式指定已有输入。
 脚本复用 tests/test-support.ps1，记录实际编译依赖、源码与 EXE 的 SHA-256、固定宿主、
-编译器和 SDK 身份，默认 Standard 成功后仅清理登记的 obj/lib/exp；构建不是运行通过。
+编译器和 SDK 身份。Standard 会清理登记的 obj/lib/exp；离线运行器在统计完成后清理登记的 GPU 原始读回，Full／Acceptance 保留完整原始数据。构建不是运行通过。
 构建／运行目录使用本仓库 tmp/ 或 artifacts/ 下的新目录，不覆盖历史。
 
 ## Fixture、合成序列与原始数据
@@ -94,8 +94,8 @@ controls 中 Reset、Jitter、Motion Scale、Subrect 仅转录输入，标记 ST
 `run.py replay` 另行核验构建身份和输入 SHA-256，运行后再次核对输入，并独立检查
 全部读回资源与完成序号。统一输出为 `result.json`，原始后端结果与 float32 文件
 保留在 `backend/`。直接执行 EXE 不替代 runner 的输入 SHA-256 校验。
-后续帧输入损坏时，后端仍保留此前已完成帧的原始读回和 Fence 记录；失败帧保持
-`status=failed`、`gpu_completed=false`，整个结果为 failed，不覆盖已有输出。
+后续帧输入损坏时，后端在运行期间仍保留此前已完成帧的原始读回和 Fence 记录；失败帧保持
+`status=failed`、`gpu_completed=false`，整个结果为 failed，不覆盖已有输出。Standard 收尾后只保留报告、Fence／统计和一个异常样本；需要完整读回时使用 Full／Acceptance。
 
 ## 既有 FG／XeFG／生命周期套件统一入口
 

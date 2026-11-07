@@ -20,7 +20,7 @@ foreach ($mode in @('Standard','Full','Acceptance')) {
         [IO.File]::WriteAllText((Join-Path $directory 'evidence.json'), '{"keep":true}')
         [IO.File]::WriteAllText((Join-Path $directory 'unregistered.obj'), 'not owned by compiler registration')
         Complete-TestOutput $directory -Outcome $outcome
-        $expected = $mode -ne 'Standard' -or $outcome -ne 'Passed'
+        $expected = $mode -ne 'Standard'
         Assert-ArtifactTest ((Test-Path -LiteralPath $object) -eq $expected) "$mode/$outcome intermediate retention"
         Assert-ArtifactTest (Test-Path -LiteralPath (Join-Path $directory 'evidence.json')) 'Evidence removed'
         Assert-ArtifactTest (Test-Path -LiteralPath (Join-Path $directory 'unregistered.obj')) 'Unregistered file removed'
@@ -32,7 +32,27 @@ $interrupted = Initialize-TestOutput (Join-Path $OutputDirectory 'interrupted')
 $object = Join-Path $interrupted 'generated.obj'
 Register-TestCompilerOutput $interrupted -ObjectPath $object
 [IO.File]::WriteAllText($object, 'unfinished')
-Assert-ArtifactTest (Test-Path -LiteralPath $object) 'Incomplete output must be retained'
+Assert-ArtifactTest (Test-Path -LiteralPath $object) 'Incomplete output remains until orphan maintenance'
+
+$orphaned = Initialize-TestOutput (Join-Path $OutputDirectory 'orphaned')
+$orphanObject = Join-Path $orphaned 'orphan.obj'
+Register-TestDisposable -Directory $orphaned -Path $orphanObject -Kind 'raw-readback'
+[IO.File]::WriteAllText($orphanObject, 'orphaned intermediate')
+$orphanMarkerPath = Join-Path $orphaned 'artifact-lifecycle.json'
+$orphanMarker = Get-Content -LiteralPath $orphanMarkerPath -Raw | ConvertFrom-Json
+$orphanMarker.ownerPid = 2147483647
+$orphanMarker | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $orphanMarkerPath -Encoding utf8
+Invoke-TestOutputMaintenance -Root $OutputDirectory
+$orphanState = Get-Content -LiteralPath $orphanMarkerPath -Raw | ConvertFrom-Json
+Assert-ArtifactTest ($orphanState.status -eq 'Failed' -and -not (Test-Path -LiteralPath $orphanObject)) 'Orphaned output was safely cleaned'
+
+$active = Initialize-TestOutput (Join-Path $OutputDirectory 'active')
+$activeObject = Join-Path $active 'active.obj'
+Register-TestDisposable -Directory $active -Path $activeObject -Kind 'raw-readback'
+[IO.File]::WriteAllText($activeObject, 'active intermediate')
+Invoke-TestOutputMaintenance -Root $OutputDirectory
+$activeState = Get-Content -LiteralPath (Join-Path $active 'artifact-lifecycle.json') -Raw | ConvertFrom-Json
+Assert-ArtifactTest ($activeState.status -eq 'Running' -and (Test-Path -LiteralPath $activeObject)) 'Active output was protected'
 $rejected = $false
 try { Initialize-TestOutput $interrupted | Out-Null } catch { $rejected = $true }
 Assert-ArtifactTest $rejected 'Nonempty output reused'
@@ -65,7 +85,7 @@ try {
     Invoke-TestProcess (Join-Path $PSHOME 'pwsh.exe') $timedOut 'sleep' @('-NoProfile','-Command','"Start-Sleep -Seconds 5"') -TimeoutMilliseconds 200
 } catch { $timeoutObserved = $_.Exception.Message -like 'Test timeout:*' }
 Assert-ArtifactTest $timeoutObserved 'Timeout was not reported'
-Assert-ArtifactTest (Test-Path -LiteralPath $timeoutObject) 'Timed out evidence removed'
+Assert-ArtifactTest (-not (Test-Path -LiteralPath $timeoutObject)) 'Timed out intermediate was cleaned'
 $timeoutState = Get-Content -LiteralPath (Join-Path $timedOut 'artifact-lifecycle.json') -Raw | ConvertFrom-Json
 Assert-ArtifactTest ($timeoutState.status -eq 'Failed') 'Timeout did not mark incomplete run failed'
 $target = Join-Path $OutputDirectory 'outside'

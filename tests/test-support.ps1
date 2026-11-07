@@ -30,6 +30,118 @@ function Initialize-TestBuild {
     }
 }
 
+function Get-TestOutputBudget {
+    if ([string]::IsNullOrWhiteSpace($env:NR_NEXUS_TEST_BUDGET_BYTES)) { return [long](4GB) }
+    [long]$budget = 0
+    if (-not [long]::TryParse($env:NR_NEXUS_TEST_BUDGET_BYTES, [Globalization.NumberStyles]::Integer,
+            [Globalization.CultureInfo]::InvariantCulture, [ref]$budget) -or $budget -lt 0) {
+        throw 'NR_NEXUS_TEST_BUDGET_BYTES must be a non-negative integer.'
+    }
+    return $budget
+}
+
+function Test-TestOutputOwnerActive {
+    param([int]$OwnerPid)
+    if ($OwnerPid -le 0) { return $false }
+    if ($OwnerPid -eq $PID) { return $true }
+    $owner = $null
+    try { $owner = [Diagnostics.Process]::GetProcessById($OwnerPid) }
+    catch [ArgumentException] { return $false }
+    try { return -not $owner.HasExited } finally { $owner.Dispose() }
+}
+
+function Remove-TestRegisteredDisposables {
+    param([string]$Directory, $State)
+    $directoryPath = [IO.Path]::GetFullPath($Directory)
+    $records = if (($State.PSObject.Properties.Name -contains 'disposables') -or
+        ($State -is [Collections.IDictionary] -and $State.Contains('disposables'))) {
+        @($State.disposables)
+    } elseif (($State.PSObject.Properties.Name -contains 'intermediates') -or
+        ($State -is [Collections.IDictionary] -and $State.Contains('intermediates'))) {
+        @($State.intermediates | ForEach-Object { @{ path=[IO.Path]::GetRelativePath($directoryPath, $_); kind='compiler-intermediate' } })
+    } else { @() }
+    foreach ($record in $records) {
+        $path = [IO.Path]::GetFullPath((Join-Path $directoryPath ([string]$record.path)))
+        try {
+            Assert-TestArtifactPath $path
+            if (-not $path.StartsWith($directoryPath + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Disposable path escaped its owned output directory.'
+            }
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+            $item = Get-Item -LiteralPath $path -Force
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse disposable refused.' }
+            if ($item.Attributes -band [IO.FileAttributes]::ReadOnly) { throw 'Read-only disposable retained.' }
+            $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+            $stream.Dispose()
+            Remove-Item -LiteralPath $path -ErrorAction Stop
+            $State.cleanup += @{ path=[IO.Path]::GetRelativePath($directoryPath,$path); bytes=$item.Length; kind=$record.kind }
+        } catch {
+            $State.cleanupErrors += @{ path=$path; error=$_.Exception.Message }
+            Write-Warning "Intermediate cleanup stopped: $path : $($_.Exception.Message)"
+        }
+    }
+    $remaining = @($records | Where-Object {
+        $candidate = Join-Path $directoryPath ([string]$_.path)
+        Test-Path -LiteralPath $candidate -PathType Leaf
+    })
+    if ($State -is [Collections.IDictionary]) { $State['disposables'] = $remaining }
+    else { $State.disposables = $remaining }
+}
+
+function Invoke-TestOutputMaintenance {
+    param([string]$Root, [long]$CapacityBudgetBytes = $(Get-TestOutputBudget))
+    $rootPath = [IO.Path]::GetFullPath($Root)
+    if (-not (Test-Path -LiteralPath $rootPath -PathType Container)) { return }
+    $markers = @(Get-ChildItem -LiteralPath $rootPath -Filter 'artifact-lifecycle.json' -File -Recurse -Force -ErrorAction SilentlyContinue)
+    foreach ($markerFile in $markers) {
+        try {
+            $state = Get-Content -LiteralPath $markerFile.FullName -Raw | ConvertFrom-Json -AsHashtable
+            if ($state.schema -ne 'nr-nexus-test-output/1') { continue }
+            $ownerActive = Test-TestOutputOwnerActive ([int]$state.ownerPid)
+            if ($state.status -eq 'Running') {
+                if ($ownerActive) { continue }
+                $state.status = 'Failed'
+                $state.orphanedUtc = [DateTime]::UtcNow.ToString('o')
+                $state.failureReason = 'owner process no longer exists'
+            } elseif ($ownerActive) { continue }
+            if ($state.mode -eq 'Standard') {
+                Remove-TestRegisteredDisposables $markerFile.DirectoryName $state
+            }
+            $state.lastMaintenanceUtc = [DateTime]::UtcNow.ToString('o')
+            $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $markerFile.FullName -Encoding utf8
+        } catch {
+            Write-Warning "Test output maintenance skipped $($markerFile.FullName): $($_.Exception.Message)"
+        }
+    }
+    if ($CapacityBudgetBytes -le 0) { return }
+    [long]$bytes = 0
+    foreach ($item in Get-ChildItem -LiteralPath $rootPath -File -Recurse -Force -ErrorAction SilentlyContinue) {
+        if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $bytes += $item.Length }
+    }
+    if ($bytes -le $CapacityBudgetBytes) { return }
+    $states = foreach ($markerFile in @(Get-ChildItem -LiteralPath $rootPath -Filter 'artifact-lifecycle.json' -File -Recurse -Force -ErrorAction SilentlyContinue)) {
+        try {
+            $state = Get-Content -LiteralPath $markerFile.FullName -Raw | ConvertFrom-Json -AsHashtable
+            if ($state.mode -eq 'Standard' -and $state.status -in @('Passed','Failed') -and
+                -not (Test-TestOutputOwnerActive ([int]$state.ownerPid))) {
+                [pscustomobject]@{ Marker=$markerFile; State=$state; SortKey=[string]$state.finishedUtc }
+            }
+        } catch { }
+    }
+    foreach ($entry in @($states | Sort-Object SortKey)) {
+        if ($bytes -le $CapacityBudgetBytes) { break }
+        $before = $bytes
+        Remove-TestRegisteredDisposables $entry.Marker.DirectoryName $entry.State
+        $entry.State.budgetCleanupUtc = [DateTime]::UtcNow.ToString('o')
+        $entry.State | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $entry.Marker.FullName -Encoding utf8
+        $bytes = 0
+        foreach ($item in Get-ChildItem -LiteralPath $rootPath -File -Recurse -Force -ErrorAction SilentlyContinue) {
+            if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $bytes += $item.Length }
+        }
+        if ($before -eq $bytes) { continue }
+    }
+}
+
 function Initialize-TestOutput {
     param([string]$Path, [ValidateSet('Standard','Full','Acceptance')][string]$RetentionMode = $(if ($env:NR_NEXUS_TEST_RETENTION) { $env:NR_NEXUS_TEST_RETENTION } else { 'Standard' }))
     $RetentionMode = @('Standard','Full','Acceptance') | Where-Object { $_ -ieq $RetentionMode } | Select-Object -First 1
@@ -39,6 +151,7 @@ function Initialize-TestOutput {
         $resolved.StartsWith((Join-Path $root $_) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
     }
     if (-not $allowed) { throw 'Test output must be below this repository tmp/ or artifacts/.' }
+    Invoke-TestOutputMaintenance -Root ([IO.Path]::GetDirectoryName($resolved))
     Assert-TestArtifactPath $resolved
     if ((Test-Path -LiteralPath $resolved) -and (Get-ChildItem -LiteralPath $resolved -Force | Select-Object -First 1)) {
         throw "Refusing nonempty output: $resolved"
@@ -50,7 +163,7 @@ function Initialize-TestOutput {
     $state = [ordered]@{ schema='nr-nexus-test-output/1'; runId=[guid]::NewGuid().ToString('N')
         ownerPid=$PID; mode=$RetentionMode; status='Running'; startedUtc=[DateTime]::UtcNow.ToString('o')
         entry=$MyInvocation.ScriptName; sourceCommit=(& git --no-optional-locks -C $root rev-parse HEAD)
-        intermediates=@(); cleanup=@(); cleanupErrors=@() }
+        budgetBytes=(Get-TestOutputBudget); disposables=@(); cleanup=@(); cleanupErrors=@() }
     $global:NexusTestOutputs[$resolved] = $state
     $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $resolved 'artifact-lifecycle.json') -Encoding utf8
     return $resolved
@@ -88,9 +201,26 @@ function Register-TestCompilerOutput {
             [IO.Path]::GetExtension($absolute) -notin @('.obj','.lib','.exp') -or (Test-Path -LiteralPath $absolute)) {
             throw "Compiler intermediate is not a new owned path: $absolute"
         }
-        if ($state.intermediates -notcontains $absolute) { $state.intermediates += $absolute }
+        Register-TestDisposable -Directory $directoryPath -Path $absolute -Kind 'compiler-intermediate'
     }
-    $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $directoryPath 'artifact-lifecycle.json') -Encoding utf8
+}
+
+function Register-TestDisposable {
+    param([string]$Directory, [string]$Path, [string]$Kind = 'intermediate')
+    $directoryPath = [IO.Path]::GetFullPath($Directory)
+    $state = $global:NexusTestOutputs[$directoryPath]
+    if (-not $state -or $state.status -ne 'Running') { throw 'Disposable requires an active owned test directory.' }
+    $absolute = [IO.Path]::GetFullPath($Path)
+    Assert-TestArtifactPath $absolute
+    if (-not $absolute.StartsWith($directoryPath + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
+        $absolute -eq (Join-Path $directoryPath 'artifact-lifecycle.json')) {
+        throw "Disposable path escaped owner: $absolute"
+    }
+    $relative = [IO.Path]::GetRelativePath($directoryPath, $absolute)
+    if (-not (@($state.disposables | Where-Object { $_.path -eq $relative }).Count)) {
+        $state.disposables += @{ path=$relative; kind=$Kind }
+    }
+    $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $directoryPath 'artifact-lifecycle.json') -Encoding utf8
 }
 
 function Get-TestOutputSize {
@@ -123,24 +253,7 @@ function Complete-TestOutput {
     }
     $state['generated'] = Get-TestOutputSize $directoryPath
     $state.status = $Outcome
-    if ($Outcome -eq 'Passed' -and $state.mode -eq 'Standard') {
-        foreach ($path in $state.intermediates) {
-            if (-not (Test-Path -LiteralPath $path)) { continue }
-            try {
-                Assert-TestArtifactPath $path
-                $item = Get-Item -LiteralPath $path -Force
-                if ($item.Attributes -band [IO.FileAttributes]::ReadOnly) { throw 'Read-only intermediate retained.' }
-                $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
-                $stream.Dispose()
-                Remove-Item -LiteralPath $path -ErrorAction Stop
-                $state.cleanup += @{ path=[IO.Path]::GetRelativePath($directoryPath,$path); bytes=$item.Length }
-            } catch {
-                $state.cleanupErrors += @{ path=$path; error=$_.Exception.Message }
-                Write-Warning "Intermediate cleanup stopped: $path : $($_.Exception.Message)"
-                break
-            }
-        }
-    }
+    if ($state.mode -eq 'Standard') { Remove-TestRegisteredDisposables $directoryPath $state }
     $state['retained'] = Get-TestOutputSize $directoryPath
     $state['finishedUtc'] = [DateTime]::UtcNow.ToString('o')
     $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $directoryPath 'artifact-lifecycle.json') -Encoding utf8
