@@ -39,6 +39,8 @@ inline uint32_t runtime_initializations = 0;
 inline uint32_t runtime_shutdowns = 0;
 inline uint32_t source_evaluate_calls = 0;
 inline uint32_t source_evaluate_c_calls = 0;
+inline ID3D12Resource* source_evaluate_color = nullptr;
+inline bool fail_source_evaluate = false;
 enum class Fault { NONE, ROOT, PSO, HEAP };
 inline Fault fault = Fault::NONE;
 inline uint32_t injected_failures = 0;
@@ -92,9 +94,11 @@ HRESULT STDMETHODCALLTYPE RemovedReason(ID3D12Device* device) {
   return device == removed_device ? DXGI_ERROR_DEVICE_REMOVED : real_removed(device);
 }
 NVSDK_NGX_Result NVSDK_CONV SourceEvaluate(ID3D12GraphicsCommandList*, const NVSDK_NGX_Handle*,
-    const NVSDK_NGX_Parameter*, PFN_NVSDK_NGX_ProgressCallback) {
+    const NVSDK_NGX_Parameter* parameters, PFN_NVSDK_NGX_ProgressCallback) {
   ++source_evaluate_calls;
-  return NVSDK_NGX_Result_Success;
+  source_evaluate_color = addon::GetD3D12Resource(parameters, NVSDK_NGX_Parameter_Color);
+  return fail_source_evaluate ? NVSDK_NGX_Result_FAIL_UnableToInitializeFeature
+                              : NVSDK_NGX_Result_Success;
 }
 NVSDK_NGX_Result NVSDK_CONV SourceEvaluateC(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Handle* handle,
     const NVSDK_NGX_Parameter* parameters, PFN_NVSDK_NGX_ProgressCallback_C) {
@@ -551,6 +555,184 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   };
   exercise_hook(false);
   exercise_hook(true);
+  {
+    const uint32_t saved_hook_point = addon::hook_point.exchange(addon::kHookRender);
+    const uint32_t saved_stack_passes = addon::stack_passes.exchange(2);
+    const uint32_t saved_second_stage = addon::pass_stage[0].exchange(2);
+    addon::configuration_generation.fetch_add(1);
+    const auto mixed_plan = addon::EvaluationStagePlan(owner);
+    Check(mixed_plan.valid && mixed_plan.mixed
+              && mixed_plan.At(renodx::addons::dlss5::stage_plan::Stage::RENDER).count == 1
+              && mixed_plan.At(renodx::addons::dlss5::stage_plan::Stage::UPSCALED).count == 1,
+          "Render-to-Upscaled ControlMask case uses the existing legal stage plan");
+    const auto saved_parameter_observer = model_parameter_observer;
+    std::vector<const NVSDK_NGX_Handle*> mixed_model_handles;
+    std::vector<ID3D12Resource*> mixed_masks;
+    model_parameter_observer = [&](const NVSDK_NGX_Handle* model_handle, const NVSDK_NGX_Parameter* block) {
+      mixed_model_handles.push_back(model_handle);
+      mixed_masks.push_back(addon::GetD3D12Resource(block, "DLSSNR.ControlMask"));
+    };
+    bool mixed_chain_ready = false;
+    for (uint32_t attempt = 0; attempt < addon::kContractDebounceFrames + 32; ++attempt) {
+      mixed_model_handles.clear();
+      mixed_masks.clear();
+      source_evaluate_color = nullptr;
+      const uint32_t model_before = model_calls;
+      const uint32_t dispatch_before = mask_dispatches;
+      gpu.list->ClearState(nullptr);
+      const auto result = addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), owner, &parameters, nullptr);
+      Check(NVSDK_NGX_SUCCEED(result), "mixed Render-to-Upscaled host SR completes");
+      gpu.Submit();
+      addon::DrainRetiredResources(true);
+      if (model_calls != model_before + 2 || mask_dispatches != dispatch_before + 2) continue;
+      auto& feature = addon::features.at(owner);
+      Check(feature.render_session != nullptr && feature.render_session.get() != &feature
+                && mixed_model_handles.size() == 2 && mixed_masks.size() == 2
+                && mixed_model_handles[0] == feature.render_session->slots[0].handle
+                && mixed_model_handles[1] == feature.slots[0].handle,
+            "Render and Upscaled execute distinct Feature histories in stage order");
+      const auto& render_workset = addon::worksets.at({owner, source.Get(), true});
+      Check(render_workset.pre_sr_color != nullptr
+                && source_evaluate_color == render_workset.pre_sr_color
+                && addon::GetD3D12Resource(&parameters, NVSDK_NGX_Parameter_Color) == source.Get(),
+            "successful host SR consumes the Render result and the wrapper restores game Color");
+      Check(mixed_masks[0] != nullptr && mixed_masks[1] != nullptr
+                && mixed_masks[0] != mixed_masks[1]
+                && mixed_masks[0]->GetDesc().Width == 8 && mixed_masks[1]->GetDesc().Width == 8
+                && !feature.render_session->slots[0].control_mask_bound
+                && !feature.slots[0].control_mask_bound,
+            "each stage binds its own generated mask and clears the transient NGX parameter");
+      mixed_chain_ready = true;
+      break;
+    }
+    Check(mixed_chain_ready, "Render-to-Upscaled ControlMask chain matures within bounded attempts");
+    {
+      ComPtr<ID3D12CommandAllocator> alternate_allocator;
+      ComPtr<ID3D12GraphicsCommandList> alternate_list;
+      Check(SUCCEEDED(gpu.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+          IID_PPV_ARGS(&alternate_allocator))), "alternate Render allocator");
+      Check(SUCCEEDED(gpu.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+          alternate_allocator.Get(), nullptr, IID_PPV_ARGS(&alternate_list))), "alternate Render list");
+      const auto gate_before = addon::control_mask_reuse_stats;
+      const auto declines_before = renodx::addons::dlss5::nr_decline_counts[static_cast<size_t>(
+          renodx::addons::dlss5::NrDeclineReason::kControlMaskReuseNotReady)].load();
+      mixed_model_handles.clear();
+      mixed_masks.clear();
+      gpu.list->ClearState(nullptr);
+      addon::PreSrSwap recorded_render;
+      Check(addon::ProcessInlinePreSR(gpu.list.Get(), owner, &parameters, recorded_render)
+                && recorded_render.result != nullptr && mixed_model_handles.size() == 1
+                && mixed_masks.size() == 1 && mixed_masks[0] != nullptr,
+            "Render ControlMask records on the first command list");
+      Check(addon::control_mask_reuse_stats.checks == gate_before.checks + 1
+                && addon::control_mask_reuse_stats.admitted == gate_before.admitted + 1,
+            "Render enters the per-object reuse admission gate");
+      const auto calls_before_rejection = model_calls;
+      const auto admitted_before_rejection = addon::control_mask_reuse_stats.admitted;
+      addon::PreSrSwap rejected_render;
+      Check(!addon::ProcessInlinePreSR(alternate_list.Get(), owner, &parameters, rejected_render)
+                && rejected_render.result == nullptr && model_calls == calls_before_rejection
+                && addon::control_mask_reuse_stats.checks == gate_before.checks + 2
+                && addon::control_mask_reuse_stats.admitted == admitted_before_rejection
+                && renodx::addons::dlss5::nr_decline_counts[static_cast<size_t>(
+                    renodx::addons::dlss5::NrDeclineReason::kControlMaskReuseNotReady)].load() == declines_before + 1,
+            "a second command list cannot reuse an open Render Feature or workset");
+      Check(SUCCEEDED(alternate_list->Close()), "close rejected alternate Render list");
+      addon::RestorePreSrColor(&parameters, recorded_render);
+      gpu.Submit();
+      addon::DrainRetiredResources(true);
+    }
+    {
+      auto& feature = addon::features.at(owner);
+      mixed_model_handles.clear();
+      mixed_masks.clear();
+      source_evaluate_color = nullptr;
+      const uint32_t model_before = model_calls;
+      const uint32_t dispatch_before = mask_dispatches;
+      fail_source_evaluate = true;
+      gpu.list->ClearState(nullptr);
+      const auto result = addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), owner, &parameters, nullptr);
+      fail_source_evaluate = false;
+      Check(NVSDK_NGX_FAILED(result), "injected host SR failure is returned to the caller");
+      gpu.Submit();
+      addon::DrainRetiredResources(true);
+      Check(model_calls == model_before + 1 && mask_dispatches == dispatch_before + 1
+                && mixed_model_handles.size() == 1
+                && mixed_model_handles[0] == feature.render_session->slots[0].handle
+                && mixed_masks.size() == 1 && mixed_masks[0] != nullptr
+                && !feature.render_session->slots[0].control_mask_bound
+                && !feature.slots[0].control_mask_bound,
+            "failed host SR runs only its Render predecessor and leaves both mask bindings clear");
+    }
+    {
+      auto& feature = addon::features.at(owner);
+      const uintptr_t previous_render_handle = reinterpret_cast<uintptr_t>(
+          feature.render_session->slots[0].handle);
+      const uintptr_t previous_upscaled_handle = reinterpret_cast<uintptr_t>(feature.slots[0].handle);
+      const uintptr_t previous_render_mask = reinterpret_cast<uintptr_t>(
+          addon::worksets.at({owner, source.Get(), true}).control_mask);
+      const uintptr_t previous_upscaled_mask = reinterpret_cast<uintptr_t>(
+          addon::worksets.at({owner, output.Get(), false}).control_mask);
+      const uint32_t model_before_discard = model_calls;
+      const uint32_t dispatch_before_discard = mask_dispatches;
+      gpu.list->ClearState(nullptr);
+      const auto result = addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), owner, &parameters, nullptr);
+      Check(NVSDK_NGX_SUCCEED(result) && model_calls == model_before_discard + 2
+                && mask_dispatches == dispatch_before_discard + 2,
+            "mature mixed chain records both stage histories before discard");
+      Check(SUCCEEDED(gpu.list->Close()) && SUCCEEDED(gpu.allocator->Reset())
+                && SUCCEEDED(gpu.list->Reset(gpu.allocator.Get(), nullptr)),
+            "discard unsubmitted mixed Render recording");
+      submission::OnCommandListReset(gpu.list.Get());
+      submission::PruneCompletedGenerations();
+
+      const size_t evaluations_before_recovery = model_evaluated_handles.size();
+      bool discarded_chain_recovered = false;
+      for (uint32_t attempt = 0; attempt < addon::kContractDebounceFrames + 32; ++attempt) {
+        mixed_model_handles.clear();
+        mixed_masks.clear();
+        const uint32_t model_before = model_calls;
+        const uint32_t dispatch_before = mask_dispatches;
+        gpu.list->ClearState(nullptr);
+        const auto recovered = addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), owner, &parameters, nullptr);
+        Check(NVSDK_NGX_SUCCEED(recovered), "discard recovery preserves host SR success");
+        gpu.Submit();
+        addon::DrainRetiredResources(true);
+        if (model_calls != model_before + 2 || mask_dispatches != dispatch_before + 2) continue;
+        Check(reinterpret_cast<uintptr_t>(feature.render_session->slots[0].handle)
+                    != previous_render_handle
+                  && reinterpret_cast<uintptr_t>(feature.slots[0].handle) != previous_upscaled_handle,
+              "discarded Render and Upscaled Features are both recreated");
+        Check(reinterpret_cast<uintptr_t>(addon::worksets.at({owner, source.Get(), true}).control_mask)
+                  != previous_render_mask,
+              "discarded Render mask workset is rebuilt");
+        Check(reinterpret_cast<uintptr_t>(addon::worksets.at({owner, output.Get(), false}).control_mask)
+                  != previous_upscaled_mask,
+              "discarded Upscaled mask workset is rebuilt");
+        const auto first_reset_for = [&](const NVSDK_NGX_Handle* target) {
+          for (size_t evaluation = evaluations_before_recovery;
+               evaluation < model_evaluated_handles.size(); ++evaluation) {
+            if (model_evaluated_handles[evaluation] == target) return model_resets[evaluation];
+          }
+          return -1;
+        };
+        Check(first_reset_for(feature.render_session->slots[0].handle) == 1
+                  && first_reset_for(feature.slots[0].handle) == 1,
+              "each recreated stage Feature receives Reset on its first Evaluate");
+        discarded_chain_recovered = true;
+        break;
+      }
+      Check(discarded_chain_recovered,
+            "discarded mixed chain recovers within bounded frame-ahead maturation");
+    }
+    source_evaluate_color = nullptr;
+    model_parameter_observer = saved_parameter_observer;
+    addon::hook_point.store(saved_hook_point);
+    addon::stack_passes.store(saved_stack_passes);
+    addon::pass_stage[0].store(saved_second_stage);
+    addon::configuration_generation.fetch_add(1);
+    mature();
+  }
   addon::ngx_slot_real[0].evaluate = previous_evaluate;
   addon::ngx_slot_real[0].evaluate_c = previous_evaluate_c;
   auto& slot = addon::features.at(owner).slots[0];
@@ -582,52 +764,53 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   mature();
   Check(mask_dispatches == depth_recovery_dispatches + 1 && saw_mask,
         "valid current depth subrect resumes the depth rule without stale state");
-  const auto run_two_pass_case = [&](uint32_t resolution_mode, float resolution_scale,
-                                     uint32_t expected_second_width) {
-    const uint32_t saved_stack_passes = addon::stack_passes.exchange(2);
+  const auto run_stack_case = [&](uint32_t pass_count, uint32_t resolution_mode,
+                                  float resolution_scale, uint32_t expected_second_width) {
+    const uint32_t saved_stack_passes = addon::stack_passes.exchange(pass_count);
     const bool saved_follow_input = addon::nr_follow_input_res.exchange(false);
     const float saved_scale = addon::nr_resolution_scale.exchange(1.f);
     const uint32_t saved_pass_mode = addon::pass_resolution_mode[0].exchange(resolution_mode);
     const float saved_pass_scale = addon::pass_resolution_scale[0].exchange(resolution_scale);
     addon::configuration_generation.fetch_add(1);
     const auto saved_parameter_observer = model_parameter_observer;
-    uint32_t two_pass_mask_bindings = 0;
+    std::vector<ID3D12Resource*> stack_masks;
     model_parameter_observer = [&](const NVSDK_NGX_Handle*, const NVSDK_NGX_Parameter* block) {
-      two_pass_mask_bindings +=
-          addon::GetD3D12Resource(block, "DLSSNR.ControlMask") != nullptr ? 1u : 0u;
+      stack_masks.push_back(addon::GetD3D12Resource(block, "DLSSNR.ControlMask"));
     };
-    bool two_pass_ready = false;
+    bool stack_ready = false;
     for (uint32_t attempt = 0; attempt < addon::kContractDebounceFrames + 32; ++attempt) {
       const auto dispatch_before = mask_dispatches;
-      const auto bindings_before = two_pass_mask_bindings;
-      if (record() == 2) {
-        Check(mask_dispatches == dispatch_before + 2
-                  && two_pass_mask_bindings == bindings_before + 2,
-              "two-pass chain generates and binds a depth mask for each Feature Slot");
-        const auto& resources = addon::worksets.at({owner, output.Get(), false});
-        Check(resources.control_mask != nullptr
-                  && resources.control_mask->GetDesc().Width == 8
-                  && resources.control_mask->GetDesc().Height == 8,
-              "first Feature Slot owns an 8x8 mask");
-        if (expected_second_width == 8) {
-          Check(resources.resolution_tail == nullptr,
-                "same-size two-pass chain shares one mask workset");
-        } else {
-          Check(resources.resolution_tail != nullptr
-                    && resources.resolution_tail->control_mask != nullptr
-                    && resources.resolution_tail->control_mask->GetDesc().Width == expected_second_width
-                    && resources.resolution_tail->control_mask->GetDesc().Height == expected_second_width,
-                "heterogeneous-size second Feature Slot owns its own differently sized mask");
+      const auto masks_before = stack_masks.size();
+      if (record() == pass_count) {
+        Check(mask_dispatches == dispatch_before + pass_count
+                  && stack_masks.size() == masks_before + pass_count,
+              "each Feature Slot generates and binds its own depth mask");
+        ID3D12Resource* const first_mask = stack_masks[masks_before];
+        for (uint32_t pass = 0; pass < pass_count; ++pass) {
+          ID3D12Resource* const pass_mask = stack_masks[masks_before + pass];
+          Check(pass_mask != nullptr, "each evaluated Feature Slot receives a ControlMask resource");
+          const auto mask_desc = pass_mask->GetDesc();
+          const uint32_t expected_width = (pass == 1 ? expected_second_width : 8u);
+          Check(mask_desc.Width == expected_width && mask_desc.Height == expected_width,
+                "each Feature Slot receives a mask at its configured working resolution");
+          if (pass == 0 || expected_second_width == 8) {
+            Check(pass_mask == first_mask,
+                  "same-size Feature Slots share their mask workset");
+          } else if (pass == 1) {
+            Check(pass_mask != first_mask,
+                  "different-size Feature Slots receive separate mask worksets");
+          }
         }
-        const auto& two_pass_feature = addon::features.at(owner);
-        Check(!two_pass_feature.slots[0].control_mask_bound
-                  && !two_pass_feature.slots[1].control_mask_bound,
-              "each two-pass Evaluate clears its own transient mask binding");
-        two_pass_ready = true;
+        const auto& stack_feature = addon::features.at(owner);
+        for (uint32_t pass = 0; pass < pass_count; ++pass) {
+          Check(!stack_feature.slots[pass].control_mask_bound,
+                "each stack Evaluate clears its transient mask binding");
+        }
+        stack_ready = true;
         break;
       }
     }
-    Check(two_pass_ready, "two-pass ControlMask chain matures within bounded attempts");
+    Check(stack_ready, "ControlMask stack matures within bounded attempts");
     model_parameter_observer = saved_parameter_observer;
     addon::stack_passes.store(saved_stack_passes);
     addon::nr_follow_input_res.store(saved_follow_input);
@@ -637,8 +820,68 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
     addon::configuration_generation.fetch_add(1);
     mature();
   };
-  run_two_pass_case(0, 1.f, 8);
-  run_two_pass_case(2, 0.5f, 4);
+  run_stack_case(2, 0, 1.f, 8);
+  run_stack_case(2, 2, 0.5f, 4);
+  run_stack_case(3, 0, 1.f, 8);
+  run_stack_case(4, 0, 1.f, 8);
+  {
+    const uint32_t saved_stack_passes = addon::stack_passes.exchange(2);
+    const uint32_t saved_pass_mode = addon::pass_resolution_mode[0].exchange(2);
+    const float saved_pass_scale = addon::pass_resolution_scale[0].exchange(0.5f);
+    addon::configuration_generation.fetch_add(1);
+    bool stack_ready = false;
+    for (uint32_t attempt = 0; attempt < addon::kContractDebounceFrames + 32; ++attempt) {
+      if (record() == 2) {
+        stack_ready = true;
+        break;
+      }
+    }
+    Check(stack_ready, "heterogeneous two-pass chain is ready for a mid-stack failure");
+    std::vector<ID3D12Resource*> failed_stack_masks;
+    const auto saved_parameter_observer = model_parameter_observer;
+    model_parameter_observer = [&](const NVSDK_NGX_Handle*, const NVSDK_NGX_Parameter* block) {
+      failed_stack_masks.push_back(addon::GetD3D12Resource(block, "DLSSNR.ControlMask"));
+    };
+    const auto before_failure = stage_execution_cases::Capture(
+        gpu, output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    gpu.Submit();
+    const uint32_t dispatches_before_failure = mask_dispatches;
+    fail_call = model_calls + 2;
+    Check(record() == 2, "second-pass NGX failure stops the remaining stack");
+    fail_call = 0;
+    const auto after_failure = stage_execution_cases::Capture(
+        gpu, output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    gpu.Submit();
+    Check(before_failure.Pixels() == after_failure.Pixels(),
+          "mid-stack failure preserves the game's output");
+    Check(mask_dispatches == dispatches_before_failure + 2 && failed_stack_masks.size() == 2
+              && failed_stack_masks[0] != nullptr && failed_stack_masks[1] != nullptr
+              && failed_stack_masks[0] != failed_stack_masks[1]
+              && failed_stack_masks[0]->GetDesc().Width == 8
+              && failed_stack_masks[1]->GetDesc().Width == 4,
+          "different-size masks are bound for both attempted passes before failure");
+    auto& failed_stack = addon::features.at(owner);
+    Check(!failed_stack.slots[0].control_mask_bound
+              && !failed_stack.slots[1].control_mask_bound
+              && !failed_stack.slots[2].control_mask_bound
+              && failed_stack.slots[1].failed && failed_stack.slots[2].pending_reset,
+          "mid-stack failure clears bindings and resets only unexecuted later history");
+    failed_stack.slots[1].failed_ns -= addon::kFeatureRetryMaxNs;
+    bool recovered_stack = false;
+    for (uint32_t attempt = 0; attempt < addon::kContractDebounceFrames + 32; ++attempt) {
+      if (record() == 2) {
+        recovered_stack = true;
+        break;
+      }
+    }
+    Check(recovered_stack, "two-pass ControlMask chain recovers after the failed pass is recreated");
+    model_parameter_observer = saved_parameter_observer;
+    addon::stack_passes.store(saved_stack_passes);
+    addon::pass_resolution_mode[0].store(saved_pass_mode);
+    addon::pass_resolution_scale[0].store(saved_pass_scale);
+    addon::configuration_generation.fetch_add(1);
+    mature();
+  }
   const auto enabled_dispatches = mask_dispatches;
   addon::control_mask_enabled = false;
   mature();

@@ -8391,6 +8391,86 @@ inline uint32_t RingSlot(
   return ring;
 }
 
+inline bool DispatchControlMask(
+    ID3D12Device* device, ID3D12GraphicsCommandList* command_list,
+    FinalResources& resources, ID3D12Resource* depth,
+    const D3D12_RESOURCE_DESC& depth_desc, const EvaluationContract& frame,
+    uint32_t width, uint32_t height, uint32_t mode,
+    const std::array<float, 3>& rgb) {
+  uint32_t depth_ring = kControlMaskDepthRingSize;
+  if (mode == kControlMaskDepthFar) {
+    depth_ring = RingSlot(resources.control_mask_depth_views, depth,
+                          &control_mask_depth_ring_recycled,
+                          &control_mask_depth_ring_full,
+                          "depth-far protection is skipped for this frame");
+    if (depth_ring == kControlMaskDepthRingSize) return false;
+  }
+
+  Transition(command_list, resources.control_mask, resources.control_mask_state,
+             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  resources.control_mask_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  ID3D12DescriptorHeap* heaps[] = {resources.descriptors};
+  command_list->SetDescriptorHeaps(1, heaps);
+  command_list->SetComputeRootSignature(codec_pipeline.root_signature);
+  command_list->SetPipelineState(codec_pipeline.control_mask);
+  const D3D12_GPU_DESCRIPTOR_HANDLE heap_start =
+      resources.descriptors->GetGPUDescriptorHandleForHeapStart();
+  command_list->SetComputeRootDescriptorTable(
+      1, DescriptorHeapSlot(heap_start, kDescriptorControlMaskUav, resources.descriptor_size));
+  uint32_t depth_descriptor = kDescriptorControlMaskDepthNullSrv;
+  if (mode == kControlMaskDepthFar) {
+    if (resources.control_mask_depth_views[depth_ring] == nullptr) {
+      depth->AddRef();
+      resources.control_mask_depth_views[depth_ring] = depth;
+      D3D12_SHADER_RESOURCE_VIEW_DESC depth_srv{};
+      depth_srv.Format = ControlMaskDepthViewFormat(depth_desc.Format);
+      depth_srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+      depth_srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+      depth_srv.Texture2D.MipLevels = 1;
+      device->CreateShaderResourceView(
+          depth, &depth_srv,
+          DescriptorHeapSlot(resources.descriptors->GetCPUDescriptorHandleForHeapStart(),
+                             kDescriptorControlMaskDepthSrv + depth_ring, resources.descriptor_size));
+    }
+    submission::TrackUse(command_list, depth);
+    depth_descriptor = kDescriptorControlMaskDepthSrv + depth_ring;
+  }
+  command_list->SetComputeRootDescriptorTable(
+      3, DescriptorHeapSlot(heap_start, depth_descriptor, resources.descriptor_size));
+  struct ControlMaskConstants {
+    uint32_t width, height, mode, rect_width, rect_height;
+    float red, green, blue;
+    uint32_t depth_base_x, depth_base_y, depth_width, depth_height;
+    uint32_t depth_inverted;
+    float depth_near, depth_far;
+    uint32_t padding;
+  } constants{
+      width, height, mode, width / 2, height / 2, rgb[0], rgb[1], rgb[2],
+      frame.depth_x, frame.depth_y, frame.input_width, frame.input_height,
+      ResolveDepthInverted(frame.create_flags) ? 1u : 0u,
+      control_mask_depth_near.load(std::memory_order_relaxed),
+      control_mask_depth_far.load(std::memory_order_relaxed), 0};
+  command_list->SetComputeRoot32BitConstants(2, 16, &constants, 0);
+  command_list->Dispatch((width + 15) / 16, (height + 15) / 16, 1);
+  UavBarrier(command_list, resources.control_mask);
+  Transition(command_list, resources.control_mask,
+             D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+  resources.control_mask_state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+  return true;
+}
+
+inline void FinishControlMaskEvaluation(
+    ID3D12GraphicsCommandList* command_list, FinalResources& resources, NrFeatureSlot& slot) {
+  Transition(command_list, resources.control_mask,
+             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  resources.control_mask_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  // NGX has consumed the CPU parameter block. Recorded GPU work keeps its
+  // workset lease; removing the pointer here covers every later early-out.
+  ClearControlMaskBinding(slot);
+}
+
 // The CPU half of PrepareFrameScale, API-agnostic (the Vulkan path records
 // the same dispatches from it): the snap decision and its counters, the
 // governor dwords of the autoscale dispatch, and whether Auto range-guards
@@ -10758,7 +10838,15 @@ inline bool ProcessInline(
     Log(reshade::log::level::warning,
         "ControlMask depth-far rule skipped: current depth format or subrect is unsupported");
   }
+  const bool control_mask_render_upscaled_chain = plan.mixed
+      && plan.At(stage_plan::Stage::RENDER).count != 0
+      && plan.At(stage_plan::Stage::UPSCALED).count != 0
+      && evaluate_chain.render_complete;
   const bool control_mask_route_eligible = present == nullptr
+      && execution_stage == stage_plan::Stage::UPSCALED
+      && (!plan.mixed || control_mask_render_upscaled_chain)
+      && nr_model::SupportsControlMask(direct_runtime_requirements.file_version);
+  const bool control_mask_capture_route_eligible = present == nullptr
       && execution_stage == stage_plan::Stage::UPSCALED
       && !plan.mixed && group.begin == 0
       && nr_model::SupportsControlMask(direct_runtime_requirements.file_version);
@@ -10766,7 +10854,7 @@ inline bool ProcessInline(
       || control_mask_depth_usable;
   const bool control_mask_capture_eligible = control_mask_capture::Enabled()
       && gpu_timers_enabled.load(std::memory_order_relaxed)
-      && control_mask_route_eligible && control_mask_mode_eligible;
+      && control_mask_capture_route_eligible && control_mask_mode_eligible;
   const bool control_mask_requested = control_mask_enabled.load(std::memory_order_relaxed);
   const bool control_mask_eligible = control_mask_requested
       && control_mask_route_eligible && control_mask_mode_eligible;
@@ -10774,7 +10862,7 @@ inline bool ProcessInline(
       && !control_mask_refusal_logged.exchange(true, std::memory_order_relaxed)) {
     Log(reshade::log::level::warning,
         "ControlMask requested but declined: requires exact DLSSNR 310.9.16.0,"
-        " D3D12 Upscaled evaluation");
+        " D3D12 Upscaled evaluation or completed Render-to-Upscaled chain");
   }
   stage_stats.width = width;
   stage_stats.height = height;
@@ -11788,7 +11876,6 @@ inline bool ProcessInline(
     uint32_t mask_blend = 0;
     std::array<float, 3> mask_rgb{1.f, 1.f, 1.f};
     bool pass_control_mask_eligible = control_mask_eligible;
-    uint32_t control_mask_depth_ring = kControlMaskDepthRingSize;
     if (control_mask_eligible || control_mask_capture_eligible) {
       mask_mode = control_mask_mode_snapshot;
       mask_blend = control_mask_blend_mode.load(std::memory_order_relaxed);
@@ -11799,12 +11886,6 @@ inline bool ProcessInline(
             std::clamp(control_mask_green.load(std::memory_order_relaxed), 0.f, 1.f),
             std::clamp(control_mask_blue.load(std::memory_order_relaxed), 0.f, 1.f)};
       }
-    }
-    if (pass_control_mask_eligible && mask_mode == kControlMaskDepthFar) {
-      control_mask_depth_ring = RingSlot(
-          res.control_mask_depth_views, frame.depth, &control_mask_depth_ring_recycled,
-          &control_mask_depth_ring_full, "depth-far protection is skipped for this frame");
-      pass_control_mask_eligible = control_mask_depth_ring < kControlMaskDepthRingSize;
     }
     if (pass_control_mask_eligible) {
       const uint32_t model_bucket = feature.slots[pass].nr_preset == 2u ? 1u : 0u;
@@ -11829,62 +11910,9 @@ inline bool ProcessInline(
         }
         Log(reshade::log::level::info, message.str());
       }
-      Transition(command_list, res.control_mask, res.control_mask_state,
-                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-      res.control_mask_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-      ID3D12DescriptorHeap* heaps[] = {res.descriptors};
-      command_list->SetDescriptorHeaps(1, heaps);
-      command_list->SetComputeRootSignature(codec_pipeline.root_signature);
-      command_list->SetPipelineState(codec_pipeline.control_mask);
-      const D3D12_GPU_DESCRIPTOR_HANDLE heap_start =
-          res.descriptors->GetGPUDescriptorHandleForHeapStart();
-      command_list->SetComputeRootDescriptorTable(
-          1, DescriptorHeapSlot(heap_start, kDescriptorControlMaskUav, res.descriptor_size));
-      uint32_t control_mask_depth_descriptor = kDescriptorControlMaskDepthNullSrv;
-      if (mask_mode == kControlMaskDepthFar) {
-        if (res.control_mask_depth_views[control_mask_depth_ring] == nullptr) {
-          frame.depth->AddRef();
-          res.control_mask_depth_views[control_mask_depth_ring] = frame.depth;
-          D3D12_SHADER_RESOURCE_VIEW_DESC depth_srv{};
-          depth_srv.Format = ControlMaskDepthViewFormat(depth_desc.Format);
-          depth_srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-          depth_srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-          depth_srv.Texture2D.MipLevels = 1;
-          device->CreateShaderResourceView(
-              frame.depth, &depth_srv,
-              DescriptorHeapSlot(
-                  res.descriptors->GetCPUDescriptorHandleForHeapStart(),
-                  kDescriptorControlMaskDepthSrv + control_mask_depth_ring, res.descriptor_size));
-        }
-        submission::TrackUse(command_list, frame.depth);
-        control_mask_depth_descriptor = kDescriptorControlMaskDepthSrv + control_mask_depth_ring;
-      }
-      command_list->SetComputeRootDescriptorTable(
-          3, DescriptorHeapSlot(heap_start, control_mask_depth_descriptor, res.descriptor_size));
-      struct ControlMaskConstants {
-        uint32_t width, height, mode, rect_width, rect_height;
-        float red, green, blue;
-        uint32_t depth_base_x, depth_base_y, depth_width, depth_height;
-        uint32_t depth_inverted;
-        float depth_near, depth_far;
-        uint32_t padding;
-      } constants{
-          nr_input_width, nr_input_height,
-          mask_mode,
-          nr_input_width / 2, nr_input_height / 2,
-          mask_rgb[0], mask_rgb[1], mask_rgb[2],
-          frame.depth_x, frame.depth_y, frame.input_width, frame.input_height,
-          ResolveDepthInverted(frame.create_flags) ? 1u : 0u,
-          control_mask_depth_near.load(std::memory_order_relaxed),
-          control_mask_depth_far.load(std::memory_order_relaxed), 0};
-      command_list->SetComputeRoot32BitConstants(2, 16, &constants, 0);
-      command_list->Dispatch((nr_input_width + 15) / 16,
-                             (nr_input_height + 15) / 16, 1);
-      UavBarrier(command_list, res.control_mask);
-      Transition(command_list, res.control_mask,
-                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-      res.control_mask_state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+      pass_control_mask_eligible = DispatchControlMask(
+          device, command_list, res, frame.depth, depth_desc, frame,
+          nr_input_width, nr_input_height, mask_mode, mask_rgb);
     }
     SetEvaluationParameters(
         feature,
@@ -11942,14 +11970,8 @@ inline bool ProcessInline(
         nr_result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
       }
     }
-    if (control_mask_eligible) {
-      Transition(command_list, res.control_mask,
-                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-      res.control_mask_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-      // NGX has consumed the CPU parameter block. Recorded GPU work keeps its
-      // workset lease; removing the pointer here also covers later early-outs.
-      ClearControlMaskBinding(feature.slots[pass]);
+    if (pass_control_mask_eligible) {
+      FinishControlMaskEvaluation(command_list, res, feature.slots[pass]);
       const uint32_t model_bucket = feature.slots[pass].nr_preset == 2u ? 1u : 0u;
       const bool accepted = nr_returned && NVSDK_NGX_SUCCEED(nr_result);
       const bool log_result = (accepted
@@ -12935,8 +12957,130 @@ inline bool ProcessInlinePreSR(
   const DXGI_FORMAT color_format = ConcreteResourceFormat(color_desc.Format);
   const uint8_t hdr_mode = FrameHdrMode(color_format, feature.create_flags);
   const uint32_t requested_stack = group.count;
+  const uint32_t control_mask_mode_snapshot = control_mask_mode.load(std::memory_order_relaxed);
+  const bool control_mask_depth_usable = depth_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D
+      && depth_desc.DepthOrArraySize == 1 && depth_desc.SampleDesc.Count == 1
+      && (depth_desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0
+      && SubrectFits(current.depth_x, current.depth_y, width, height, depth_desc)
+      && ControlMaskDepthViewFormat(depth_desc.Format) != DXGI_FORMAT_UNKNOWN;
+  if (control_mask_mode_snapshot == kControlMaskDepthFar && !control_mask_depth_usable
+      && !control_mask_depth_refusal_logged.exchange(true, std::memory_order_relaxed)) {
+    Log(reshade::log::level::warning,
+        "ControlMask depth-far rule skipped: current depth format or subrect is unsupported");
+  }
+  const bool control_mask_route_eligible = !control_mask_use_core_context.load(std::memory_order_relaxed)
+      && !direct_api.borrowed_core_context
+      && group.stage == stage_plan::Stage::RENDER
+      && nr_model::SupportsControlMask(direct_runtime_requirements.file_version);
+  const bool control_mask_mode_eligible = control_mask_mode_snapshot != kControlMaskDepthFar
+      || control_mask_depth_usable;
+  const bool control_mask_requested = control_mask_enabled.load(std::memory_order_relaxed);
+  const bool control_mask_eligible = control_mask_requested
+      && control_mask_route_eligible && control_mask_mode_eligible;
+  if (control_mask_requested && !control_mask_route_eligible
+      && !control_mask_refusal_logged.exchange(true, std::memory_order_relaxed)) {
+    Log(reshade::log::level::warning,
+        "ControlMask requested but declined: Render requires the owned D3D12 runtime context and exact DLSSNR 310.9.16.0");
+  }
   stage_stats.width = width;
   stage_stats.height = height;
+  if (control_mask_eligible || feature.control_mask_recording != nullptr) {
+    const auto current_recording = submission::RecordingIdentity(command_list);
+    const auto reusable = [&](const std::vector<const void*>& objects,
+                              const std::shared_ptr<submission::RecordingStatus>& previous) {
+      return submission::CanReuseRecordingObjects(objects, current_recording, previous);
+    };
+    bool ready = queue_tracking_active.load(std::memory_order_relaxed)
+        && SUCCEEDED(device->GetDeviceRemovedReason());
+    for (const auto& slot : feature.slots) {
+      if (slot.handle == nullptr) continue;
+      if (slot.recording != nullptr) {
+        ready &= slot.tracked_since_create && reusable(
+            {slot.handle, slot.look_history.buffers[0], slot.look_history.buffers[1]}, slot.recording);
+      } else {
+        // Off-to-on reuse has no mask provenance; retire only after all exact
+        // references to the old feature and History have ended.
+        ready &= slot.tracked_since_create && submission::ResourceReleasable(slot.handle);
+        for (const auto* history : slot.look_history.buffers) {
+          ready &= submission::ResourceReleasable(history);
+        }
+      }
+    }
+    if (feature.slots[0].recording != nullptr && feature.slots[0].recording->closed.load()
+        && !feature.slots[0].recording->submitted.load()) {
+      feature.control_mask_recording = feature.slots[0].recording;
+    }
+    for (auto& [key, resources] : worksets) {
+      if (key.handle != handle) continue;
+      ready &= resources.recording != nullptr
+          ? reusable(CollectWorksetGpuObjects(resources), resources.recording)
+          : resources.tracked_recording && WorksetRecordingsComplete(resources);
+      if (resources.recording != nullptr && resources.recording->closed.load()
+          && !resources.recording->submitted.load()) {
+        resources.control_mask_recording = resources.recording;
+      }
+    }
+    for (const auto& retired : retired_final_resources) {
+      if (retired.resources.owner != handle) continue;
+      ready &= retired.resources.recording != nullptr
+          ? reusable(CollectWorksetGpuObjects(retired.resources), retired.resources.recording)
+          : retired.resources.tracked_recording && WorksetRecordingsComplete(retired.resources);
+    }
+    ++control_mask_reuse_stats.checks;
+    if (!ready) {
+      for (uint32_t pass = 0; pass < requested_stack; ++pass) {
+        ClearControlMaskBinding(feature.slots[pass]);
+      }
+      CountNrDecline(NrDeclineReason::kControlMaskReuseNotReady);
+      device->Release();
+      return false;
+    }
+    ++control_mask_reuse_stats.admitted;
+    for (uint32_t pass = 0; pass < kMaxNrPasses; ++pass) {
+      if (feature.slots[pass].handle != nullptr && feature.slots[pass].recording == nullptr) {
+        ReleaseNrSlot(feature, pass, true);
+      }
+    }
+    for (auto existing = worksets.begin(); existing != worksets.end();) {
+      if (existing->first.handle == handle && existing->second.recording == nullptr) {
+        const auto key = existing->first;
+        ++existing;
+        RetireWorkset(key);
+      } else {
+        ++existing;
+      }
+    }
+  }
+  const auto discarded_recording = [](
+      const std::shared_ptr<submission::RecordingStatus>& recording) {
+    return recording != nullptr && recording->closed.load()
+        && !recording->submitted.load();
+  };
+  bool discarded_control_mask_history = discarded_recording(feature.control_mask_recording);
+  for (const auto& slot : feature.slots) {
+    discarded_control_mask_history |= discarded_recording(slot.recording);
+  }
+  if (discarded_control_mask_history) {
+    // Reset discards GPU commands, but leaves the CPU resource-state ledger
+    // and NGX History describing work that never executed. Rebuild this
+    // Render group's Features and worksets before recording another frame.
+    ReleaseAllNrSlots(feature, true);
+    for (auto& slot : feature.slots) {
+      slot.pending_reset = true;
+      slot.pending_reset_reasons |= kResetRecovery;
+    }
+    feature.control_mask_recording.reset();
+    for (auto existing = worksets.begin(); existing != worksets.end();) {
+      if (existing->first.handle != handle
+          || !discarded_recording(existing->second.control_mask_recording)) {
+        ++existing;
+        continue;
+      }
+      const auto key = existing->first;
+      ++existing;
+      RetireWorkset(key);
+    }
+  }
   // NR working resolution (v5.1): the same controls as the after path, with
   // the NGX color surface as the reference - pre-SR has no separate output
   // resolution, the game's own DLSS upscales after us.  Scaled mode runs the
@@ -13071,6 +13215,8 @@ inline bool ProcessInlinePreSR(
 
   const bool codec_ok = hdr_mode != 0 ? EnsureV6CodecPipeline(device)
                                       : EnsureLegacyCodecPipeline(device);
+  const bool control_mask_pipeline_ok = !control_mask_eligible
+      || EnsureControlMaskPipeline(device);
   // The NR look stage (look_stage.hpp): this chain's look values and the
   // surfaces they need, fixed before the workset is sized.  Detail
   // stability's Auto leaves pre-SR alone: DLSS accumulates NR's output
@@ -13091,7 +13237,7 @@ inline bool ProcessInlinePreSR(
   }
   const bool split_working_sizes = independent_pair
       && (pass_widths[1] != nr_input_width || pass_heights[1] != nr_input_height);
-  FinalResources* workset = codec_ok
+  FinalResources* workset = codec_ok && control_mask_pipeline_ok
                                 ? EnsureWorkset(
                                       device,
                                       handle,
@@ -13104,13 +13250,13 @@ inline bool ProcessInlinePreSR(
                                       hdr_mode,
                                       requested_stack,
                                       split_working_sizes ? pass_look_wanted[0] : look_chain.wanted,
-                                      true)
+                                      true, nullptr, nullptr, control_mask_eligible)
                                 : nullptr;
   FinalResources* second_workset = nullptr;
   if (workset != nullptr && split_working_sizes) {
     second_workset = EnsureWorkset(device, handle, color, pass_widths[1], pass_heights[1], width, height,
                                    color_desc.Format, hdr_mode, requested_stack, pass_look_wanted[1],
-                                   true, &workset->units, workset);
+                                   true, &workset->units, workset, control_mask_eligible);
   } else if (workset != nullptr && workset->resolution_tail != nullptr) {
     RetireSecondResolutionResources(workset);
   }
@@ -13123,6 +13269,15 @@ inline bool ProcessInlinePreSR(
     auto& failed_slot = feature.slots[split_working_sizes && workset != nullptr ? 1 : 0];
     failed_slot.failed = true;
     failed_slot.failed_ns = SteadyNowNs();
+    if (control_mask_eligible) {
+      for (uint32_t slot = 0; slot < requested_stack; ++slot) {
+        ClearControlMaskBinding(feature.slots[slot]);
+      }
+      if (!control_mask_failure_logged.exchange(true, std::memory_order_relaxed)) {
+        Log(reshade::log::level::error,
+            "ControlMask setup failed on the Render path; this evaluate is skipped without a retry");
+      }
+    }
     device->Release();
     return false;
   }
@@ -13133,6 +13288,10 @@ inline bool ProcessInlinePreSR(
   }
   // Exact submission-use proof (issue 01) - see the post-SR path.
   TrackWorksetRecording(command_list, res);
+  if (control_mask_eligible) {
+    workset->control_mask_recording = submission::ObserveRecording(command_list);
+    feature.control_mask_recording = workset->control_mask_recording;
+  }
   // Stage A: hand the raw exposure evidence to the workset so the present-
   // side normalization lock reads the same contract this evaluate saw.
   // One gain snapshot for this frame's encode, decode, and black restore.
@@ -13565,6 +13724,17 @@ inline bool ProcessInlinePreSR(
         res.nr_output_state,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     res.nr_output_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    bool pass_control_mask_eligible = control_mask_eligible;
+    const uint32_t mask_blend = control_mask_blend_mode.load(std::memory_order_relaxed);
+    const std::array<float, 3> mask_rgb{
+        std::clamp(control_mask_red.load(std::memory_order_relaxed), 0.f, 1.f),
+        std::clamp(control_mask_green.load(std::memory_order_relaxed), 0.f, 1.f),
+        std::clamp(control_mask_blue.load(std::memory_order_relaxed), 0.f, 1.f)};
+    if (pass_control_mask_eligible) {
+      pass_control_mask_eligible = DispatchControlMask(
+          device, command_list, res, frame.depth, depth_desc, frame,
+          nr_input_width, nr_input_height, control_mask_mode_snapshot, mask_rgb);
+    }
     SetEvaluationParameters(
         feature,
         feature.slots[pass],
@@ -13575,7 +13745,9 @@ inline bool ProcessInlinePreSR(
         nr_input_width,
         nr_input_height,
         nr_input_width,
-        nr_input_height);
+        nr_input_height,
+        pass_control_mask_eligible,
+        mask_blend);
     ++stage_stats.evaluates;
     stage_stats.resets += feature.slots[pass].model_reset;
     stage_stats.resolved_requests[group.begin + pass] = feature.slots[pass].nr_preset;
@@ -13610,6 +13782,9 @@ inline bool ProcessInlinePreSR(
         Log(reshade::log::level::error, "pre-SR feature 18 evaluate raised an exception");
         nr_result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
       }
+    }
+    if (pass_control_mask_eligible) {
+      FinishControlMaskEvaluation(command_list, res, feature.slots[pass]);
     }
     ObserveNrEvaluation(stage_plan::Stage::RENDER, handle, feature, feature.slots[pass], group.begin + pass, nr_result, plan, nullptr, nr_returned);
     last_result = static_cast<uint32_t>(nr_result);
