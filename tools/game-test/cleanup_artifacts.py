@@ -13,7 +13,9 @@ def adopt_completed(root):
     report = dict(adopted=[], skipped=[], errors=[])
     if lifecycle.os.environ.get('NR_NEXUS_TEST_KEEP_RAW') == '1':
         return report
-    for complete_path in root.rglob('guard-complete.json'):
+    for complete_path in lifecycle._walk_paths(root):
+        if complete_path.name != 'guard-complete.json':
+            continue
         directory = complete_path.parent
         if (directory / 'artifact-lifecycle.json').exists():
             continue

@@ -213,11 +213,19 @@ def _is_link(path: Path) -> bool:
     return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
 
 
+def _walk_paths(root: Path) -> Iterable[Path]:
+    # Path.rglob follows Windows junctions, including links back to this checkout.
+    for directory, folders, files in os.walk(root, followlinks=False):
+        for name in folders + files:
+            yield Path(directory) / name
+        folders[:] = [name for name in folders if not _is_link(Path(directory) / name)]
+
+
 def _compact(directory: Path, state: dict[str, Any]) -> None:
     """Drop bulk run artifacts without relying on the disposable-file list."""
     if state.get("keepRawArtifacts") is True or (directory / "build-manifest.json").is_file():
         return
-    items = list(directory.rglob("*"))
+    items = list(_walk_paths(directory))
     if _is_link(directory) or any(_is_link(path) for path in items):
         raise ValueError("budget cleanup refuses reparse points")
     captures = {path.parent for path in items if path.name == "captures.json"}
@@ -263,7 +271,7 @@ def maintain(root: Path, limit: int | None = None) -> None:
         return
     limit = budget_bytes() if limit is None else limit
     states: list[tuple[Path, dict[str, Any]]] = []
-    markers = list(root.rglob("artifact-lifecycle.json"))
+    markers = [path for path in _walk_paths(root) if path.name == "artifact-lifecycle.json"]
     protected = []
     ancestor_markers = [parent / "artifact-lifecycle.json" for parent in root.parents
                         if (parent / "artifact-lifecycle.json").is_file()]

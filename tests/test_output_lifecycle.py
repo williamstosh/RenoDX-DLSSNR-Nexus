@@ -201,6 +201,34 @@ class OutputLifecycleTests(unittest.TestCase):
                 self.assertFalse(raw.exists())
                 self.assertEqual(output_lifecycle._read(run)['status'], 'Failed')
 
+    def test_maintenance_does_not_follow_a_directory_link_cycle(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cycle = root / 'cycle'
+            if output_lifecycle.os.name == 'nt':
+                script = root / 'junction.ps1'
+                script.write_text('param($Link,$Target); New-Item -ItemType Junction -Path $Link -Target $Target | Out-Null')
+                subprocess.run(['pwsh.exe', '-NoProfile', '-File', str(script), str(cycle), str(root)], check=True)
+            else:
+                cycle.symlink_to(root, target_is_directory=True)
+            try:
+                run = root / 'run'
+                output_lifecycle.initialize(run)
+                raw = run / 'raw.f32'
+                raw.write_bytes(b'intermediate')
+                output_lifecycle.register_disposable(run, [raw])
+                state = output_lifecycle._read(run)
+                state['ownerPid'] = 2**31 - 1
+                output_lifecycle._write(run, state)
+                output_lifecycle.maintain(root, limit=1)
+                self.assertFalse(raw.exists())
+                self.assertTrue(cycle.exists())
+            finally:
+                if output_lifecycle.os.name == 'nt':
+                    cycle.rmdir()
+                else:
+                    cycle.unlink()
+
     def test_workspace_budget_is_shared_across_tmp_and_artifacts(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
