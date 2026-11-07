@@ -278,6 +278,14 @@ int wmain(int argc, wchar_t** argv) {
               .NumDescriptors = addon::kDescriptorHeapSize, .Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE};
           ComPtr<ID3D12DescriptorHeap> heap;
           Check(SUCCEEDED(gpu.device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap))), "case descriptor heap");
+          D3D12_SHADER_RESOURCE_VIEW_DESC null_depth_srv{.Format = DXGI_FORMAT_R32_FLOAT,
+              .ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D,
+              .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING};
+          null_depth_srv.Texture2D.MipLevels = 1;
+          gpu.device->CreateShaderResourceView(nullptr, &null_depth_srv,
+              addon::DescriptorHeapSlot(heap->GetCPUDescriptorHandleForHeapStart(),
+                  addon::kDescriptorControlMaskDepthNullSrv,
+                  gpu.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)));
           const D3D12_UNORDERED_ACCESS_VIEW_DESC view{.Format = DXGI_FORMAT_R8G8B8A8_UNORM,
               .ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D};
           auto descriptor = heap->GetCPUDescriptorHandleForHeapStart();

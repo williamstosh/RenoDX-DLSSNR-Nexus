@@ -3,6 +3,7 @@
 #include <array>
 #include <bit>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -491,7 +492,8 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
           "one ProcessInline contributes at most one coherent reuse check and admission");
     gpu.Submit();
     addon::DrainRetiredResources(true);
-    Check(model_calls <= before + 1, "at most one NR Evaluate per frame, including failures");
+    Check(model_calls <= before + addon::stack_passes.load(),
+          "NR Evaluate count stays within the configured stack, including failures");
     return model_calls - before;
   };
   const auto mature = [&] {
@@ -556,7 +558,8 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
             && addon::GetD3D12Resource(slot.parameters, "DLSSNR.ControlMask") == nullptr,
         "completed Evaluate leaves no stale mask in reusable NGX parameters");
   for (uint32_t mode : {addon::kControlMaskNeutral, addon::kControlMaskRect,
-                       addon::kControlMaskGreenRect, addon::kControlMaskBlueRect}) {
+                       addon::kControlMaskGreenRect, addon::kControlMaskBlueRect,
+                       addon::kControlMaskDepthFar}) {
     addon::control_mask_mode = mode;
     const auto before = mask_dispatches;
     Check(record() == 1 && mask_dispatches == before + 1 && !slot.control_mask_bound,
@@ -565,6 +568,77 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
                   == D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
           "mode switch restores mask UAV state after Evaluate");
   }
+  addon::control_mask_mode = addon::kControlMaskDepthFar;
+  parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, 9u);
+  const auto depth_misfit_dispatches = mask_dispatches;
+  const auto depth_misfit_models = model_calls;
+  saw_mask = true;
+  mature();
+  Check(model_calls == depth_misfit_models + 1 && mask_dispatches == depth_misfit_dispatches
+            && !saw_mask && !slot.control_mask_bound,
+        "invalid current depth subrect skips only the depth rule and clears its Evaluate binding");
+  parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, 0u);
+  const auto depth_recovery_dispatches = mask_dispatches;
+  mature();
+  Check(mask_dispatches == depth_recovery_dispatches + 1 && saw_mask,
+        "valid current depth subrect resumes the depth rule without stale state");
+  const auto run_two_pass_case = [&](uint32_t resolution_mode, float resolution_scale,
+                                     uint32_t expected_second_width) {
+    const uint32_t saved_stack_passes = addon::stack_passes.exchange(2);
+    const bool saved_follow_input = addon::nr_follow_input_res.exchange(false);
+    const float saved_scale = addon::nr_resolution_scale.exchange(1.f);
+    const uint32_t saved_pass_mode = addon::pass_resolution_mode[0].exchange(resolution_mode);
+    const float saved_pass_scale = addon::pass_resolution_scale[0].exchange(resolution_scale);
+    addon::configuration_generation.fetch_add(1);
+    const auto saved_parameter_observer = model_parameter_observer;
+    uint32_t two_pass_mask_bindings = 0;
+    model_parameter_observer = [&](const NVSDK_NGX_Handle*, const NVSDK_NGX_Parameter* block) {
+      two_pass_mask_bindings +=
+          addon::GetD3D12Resource(block, "DLSSNR.ControlMask") != nullptr ? 1u : 0u;
+    };
+    bool two_pass_ready = false;
+    for (uint32_t attempt = 0; attempt < addon::kContractDebounceFrames + 32; ++attempt) {
+      const auto dispatch_before = mask_dispatches;
+      const auto bindings_before = two_pass_mask_bindings;
+      if (record() == 2) {
+        Check(mask_dispatches == dispatch_before + 2
+                  && two_pass_mask_bindings == bindings_before + 2,
+              "two-pass chain generates and binds a depth mask for each Feature Slot");
+        const auto& resources = addon::worksets.at({owner, output.Get(), false});
+        Check(resources.control_mask != nullptr
+                  && resources.control_mask->GetDesc().Width == 8
+                  && resources.control_mask->GetDesc().Height == 8,
+              "first Feature Slot owns an 8x8 mask");
+        if (expected_second_width == 8) {
+          Check(resources.resolution_tail == nullptr,
+                "same-size two-pass chain shares one mask workset");
+        } else {
+          Check(resources.resolution_tail != nullptr
+                    && resources.resolution_tail->control_mask != nullptr
+                    && resources.resolution_tail->control_mask->GetDesc().Width == expected_second_width
+                    && resources.resolution_tail->control_mask->GetDesc().Height == expected_second_width,
+                "heterogeneous-size second Feature Slot owns its own differently sized mask");
+        }
+        const auto& two_pass_feature = addon::features.at(owner);
+        Check(!two_pass_feature.slots[0].control_mask_bound
+                  && !two_pass_feature.slots[1].control_mask_bound,
+              "each two-pass Evaluate clears its own transient mask binding");
+        two_pass_ready = true;
+        break;
+      }
+    }
+    Check(two_pass_ready, "two-pass ControlMask chain matures within bounded attempts");
+    model_parameter_observer = saved_parameter_observer;
+    addon::stack_passes.store(saved_stack_passes);
+    addon::nr_follow_input_res.store(saved_follow_input);
+    addon::nr_resolution_scale.store(saved_scale);
+    addon::pass_resolution_mode[0].store(saved_pass_mode);
+    addon::pass_resolution_scale[0].store(saved_pass_scale);
+    addon::configuration_generation.fetch_add(1);
+    mature();
+  };
+  run_two_pass_case(0, 1.f, 8);
+  run_two_pass_case(2, 0.5f, 4);
   const auto enabled_dispatches = mask_dispatches;
   addon::control_mask_enabled = false;
   mature();
@@ -955,8 +1029,12 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
     recovered.list->SetPipelineState(addon::codec_pipeline.control_mask);
     recovered.list->SetComputeRootDescriptorTable(1, addon::DescriptorHeapSlot(
         rebuilt->descriptors->GetGPUDescriptorHandleForHeapStart(), addon::kDescriptorControlMaskUav, rebuilt->descriptor_size));
-    const std::array<uint32_t, 8> constants{8, 8, addon::kControlMaskNeutral, 4, 4, 0, 0, 0};
-    recovered.list->SetComputeRoot32BitConstants(2, 8, constants.data(), 0);
+    recovered.list->SetComputeRootDescriptorTable(3, addon::DescriptorHeapSlot(
+        rebuilt->descriptors->GetGPUDescriptorHandleForHeapStart(), addon::kDescriptorControlMaskDepthNullSrv,
+        rebuilt->descriptor_size));
+    const std::array<uint32_t, 16> constants{8, 8, addon::kControlMaskNeutral, 4, 4, 0, 0, 0,
+        0, 0, 0, 0, 0, std::bit_cast<uint32_t>(0.7f), std::bit_cast<uint32_t>(0.9f), 0};
+    recovered.list->SetComputeRoot32BitConstants(2, 16, constants.data(), 0);
     recovered.list->Dispatch(1, 1, 1);
     recovered.Transition(rebuilt->control_mask, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
     auto transfer = recovered.CreateTextureTransfer(rebuilt->control_mask);
@@ -1017,7 +1095,10 @@ std::vector<uint8_t> ReadPixels(Gpu& gpu, ID3D12Resource* texture) {
 
 void Dispatch(Gpu& gpu, ID3D12Resource* texture, ID3D12DescriptorHeap* heap,
               uint32_t mode, uint32_t rect_width, uint32_t rect_height,
-              float red, float green, float blue) {
+              float red, float green, float blue, ID3D12Resource* depth = nullptr,
+              uint32_t depth_base_x = 0, uint32_t depth_base_y = 0,
+              uint32_t depth_width = 0, uint32_t depth_height = 0,
+              bool depth_inverted = false, float depth_near = 0.7f, float depth_far = 0.9f) {
   ID3D12DescriptorHeap* heaps[]{heap};
   gpu.list->SetDescriptorHeaps(1, heaps);
   gpu.list->SetComputeRootSignature(addon::codec_pipeline.root_signature);
@@ -1026,10 +1107,19 @@ void Dispatch(Gpu& gpu, ID3D12Resource* texture, ID3D12DescriptorHeap* heap,
   uav.ptr += static_cast<UINT64>(addon::kDescriptorControlMaskUav)
       * gpu.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
   gpu.list->SetComputeRootDescriptorTable(1, uav);
-  const std::array<uint32_t, 8> constants{
+  auto srv = heap->GetGPUDescriptorHandleForHeapStart();
+  const uint32_t depth_descriptor = depth != nullptr
+      ? addon::kDescriptorControlMaskDepthSrv
+      : addon::kDescriptorControlMaskDepthNullSrv;
+  srv.ptr += static_cast<UINT64>(depth_descriptor)
+      * gpu.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  gpu.list->SetComputeRootDescriptorTable(3, srv);
+  const std::array<uint32_t, 16> constants{
       static_cast<uint32_t>(texture->GetDesc().Width), texture->GetDesc().Height,
       mode, rect_width, rect_height,
-      std::bit_cast<uint32_t>(red), std::bit_cast<uint32_t>(green), std::bit_cast<uint32_t>(blue)};
+      std::bit_cast<uint32_t>(red), std::bit_cast<uint32_t>(green), std::bit_cast<uint32_t>(blue),
+      depth_base_x, depth_base_y, depth_width, depth_height, depth_inverted ? 1u : 0u,
+      std::bit_cast<uint32_t>(depth_near), std::bit_cast<uint32_t>(depth_far), 0};
   gpu.list->SetComputeRoot32BitConstants(2, static_cast<UINT>(constants.size()), constants.data(), 0);
   gpu.list->Dispatch((static_cast<UINT>(texture->GetDesc().Width) + 15) / 16,
                     (texture->GetDesc().Height + 15) / 16, 1);
@@ -1186,6 +1276,14 @@ int RunSafety(bool hardware, bool safety = true) {
         .Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE};
     ComPtr<ID3D12DescriptorHeap> heap;
     Check(SUCCEEDED(gpu.device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&heap))), "ControlMask workset descriptor heap");
+    D3D12_SHADER_RESOURCE_VIEW_DESC null_depth_srv{.Format = DXGI_FORMAT_R32_FLOAT,
+        .ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D,
+        .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING};
+    null_depth_srv.Texture2D.MipLevels = 1;
+    gpu.device->CreateShaderResourceView(nullptr, &null_depth_srv,
+        addon::DescriptorHeapSlot(heap->GetCPUDescriptorHandleForHeapStart(),
+            addon::kDescriptorControlMaskDepthNullSrv,
+            gpu.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)));
     D3D12_UNORDERED_ACCESS_VIEW_DESC view{.Format = DXGI_FORMAT_R8G8B8A8_UNORM,
         .ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D};
     auto cpu = heap->GetCPUDescriptorHandleForHeapStart();
@@ -1256,6 +1354,59 @@ int RunSafety(bool hardware, bool safety = true) {
           }
         }
       }
+    }
+    gpu.device->CreateUnorderedAccessView(texture.Get(), nullptr, &view, cpu);
+
+    auto depth_input = gpu.Texture(7, 3, DXGI_FORMAT_R32_FLOAT);
+    std::array<float, 21> depth_values{};
+    depth_values[7 + 1] = 0.1f;
+    depth_values[7 + 2] = 0.4f;
+    depth_values[7 + 3] = 0.6f;
+    depth_values[7 + 4] = 0.9f;
+    depth_values[7 + 5] = 1.25f;
+    auto depth_transfer = gpu.CreateTextureTransfer(depth_input.Get());
+    gpu.Transition(depth_input.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+    gpu.UploadTexture(depth_input.Get(), depth_transfer,
+        reinterpret_cast<const uint8_t*>(depth_values.data()), sizeof(depth_values), 7 * sizeof(float));
+    gpu.Transition(depth_input.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    gpu.Submit();
+
+    auto depth_mask_desc = texture_desc;
+    depth_mask_desc.Width = 5;
+    depth_mask_desc.Height = 1;
+    ComPtr<ID3D12Resource> depth_mask;
+    Check(SUCCEEDED(gpu.device->CreateCommittedResource(&properties, D3D12_HEAP_FLAG_NONE,
+        &depth_mask_desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+        IID_PPV_ARGS(&depth_mask))), "ControlMask depth-far output texture allocation");
+    gpu.device->CreateUnorderedAccessView(depth_mask.Get(), nullptr, &view, cpu);
+    D3D12_SHADER_RESOURCE_VIEW_DESC depth_srv{.Format = DXGI_FORMAT_R32_FLOAT,
+        .ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D,
+        .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING};
+    depth_srv.Texture2D.MipLevels = 1;
+    auto depth_cpu = heap->GetCPUDescriptorHandleForHeapStart();
+    depth_cpu.ptr += static_cast<SIZE_T>(addon::kDescriptorControlMaskDepthSrv)
+        * gpu.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    gpu.device->CreateShaderResourceView(depth_input.Get(), &depth_srv, depth_cpu);
+    Dispatch(gpu, depth_mask.Get(), heap.Get(), addon::kControlMaskDepthFar, 0, 0, 1.f, 0.5f, 0.25f,
+            depth_input.Get(), 1, 1, 5, 1, false, 0.25f, 0.75f);
+    const auto depth_pixels = ReadPixels(gpu, depth_mask.Get());
+    const std::array<uint8_t, 5> expected_depth_red{255, 200, 55, 0, 255};
+    for (uint32_t x = 0; x < expected_depth_red.size(); ++x) {
+      const size_t offset = static_cast<size_t>(x) * 4;
+      Check(std::abs(static_cast<int>(depth_pixels[offset]) - expected_depth_red[x]) <= 1
+                && (depth_pixels[offset + 1] == 127 || depth_pixels[offset + 1] == 128)
+                && depth_pixels[offset + 2] == 64 && depth_pixels[offset + 3] == 255,
+            "depth-far mask uses the current nonzero depth subrect, soft range, R-only modulation and invalid-value pass-through");
+    }
+    Dispatch(gpu, depth_mask.Get(), heap.Get(), addon::kControlMaskDepthFar, 0, 0, 1.f, 0.5f, 0.25f,
+            depth_input.Get(), 1, 1, 5, 1, true, 0.25f, 0.75f);
+    const auto inverted_depth_pixels = ReadPixels(gpu, depth_mask.Get());
+    const std::array<uint8_t, 5> expected_inverted_red{0, 55, 200, 255, 255};
+    for (uint32_t x = 0; x < expected_inverted_red.size(); ++x) {
+      Check(std::abs(static_cast<int>(inverted_depth_pixels[static_cast<size_t>(x) * 4])
+                     - expected_inverted_red[x]) <= 1,
+            "depth-far mask follows DepthInverted while leaving invalid values unclassified");
     }
     gpu.device->CreateUnorderedAccessView(texture.Get(), nullptr, &view, cpu);
 

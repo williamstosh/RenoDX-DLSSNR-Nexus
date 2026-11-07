@@ -761,7 +761,10 @@ constexpr uint32_t kExposureRingSize = 4;
 constexpr uint32_t kDescriptorExposureRing = kDescriptorLookUav + look::kUavCount;
 constexpr uint32_t kDescriptorControlMaskUav =
     kDescriptorExposureRing + kExposureRingSize * kCodecSrvSetStride;
-constexpr uint32_t kDescriptorHeapSize = kDescriptorControlMaskUav + 2;
+constexpr uint32_t kControlMaskDepthRingSize = 4;
+constexpr uint32_t kDescriptorControlMaskDepthNullSrv = kDescriptorControlMaskUav + 2;
+constexpr uint32_t kDescriptorControlMaskDepthSrv = kDescriptorControlMaskDepthNullSrv + 1;
+constexpr uint32_t kDescriptorHeapSize = kDescriptorControlMaskDepthSrv + kControlMaskDepthRingSize;
 
 // FinalResources::look_surfaces bits: what a workset allocated for the look.
 constexpr uint32_t kLookSurfaceOutput = 1u;     // look_output, the look set
@@ -906,6 +909,9 @@ struct FinalResources {
   ID3D12Resource* motion_views[kMotionRingSize] = {};
   // The exposure ring's resources, held for the same reason.
   ID3D12Resource* exposure_views[kExposureRingSize] = {};
+  // Depth guides rotate independently of the workset; each view is write-once
+  // until the submission tracker proves its resource idle.
+  ID3D12Resource* control_mask_depth_views[kControlMaskDepthRingSize] = {};
   // The pre-SR path's game color, held for the same reason (v7.0.0-rc10):
   // the workset is keyed by its pointer and its views are written once, so
   // a same-size color the game recreated at a freed one's address matched
@@ -2241,6 +2247,7 @@ inline constexpr uint32_t kControlMaskNeutral = 1;
 inline constexpr uint32_t kControlMaskRect = 2;
 inline constexpr uint32_t kControlMaskGreenRect = 3;
 inline constexpr uint32_t kControlMaskBlueRect = 4;
+inline constexpr uint32_t kControlMaskDepthFar = 5;
 inline std::atomic_bool control_mask_enabled = false;
 inline std::atomic_bool control_mask_use_core_context = false;
 // Valid only in the after-path of a successful, classified host SR evaluate.
@@ -2268,12 +2275,17 @@ inline std::atomic_uint32_t control_mask_mode = kControlMaskRgb;
 inline std::atomic<float> control_mask_red = 1.f;
 inline std::atomic<float> control_mask_green = 1.f;
 inline std::atomic<float> control_mask_blue = 1.f;
+inline std::atomic<float> control_mask_depth_near = 0.7f;
+inline std::atomic<float> control_mask_depth_far = 0.9f;
 inline std::atomic_uint32_t control_mask_blend_mode = 0;
 inline std::atomic_bool control_mask_refusal_logged{false};
 inline std::atomic_bool control_mask_failure_logged{false};
 inline std::atomic_bool control_mask_active_logged[2]{};
 inline std::atomic_bool control_mask_success_logged[2]{};
 inline std::atomic_bool control_mask_evaluate_failure_logged{false};
+inline std::atomic_bool control_mask_depth_refusal_logged{false};
+inline std::atomic_uint64_t control_mask_depth_ring_recycled{0};
+inline std::atomic_uint64_t control_mask_depth_ring_full{0};
 inline std::atomic_bool ui_correction = defaults::kUiCorrection;
 // NR codec operating mode.  0 = classic: the codec input gain is the raw
 // paper-white scale (a scene-linear multiplier).  1 = anchored: the gain is
@@ -4572,6 +4584,7 @@ inline void ReleaseFinalResources(FinalResources& resources) {
   ReleaseCom(resources.look_trace_blocks);
   for (ID3D12Resource*& motion : resources.motion_views) ReleaseCom(motion);
   for (ID3D12Resource*& exposure : resources.exposure_views) ReleaseCom(exposure);
+  for (ID3D12Resource*& depth : resources.control_mask_depth_views) ReleaseCom(depth);
   ReleaseCom(resources.pre_sr_source);
   resources = {};
 }
@@ -5732,15 +5745,18 @@ inline bool EnsureCodecRootSignature(ID3D12Device* device) {
     return false;
   }
 
-  D3D12_DESCRIPTOR_RANGE ranges[2]{};
+  D3D12_DESCRIPTOR_RANGE ranges[3]{};
   ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
   ranges[0].NumDescriptors = 4;
   ranges[0].BaseShaderRegister = 0;
   ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
   ranges[1].NumDescriptors = 2;
   ranges[1].BaseShaderRegister = 0;
+  ranges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+  ranges[2].NumDescriptors = 1;
+  ranges[2].BaseShaderRegister = 4;
 
-  D3D12_ROOT_PARAMETER root_parameters[3]{};
+  D3D12_ROOT_PARAMETER root_parameters[4]{};
   root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
   root_parameters[0].DescriptorTable.NumDescriptorRanges = 1;
   root_parameters[0].DescriptorTable.pDescriptorRanges = &ranges[0];
@@ -5755,9 +5771,12 @@ inline bool EnsureCodecRootSignature(ID3D12Device* device) {
   // are the v6-only style highlight guard plus alignment pad.
   root_parameters[2].Constants.Num32BitValues = 28;
   root_parameters[2].Constants.ShaderRegister = 0;
+  root_parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  root_parameters[3].DescriptorTable.NumDescriptorRanges = 1;
+  root_parameters[3].DescriptorTable.pDescriptorRanges = &ranges[2];
 
   D3D12_ROOT_SIGNATURE_DESC root_desc{};
-  root_desc.NumParameters = 3;
+  root_desc.NumParameters = 4;
   root_desc.pParameters = root_parameters;
   ID3DBlob* serialized = nullptr;
   ID3DBlob* errors = nullptr;
@@ -6094,6 +6113,25 @@ inline DXGI_FORMAT CodecViewFormat(DXGI_FORMAT format) {
     case DXGI_FORMAT_BC3_UNORM_SRGB: return DXGI_FORMAT_BC3_UNORM;
     case DXGI_FORMAT_BC7_UNORM_SRGB: return DXGI_FORMAT_BC7_UNORM;
     default: return format;
+  }
+}
+
+inline DXGI_FORMAT ControlMaskDepthViewFormat(DXGI_FORMAT format) {
+  switch (format) {
+    case DXGI_FORMAT_R16_TYPELESS:
+    case DXGI_FORMAT_D16_UNORM:
+    case DXGI_FORMAT_R16_UNORM: return DXGI_FORMAT_R16_UNORM;
+    case DXGI_FORMAT_R16_FLOAT: return DXGI_FORMAT_R16_FLOAT;
+    case DXGI_FORMAT_R32_TYPELESS:
+    case DXGI_FORMAT_D32_FLOAT:
+    case DXGI_FORMAT_R32_FLOAT: return DXGI_FORMAT_R32_FLOAT;
+    case DXGI_FORMAT_R24G8_TYPELESS:
+    case DXGI_FORMAT_D24_UNORM_S8_UINT:
+    case DXGI_FORMAT_R24_UNORM_X8_TYPELESS: return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+    case DXGI_FORMAT_R32G8X24_TYPELESS:
+    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+    case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS: return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+    default: return DXGI_FORMAT_UNKNOWN;
   }
 }
 
@@ -6835,6 +6873,14 @@ inline FinalResources* EnsureWorkset(
       D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
   const D3D12_CPU_DESCRIPTOR_HANDLE heap_start =
       resources.descriptors->GetCPUDescriptorHandleForHeapStart();
+  D3D12_SHADER_RESOURCE_VIEW_DESC null_depth_srv{};
+  null_depth_srv.Format = DXGI_FORMAT_R32_FLOAT;
+  null_depth_srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+  null_depth_srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+  null_depth_srv.Texture2D.MipLevels = 1;
+  device->CreateShaderResourceView(
+      nullptr, &null_depth_srv,
+      DescriptorHeapSlot(heap_start, kDescriptorControlMaskDepthNullSrv, resources.descriptor_size));
   D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
   srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
   srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -7491,19 +7537,22 @@ inline void SetEvaluationParameters(
 // the half of the evaluate block that names no resource, shared by the
 // D3D12 after path (SetEvaluationParameters) and the Vulkan one
 // (vulkan_path.hpp), so both send the Look section the same way.
+inline bool ResolveDepthInverted(uint32_t create_flags) {
+  const uint32_t mode = depth_mode.load();
+  if (mode == 1) return false;
+  if (mode == 2) return true;
+  return (create_flags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
+}
+
 inline void SetModelParameters(NrFeatureSlot& slot, uint32_t slot_index,
                                uint64_t chain_reset_epoch, uint32_t create_flags,
                                int32_t frame_reset, bool frame_ui_correction,
                                uint32_t diagnostic_model_ui) {
   NVSDK_NGX_Parameter* parameters = slot.parameters;
-  bool depth_inverted =
-      (create_flags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
-  if (depth_mode.load() == 1) depth_inverted = false;
-  if (depth_mode.load() == 2) depth_inverted = true;
   NVSDK_NGX_Parameter_SetI(
       parameters,
       "DLSSNR.DepthInverted",
-      depth_inverted ? 1 : 0);
+      ResolveDepthInverted(create_flags) ? 1 : 0);
   NVSDK_NGX_Parameter_SetI(parameters, "DLSSNR.Enabled", 1);
   // Reset semantics with stacking (v5.3 epoch model; see reset_epoch.hpp):
   // the chain's reset epoch is resolved once before the pass loop and every
@@ -10696,23 +10745,36 @@ inline bool ProcessInline(
     return false;
   }
   const uint32_t requested_stack = group.count;
+  const uint32_t control_mask_mode_snapshot = control_mask_mode.load(std::memory_order_relaxed);
+  const bool control_mask_depth_format_supported =
+      ControlMaskDepthViewFormat(depth_desc.Format) != DXGI_FORMAT_UNKNOWN;
+  const bool control_mask_depth_usable = depth_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D
+      && depth_desc.DepthOrArraySize == 1 && depth_desc.SampleDesc.Count == 1
+      && (depth_desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0
+      && SubrectFits(current.depth_x, current.depth_y, current.input_width, current.input_height, depth_desc)
+      && control_mask_depth_format_supported;
+  if (control_mask_mode_snapshot == kControlMaskDepthFar && !control_mask_depth_usable
+      && !control_mask_depth_refusal_logged.exchange(true, std::memory_order_relaxed)) {
+    Log(reshade::log::level::warning,
+        "ControlMask depth-far rule skipped: current depth format or subrect is unsupported");
+  }
+  const bool control_mask_route_eligible = present == nullptr
+      && execution_stage == stage_plan::Stage::UPSCALED
+      && !plan.mixed && group.begin == 0
+      && nr_model::SupportsControlMask(direct_runtime_requirements.file_version);
+  const bool control_mask_mode_eligible = control_mask_mode_snapshot != kControlMaskDepthFar
+      || control_mask_depth_usable;
   const bool control_mask_capture_eligible = control_mask_capture::Enabled()
       && gpu_timers_enabled.load(std::memory_order_relaxed)
-      && present == nullptr && execution_stage == stage_plan::Stage::UPSCALED
-      && !plan.mixed && requested_stack == 1 && group.begin == 0
-      && nr_model::SupportsControlMask(direct_runtime_requirements.file_version);
+      && control_mask_route_eligible && control_mask_mode_eligible;
   const bool control_mask_requested = control_mask_enabled.load(std::memory_order_relaxed);
   const bool control_mask_eligible = control_mask_requested
-      && present == nullptr
-      && execution_stage == stage_plan::Stage::UPSCALED
-      && !plan.mixed && requested_stack == 1
-      && group.begin == 0
-      && nr_model::SupportsControlMask(direct_runtime_requirements.file_version);
-  if (control_mask_requested && !control_mask_eligible
+      && control_mask_route_eligible && control_mask_mode_eligible;
+  if (control_mask_requested && !control_mask_route_eligible
       && !control_mask_refusal_logged.exchange(true, std::memory_order_relaxed)) {
     Log(reshade::log::level::warning,
         "ControlMask requested but declined: requires exact DLSSNR 310.9.16.0,"
-        " D3D12 Upscaled, single-pass evaluation");
+        " D3D12 Upscaled evaluation");
   }
   stage_stats.width = width;
   stage_stats.height = height;
@@ -11046,7 +11108,7 @@ inline bool ProcessInline(
   if (workset != nullptr && split_working_sizes) {
     second_workset = EnsureWorkset(device, handle, output, pass_widths[1], pass_heights[1], width, height,
                                    output_desc.Format, hdr_mode, requested_stack, pass_look_wanted[1],
-                                   false, &workset->units, workset);
+                                   false, &workset->units, workset, control_mask_eligible);
   } else if (workset != nullptr && workset->resolution_tail != nullptr) {
     RetireSecondResolutionResources(workset);
   }
@@ -11725,17 +11787,26 @@ inline bool ProcessInline(
     uint32_t mask_mode = kControlMaskRgb;
     uint32_t mask_blend = 0;
     std::array<float, 3> mask_rgb{1.f, 1.f, 1.f};
+    bool pass_control_mask_eligible = control_mask_eligible;
+    uint32_t control_mask_depth_ring = kControlMaskDepthRingSize;
     if (control_mask_eligible || control_mask_capture_eligible) {
-      mask_mode = control_mask_mode.load(std::memory_order_relaxed);
+      mask_mode = control_mask_mode_snapshot;
       mask_blend = control_mask_blend_mode.load(std::memory_order_relaxed);
-      if (mask_mode == kControlMaskRgb || mask_mode == kControlMaskRect) {
+      if (mask_mode == kControlMaskRgb || mask_mode == kControlMaskRect
+          || mask_mode == kControlMaskDepthFar) {
         mask_rgb = {
             std::clamp(control_mask_red.load(std::memory_order_relaxed), 0.f, 1.f),
             std::clamp(control_mask_green.load(std::memory_order_relaxed), 0.f, 1.f),
             std::clamp(control_mask_blue.load(std::memory_order_relaxed), 0.f, 1.f)};
       }
     }
-    if (control_mask_eligible) {
+    if (pass_control_mask_eligible && mask_mode == kControlMaskDepthFar) {
+      control_mask_depth_ring = RingSlot(
+          res.control_mask_depth_views, frame.depth, &control_mask_depth_ring_recycled,
+          &control_mask_depth_ring_full, "depth-far protection is skipped for this frame");
+      pass_control_mask_eligible = control_mask_depth_ring < kControlMaskDepthRingSize;
+    }
+    if (pass_control_mask_eligible) {
       const uint32_t model_bucket = feature.slots[pass].nr_preset == 2u ? 1u : 0u;
       if (!control_mask_active_logged[model_bucket].exchange(true, std::memory_order_relaxed)) {
         const auto mask_desc = res.control_mask->GetDesc();
@@ -11749,7 +11820,8 @@ inline bool ProcessInline(
                 << " blend_mode=" << mask_blend
                 << " rgb=" << mask_rgb[0] << ',' << mask_rgb[1] << ',' << mask_rgb[2]
                 << " auto_mask=" << PassModel(group.begin + pass, use_auto_mask, pass_auto_mask)
-                << " stage=DX12-Upscaled passes=1; cost is included in the existing per-pass evaluate GPU timer";
+                << " stage=DX12-Upscaled passes=" << requested_stack
+                << "; cost is included in the existing per-pass evaluate GPU timer";
         if (mask_mode == kControlMaskGreenRect || mask_mode == kControlMaskBlueRect) {
           message << " configured_rgb_ignored=1 base_rgba=1,1,1,1 local_zero_channel="
                   << (mask_mode == kControlMaskGreenRect ? 'G' : 'B')
@@ -11768,15 +11840,44 @@ inline bool ProcessInline(
           res.descriptors->GetGPUDescriptorHandleForHeapStart();
       command_list->SetComputeRootDescriptorTable(
           1, DescriptorHeapSlot(heap_start, kDescriptorControlMaskUav, res.descriptor_size));
+      uint32_t control_mask_depth_descriptor = kDescriptorControlMaskDepthNullSrv;
+      if (mask_mode == kControlMaskDepthFar) {
+        if (res.control_mask_depth_views[control_mask_depth_ring] == nullptr) {
+          frame.depth->AddRef();
+          res.control_mask_depth_views[control_mask_depth_ring] = frame.depth;
+          D3D12_SHADER_RESOURCE_VIEW_DESC depth_srv{};
+          depth_srv.Format = ControlMaskDepthViewFormat(depth_desc.Format);
+          depth_srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+          depth_srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+          depth_srv.Texture2D.MipLevels = 1;
+          device->CreateShaderResourceView(
+              frame.depth, &depth_srv,
+              DescriptorHeapSlot(
+                  res.descriptors->GetCPUDescriptorHandleForHeapStart(),
+                  kDescriptorControlMaskDepthSrv + control_mask_depth_ring, res.descriptor_size));
+        }
+        submission::TrackUse(command_list, frame.depth);
+        control_mask_depth_descriptor = kDescriptorControlMaskDepthSrv + control_mask_depth_ring;
+      }
+      command_list->SetComputeRootDescriptorTable(
+          3, DescriptorHeapSlot(heap_start, control_mask_depth_descriptor, res.descriptor_size));
       struct ControlMaskConstants {
         uint32_t width, height, mode, rect_width, rect_height;
         float red, green, blue;
+        uint32_t depth_base_x, depth_base_y, depth_width, depth_height;
+        uint32_t depth_inverted;
+        float depth_near, depth_far;
+        uint32_t padding;
       } constants{
           nr_input_width, nr_input_height,
           mask_mode,
           nr_input_width / 2, nr_input_height / 2,
-          mask_rgb[0], mask_rgb[1], mask_rgb[2]};
-      command_list->SetComputeRoot32BitConstants(2, 8, &constants, 0);
+          mask_rgb[0], mask_rgb[1], mask_rgb[2],
+          frame.depth_x, frame.depth_y, frame.input_width, frame.input_height,
+          ResolveDepthInverted(frame.create_flags) ? 1u : 0u,
+          control_mask_depth_near.load(std::memory_order_relaxed),
+          control_mask_depth_far.load(std::memory_order_relaxed), 0};
+      command_list->SetComputeRoot32BitConstants(2, 16, &constants, 0);
       command_list->Dispatch((nr_input_width + 15) / 16,
                              (nr_input_height + 15) / 16, 1);
       UavBarrier(command_list, res.control_mask);
@@ -11796,7 +11897,7 @@ inline bool ProcessInline(
         nr_input_height,
         feature_out_width,
         feature_out_height,
-        control_mask_eligible,
+        pass_control_mask_eligible,
         mask_blend);
     ++stage_stats.evaluates;
     stage_stats.resets += feature.slots[pass].model_reset;
@@ -26987,6 +27088,8 @@ inline void ReadIniRawValues() {
       {"NRControlMaskRed", IniKind::kFloat},
       {"NRControlMaskGreen", IniKind::kFloat},
       {"NRControlMaskBlue", IniKind::kFloat},
+      {"NRControlMaskDepthNear", IniKind::kFloat},
+      {"NRControlMaskDepthFar", IniKind::kFloat},
       {"NRControlMaskGpuCaptureSamples", IniKind::kUint},
       {"NRControlMaskGpuCaptureSeconds", IniKind::kUint},
       {"NRControlMaskGpuCaptureWarmupSeconds", IniKind::kUint},
@@ -27628,6 +27731,8 @@ inline void LoadConfiguration() {
   float saved_control_mask_red = 1.f;
   float saved_control_mask_green = 1.f;
   float saved_control_mask_blue = 1.f;
+  float saved_control_mask_depth_near = 0.7f;
+  float saved_control_mask_depth_far = 0.9f;
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskEnabled", saved_control_mask_enabled);
   bool saved_control_mask_use_core_context = false;
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskUseCoreContext", saved_control_mask_use_core_context);
@@ -27641,14 +27746,24 @@ inline void LoadConfiguration() {
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskRed", saved_control_mask_red);
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskGreen", saved_control_mask_green);
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskBlue", saved_control_mask_blue);
+  reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskDepthNear", saved_control_mask_depth_near);
+  reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskDepthFar", saved_control_mask_depth_far);
   control_mask_enabled = saved_control_mask_enabled;
   control_mask_mode = SanitizeEnumKey(saved_control_mask_mode, kControlMaskRgb,
-      kControlMaskRgb, kControlMaskBlueRect, "NRControlMaskMode");
+      kControlMaskRgb, kControlMaskDepthFar, "NRControlMaskMode");
   control_mask_blend_mode = SanitizeEnumKey(saved_control_mask_blend_mode, 0u, 0u, 3u,
       "NRControlMaskBlendMode");
   control_mask_red = SanitizeFloatKey(saved_control_mask_red, 1.f, 0.f, 1.f, "NRControlMaskRed");
   control_mask_green = SanitizeFloatKey(saved_control_mask_green, 1.f, 0.f, 1.f, "NRControlMaskGreen");
   control_mask_blue = SanitizeFloatKey(saved_control_mask_blue, 1.f, 0.f, 1.f, "NRControlMaskBlue");
+  control_mask_depth_near = SanitizeFloatKey(saved_control_mask_depth_near, 0.7f, 0.f, 1.f, "NRControlMaskDepthNear");
+  control_mask_depth_far = SanitizeFloatKey(saved_control_mask_depth_far, 0.9f, 0.f, 1.f, "NRControlMaskDepthFar");
+  if (control_mask_depth_far.load() <= control_mask_depth_near.load()) {
+    control_mask_depth_near = 0.7f;
+    control_mask_depth_far = 0.9f;
+    Log(reshade::log::level::warning,
+        "NRControlMaskDepthFar must be greater than NRControlMaskDepthNear; using 0.7 and 0.9");
+  }
   uint32_t capture_samples = 0, capture_seconds = 120, capture_warmup = 6;
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskGpuCaptureSamples", capture_samples);
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskGpuCaptureSeconds", capture_seconds);
