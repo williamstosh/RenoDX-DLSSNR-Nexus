@@ -41,9 +41,13 @@ struct Gpu {
   ComPtr<ID3D12Fence> fence;
   std::vector<ComPtr<ID3D12Resource>> uploads;
   std::vector<ComPtr<IUnknown>> retained_resources;
+  UINT swapchain_width = 8;
+  UINT swapchain_height = 8;
   uint64_t serial = 0;
   bool submission_pending = false;
-  explicit Gpu(bool hardware = false) {
+  explicit Gpu(bool hardware = false, UINT width = 8, UINT height = 8)
+      : swapchain_width(width), swapchain_height(height) {
+    Check(width > 0 && height > 0, "swapchain dimensions");
     ComPtr<IDXGIAdapter> adapter;
     Check(SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))), "DXGI factory");
     if (hardware) {
@@ -84,8 +88,8 @@ struct Gpu {
   }
   ComPtr<IDXGISwapChain3> Swapchain() {
     DXGI_SWAP_CHAIN_DESC1 desc{};
-    desc.Width = 8;
-    desc.Height = 8;
+    desc.Width = swapchain_width;
+    desc.Height = swapchain_height;
     desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     desc.SampleDesc.Count = 1;
     desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;

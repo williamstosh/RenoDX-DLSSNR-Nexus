@@ -113,6 +113,10 @@ struct Session {
   ComPtr<IDXGISwapChain3> proxy;
   void* handle = this;
   std::shared_ptr<adapter::Context> context;
+  uint32_t extent_left = 1;
+  uint32_t extent_top = 2;
+  uint32_t extent_width = 4;
+  uint32_t extent_height = 3;
   explicit Session(Gpu* value, int32_t ui_mode = 0) : gpu(value), proxy(value->Swapchain()) {
     xefg::abi::Init init{.application_swapchain = proxy.Get(), .flags = 17, .max_interpolated = 1, .ui_mode = ui_mode};
     Check(Hooks::Init(handle, gpu->queue.Get(), &init) == 0, "SDK init");
@@ -130,7 +134,8 @@ struct Session {
     adapter::RefreshOwnership();
   }
   xefg::abi::Resource Tag(uint32_t id, int32_t type, ID3D12Resource* resource, int32_t validity = UNTIL_NEXT_PRESENT) {
-    const xefg::abi::Resource data{.type = type, .validity = validity, .base = {1, 2}, .size = {4, 3},
+    const xefg::abi::Resource data{.type = type, .validity = validity,
+        .base = {extent_left, extent_top}, .size = {extent_width, extent_height},
         .resource = resource, .state = D3D12_RESOURCE_STATE_COMMON};
     Check(Hooks::Resource(handle, gpu->list.Get(), id, &data) == sdk_status, "SDK resource result forwarding");
     Check(data.resource == resource && data.validity == validity, "caller tag mutated");

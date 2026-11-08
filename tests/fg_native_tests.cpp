@@ -49,6 +49,15 @@ ID3D12Resource* model_execution_readback = nullptr;
 std::map<const NVSDK_NGX_Handle*, uint32_t> model_create_flags;
 std::function<void()> model_ui_observer;
 std::function<void(const NVSDK_NGX_Handle*, const NVSDK_NGX_Parameter*)> model_parameter_observer;
+struct NativeRuntimeEvaluation {
+  const NVSDK_NGX_Handle* model = nullptr;
+  ID3D12Resource* depth = nullptr;
+  ID3D12Resource* motion = nullptr;
+  ID3D12Resource* mask = nullptr;
+};
+native::DirectEvaluateFn native_runtime_evaluate = nullptr;
+std::vector<NativeRuntimeEvaluation> native_runtime_evaluations;
+std::vector<NVSDK_NGX_Result> native_runtime_evaluation_results;
 constexpr auto NATIVE_INPUT_STATE = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 using BarrierFn = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, UINT, const D3D12_RESOURCE_BARRIER*);
 BarrierFn real_barrier = nullptr;
@@ -160,13 +169,28 @@ NVSDK_NGX_Result NVSDK_CONV EvaluateModel(ID3D12GraphicsCommandList* list, const
   }
   return NVSDK_NGX_Result_Success;
 }
+
+NVSDK_NGX_Result NVSDK_CONV ObserveNativeRuntimeEvaluation(
+    ID3D12GraphicsCommandList* list,
+    const NVSDK_NGX_Handle* handle,
+    const NVSDK_NGX_Parameter* parameters,
+    PFN_NVSDK_NGX_ProgressCallback progress) {
+  native_runtime_evaluations.push_back({
+      .model = handle,
+      .depth = native::GetD3D12Resource(parameters, "DLSSNR.Depth"),
+      .motion = native::GetD3D12Resource(parameters, "DLSSNR.MVec"),
+      .mask = native::GetD3D12Resource(parameters, "DLSSNR.ControlMask")});
+  const NVSDK_NGX_Result result = native_runtime_evaluate(list, handle, parameters, progress);
+  native_runtime_evaluation_results.push_back(result);
+  return result;
+}
 }  // namespace
 
 // The isolated idle test is defined after the existing scenarios.
 int RunNativeOwnerIdleTest();
 int RunNativeOptionsResumeTest(bool delayed_options = false);
 int RunNativeGuideContractTest();
-int RunPresentGuideModelsTest();
+int RunPresentGuideModelsTest(bool native_ngx = false, const char* project_id_path = nullptr);
 int RunNativePresentDecisionTest();
 
 int RunNativeRequiredMenuTest() {
@@ -710,6 +734,9 @@ int RunNativeRequiredMenuTest() {
 int main(int argc, char** argv) {
   if (argc == 3 && std::strcmp(argv[1], "--control-mask-native-ngx") == 0) {
     return control_mask_gpu_cases::RunNativeNgx(argv[2]);
+  }
+  if (argc == 3 && std::strcmp(argv[1], "--control-mask-native-ngx-fg") == 0) {
+    return RunPresentGuideModelsTest(true, argv[2]);
   }
   if (argc == 2 && std::strcmp(argv[1], "--vulkan-recorded-use-contract") == 0) {
     try {
@@ -3798,14 +3825,17 @@ int RunNativeOptionsResumeTest(bool delayed_options) {
   }
 }
 
-int RunPresentGuideModelsTest() {
+int RunPresentGuideModelsTest(bool native_ngx, const char* project_id_path) {
   try {
     const HMODULE test_module = GetModuleHandleW(nullptr);
     reshade::internal::get_reshade_module_handle(test_module);
     native::addon_module = test_module;
     ComPtr<ID3D12Debug> debug;
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) debug->EnableDebugLayer();
-    Gpu gpu;
+    if (native_ngx) {
+      Check(project_id_path != nullptr, "native FG ProjectID path");
+    }
+    Gpu gpu(native_ngx, native_ngx ? 960u : 8u, native_ngx ? 540u : 8u);
     model_gpu = &gpu;
     ComPtr<ID3D12InfoQueue> info;
     if (debug != nullptr) Check(SUCCEEDED(gpu.device.As(&info)), "Present models debug queue");
@@ -3820,17 +3850,48 @@ int RunPresentGuideModelsTest() {
     native::codec_mode.store(0);
     native::transfer_strength.store(1.f);
     native::color_strength.store(1.f);
-    native::direct_api.module = GetModuleHandleW(nullptr);
-    native::direct_api.create = CreateModel;
-    native::direct_api.evaluate = EvaluateModel;
-    native::direct_api.release = ReleaseModel;
-    native::direct_load_state = native::DirectLoadState::Ready;
-    native::direct_device = gpu.device.Get();
-    native::direct_device->AddRef();
-    native::direct_device_native = gpu.device.Get();
-    native::parameter_runtime_ready = true;
-    native::core_allocate_parameters = renodx::addons::dlss5::bridge::AllocateOwnedParameters;
-    native::core_destroy_parameters = renodx::addons::dlss5::bridge::DestroyOwnedParameters;
+    if (native_ngx) {
+      native::PrimeNgxLoaderSymbols(gpu.device.Get());
+      std::ifstream project_id_file(project_id_path);
+      std::string project_id;
+      Check(project_id_file.is_open() && std::getline(project_id_file, project_id)
+                && project_id.size() == 36,
+            "read the existing isolated NGX ProjectID for FG");
+      const std::wstring runtime_directory = native::AddonDirectory().wstring();
+      const wchar_t* runtime_paths[]{runtime_directory.c_str()};
+      NVSDK_NGX_FeatureCommonInfo common_info{};
+      common_info.PathListInfo = {runtime_paths, 1};
+      common_info.LoggingInfo = {control_mask_gpu_cases::NativeNgxSdkLog,
+          NVSDK_NGX_LOGGING_LEVEL_ON, true};
+      const auto core_init = NVSDK_NGX_D3D12_Init_with_ProjectID(
+          project_id.c_str(), NVSDK_NGX_ENGINE_TYPE_CUSTOM,
+          "NR-Nexus-ControlMask-FG-offline-1", runtime_directory.c_str(),
+          gpu.device.Get(), &common_info);
+      Check(NVSDK_NGX_SUCCEED(core_init), "public SDK initializes the real FG NGX Core context");
+      native::PrimeNgxLoaderSymbols(gpu.device.Get());
+      {
+        std::scoped_lock runtime_lock(native::runtime_mutex);
+        Check(native::EnsureDirectRuntime(gpu.list.Get()),
+              "real FG Runtime initializes with the public Core loaded");
+        Check(native::parameter_runtime_via_core.load()
+                  && native::core_evaluate_feature != nullptr,
+              "real FG path adopts public Core parameters and Feature 18 calls");
+        native_runtime_evaluate = native::core_evaluate_feature;
+        native::core_evaluate_feature = ObserveNativeRuntimeEvaluation;
+      }
+    } else {
+      native::direct_api.module = GetModuleHandleW(nullptr);
+      native::direct_api.create = CreateModel;
+      native::direct_api.evaluate = EvaluateModel;
+      native::direct_api.release = ReleaseModel;
+      native::direct_load_state = native::DirectLoadState::Ready;
+      native::direct_device = gpu.device.Get();
+      native::direct_device->AddRef();
+      native::direct_device_native = gpu.device.Get();
+      native::parameter_runtime_ready = true;
+      native::core_allocate_parameters = renodx::addons::dlss5::bridge::AllocateOwnedParameters;
+      native::core_destroy_parameters = renodx::addons::dlss5::bridge::DestroyOwnedParameters;
+    }
     Check(native::InstallQueueCompletionHooks(gpu.queue.Get()), "Present models real queue hooks");
     Check(native::InstallCommandListStateHooks(gpu.list.Get()), "Present models real list hooks");
     const auto submit = [&] {
@@ -3850,16 +3911,39 @@ int RunPresentGuideModelsTest() {
       gpu.uploads.clear();
     };
     submit();
-    auto color = gpu.Texture();
-    auto hudless = gpu.Texture();
+    const UINT width = native_ngx ? 960u : 8u;
+    const UINT height = native_ngx ? 540u : 8u;
+    const DXGI_FORMAT color_format = native_ngx
+        ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
+    const auto wait_service_fence = [](const native::fg_service::Stream& stream) {
+      if (stream.fence == nullptr || stream.submitted == 0) return;
+      if (stream.fence->GetCompletedValue() < stream.submitted) {
+        HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        Check(event != nullptr, "XeFG service fence event");
+        const HRESULT signal = stream.fence->SetEventOnCompletion(stream.submitted, event);
+        const DWORD wait = SUCCEEDED(signal) ? WaitForSingleObject(event, 10000) : WAIT_FAILED;
+        CloseHandle(event);
+        Check(wait == WAIT_OBJECT_0, "bounded XeFG service GPU completion");
+      }
+      Check(stream.fence->GetCompletedValue() >= stream.submitted,
+            "XeFG service fence confirms GPU completion");
+    };
+    if (native_ngx) {
+      std::cout << "NATIVE_NGX runtime=" << native::direct_runtime_requirements.file_version
+                << " sha256=" << native::direct_runtime_sha256
+                << " input=" << width << 'x' << height << std::endl;
+    }
+    auto color = gpu.Texture(width, height, color_format);
+    auto hudless = gpu.Texture(width, height, color_format);
     gpu.Write(color.Get(), 64);
     gpu.Write(hudless.Get(), 96);
     gpu.Transition(color.Get(), D3D12_RESOURCE_STATE_COMMON, NATIVE_INPUT_STATE);
     gpu.Transition(hudless.Get(), D3D12_RESOURCE_STATE_COMMON, NATIVE_INPUT_STATE);
     auto& owner = native::present_streams[nullptr];
     owner.device_identity = renodx::utils::directx::NativeIdentity(gpu.device.Get());
-    owner.backbuffer_width = owner.backbuffer_height = 8;
-    owner.backbuffer_format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    owner.backbuffer_width = width;
+    owner.backbuffer_height = height;
+    owner.backbuffer_format = color_format;
     owner.prefg_target_valid = true;
     owner.prefg_target.diagnostic.bypass_host_look = true;
     owner.prefg_target.pass_transfer_strength[0] = 1.f;
@@ -3870,19 +3954,22 @@ int RunPresentGuideModelsTest() {
     fg_parameters.Set(NVSDK_NGX_DLSSG_Parameter_MultiFrameIndex, 1u);
     const auto* fg_handle = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xF018});
     native::RegisterCreatedFeatureLocked(fg_handle, NVSDK_NGX_Feature_FrameGeneration, &fg_parameters);
-    // Exercise the real output-owner registration rather than seeding its resident set.
-    auto* original = native::RunNativePreFg(gpu.list.Get(), &fg_parameters, fg_handle);
-    if (original != nullptr) {
-      native::RestoreNativePreFg(gpu.list.Get(), &fg_parameters, original, true, fg_handle);
+    if (!native_ngx) {
+      // Exercise the real output-owner registration rather than seeding its resident set.
+      auto* original = native::RunNativePreFg(gpu.list.Get(), &fg_parameters, fg_handle);
+      if (original != nullptr) {
+        native::RestoreNativePreFg(gpu.list.Get(), &fg_parameters, original, true, fg_handle);
+      }
     }
     submit();
 
     std::array<ComPtr<ID3D12Resource>, 4> guides;
     for (size_t i = 0; i < guides.size(); ++i) {
       const D3D12_HEAP_PROPERTIES heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
-      const uint32_t size = (i < 2 ? 4u : 8u);
+      const uint32_t guide_width = native_ngx ? width : (i < 2 ? 4u : 8u);
+      const uint32_t guide_height = native_ngx ? height : (i < 2 ? 4u : 8u);
       const D3D12_RESOURCE_DESC desc{.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-          .Width = size, .Height = size, .DepthOrArraySize = 1, .MipLevels = 1,
+          .Width = guide_width, .Height = guide_height, .DepthOrArraySize = 1, .MipLevels = 1,
           .Format = (i % 2 == 0 ? DXGI_FORMAT_R16G16_FLOAT : DXGI_FORMAT_R32_FLOAT), .SampleDesc = {1, 0}};
       Check(SUCCEEDED(gpu.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
                 D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&guides[i]))), "Present models guide texture");
@@ -3892,7 +3979,14 @@ int RunPresentGuideModelsTest() {
     const bool saved_control_mask_enabled = native::control_mask_enabled.exchange(true);
     const uint32_t saved_control_mask_mode = native::control_mask_mode.exchange(native::kControlMaskDepthFar);
     const std::string saved_control_mask_runtime_version = native::direct_runtime_requirements.file_version;
-    native::direct_runtime_requirements.file_version = "310.9.16.0";
+    if (!native_ngx) {
+      native::direct_runtime_requirements.file_version = "310.9.16.0";
+    } else {
+      Check(native::direct_runtime_requirements.file_version == "310.9.16.0"
+                && renodx::addons::dlss5::nr_model::SupportsControlMask(
+                    native::direct_runtime_requirements.file_version),
+            "real FG Runtime exposes ControlMask-capable Feature 18 version");
+    }
     fg_parameters.Set(NVSDK_NGX_DLSSG_Parameter_MVecs, guides[2].Get());
     fg_parameters.Set(NVSDK_NGX_DLSSG_Parameter_Depth, guides[3].Get());
     struct ConsumedMask {
@@ -3908,60 +4002,90 @@ int RunPresentGuideModelsTest() {
          attempt < native::kContractDebounceFrames + 2 && original_with_mask == nullptr; ++attempt) {
       consumed_masks = {};
       consumed_mask_count = 0;
+      native_runtime_evaluations.clear();
+      native_runtime_evaluation_results.clear();
       const auto calls_before = model_calls;
-      model_parameter_observer = [&](const NVSDK_NGX_Handle* model, const NVSDK_NGX_Parameter* block) {
-        if (consumed_mask_count >= consumed_masks.size()) return;
-        consumed_masks[consumed_mask_count++] = {
-            .model = model,
-            .depth = native::GetD3D12Resource(block, "DLSSNR.Depth"),
-            .motion = native::GetD3D12Resource(block, "DLSSNR.MVec"),
-            .mask = native::GetD3D12Resource(block, "DLSSNR.ControlMask")};
-      };
+      if (!native_ngx) {
+        model_parameter_observer = [&](const NVSDK_NGX_Handle* model, const NVSDK_NGX_Parameter* block) {
+          if (consumed_mask_count >= consumed_masks.size()) return;
+          consumed_masks[consumed_mask_count++] = {
+              .model = model,
+              .depth = native::GetD3D12Resource(block, "DLSSNR.Depth"),
+              .motion = native::GetD3D12Resource(block, "DLSSNR.MVec"),
+              .mask = native::GetD3D12Resource(block, "DLSSNR.ControlMask")};
+        };
+      }
       original_with_mask = native::RunNativePreFg(gpu.list.Get(), &fg_parameters, fg_handle);
       if (original_with_mask == nullptr) {
         submit();
         continue;
       }
-      Check(original_with_mask == hudless.Get() && model_calls == calls_before + 2
-                && consumed_mask_count == consumed_masks.size(),
-            "real native FG input frame evaluates both color roles with depth ControlMask enabled");
+      Check(original_with_mask == hudless.Get(),
+            "native FG returns the original HUDLess input after its two-color evaluation");
+      if (native_ngx) {
+        Check(native_runtime_evaluations.size() == 2
+                  && native_runtime_evaluation_results.size() == native_runtime_evaluations.size()
+                  && std::all_of(native_runtime_evaluation_results.begin(), native_runtime_evaluation_results.end(),
+                      [](NVSDK_NGX_Result result) { return NVSDK_NGX_SUCCEED(result); }),
+              "real NGX Core successfully evaluates both native FG color roles");
+      } else {
+        Check(model_calls == calls_before + 2 && consumed_mask_count == consumed_masks.size(),
+              "mock NGX evaluates both native FG color roles");
+      }
       const auto& native_stream = native::fg_service::streams.at(
           {true, reinterpret_cast<uintptr_t>(&owner)});
+      if (native_ngx) wait_service_fence(native_stream);
       for (const auto& role : native_stream.roles) {
         const auto model = native::features.at(role.Handle()).slots[0].handle;
-        const auto observed = std::find_if(consumed_masks.begin(), consumed_masks.end(),
-            [model](const ConsumedMask& entry) { return entry.model == model; });
-        Check(model != nullptr && observed != consumed_masks.end()
-                  && observed->depth == guides[3].Get() && observed->motion == guides[2].Get()
-                  && observed->mask != nullptr,
-            "native FG Backbuffer/HUDLess role consumes its mask with the current depth guide");
+        if (native_ngx) {
+          const auto observed = std::find_if(native_runtime_evaluations.begin(), native_runtime_evaluations.end(),
+              [model](const NativeRuntimeEvaluation& entry) { return entry.model == model; });
+          Check(model != nullptr && observed != native_runtime_evaluations.end()
+                    && observed->depth == guides[3].Get() && observed->motion == guides[2].Get()
+                    && observed->mask != nullptr,
+              "real NGX Backbuffer/HUDLess role consumes paired guides and its ControlMask");
+        } else {
+          const auto observed = std::find_if(consumed_masks.begin(), consumed_masks.end(),
+              [model](const ConsumedMask& entry) { return entry.model == model; });
+          Check(model != nullptr && observed != consumed_masks.end()
+                    && observed->depth == guides[3].Get() && observed->motion == guides[2].Get()
+                    && observed->mask != nullptr,
+              "mock NGX Backbuffer/HUDLess role consumes paired guides and its ControlMask");
+        }
       }
-      Check(consumed_masks[0].mask != consumed_masks[1].mask,
-            "native FG color roles own distinct ControlMask images");
+      if (native_ngx) {
+        Check(native_runtime_evaluations[0].mask != native_runtime_evaluations[1].mask,
+              "native FG real NGX roles receive distinct ControlMask images");
+      } else {
+        Check(consumed_masks[0].mask != consumed_masks[1].mask,
+              "native FG mock NGX roles receive distinct ControlMask images");
+      }
     }
     model_parameter_observer = {};
     Check(original_with_mask == hudless.Get(), "native FG depth ControlMask reaches a completed two-color frame");
     native::RestoreNativePreFg(gpu.list.Get(), &fg_parameters, original_with_mask, true, fg_handle);
     submit();
 
-    native::direct_api = {};
-    native::direct_api.module = test_module;
-    native::direct_api.create = CreateModel;
-    native::direct_api.evaluate = EvaluateModel;
-    native::direct_api.release = ReleaseModel;
-    native::direct_load_state = native::DirectLoadState::Ready;
-    if (native::direct_device == nullptr) {
-      native::direct_device = gpu.device.Get();
-      native::direct_device->AddRef();
-    } else {
-      Check(native::direct_device == gpu.device.Get(), "XeFG mock runtime retains the test D3D12 device");
+    if (!native_ngx) {
+      native::direct_api = {};
+      native::direct_api.module = test_module;
+      native::direct_api.create = CreateModel;
+      native::direct_api.evaluate = EvaluateModel;
+      native::direct_api.release = ReleaseModel;
+      native::direct_load_state = native::DirectLoadState::Ready;
+      if (native::direct_device == nullptr) {
+        native::direct_device = gpu.device.Get();
+        native::direct_device->AddRef();
+      } else {
+        Check(native::direct_device == gpu.device.Get(), "XeFG mock runtime retains the test D3D12 device");
+      }
+      native::direct_device_native = gpu.device.Get();
+      native::parameter_runtime_ready = true;
+      native::parameter_runtime_via_core = false;
+      native::core_allocate_parameters = renodx::addons::dlss5::bridge::AllocateOwnedParameters;
+      native::core_destroy_parameters = renodx::addons::dlss5::bridge::DestroyOwnedParameters;
+      native::direct_runtime_requirements.file_version = "310.9.16.0";
     }
-    native::direct_device_native = gpu.device.Get();
-    native::parameter_runtime_ready = true;
-    native::parameter_runtime_via_core = false;
-    native::core_allocate_parameters = renodx::addons::dlss5::bridge::AllocateOwnedParameters;
-    native::core_destroy_parameters = renodx::addons::dlss5::bridge::DestroyOwnedParameters;
-    native::direct_runtime_requirements.file_version = "310.9.16.0";
 
     adapter::modules[0].complete = true;
     adapter::modules[0].real[0] = reinterpret_cast<void*>(&FakeInit);
@@ -3976,20 +4100,30 @@ int RunPresentGuideModelsTest() {
     {
       Session xefg_session(&gpu);
       xefg_session.context->ui_composition = false;
+      if (native_ngx) {
+        xefg_session.extent_left = 0;
+        xefg_session.extent_top = 0;
+        xefg_session.extent_width = width;
+        xefg_session.extent_height = height;
+      }
       xefg_context = reinterpret_cast<uintptr_t>(xefg_session.handle);
       for (uint32_t frame = 0; frame < native::kContractDebounceFrames + 3
            && xefg_result != fg::Result::SUBMITTED; ++frame) {
         consumed_masks = {};
         consumed_mask_count = 0;
+        native_runtime_evaluations.clear();
+        native_runtime_evaluation_results.clear();
         const auto calls_before = model_calls;
-        model_parameter_observer = [&](const NVSDK_NGX_Handle* model, const NVSDK_NGX_Parameter* block) {
-          if (consumed_mask_count >= consumed_masks.size()) return;
-          consumed_masks[consumed_mask_count++] = {
-              .model = model,
-              .depth = native::GetD3D12Resource(block, "DLSSNR.Depth"),
-              .motion = native::GetD3D12Resource(block, "DLSSNR.MVec"),
-              .mask = native::GetD3D12Resource(block, "DLSSNR.ControlMask")};
-        };
+        if (!native_ngx) {
+          model_parameter_observer = [&](const NVSDK_NGX_Handle* model, const NVSDK_NGX_Parameter* block) {
+            if (consumed_mask_count >= consumed_masks.size()) return;
+            consumed_masks[consumed_mask_count++] = {
+                .model = model,
+                .depth = native::GetD3D12Resource(block, "DLSSNR.Depth"),
+                .motion = native::GetD3D12Resource(block, "DLSSNR.MVec"),
+                .mask = native::GetD3D12Resource(block, "DLSSNR.ControlMask")};
+          };
+        }
         const uint32_t present_id = 120u + frame;
         xefg_session.Guides(present_id, guides[3].Get(), guides[2].Get());
         xefg_session.Tag(present_id, HUDLESS, hudless.Get());
@@ -3998,20 +4132,43 @@ int RunPresentGuideModelsTest() {
         submit();
         if (xefg_result != fg::Result::SUBMITTED) continue;
 
-        Check(model_calls == calls_before + 2 && consumed_mask_count == consumed_masks.size(),
-            "XeFG service submission evaluates both color roles with ControlMask enabled");
+        if (native_ngx) {
+          Check(native_runtime_evaluations.size() == 2
+                    && native_runtime_evaluation_results.size() == native_runtime_evaluations.size()
+                    && std::all_of(native_runtime_evaluation_results.begin(), native_runtime_evaluation_results.end(),
+                        [](NVSDK_NGX_Result result) { return NVSDK_NGX_SUCCEED(result); }),
+                "real NGX Core successfully evaluates both XeFG color roles");
+        } else {
+          Check(model_calls == calls_before + 2 && consumed_mask_count == consumed_masks.size(),
+              "mock NGX evaluates both XeFG color roles");
+        }
         const auto& stream = native::fg_service::streams.at({false, xefg_context});
+        if (native_ngx) wait_service_fence(stream);
         for (const auto& role : stream.roles) {
           const auto model = native::features.at(role.Handle()).slots[0].handle;
-          const auto observed = std::find_if(consumed_masks.begin(), consumed_masks.end(),
-              [model](const ConsumedMask& entry) { return entry.model == model; });
-          Check(model != nullptr && observed != consumed_masks.end()
-                    && observed->depth == guides[3].Get() && observed->motion == guides[2].Get()
-                    && observed->mask != nullptr,
-              "XeFG Backbuffer/HUDLess role consumes the paired current guides and ControlMask");
+          if (native_ngx) {
+            const auto observed = std::find_if(native_runtime_evaluations.begin(), native_runtime_evaluations.end(),
+                [model](const NativeRuntimeEvaluation& entry) { return entry.model == model; });
+            Check(model != nullptr && observed != native_runtime_evaluations.end()
+                      && observed->depth == guides[3].Get() && observed->motion == guides[2].Get()
+                      && observed->mask != nullptr,
+                "real NGX XeFG Backbuffer/HUDLess role consumes paired guides and its ControlMask");
+          } else {
+            const auto observed = std::find_if(consumed_masks.begin(), consumed_masks.end(),
+                [model](const ConsumedMask& entry) { return entry.model == model; });
+            Check(model != nullptr && observed != consumed_masks.end()
+                      && observed->depth == guides[3].Get() && observed->motion == guides[2].Get()
+                      && observed->mask != nullptr,
+                "mock NGX XeFG Backbuffer/HUDLess role consumes paired guides and its ControlMask");
+          }
         }
-        Check(consumed_masks[0].mask != consumed_masks[1].mask,
-            "XeFG color roles own distinct ControlMask images");
+        if (native_ngx) {
+          Check(native_runtime_evaluations[0].mask != native_runtime_evaluations[1].mask,
+                "XeFG real NGX roles receive distinct ControlMask images");
+        } else {
+          Check(consumed_masks[0].mask != consumed_masks[1].mask,
+                "XeFG mock NGX roles receive distinct ControlMask images");
+        }
       }
       model_parameter_observer = {};
       Check(xefg_result == fg::Result::SUBMITTED,
@@ -4023,7 +4180,49 @@ int RunPresentGuideModelsTest() {
       native::fg_service::Release(&stream->second);
       native::fg_service::streams.erase(stream);
     }
-    std::cout << "CASE path=XeFG-service roles=Backbuffer+HUDLess evidence=WARP+MOCK mask=bound+distinct" << std::endl;
+    std::cout << "CASE path=XeFG-service roles=Backbuffer+HUDLess evidence="
+              << (native_ngx ? "NATIVE_GPU+NATIVE_NGX+MOCK_XeFG" : "WARP+MOCK")
+              << " mask=bound+distinct" << std::endl;
+    if (native_ngx) {
+      native::core_evaluate_feature = native_runtime_evaluate;
+      native_runtime_evaluations.clear();
+      native_runtime_evaluation_results.clear();
+      native::RetirePresentStream(nullptr);
+      native::DrainRetiredResources(true);
+      Check(gpu.fence->GetCompletedValue() >= gpu.serial
+                && SUCCEEDED(gpu.device->GetDeviceRemovedReason()),
+            "native FG and XeFG ControlMask submissions complete on the GPU fence");
+      {
+        std::scoped_lock runtime_lock(native::runtime_mutex);
+        native::ReleaseFeatureStates();
+        native::RetireAllWorksets();
+        native::FlushRetiredResources();
+        Check(native::direct_device != nullptr && native::direct_api.shutdown != nullptr,
+              "native FG Runtime owns an initialized device and shutdown entry point");
+        renodx::addons::dlss5::DirectCallScope direct_call;
+        const auto shutdown = native::direct_api.shutdown(native::direct_device);
+        Check(NVSDK_NGX_SUCCEED(shutdown), "native FG Runtime shutdown");
+        native::direct_device->Release();
+        native::direct_device = nullptr;
+        native::direct_device_native = nullptr;
+        native::direct_api = {};
+        native::direct_load_state = native::DirectLoadState::Unknown;
+        native::parameter_runtime_ready = false;
+        native::parameter_runtime_via_core = false;
+        native::core_allocate_parameters = nullptr;
+        native::core_destroy_parameters = nullptr;
+        native::core_create_feature = nullptr;
+        native::core_evaluate_feature = nullptr;
+        native::core_release_feature = nullptr;
+      }
+      native::control_mask_enabled.store(saved_control_mask_enabled);
+      native::control_mask_mode.store(saved_control_mask_mode);
+      native::direct_runtime_requirements.file_version = saved_control_mask_runtime_version;
+      std::cout << "PASS native FG ControlMask roles=Backbuffer+HUDLess "
+                   "evidence=NATIVE_GPU+NATIVE_NGX+MOCK_XeFG runtime=310.9.16.0" << std::endl;
+      model_gpu = nullptr;
+      return 0;
+    }
     native::control_mask_enabled.store(saved_control_mask_enabled);
     native::control_mask_mode.store(saved_control_mask_mode);
     native::direct_runtime_requirements.file_version = saved_control_mask_runtime_version;
