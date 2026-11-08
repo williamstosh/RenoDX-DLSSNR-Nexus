@@ -71,9 +71,15 @@ void Begin(vk_test::VulkanContext& context) {
                        context.command_buffer, &info), "vkBeginCommandBuffer");
 }
 
+void SubmitRecordedAndWait(vk_test::VulkanContext& context);
+
 void SubmitAndWait(vk_test::VulkanContext& context) {
   vk_test::Require(context.DeviceProc<PFN_vkEndCommandBuffer>("vkEndCommandBuffer")(
                        context.command_buffer), "vkEndCommandBuffer");
+  SubmitRecordedAndWait(context);
+}
+
+void SubmitRecordedAndWait(vk_test::VulkanContext& context) {
   VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
   VkFence fence = VK_NULL_HANDLE;
   vk_test::Require(context.DeviceProc<PFN_vkCreateFence>("vkCreateFence")(
@@ -367,9 +373,17 @@ void RunNativeNgx() {
           "native production mask contains the depth-far transition");
     Check(pixels[63 * width * 4] == 0, "native production mask fades far depth to zero");
     context.DeviceProc<PFN_vkUnmapMemory>("vkUnmapMemory")(context.device, mask_readback.memory);
+    SubmitRecordedAndWait(context);
+    Check(!addon::vk::RecordedUseComplete(workset.use_id),
+          "completed production Vulkan recording remains live while replayable");
+    Begin(context);
+    addon::vk::OnResetCommandList(&command_list);
+    Check(addon::vk::RecordedUseComplete(workset.use_id),
+          "production reset retires the replayed workset use");
     cleanup();
     std::cout << "PASS NATIVE_GPU+NATIVE_NGX: production Vulkan Feature 18 Create/Evaluate consumed"
-                 " the generated depth-far ControlMask and readback completed\n";
+                 " the generated depth-far ControlMask, replayed the completed command buffer,"
+                 " and completed reset/readback\n";
   } catch (...) {
     cleanup();
     throw;
@@ -732,20 +746,21 @@ void RunProductionMaskDispatchMock() {
   }
   context.DeviceProc<PFN_vkUnmapMemory>("vkUnmapMemory")(context.device, readback.memory);
 
-  SubmitAndWait(context);
-  vk_test::Require(context.DeviceProc<PFN_vkResetCommandBuffer>("vkResetCommandBuffer")(
-                       context.command_buffer, 0), "reset replayed Vulkan command buffer");
-  addon::vk::ForgetRecordedUses(&command_list);
+  SubmitRecordedAndWait(context);
+  Check(!addon::vk::RecordedUseComplete(use_id),
+        "replayed production Vulkan mask use remains live until reset");
+  Begin(context);
+  addon::vk::OnResetCommandList(&command_list);
   Check(addon::vk::RecordedUseComplete(use_id),
         "production reset retirement releases completed mask use");
 
   constexpr uint64_t discarded_use = 0xC0A71002;
   Begin(context);
+  addon::vk::OnResetCommandList(&command_list);
   addon::vk::TrackRecordedUse(&command_list, discarded_use);
   Check(!addon::vk::RecordedUseComplete(discarded_use), "unsubmitted recording retains its mask use");
-  vk_test::Require(context.DeviceProc<PFN_vkResetCommandBuffer>("vkResetCommandBuffer")(
-                       context.command_buffer, 0), "discard Vulkan command buffer recording");
-  addon::vk::ForgetRecordedUses(&command_list);
+  Begin(context);
+  addon::vk::OnResetCommandList(&command_list);
   Check(addon::vk::RecordedUseComplete(discarded_use), "discarded recording retires mask use on reset");
 
   DestroyBuffer(context, &upload);
