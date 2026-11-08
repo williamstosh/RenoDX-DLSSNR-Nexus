@@ -12,8 +12,11 @@ param(
     [string]$DetoursLibrary,
     [string]$PythonExecutable,
     [ValidateSet('Auto','Quick','Full','None')][string]$UiPreview = 'Auto',
-    [ValidateSet('control-mask','control-mask-safety','control-mask-safety-hardware','control-mask-capture','gpu-pass-diagnostics','native-required-menu','native-owner-idle','native-options-resume','native-options-delayed','native-guide-contract','present-guide-models','vulkan-recorded-use-contract','native-present-decision','trace-metadata','stage-chain','stage-resolution','stage-resolution-hardware','same-stage-resolution','same-stage-resolution-hardware','render-stage-resolution','render-stage-resolution-hardware','present-stage-resolution','present-stage-resolution-hardware','native-prefg-resolution','native-prefg-resolution-hardware','native-frame-identity','same-stage-model-pair','same-stage-mixed-pair','source-lifecycle','feature-switch','feature-switch-hardware','f5-mixed','present-chain','present-chain-hardware','present-chain-scrgb','present-chain-hdr10','native-full','native-full-hardware')]
+    [ValidateSet('control-mask','control-mask-safety','control-mask-safety-hardware','control-mask-capture','control-mask-native-ngx','gpu-pass-diagnostics','native-required-menu','native-owner-idle','native-options-resume','native-options-delayed','native-guide-contract','present-guide-models','vulkan-recorded-use-contract','native-present-decision','trace-metadata','stage-chain','stage-resolution','stage-resolution-hardware','same-stage-resolution','same-stage-resolution-hardware','render-stage-resolution','render-stage-resolution-hardware','present-stage-resolution','present-stage-resolution-hardware','native-prefg-resolution','native-prefg-resolution-hardware','native-frame-identity','same-stage-model-pair','same-stage-mixed-pair','source-lifecycle','feature-switch','feature-switch-hardware','f5-mixed','present-chain','present-chain-hardware','present-chain-scrgb','present-chain-hdr10','native-full','native-full-hardware')]
     [string[]]$NativeCase = @(),
+    [string]$NativeNgxProjectIdPath,
+    [string]$NativeNgxSdkLibraryDirectory,
+    [string]$NativeNgxRuntimePath = $(if ($env:NR_NEXUS_NGX_RUNTIME_DIR) { Join-Path $env:NR_NEXUS_NGX_RUNTIME_DIR 'nvngx_dlssnr.dll' }),
     [ValidateSet('dlaa','sr','stage-resolution','same-stage-resolution','render-stage-resolution','present-stage-resolution')][string[]]$BridgeCase = @(),
     [switch]$BuildOnly,
     [ValidateSet('Standard','Full','Acceptance')][string]$RetentionMode = $(if ($env:NR_NEXUS_TEST_RETENTION) { $env:NR_NEXUS_TEST_RETENTION } else { 'Standard' }),
@@ -57,6 +60,21 @@ if ($BuildOnly -and @($Suite | Where-Object { $_ -in @('config','constants','lif
     throw '-BuildOnly requires explicitly selecting native/policy/scope/fg-xefg/fg-native/bridge-motion suites.'
 }
 if ($NativeCase.Count -and $Suite -notcontains 'fg-native') { throw '-NativeCase requires -Suite fg-native (or all).' }
+if ($NativeCase -contains 'control-mask-native-ngx') {
+    if (-not $NativeNgxProjectIdPath -or -not (Test-Path -LiteralPath $NativeNgxProjectIdPath -PathType Leaf)) {
+        throw '-control-mask-native-ngx requires -NativeNgxProjectIdPath to an existing ProjectID file.'
+    }
+    if (-not $NativeNgxSdkLibraryDirectory -or
+        -not (Test-Path -LiteralPath (Join-Path $NativeNgxSdkLibraryDirectory 'nvsdk_ngx_s.lib') -PathType Leaf)) {
+        throw '-control-mask-native-ngx requires -NativeNgxSdkLibraryDirectory containing nvsdk_ngx_s.lib.'
+    }
+    if (-not $NativeNgxRuntimePath -or -not (Test-Path -LiteralPath $NativeNgxRuntimePath -PathType Leaf)) {
+        throw '-control-mask-native-ngx requires -NativeNgxRuntimePath or NR_NEXUS_NGX_RUNTIME_DIR.'
+    }
+    $NativeNgxProjectIdPath = (Resolve-Path -LiteralPath $NativeNgxProjectIdPath).Path
+    $NativeNgxSdkLibraryDirectory = (Resolve-Path -LiteralPath $NativeNgxSdkLibraryDirectory).Path
+    $NativeNgxRuntimePath = (Resolve-Path -LiteralPath $NativeNgxRuntimePath).Path
+}
 if ($BridgeCase -and $Suite -notcontains 'bridge-motion') { throw '-BridgeCase requires -Suite bridge-motion (or all).' }
 if ($Suite -contains 'vulkan-control-mask') {
     if (-not $VulkanIncludeDirectory -or -not (Test-Path -LiteralPath (Join-Path $VulkanIncludeDirectory 'vulkan/vulkan.h'))) {
@@ -120,6 +138,9 @@ foreach ($item in $Suite) {
             "/I$HostRoot/external/json/include", "/I$HostRoot/external/frozen/include", "/I$HostRoot/external/gtl/include")
         if ($item -eq 'vulkan-control-mask') { $arguments += "/I$VulkanIncludeDirectory" }
         $link += @('user32.lib','gdi32.lib','ole32.lib','psapi.lib')
+        if ($item -eq 'fg-native' -and $NativeCase -contains 'control-mask-native-ngx') {
+            $link += (Join-Path $NativeNgxSdkLibraryDirectory 'nvsdk_ngx_s.lib')
+        }
         if ($item -eq 'bridge-motion') { $link += 'd3dcompiler.lib' }
     }
     if ($item -eq 'branding') { $arguments += '/DRENODX_DLSS5_DEBUG' }
@@ -145,7 +166,20 @@ foreach ($item in $Suite) {
                 Invoke-TestProcess $exe $directory "warp$suffix" (@('--warp') + $bridgeArguments)
             }
         } elseif ($item -eq 'fg-native' -and $NativeCase.Count) {
-            foreach ($case in $NativeCase) { Invoke-TestProcess $exe $directory $case @("--$case") }
+            foreach ($case in $NativeCase) {
+                if ($case -eq 'control-mask-native-ngx') {
+                    $runtimeLink = Join-Path $directory 'nvngx_dlssnr.dll'
+                    if (Test-Path -LiteralPath $runtimeLink) { throw "Runtime link target already exists: $runtimeLink" }
+                    New-Item -ItemType HardLink -Path $runtimeLink -Target $NativeNgxRuntimePath | Out-Null
+                    try {
+                        Invoke-TestProcess $exe $directory $case @('--control-mask-native-ngx', $NativeNgxProjectIdPath) -TimeoutMilliseconds 90000
+                    } finally {
+                        if (Test-Path -LiteralPath $runtimeLink) { Remove-Item -LiteralPath $runtimeLink -Force }
+                    }
+                } else {
+                    Invoke-TestProcess $exe $directory $case @("--$case")
+                }
+            }
         } else {
             Invoke-TestProcess $exe $directory 'test'
             if ($item -eq 'fg-native') {

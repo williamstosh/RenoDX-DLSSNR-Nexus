@@ -708,6 +708,9 @@ int RunNativeRequiredMenuTest() {
 #include "control_mask_capture_cases.hpp"
 
 int main(int argc, char** argv) {
+  if (argc == 3 && std::strcmp(argv[1], "--control-mask-native-ngx") == 0) {
+    return control_mask_gpu_cases::RunNativeNgx(argv[2]);
+  }
   if (argc == 2 && std::strcmp(argv[1], "--vulkan-recorded-use-contract") == 0) {
     try {
       constexpr uint64_t use_id = 0xFFFFFFFFFFFFFFF0ull;

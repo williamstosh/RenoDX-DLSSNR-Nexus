@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <DirectXPackedVector.h>
+#include <fstream>
 #include <vector>
 
 namespace control_mask_gpu_cases {
@@ -1850,6 +1852,295 @@ int RunSafety(bool hardware, bool safety = true) {
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "FAIL ControlMask: " << error.what() << std::endl;
+    return 1;
+  }
+}
+
+inline addon::DirectEvaluateFn native_runtime_evaluate = nullptr;
+inline std::vector<ID3D12Resource*> native_runtime_masks;
+inline std::vector<NVSDK_NGX_Result> native_runtime_results;
+
+void NVSDK_CONV NativeNgxSdkLog(
+    const char*, NVSDK_NGX_Logging_Level, NVSDK_NGX_Feature) {}
+
+NVSDK_NGX_Result NVSDK_CONV ObserveNativeRuntimeEvaluate(
+    ID3D12GraphicsCommandList* command_list,
+    const NVSDK_NGX_Handle* handle,
+    const NVSDK_NGX_Parameter* parameters,
+    PFN_NVSDK_NGX_ProgressCallback progress) {
+  native_runtime_masks.push_back(addon::GetD3D12Resource(parameters, "DLSSNR.ControlMask"));
+  const NVSDK_NGX_Result result = native_runtime_evaluate(command_list, handle, parameters, progress);
+  native_runtime_results.push_back(result);
+  return result;
+}
+
+int RunNativeNgx(const char* project_id_path) {
+  try {
+    reshade::internal::get_reshade_module_handle(GetModuleHandleW(nullptr));
+    addon::addon_module = GetModuleHandleW(nullptr);
+    Gpu gpu(true);
+    constexpr UINT width = 960;
+    constexpr UINT height = 540;
+    Check(addon::InstallQueueCompletionHooks(gpu.queue.Get()), "native ControlMask queue completion hooks");
+    Check(addon::InstallCommandListStateHooks(gpu.list.Get()), "native ControlMask command-list hooks");
+    Check(addon::EnsureControlMaskPipeline(gpu.device.Get()), "native ControlMask production pipeline");
+
+    auto color = gpu.Texture(width, height, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    auto depth = gpu.Texture(width, height, DXGI_FORMAT_R32_FLOAT);
+    auto motion = gpu.Texture(width, height, DXGI_FORMAT_R16G16_FLOAT);
+    D3D12_RESOURCE_DESC output_desc{.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+        .Width = width, .Height = height, .DepthOrArraySize = 1, .MipLevels = 1,
+        .Format = DXGI_FORMAT_R16G16B16A16_FLOAT, .SampleDesc = {1, 0},
+        .Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS};
+    const D3D12_HEAP_PROPERTIES default_heap{.Type = D3D12_HEAP_TYPE_DEFAULT};
+    ComPtr<ID3D12Resource> output;
+    Check(SUCCEEDED(gpu.device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE,
+        &output_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&output))),
+        "native ControlMask output allocation");
+
+    const size_t pixel_count = static_cast<size_t>(width) * height;
+    std::vector<uint16_t> color_data(pixel_count * 4);
+    std::vector<float> depth_data(pixel_count);
+    std::vector<uint16_t> motion_data(pixel_count * 2, 0);
+    for (UINT y = 0; y < height; ++y) {
+      for (UINT x = 0; x < width; ++x) {
+        const size_t pixel = static_cast<size_t>(y) * width + x;
+        const float u = static_cast<float>(x) / (width - 1);
+        const float v = static_cast<float>(y) / (height - 1);
+        color_data[pixel * 4] = DirectX::PackedVector::XMConvertFloatToHalf(0.12f + 0.65f * u);
+        color_data[pixel * 4 + 1] = DirectX::PackedVector::XMConvertFloatToHalf(0.1f + 0.65f * v);
+        color_data[pixel * 4 + 2] = DirectX::PackedVector::XMConvertFloatToHalf(0.15f + 0.5f * (1.f - u * v));
+        color_data[pixel * 4 + 3] = DirectX::PackedVector::XMConvertFloatToHalf(1.f);
+        depth_data[pixel] = 0.2f + 0.6f * v;
+      }
+    }
+    auto color_transfer = gpu.CreateTextureTransfer(color.Get());
+    auto depth_transfer = gpu.CreateTextureTransfer(depth.Get());
+    auto motion_transfer = gpu.CreateTextureTransfer(motion.Get());
+    gpu.Transition(color.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+    gpu.UploadTexture(color.Get(), color_transfer, reinterpret_cast<const uint8_t*>(color_data.data()),
+                      color_data.size() * sizeof(uint16_t), width * 8);
+    gpu.Transition(color.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    gpu.Transition(depth.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+    gpu.UploadTexture(depth.Get(), depth_transfer, reinterpret_cast<const uint8_t*>(depth_data.data()),
+                      depth_data.size() * sizeof(float), width * sizeof(float));
+    gpu.Transition(depth.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    gpu.Transition(motion.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+    gpu.UploadTexture(motion.Get(), motion_transfer, reinterpret_cast<const uint8_t*>(motion_data.data()),
+                      motion_data.size() * sizeof(uint16_t), width * 4);
+    gpu.Transition(motion.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    gpu.Transition(output.Get(), D3D12_RESOURCE_STATE_COMMON,
+                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    gpu.Transition(color.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                   D3D12_RESOURCE_STATE_COPY_SOURCE);
+    gpu.Transition(output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                   D3D12_RESOURCE_STATE_COPY_DEST);
+    gpu.list->CopyResource(output.Get(), color.Get());
+    gpu.Transition(color.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    gpu.Transition(output.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    gpu.Submit();
+
+    addon::PrimeNgxLoaderSymbols(gpu.device.Get());
+    if (std::getenv("NR_NEXUS_TEST_DIRECT_INIT_ONLY") != nullptr) {
+      std::scoped_lock runtime_lock(addon::runtime_mutex);
+      const bool initialized = addon::EnsureDirectRuntime(gpu.list.Get());
+      std::cout << "DIRECT_INIT_ONLY initialized=" << initialized << " result=0x"
+                << std::hex << addon::last_result.load() << std::dec << '\n';
+      return initialized ? 0 : 2;
+    }
+    const auto& symbols = addon::NgxLoaderView();
+    Check(symbols.nr_ready && !symbols.nr_failed
+              && symbols.nr_requirements.file_version == "310.9.16.0",
+          "production loader resolves the pinned ControlMask Runtime from the isolated test directory");
+    std::ifstream project_id_file(project_id_path);
+    std::string project_id;
+    Check(project_id_file.is_open() && std::getline(project_id_file, project_id)
+              && project_id.size() == 36,
+          "read the existing isolated NGX ProjectID");
+    const std::wstring runtime_directory = addon::AddonDirectory().wstring();
+    const wchar_t* runtime_paths[]{runtime_directory.c_str()};
+    NVSDK_NGX_FeatureCommonInfo common_info{};
+    common_info.PathListInfo = {runtime_paths, 1};
+    common_info.LoggingInfo = {NativeNgxSdkLog, NVSDK_NGX_LOGGING_LEVEL_ON, true};
+    const std::wstring application_data_path = addon::AddonDirectory().wstring();
+    const auto core_init = NVSDK_NGX_D3D12_Init_with_ProjectID(
+        project_id.c_str(), NVSDK_NGX_ENGINE_TYPE_CUSTOM,
+        "NR-Nexus-ControlMask-P0-offline-1", application_data_path.c_str(),
+        gpu.device.Get(), &common_info);
+    if (!NVSDK_NGX_SUCCEED(core_init)) {
+      std::cerr << "public NGX SDK/Core init result=0x" << std::hex
+                << static_cast<uint32_t>(core_init) << std::dec << '\n';
+    }
+    Check(NVSDK_NGX_SUCCEED(core_init), "public SDK initializes the real NGX Core context");
+    addon::PrimeNgxLoaderSymbols(gpu.device.Get());
+    Check(addon::NgxLoaderView().core_ready,
+          "production loader observes the SDK-initialized public NGX Core");
+    {
+      std::scoped_lock runtime_lock(addon::runtime_mutex);
+      Check(addon::EnsureDirectRuntime(gpu.list.Get()),
+            "production direct Runtime initializes with the public Core loaded");
+      Check(addon::parameter_runtime_via_core.load()
+                && addon::core_evaluate_feature != nullptr,
+            "production path adopts public Core parameters and Feature 18 calls");
+      native_runtime_evaluate = addon::core_evaluate_feature;
+      addon::core_evaluate_feature = ObserveNativeRuntimeEvaluate;
+    }
+    addon::enabled = true;
+    addon::hooks_enabled = true;
+    addon::hook_point = addon::kHookRender;
+    addon::stack_passes = 2;
+    addon::pass_stage[0] = 2u;
+    addon::configuration_generation.fetch_add(1);
+    addon::nr_follow_input_res = false;
+    addon::nr_resolution_scale = 1.f;
+    addon::look_mode = false;
+    addon::transfer_strength = 1.f;
+    addon::color_strength = 1.f;
+    addon::intensity = 1.f;
+    addon::preset = 1u;
+    addon::codec_mode = 0u;
+    const bool mask_enabled = std::getenv("NR_NEXUS_TEST_CONTROL_MASK_OFF") == nullptr;
+    addon::control_mask_enabled = mask_enabled;
+    addon::control_mask_mode = addon::kControlMaskDepthFar;
+    addon::control_mask_depth_near = 0.7f;
+    addon::control_mask_depth_far = 0.9f;
+    addon::control_mask_blend_mode = 0u;
+
+    renodx::addons::dlss5::bridge::OwnedParameters parameters;
+    parameters.Set(NVSDK_NGX_Parameter_Color, color.Get());
+    parameters.Set(NVSDK_NGX_Parameter_Output, output.Get());
+    parameters.Set(NVSDK_NGX_Parameter_Depth, depth.Get());
+    parameters.Set(NVSDK_NGX_Parameter_MotionVectors, motion.Get());
+    parameters.Set(NVSDK_NGX_Parameter_Width, width);
+    parameters.Set(NVSDK_NGX_Parameter_Height, height);
+    parameters.Set(NVSDK_NGX_Parameter_OutWidth, width);
+    parameters.Set(NVSDK_NGX_Parameter_OutHeight, height);
+    parameters.Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, width);
+    parameters.Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, height);
+    parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X, 0u);
+    parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y, 0u);
+    parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, 0u);
+    parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, 0u);
+    parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X, 0u);
+    parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y, 0u);
+    parameters.Set(NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_X, 0u);
+    parameters.Set(NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_Y, 0u);
+    parameters.Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,
+        static_cast<uint32_t>(NVSDK_NGX_DLSS_Feature_Flags_MVLowRes));
+    parameters.Set(NVSDK_NGX_Parameter_MV_Scale_X, 1.f);
+    parameters.Set(NVSDK_NGX_Parameter_MV_Scale_Y, 1.f);
+    const auto* owner = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xC04A7});
+    addon::RegisterCreatedFeatureLocked(owner, addon::kFeatureDlss, &parameters);
+    bool production_chain_completed = false;
+    for (uint32_t attempt = 0; attempt < addon::kContractDebounceFrames + 32; ++attempt) {
+      native_runtime_masks.clear();
+      native_runtime_results.clear();
+      gpu.list->ClearState(nullptr);
+      addon::ngx_slot_real[0].evaluate = reinterpret_cast<void*>(SuccessfulHostEvaluate);
+      const NVSDK_NGX_Result result = addon::HookedEvaluateFeatureSlot<0>(
+          gpu.list.Get(), owner, &parameters, nullptr);
+      addon::ngx_slot_real[0].evaluate = nullptr;
+      Check(NVSDK_NGX_SUCCEED(result), "mock host SR succeeds around production Render and Upscaled hooks");
+      gpu.Submit();
+      addon::DrainRetiredResources(true);
+      if (native_runtime_masks.size() != 2 || native_runtime_results.size() != 2) continue;
+
+      auto& feature = addon::features.at(owner);
+      Check(feature.render_session != nullptr
+                && feature.render_session->slots[0].handle != nullptr
+                && feature.slots[0].handle != nullptr,
+            "real Runtime creates both production Feature 18 stage handles");
+      const auto& render_workset = addon::worksets.at({owner, color.Get(), true});
+      const auto& upscaled_workset = addon::worksets.at({owner, output.Get(), false});
+      Check(native_runtime_results.size() == 2
+                && NVSDK_NGX_SUCCEED(native_runtime_results[0])
+                && NVSDK_NGX_SUCCEED(native_runtime_results[1]),
+            "real Runtime Evaluate returns success for both production stages");
+      if (mask_enabled) {
+        Check(native_runtime_masks[0] == render_workset.control_mask
+                  && native_runtime_masks[1] == upscaled_workset.control_mask
+                  && native_runtime_masks[0] != nullptr && native_runtime_masks[1] != nullptr,
+              "real Runtime receives each production-generated stage mask");
+      } else {
+        Check(native_runtime_masks[0] == nullptr && native_runtime_masks[1] == nullptr,
+              "mask-off baseline leaves both NGX ControlMask bindings empty");
+      }
+      Check(gpu.fence->GetCompletedValue() >= gpu.serial
+                && SUCCEEDED(gpu.device->GetDeviceRemovedReason()),
+            "both native Feature 18 stages complete on the GPU fence");
+      production_chain_completed = true;
+      break;
+    }
+    Check(production_chain_completed,
+          "real Runtime completes both production Render and Upscaled stages within the debounce window");
+    const D3D12_RESOURCE_DESC final_output_desc = output->GetDesc();
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT output_footprint{};
+    UINT64 output_readback_size = 0;
+    gpu.device->GetCopyableFootprints(
+        &final_output_desc, 0, 1, 0, &output_footprint, nullptr, nullptr,
+        &output_readback_size);
+    auto output_readback = gpu.Buffer(output_readback_size, D3D12_HEAP_TYPE_READBACK);
+    gpu.Transition(output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                   D3D12_RESOURCE_STATE_COPY_SOURCE);
+    const D3D12_TEXTURE_COPY_LOCATION output_source{
+        .pResource = output.Get(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+    const D3D12_TEXTURE_COPY_LOCATION output_destination{
+        .pResource = output_readback.Get(),
+        .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+        .PlacedFootprint = output_footprint};
+    gpu.list->CopyTextureRegion(&output_destination, 0, 0, 0, &output_source, nullptr);
+    gpu.Transition(output.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    gpu.Submit();
+    uint8_t* output_mapped = nullptr;
+    Check(SUCCEEDED(output_readback->Map(
+              0, nullptr, reinterpret_cast<void**>(&output_mapped))),
+          "production output readback map");
+    const size_t output_row_bytes = static_cast<size_t>(final_output_desc.Width) * 8;
+    std::vector<uint8_t> output_bytes(output_row_bytes * final_output_desc.Height);
+    for (UINT y = 0; y < final_output_desc.Height; ++y) {
+      std::memcpy(output_bytes.data() + static_cast<size_t>(y) * output_row_bytes,
+                  output_mapped + output_footprint.Offset
+                      + static_cast<size_t>(y) * output_footprint.Footprint.RowPitch,
+                  output_row_bytes);
+    }
+    output_readback->Unmap(0, nullptr);
+    const bool keep_raw_output = std::getenv("NR_NEXUS_TEST_KEEP_RAW") != nullptr
+        && std::strcmp(std::getenv("NR_NEXUS_TEST_KEEP_RAW"), "1") == 0;
+    if (keep_raw_output) {
+      std::ofstream output_file("controlmask-production-output.rgba16f",
+                                std::ios::binary | std::ios::trunc);
+      Check(output_file.is_open(), "production output file opens");
+      output_file.write(reinterpret_cast<const char*>(output_bytes.data()),
+                        static_cast<std::streamsize>(output_bytes.size()));
+      Check(output_file.good(), "production output bytes are saved");
+    }
+    std::cout << "PASS ControlMask production chain stages=Render+Upscaled"
+                 " evidence=NATIVE_GPU+NATIVE_NGX host_sr=MOCK frames=1 size=960x540 mask="
+              << (mask_enabled ? "depthfar" : "off") << " output_readback=rgba16f raw="
+              << (keep_raw_output ? "retained" : "discarded") << "\n";
+
+    {
+      std::scoped_lock runtime_lock(addon::runtime_mutex);
+      addon::ReleaseFeatureStates();
+      addon::RetireAllWorksets();
+      addon::FlushRetiredResources();
+      if (addon::direct_device != nullptr) {
+        renodx::addons::dlss5::DirectCallScope direct_call;
+        const auto shutdown = addon::direct_api.shutdown(addon::direct_device);
+        Check(NVSDK_NGX_SUCCEED(shutdown), "production Runtime shutdown");
+        addon::direct_device->Release();
+        addon::direct_device = nullptr;
+      }
+    }
+    return 0;
+  } catch (const std::exception& error) {
+    std::cerr << "FAIL ControlMask production NATIVE_NGX: " << error.what() << '\n';
     return 1;
   }
 }
