@@ -1642,6 +1642,45 @@ inline bool EnsureControlMaskPipeline(reshade::api::device* device) {
   return false;
 }
 
+struct ControlMaskConstants {
+  uint32_t width, height, mode, rect_width, rect_height;
+  float red, green, blue;
+  uint32_t depth_base_x, depth_base_y, depth_width, depth_height;
+  uint32_t depth_inverted;
+  float depth_near, depth_far;
+  uint32_t padding;
+};
+static_assert(sizeof(ControlMaskConstants) == 16 * sizeof(uint32_t));
+
+inline void RecordControlMaskDispatch(reshade::api::command_list* cmd,
+                                     const NVSDK_NGX_Resource_VK* depth,
+                                     reshade::api::resource_view depth_view,
+                                     reshade::api::resource_view mask_view,
+                                     const ControlMaskConstants& constants) {
+  using namespace reshade::api;
+  const descriptor_table_update depth_update{
+      {}, 0, 0, 1, descriptor_type::texture_shader_resource_view, &depth_view};
+  const descriptor_table_update mask_update{
+      {}, 4, 0, 1, descriptor_type::texture_unordered_access_view, &mask_view};
+  const SampledInputScope sampled_depth(cmd, depth);
+  cmd->bind_pipeline(pipeline_stage::all_compute, control_mask_program);
+  cmd->push_descriptors(shader_stage::all_compute, control_mask_layout, 0, depth_update);
+  cmd->push_descriptors(shader_stage::all_compute, control_mask_layout, 0, mask_update);
+  cmd->push_constants(shader_stage::all_compute, control_mask_layout, 1, 0, 16, &constants);
+  cmd->dispatch((constants.width + 15) / 16, (constants.height + 15) / 16, 1);
+}
+
+inline void SetControlMaskParameters(NVSDK_NGX_Parameter* parameters,
+                                     NVSDK_NGX_Resource_VK* mask,
+                                     uint32_t width, uint32_t height, uint32_t blend) {
+  parameters->Set("DLSSNR.ControlMask", mask);
+  NVSDK_NGX_Parameter_SetUI(parameters, "DLSSNR.ControlMaskSubrectBaseX", 0);
+  NVSDK_NGX_Parameter_SetUI(parameters, "DLSSNR.ControlMaskSubrectBaseY", 0);
+  NVSDK_NGX_Parameter_SetUI(parameters, "DLSSNR.ControlMaskSubrectWidth", width);
+  NVSDK_NGX_Parameter_SetUI(parameters, "DLSSNR.ControlMaskSubrectHeight", height);
+  NVSDK_NGX_Parameter_SetUI(parameters, "DLSSNR.MaskBlendMode", blend);
+}
+
 inline void DestroyWorkset(reshade::api::device* device, const Workset& workset) {
   for (const auto view : workset.views) {
     if (view.handle != 0) device->destroy_resource_view(view);
@@ -2573,34 +2612,15 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
   const resource_view output_view = {reinterpret_cast<uint64_t>(out.ImageView)};
   const auto dispatch_control_mask = [&] {
     transition(kControlMask, resource_usage::unordered_access);
-    struct ControlMaskConstants {
-      uint32_t width, height, mode, rect_width, rect_height;
-      float red, green, blue;
-      uint32_t depth_base_x, depth_base_y, depth_width, depth_height;
-      uint32_t depth_inverted;
-      float depth_near, depth_far;
-      uint32_t padding;
-    } constants{
+    const ControlMaskConstants constants{
         width, height, control_mask_mode_snapshot, width / 2, height / 2,
         control_mask_rgb[0], control_mask_rgb[1], control_mask_rgb[2],
         depth_base_x, depth_base_y, render_width, render_height,
         ResolveDepthInverted(feature.create_flags) ? 1u : 0u,
         control_mask_depth_near.load(std::memory_order_relaxed),
         control_mask_depth_far.load(std::memory_order_relaxed), 0};
-    static_assert(sizeof(ControlMaskConstants) == 16 * sizeof(uint32_t));
     const resource_view depth_view{reinterpret_cast<uint64_t>(depth_info.ImageView)};
-    {
-      const SampledInputScope sampled_depth(cmd, depth);
-      cmd->bind_pipeline(pipeline_stage::all_compute, control_mask_program);
-      cmd->push_descriptors(
-          shader_stage::all_compute, control_mask_layout, 0,
-          {{}, 0, 0, 1, descriptor_type::texture_shader_resource_view, &depth_view});
-      cmd->push_descriptors(
-          shader_stage::all_compute, control_mask_layout, 0,
-          {{}, 4, 0, 1, descriptor_type::texture_unordered_access_view, &views[kControlMask]});
-      cmd->push_constants(shader_stage::all_compute, control_mask_layout, 1, 0, 16, &constants);
-      cmd->dispatch((width + 15) / 16, (height + 15) / 16, 1);
-    }
+    RecordControlMaskDispatch(cmd, depth, depth_view, views[kControlMask], constants);
     transition(kControlMask, resource_usage::shader_resource);
   };
   float final_transfer = 0.f;
@@ -2656,23 +2676,14 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
       dispatch_control_mask();
       control_mask_vk = ImageResource(views[kControlMask], images[kControlMask], width, height, false,
                                       VK_FORMAT_R8G8B8A8_UNORM);
-      nr->Set("DLSSNR.ControlMask", static_cast<void*>(&control_mask_vk));
-      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectBaseX", 0);
-      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectBaseY", 0);
-      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectWidth", width);
-      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectHeight", height);
-      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.MaskBlendMode", control_mask_blend);
+      SetControlMaskParameters(nr, &control_mask_vk, width, height, control_mask_blend);
       slot.control_mask_bound = true;
       if (!control_mask_active_logged.exchange(true, std::memory_order_relaxed)) {
         Log(reshade::log::level::info,
             "ControlMask active on Vulkan: Feature 18 receives the generated per-pass RGBA8 image");
       }
     } else {
-      nr->Set("DLSSNR.ControlMask", static_cast<void*>(nullptr));
-      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectBaseX", 0);
-      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectBaseY", 0);
-      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectWidth", 0);
-      NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectHeight", 0);
+      SetControlMaskParameters(nr, nullptr, 0, 0, 0);
       slot.control_mask_bound = false;
     }
     nr->Set("DLSSNR.Color", static_cast<void*>(&proxy_vk));
@@ -2727,11 +2738,7 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
       }
     }
     last_result = static_cast<uint32_t>(result);
-    nr->Set("DLSSNR.ControlMask", static_cast<void*>(nullptr));
-    NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectBaseX", 0);
-    NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectBaseY", 0);
-    NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectWidth", 0);
-    NVSDK_NGX_Parameter_SetUI(nr, "DLSSNR.ControlMaskSubrectHeight", 0);
+    SetControlMaskParameters(nr, nullptr, 0, 0, 0);
     slot.control_mask_bound = false;
     if (pass_control_mask_eligible) {
       transition(kControlMask, resource_usage::unordered_access);

@@ -1,10 +1,11 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('all','report','branding','ui','presets','unicode-input','native','sdr-policy','hdr-policy','scope','config','constants','control-mask','control-mask-execution','fg-xefg','fg-native','lifecycle','bridge-motion','stage-plan','copy-slots')]
+    [ValidateSet('all','report','branding','ui','presets','unicode-input','native','sdr-policy','hdr-policy','scope','config','constants','control-mask','control-mask-execution','vulkan-control-mask','fg-xefg','fg-native','lifecycle','bridge-motion','stage-plan','copy-slots')]
     [string[]]$Suite = @('all'),
     [string]$SourceRoot = (Split-Path $PSScriptRoot -Parent),
     [string]$HostRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) '.local/renodx'),
     [string]$ShaderIncludeDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) 'build/dlss5.include'),
+    [string]$VulkanIncludeDirectory = $(if ($env:VULKAN_SDK) { Join-Path $env:VULKAN_SDK 'Include' }),
     [string]$BuildProject = (Join-Path (Split-Path $PSScriptRoot -Parent) 'build/dlss5.vcxproj'),
     [string]$OutputDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) ('tmp/tests/' + [guid]::NewGuid().ToString('N'))),
     [string]$VcVars64,
@@ -45,6 +46,7 @@ $sources = [ordered]@{
     config='present_restore_configuration_tests'; constants='present_hdr_runtime_constants_tests'
     'control-mask'='control_mask_contract_tests'
     'control-mask-execution'='control_mask_execution_tests'
+    'vulkan-control-mask'='vulkan_control_mask_tests'
     'fg-xefg'='fg_xefg_tests'; 'fg-native'='fg_native_tests'
     lifecycle='fg_lifecycle_tests'; 'bridge-motion'='d3d11_bridge_motion_tests'
     'stage-plan'='stage_plan_tests'
@@ -56,6 +58,12 @@ if ($BuildOnly -and @($Suite | Where-Object { $_ -in @('config','constants','lif
 }
 if ($NativeCase.Count -and $Suite -notcontains 'fg-native') { throw '-NativeCase requires -Suite fg-native (or all).' }
 if ($BridgeCase -and $Suite -notcontains 'bridge-motion') { throw '-BridgeCase requires -Suite bridge-motion (or all).' }
+if ($Suite -contains 'vulkan-control-mask') {
+    if (-not $VulkanIncludeDirectory -or -not (Test-Path -LiteralPath (Join-Path $VulkanIncludeDirectory 'vulkan/vulkan.h'))) {
+        throw '-Suite vulkan-control-mask requires -VulkanIncludeDirectory or VULKAN_SDK.'
+    }
+    $VulkanIncludeDirectory = [IO.Path]::GetFullPath($VulkanIncludeDirectory)
+}
 if (-not $DetoursLibrary) { $DetoursLibrary = Join-Path $HostRoot 'external/Detours/lib.X64/detours.lib' }
 $parameters = @{ SourceRoot=$SourceRoot; HostRoot=$HostRoot; ShaderIncludeDirectory=$ShaderIncludeDirectory
     BuildProject=$BuildProject; VcVars64=$VcVars64 }
@@ -100,16 +108,17 @@ foreach ($item in $Suite) {
     $name = $sources[$item]
     $exe = Join-Path $directory "$name.exe"
     $arguments = $common + @($includes | ForEach-Object { "/I$_" })
-    if ($item -eq 'control-mask-execution') {
+    if ($item -in @('control-mask-execution','vulkan-control-mask')) {
         $arguments += "/I$HostRoot/external/reshade/include"
     }
     $link = $libraries
     if ($item -in @('branding','sdr-policy','hdr-policy','scope','stage-plan','control-mask')) { $link = @() }
-    if ($item -in @('fg-native','bridge-motion')) {
+    if ($item -in @('fg-native','bridge-motion','vulkan-control-mask')) {
         if (-not (Test-Path -LiteralPath "$ShaderIncludeDirectory/embed/shaders.h")) { throw 'Build new shaders first.' }
         $arguments += @('/bigobj','/Gy','/Gw','/DNDEBUG','/DRESHADE_ADDON=1',
             "/I$ShaderIncludeDirectory", "/I$HostRoot/external/DLSS/include",
             "/I$HostRoot/external/json/include", "/I$HostRoot/external/frozen/include", "/I$HostRoot/external/gtl/include")
+        if ($item -eq 'vulkan-control-mask') { $arguments += "/I$VulkanIncludeDirectory" }
         $link += @('user32.lib','gdi32.lib','ole32.lib','psapi.lib')
         if ($item -eq 'bridge-motion') { $link += 'd3dcompiler.lib' }
     }
