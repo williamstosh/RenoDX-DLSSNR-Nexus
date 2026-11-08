@@ -22,6 +22,13 @@ u.SetForegroundWindow.argtypes = [W.HWND]
 u.GetClientRect.argtypes = [W.HWND, C.POINTER(W.RECT)]
 u.ClientToScreen.argtypes = [W.HWND, C.POINTER(W.POINT)]
 u.GetWindowThreadProcessId.argtypes = [W.HWND, C.POINTER(W.DWORD)]
+u.GetWindowThreadProcessId.restype = W.DWORD
+u.GetKeyboardLayout.argtypes = [W.DWORD]
+u.GetKeyboardLayout.restype = C.c_void_p
+u.LoadKeyboardLayoutW.argtypes = [W.LPCWSTR, W.UINT]
+u.LoadKeyboardLayoutW.restype = C.c_void_p
+u.SystemParametersInfoW.argtypes = [W.UINT, W.UINT, C.c_void_p, W.UINT]
+u.SystemParametersInfoW.restype = W.BOOL
 u.IsWindowVisible.argtypes = [W.HWND]
 u.IsWindow.argtypes = [W.HWND]
 u.ShowWindow.argtypes = [W.HWND, C.c_int]
@@ -108,6 +115,70 @@ def window_alive(window):
     return bool(u.IsWindow(window['hwnd'])
                 and u.GetWindowThreadProcessId(window['hwnd'], C.byref(pid))
                 and pid.value == window['pid'])
+
+def _layout_language_id(layout):
+    return int(layout) & 0x3ff
+
+def is_english_input_language(layout):
+    return _layout_language_id(layout) == 0x09
+
+def input_language_for_window(window):
+    """Return the HKL used by a verified window's owning UI thread."""
+    pid = W.DWORD()
+    thread = u.GetWindowThreadProcessId(window['hwnd'], C.byref(pid))
+    if not thread or pid.value != window['pid']:
+        raise RuntimeError('Target window identity changed while reading input language')
+    layout = u.GetKeyboardLayout(thread)
+    if not layout:
+        raise C.WinError(C.get_last_error())
+    return int(layout)
+
+def _default_input_language():
+    layout = C.c_void_p()
+    if not u.SystemParametersInfoW(0x0059, 0, C.byref(layout), 0):
+        raise C.WinError(C.get_last_error())
+    return int(layout.value or 0)
+
+def activate_english_input_language():
+    """Set the session default and current foreground window to US English."""
+    before_default = _default_input_language()
+    hwnd = u.GetForegroundWindow()
+    if not hwnd:
+        raise RuntimeError('No foreground window for input-language preflight')
+    pid = W.DWORD()
+    thread = u.GetWindowThreadProcessId(hwnd, C.byref(pid))
+    if not thread:
+        raise C.WinError(C.get_last_error())
+    before_foreground = u.GetKeyboardLayout(thread)
+    if not before_foreground:
+        raise C.WinError(C.get_last_error())
+
+    english = u.LoadKeyboardLayoutW('00000409', 0)
+    if not english:
+        raise C.WinError(C.get_last_error())
+    english = int(english)
+    layout = C.c_void_p(english)
+    if not u.SystemParametersInfoW(0x005A, 0, C.byref(layout), 0x0002):
+        raise C.WinError(C.get_last_error())
+
+    if not u.PostMessageW(hwnd, 0x0050, 0, english):
+        raise C.WinError(C.get_last_error())
+    deadline = time.monotonic() + 1
+    after_foreground = 0
+    while time.monotonic() < deadline:
+        if u.GetForegroundWindow() != hwnd:
+            raise RuntimeError('Foreground window changed during input-language preflight')
+        after_foreground = u.GetKeyboardLayout(thread)
+        if after_foreground and is_english_input_language(after_foreground):
+            break
+        time.sleep(.02)
+    after_default = _default_input_language()
+    if (not after_foreground or not is_english_input_language(after_foreground)
+            or not is_english_input_language(after_default)):
+        raise RuntimeError('Windows did not activate English as the session input language')
+    return dict(default_before=before_default, default_after=after_default,
+                foreground_hwnd=int(hwnd), foreground_pid=pid.value, foreground_thread=thread,
+                foreground_before=int(before_foreground), foreground_after=int(after_foreground))
 
 def process_path(pid):
     h = k.OpenProcess(0x1000, False, pid)

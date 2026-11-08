@@ -193,9 +193,14 @@ def verify(run, acceptance, block_hudless, nr_hook_point, nr_off_control=False, 
         raise RuntimeError('Loaded candidate identity mismatch')
     ready = json.loads((run / 'capture-ready.json').read_text(encoding='utf-8'))
     start = datetime.fromisoformat(ready['time']).astimezone()
-    health = json.loads((run / 'scene-health.json').read_text(encoding='utf-8'))
-    end = datetime.fromisoformat(health[0]['time']).astimezone()
     events = json.loads((run / 'nr-toggle-captures.json').read_text(encoding='utf-8'))
+    capture_times = [datetime.fromisoformat(event['time']).astimezone()
+                     for event in events if event.get('action') == 'capture']
+    if not capture_times:
+        raise RuntimeError('Capture events do not define an acceptance window')
+    end = max(capture_times)
+    if end <= start:
+        raise RuntimeError('Capture events do not follow capture-ready')
     intervals, resizes, contracts, gpu_timer_lines, telemetry_lines = [], [], [], [], []
     telemetry_times = []
     log_entries = []
@@ -450,6 +455,8 @@ def main():
     if args.restore_installation:
         command.append('-RestoreInstallation')
     dump(out / 'command.json', command)
+    if args.control_mask_case:
+        dump(out / 'input-language-preflight.json', desktop.activate_english_input_language())
     print('ORCHESTRATION=' + str(out), flush=True)
     acceptance = run = None
     capture_error = None

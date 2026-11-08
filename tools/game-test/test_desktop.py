@@ -41,6 +41,34 @@ class DesktopTests(unittest.TestCase):
             pid._obj.value = self.window['pid']
         return 7
 
+    def test_input_language_for_window_reads_owning_thread_layout(self):
+        self.u.GetKeyboardLayout.return_value = 0x4090409
+        self.assertEqual(desktop.input_language_for_window(self.window), 0x4090409)
+        self.assertTrue(desktop.is_english_input_language(0x4090409))
+        self.assertFalse(desktop.is_english_input_language(0x8040804))
+
+    def test_english_input_preflight_sets_default_and_foreground_layout(self):
+        self.u.GetForegroundWindow.return_value = self.window['hwnd']
+        self.u.GetKeyboardLayout.side_effect = [0x8040804, 0x4090409]
+        self.u.LoadKeyboardLayoutW.return_value = 0x4090409
+        default = [0x8040804]
+
+        def system_parameters(action, _param, value, _flags):
+            if action == 0x0059:
+                value._obj.value = default[0]
+            elif action == 0x005A:
+                default[0] = value._obj.value
+            return True
+
+        self.u.SystemParametersInfoW.side_effect = system_parameters
+        self.u.PostMessageW.return_value = 1
+        result = desktop.activate_english_input_language()
+        self.assertEqual(result['default_before'], 0x8040804)
+        self.assertEqual(result['default_after'], 0x4090409)
+        self.assertEqual(result['foreground_after'], 0x4090409)
+        self.u.SystemParametersInfoW.assert_any_call(0x005A, 0, mock.ANY, 0x0002)
+        self.u.PostMessageW.assert_called_once_with(self.window['hwnd'], 0x0050, 0, 0x4090409)
+
     def test_metrics_live_and_single_handle_identity(self):
         self.assertEqual(desktop.process_metrics(42), dict(created=100, cpu_seconds=3))
         self.assertTrue(desktop.same_process(self.window))

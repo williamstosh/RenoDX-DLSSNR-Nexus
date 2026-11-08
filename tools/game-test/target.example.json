@@ -19,7 +19,6 @@
   "required_module": "renodx-dlss5.addon64",
   "startup_timeout": 120,
   "load_timeout": 120,
-  "scene_patterns": [],
   "scene_seconds": 8,
   "max_save_steps": 40,
   "run_timeout": 420,

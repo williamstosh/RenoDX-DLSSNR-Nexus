@@ -267,8 +267,9 @@ class SdkIsolationTests(unittest.TestCase):
             fg_acceptance.dump(run / 'loaded-modules.json',
                 dict(matching_paths=['candidate'], actual_sha256='candidate'))
             fg_acceptance.dump(run / 'capture-ready.json', dict(time='2026-11-03T01:00:00+00:00'))
-            fg_acceptance.dump(run / 'scene-health.json', [dict(time='2026-11-03T01:01:00+00:00')])
-            fg_acceptance.dump(run / 'nr-toggle-captures.json', [])
+            fg_acceptance.dump(run / 'scene-health.json', [dict(time='2026-11-03T01:00:04+00:00')])
+            fg_acceptance.dump(run / 'nr-toggle-captures.json', [dict(
+                time='2026-11-03T01:00:10+00:00', action='capture', name='sample')])
             local_time = fg_acceptance.datetime.fromisoformat('2026-11-03T01:00:05+00:00').astimezone()
             (run / 'final-logs/ReShade.log').write_text(
                 local_time.strftime('%H:%M:%S') + f':001 | NR Nexus: telemetry t=5.0s win=1.0s '
@@ -400,9 +401,12 @@ class CaptureTests(unittest.TestCase):
             with mock.patch.object(fg_acceptance.sys, 'argv', arguments), \
                     mock.patch.object(fg_acceptance.subprocess, 'run', return_value=query), \
                     mock.patch.object(fg_acceptance.subprocess, 'Popen', return_value=child) as launch, \
-                    mock.patch.object(fg_acceptance, 'capture') as capture:
+                    mock.patch.object(fg_acceptance, 'capture') as capture, \
+                    mock.patch.object(fg_acceptance.desktop, 'activate_english_input_language',
+                                      return_value=dict(default_after=0x4090409)) as input_language:
                 self.assertEqual(fg_acceptance.main(), 1)  # No fake routing/acceptance claim.
             capture.assert_not_called()
+            input_language.assert_called_once_with()
             printed.assert_any_call('CAPTURE_STARTED=' + str(run), flush=True)
             command = launch.call_args.args[0]
             self.assertIn('-RestoreInstallation', command)

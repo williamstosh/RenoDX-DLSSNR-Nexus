@@ -110,8 +110,6 @@ def resolve_target(game, platform, save, addon_absent_control=False, target_path
         raise ValueError('Target identity does not match the selected adapter')
     if game != 'witcher3':
         raise ValueError('Only the existing Witcher adapter is supported')
-    if not cfg.get('scene_patterns'):
-        raise ValueError('Configure scene_patterns in the local target before use')
     if platform != 'steam':
         raise ValueError('Platform adapter has not been implemented or validated')
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Valve\Steam') as key:
@@ -241,7 +239,7 @@ class Session:
         self.activate()
         self.number += 1
         path = self.out / 'latest.png'
-        if region_state is None and self.ui_state == 'load_menu':
+        if region_state is None and self.ui_state in ('main_menu', 'pause_menu', 'load_menu'):
             try:
                 desktop.park_cursor(self.window)
             except Exception:
@@ -501,12 +499,12 @@ class Session:
         self.load_save()
         if self.ui_state != 'scene':
             self.ui_state = 'loading'
-            self.wait_scene()
-        self.status['save_load'] = 'unique_file_timestamp_selected_and_scene_confirmed'
+        self.wait_scene()
+        self.status['save_load'] = 'unique_save_selected_load_menu_exited'
         self.status['visual_quality'] = 'not_tested_screenshots_only'
         self.evidence('scene-loaded')
-        self.capture_hold()
         self.scene_health()
+        self.capture_hold()
         self.key('ESC')
         self.ui_state = 'pause_menu'
         self.select_menu('继续', PAUSE_MENU)
@@ -593,25 +591,14 @@ class Session:
                    else self.observe('save-list'))
             rows = save_rows(self.out / 'latest.png', obs)
             if clicked_target:
-                # A row click can activate loading directly, rather than just
-                # focus the row. Missing menu text alone proves neither state.
                 self.ui_state = 'load_menu' if rows else 'save_click_pending'
                 if not rows:
-                    scene = self.observe('save-click-scene', region_state='scene')
-                    patterns = self.cfg.get('scene_patterns', [])
-                    if patterns and all(re.search(pattern, compact(scene['text'])) for pattern in patterns):
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            break
-                        self.ui_state = 'loading'
-                        self.wait_scene(timeout=remaining)
-                        dump(self.out / 'save-selection.json', dict(
-                            time=stamp(), filename=self.cfg['save'], sha256=self.cfg['save_sha256'],
-                            timestamp=expected, clicked=clicked_row,
-                            basis='unique original-file mtime, unique UI timestamp click, expected scene confirmed'))
-                        return
-                    time.sleep(.5)
-                    continue
+                    self.ui_state = 'loading'
+                    dump(self.out / 'save-selection.json', dict(
+                        time=stamp(), filename=self.cfg['save'], sha256=self.cfg['save_sha256'],
+                        timestamp=expected, clicked=clicked_row,
+                        basis='unique original-file mtime, unique UI timestamp click, load menu exited'))
+                    return
             target = [row for row in rows if row['timestamp'] == expected]
             if len(target) > 1:
                 raise RuntimeError('ambiguous_ui_save_timestamp')
@@ -637,6 +624,7 @@ class Session:
                 dump(self.out / 'save-selection.json', dict(time=stamp(), filename=self.cfg['save'], sha256=self.cfg['save_sha256'],
                                                            timestamp=expected, selected=selected[0], basis='unique original-file mtime, UI timestamp, observed focus frame'))
                 self.key('ENTER')
+                self.ui_state = 'loading'
                 return
             if current in seen:
                 raise RuntimeError('save_selection_did_not_move')
@@ -646,20 +634,28 @@ class Session:
         raise TimeoutError('save_selection_timeout')
 
     def wait_scene(self, timeout=None):
+        loading = self.ui_state == 'loading'
+        if not loading and self.ui_state != 'scene':
+            raise RuntimeError('scene_transition_requires_loading_or_scene_state')
         deadline = time.monotonic() + (timeout or self.cfg['load_timeout'])
         consecutive = 0
         while time.monotonic() < deadline:
-            obs = self.observe('scene-wait')
-            text = compact(obs['text'])
-            if all(re.search(pattern, text) for pattern in self.cfg['scene_patterns']):
-                consecutive += 1
-                if consecutive >= 2:
-                    self.ui_state = 'scene'
-                    return obs
+            region_state = 'load_menu' if loading else 'pause_menu'
+            obs = self.observe('scene-wait', region_state=region_state)
+            if loading:
+                menu_visible = bool(save_rows(self.out / 'latest.png', obs))
             else:
-                consecutive = 0
+                text = compact(obs['text'])
+                menu_visible = any(compact(label) in text for label in PAUSE_MENU)
+            consecutive = 0 if menu_visible else consecutive + 1
+            if consecutive >= 2:
+                previous_state = self.ui_state
+                self.ui_state = 'scene'
+                self.event('gameplay_transition_confirmed', from_state=previous_state,
+                           basis='menu_absent_in_two_observations')
+                return obs
             time.sleep(1)
-        raise TimeoutError('scene_load_timeout')
+        raise TimeoutError('scene_load_timeout' if loading else 'scene_resume_timeout')
 
     def scene_health(self):
         samples, last, black_since = [], None, None

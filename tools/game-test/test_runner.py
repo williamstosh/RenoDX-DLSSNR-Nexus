@@ -74,6 +74,7 @@ class ExitTests(unittest.TestCase):
         self.assertEqual(entries[1]['disk_sha256'], runner.sha(runtime))
 
     def test_smoke_pause_uses_observed_focus_without_requiring_full_ocr_sentence(self):
+        order = []
         with mock.patch.object(self.session, 'main_menu'), \
                 mock.patch.object(self.session, 'check_mod'), \
                 mock.patch.object(self.session, 'select_menu') as select_menu, \
@@ -81,13 +82,14 @@ class ExitTests(unittest.TestCase):
                 mock.patch.object(self.session, 'load_save'), \
                 mock.patch.object(self.session, 'wait_scene'), \
                 mock.patch.object(self.session, 'evidence'), \
-                mock.patch.object(self.session, 'capture_hold'), \
-                mock.patch.object(self.session, 'scene_health'), \
+                mock.patch.object(self.session, 'capture_hold', side_effect=lambda: order.append('capture')), \
+                mock.patch.object(self.session, 'scene_health', side_effect=lambda: order.append('health')), \
                 mock.patch.object(self.session, 'wait_text', side_effect=AssertionError('redundant ordered OCR gate')):
             self.session.smoke()
         self.assertEqual(select_menu.call_args_list,
             [mock.call('读取游戏', runner.MAIN_MENU), mock.call('继续', runner.PAUSE_MENU)])
         self.assertEqual(key.call_args_list, [mock.call('ENTER'), mock.call('ESC'), mock.call('ESC')])
+        self.assertEqual(order, ['health', 'capture'])
         self.assertEqual(self.session.status['functionality'],
             'pause_and_resume_input_response_confirmed_mod_features_not_tested')
 
@@ -159,26 +161,28 @@ class ExitTests(unittest.TestCase):
         click.assert_not_called()
         key.assert_not_called()
 
-    def test_save_click_direct_load_confirms_scene_without_enter(self):
+    def test_save_click_direct_load_waits_for_save_list_exit_without_enter(self):
         self.session.cfg.update(save_modified='2026-10-14T01:08:30', save='manual.sav',
-                                save_sha256='hash', scene_patterns=['expected.*quest'], load_timeout=120)
+                                save_sha256='hash', load_timeout=120)
         self.session.ui_state = 'load_menu'
         target = dict(timestamp='2026-10-14T01:08:30', selected=False, text='target', y=640)
-        observations = [dict(text='target'), dict(text='loading tip'),
-                        dict(text='wrong quest'), dict(text=''), dict(text='expected quest'),
-                        dict(text='expected quest'), dict(text='expected quest')]
+        observations = [dict(text='target'), dict(text='loading tip')]
         with mock.patch.object(self.session, 'observe', side_effect=observations) as observe, \
-                mock.patch.object(runner, 'save_rows', side_effect=[[target], [], []]), \
+                mock.patch.object(runner, 'save_rows', side_effect=[[target], []]), \
                 mock.patch.object(self.session, 'click_text') as click, \
                 mock.patch.object(self.session, 'key') as key, \
-                mock.patch.object(self.session, 'evidence'), mock.patch.object(runner.time, 'sleep'):
+                mock.patch.object(self.session, 'evidence'), \
+                mock.patch.object(self.session, 'wait_scene', side_effect=AssertionError('load transition is separate')), \
+                mock.patch.object(runner.time, 'sleep'):
             self.session.load_save()
         click.assert_called_once()
         key.assert_not_called()
-        self.assertEqual(self.session.ui_state, 'scene')
-        self.assertIn(mock.call('save-click-scene', region_state='scene'), observe.call_args_list)
-        self.assertEqual(json.loads((self.out / 'save-selection.json').read_text())['timestamp'],
-                         target['timestamp'])
+        self.assertEqual(self.session.ui_state, 'loading')
+        self.assertEqual(observe.call_count, 2)
+        receipt = json.loads((self.out / 'save-selection.json').read_text())
+        self.assertEqual(receipt['timestamp'], target['timestamp'])
+        self.assertIn('load menu exited', receipt['basis'])
+        self.session.ui_state = 'scene'
         with mock.patch.object(runner.desktop, 'same_process', side_effect=[True, False]), \
                 mock.patch.object(self.session, 'key') as exit_key, \
                 mock.patch.object(self.session, 'request_exit') as request_exit:
@@ -186,26 +190,21 @@ class ExitTests(unittest.TestCase):
         exit_key.assert_called_once_with('ESC')
         request_exit.assert_called_once()
 
-    def test_save_click_unknown_or_wrong_scene_never_passes_or_sends_more_input(self):
-        for scene in ('', 'loading tip', 'other quest'):
-            with self.subTest(scene=scene):
-                self.session.cfg.update(save_modified='2026-10-14T01:08:30', max_save_steps=3,
-                                        scene_patterns=['expected.*quest'])
-                self.session.ui_state = 'load_menu'
-                target = dict(timestamp='2026-10-14T01:08:30', selected=False, text='target', y=640)
-                with mock.patch.object(self.session, 'observe', return_value=dict(text=scene)), \
-                        mock.patch.object(runner, 'save_rows', side_effect=[[target], [], []]), \
-                        mock.patch.object(self.session, 'click_text') as click, \
-                        mock.patch.object(self.session, 'key') as key, \
-                        mock.patch.object(self.session, 'wait_scene') as wait_scene, \
-                        mock.patch.object(runner.time, 'sleep'):
-                    with self.assertRaisesRegex(TimeoutError, 'save_selection_timeout'):
-                        self.session.load_save()
-                click.assert_called_once()
-                key.assert_not_called()
-                wait_scene.assert_not_called()
-                self.assertEqual(self.session.ui_state, 'save_click_pending')
-                self.assertFalse((self.out / 'save-selection.json').exists())
+    def test_save_click_does_not_confirm_if_save_list_remains(self):
+        self.session.cfg.update(save_modified='2026-10-14T01:08:30', max_save_steps=3)
+        self.session.ui_state = 'load_menu'
+        target = dict(timestamp='2026-10-14T01:08:30', selected=False, text='target', y=640)
+        with mock.patch.object(self.session, 'observe', return_value=dict(text='unrelated screen text')), \
+                mock.patch.object(runner, 'save_rows', return_value=[target]), \
+                mock.patch.object(self.session, 'click_text') as click, \
+                mock.patch.object(self.session, 'key') as key, \
+                mock.patch.object(runner.time, 'sleep'):
+            with self.assertRaisesRegex(TimeoutError, 'save_selection_timeout'):
+                self.session.load_save()
+        click.assert_called_once()
+        key.assert_not_called()
+        self.assertEqual(self.session.ui_state, 'load_menu')
+        self.assertFalse((self.out / 'save-selection.json').exists())
 
     def test_unknown_timestamp_does_not_click_or_enter(self):
         self.session.cfg.update(save_modified='2026-10-14T01:08:30', max_save_steps=2)
@@ -218,20 +217,23 @@ class ExitTests(unittest.TestCase):
         click.assert_not_called()
         key.assert_not_called()
 
-    def test_scene_probe_uses_scene_crop_without_changing_pending_state(self):
-        self.session.ui_state = 'save_click_pending'
-        self.session.cfg['ocr_executable'] = 'unused-mocked-ocr'
-        Image.new('RGB', (3840, 2160)).save(self.out / 'latest.png')
-        result = mock.Mock(returncode=0, stdout=b'{"text":"quest","lines":[]}')
-        with mock.patch.object(runner.desktop, 'same_process', return_value=True), \
-                mock.patch.object(self.session, 'activate'), \
-                mock.patch.object(runner.desktop, 'capture', return_value={}), \
-                mock.patch.object(runner.subprocess, 'run', return_value=result):
-            obs = self.session.observe('save-click-scene', region_state='scene')
-        self.assertEqual(obs['scale'], 1)
-        with Image.open(self.out / 'ocr.png') as image:
-            self.assertEqual(image.size, (826, 259))
-        self.assertEqual(self.session.ui_state, 'save_click_pending')
+    def test_load_wait_requires_menu_exit_and_ignores_scene_text(self):
+        self.session.ui_state = 'loading'
+        self.session.cfg['load_timeout'] = 120
+        self.session.cfg.pop('scene_patterns', None)
+        target = dict(timestamp='2026-10-14T01:08:30', selected=True, text='save row', y=640)
+        observations = [dict(text='expected quest'), dict(text='wrong quest'), dict(text='')]
+        with mock.patch.object(self.session, 'observe', side_effect=observations) as observe, \
+                mock.patch.object(runner, 'save_rows', side_effect=[[target], [], []]), \
+                mock.patch.object(self.session, 'event') as event, \
+                mock.patch.object(runner.time, 'sleep'):
+            result = self.session.wait_scene()
+        self.assertEqual(result['text'], '')
+        self.assertEqual(observe.call_count, 3)
+        self.assertTrue(all(call.kwargs['region_state'] == 'load_menu' for call in observe.call_args_list))
+        self.assertEqual(self.session.ui_state, 'scene')
+        event.assert_called_once_with('gameplay_transition_confirmed', from_state='loading',
+                                      basis='menu_absent_in_two_observations')
 
     def test_save_list_parks_cursor_before_capture_without_clicking(self):
         self.session.ui_state = 'load_menu'
@@ -278,8 +280,7 @@ class ExitTests(unittest.TestCase):
         self.park_cursor.assert_not_called()
 
     def test_save_click_remaining_menu_does_not_start_scene_wait(self):
-        self.session.cfg.update(save_modified='2026-10-14T01:08:30', max_save_steps=3,
-                                scene_patterns=['expected.*quest'])
+        self.session.cfg.update(save_modified='2026-10-14T01:08:30', max_save_steps=3)
         target = dict(timestamp='2026-10-14T01:08:30', y=640, selected=False, text='target')
         with mock.patch.object(self.session, 'observe', return_value=dict(text='expected quest')), \
                 mock.patch.object(runner, 'save_rows', return_value=[target]), \
@@ -293,24 +294,17 @@ class ExitTests(unittest.TestCase):
         wait_scene.assert_not_called()
         self.assertEqual(self.session.ui_state, 'load_menu')
 
-    def test_save_click_single_scene_match_cannot_bypass_wait_scene(self):
-        self.session.cfg.update(save_modified='2026-10-14T01:08:30',
-                                scene_patterns=['expected.*quest'])
-        target = dict(timestamp='2026-10-14T01:08:30', y=640, selected=False, text='target')
-        clock = iter(range(10, 1000, 10))
-        observations = [dict(text='target'), dict(text=''), dict(text='expected quest'),
-                        dict(text='other quest'), dict(text='other quest')]
-        with mock.patch.object(self.session, 'observe', side_effect=observations), \
-                mock.patch.object(runner, 'save_rows', side_effect=[[target], []]), \
-                mock.patch.object(self.session, 'click_text'), \
-                mock.patch.object(self.session, 'key') as key, \
-                mock.patch.object(runner.time, 'monotonic', side_effect=lambda: next(clock)), \
+    def test_resume_wait_requires_pause_menu_exit_without_scene_text(self):
+        self.session.ui_state = 'scene'
+        self.session.cfg.pop('scene_patterns', None)
+        observations = [dict(text='继续'), dict(text=''), dict(text='')]
+        with mock.patch.object(self.session, 'observe', side_effect=observations) as observe, \
+                mock.patch.object(self.session, 'event'), \
                 mock.patch.object(runner.time, 'sleep'):
-            with self.assertRaisesRegex(TimeoutError, 'scene_load_timeout'):
-                self.session.load_save()
-        key.assert_not_called()
-        self.assertNotEqual(self.session.ui_state, 'scene')
-        self.assertFalse((self.out / 'save-selection.json').exists())
+            self.session.wait_scene(timeout=20)
+        self.assertEqual(observe.call_count, 3)
+        self.assertTrue(all(call.kwargs['region_state'] == 'pause_menu' for call in observe.call_args_list))
+        self.assertEqual(self.session.ui_state, 'scene')
 
     def test_pending_save_click_shutdown_does_not_send_menu_escape(self):
         self.session.ui_state = 'save_click_pending'
@@ -661,6 +655,32 @@ class ExitTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'menu_focus_unknown'):
                 self.session.select_menu('继续', runner.PAUSE_MENU)
         key.assert_not_called()
+
+    def test_observe_parks_cursor_before_capturing_menu_states(self):
+        for ui_state, region_state, should_park in (
+                ('main_menu', None, True), ('pause_menu', None, True),
+                ('load_menu', None, True), ('starting', 'load_menu', False),
+                ('scene', None, False)):
+            with self.subTest(ui_state=ui_state, region_state=region_state):
+                self.session.ui_state = ui_state
+                self.session.cfg['ocr_executable'] = 'ocr.exe'
+                order = []
+                image = mock.MagicMock()
+                image.__enter__.return_value = image
+                image.width, image.height = 1920, 1080
+                image.resize.return_value = image
+                image.crop.return_value = image
+                result = mock.Mock(returncode=0, stdout=b'{"text":"","lines":[]}')
+                with mock.patch.object(runner.desktop, 'same_process', return_value=True), \
+                        mock.patch.object(self.session, 'activate'), \
+                        mock.patch.object(runner.desktop, 'park_cursor',
+                                          side_effect=lambda *_: order.append('park')), \
+                        mock.patch.object(runner.desktop, 'capture',
+                                          side_effect=lambda *_: order.append('capture') or {}), \
+                        mock.patch.object(runner.Image, 'open', return_value=image), \
+                        mock.patch.object(runner.subprocess, 'run', return_value=result):
+                    self.session.observe('cursor-test', region_state=region_state)
+                self.assertEqual(order, ['park', 'capture'] if should_park else ['capture'])
 
     def test_worker_diagnostic_failure_still_writes_result(self):
         runner.dump(self.out / 'target.json', self.session.cfg | dict(scenario='menu'))
