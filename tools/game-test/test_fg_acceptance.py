@@ -375,10 +375,12 @@ class CaptureTests(unittest.TestCase):
             target = root / 'target.json'
             target.write_text(json.dumps(dict(expected_hdr_monitor='fixture monitor')), encoding='utf-8')
             manifest, game, tool, runtime = root / 'manifest.json', root / 'game', root / 'hdr.exe', root / 'runtime.dll'
+            capture_script = root / 'capture.py'
             manifest.write_text('{}', encoding='utf-8')
             game.mkdir()
             tool.touch()
             runtime.touch()
+            capture_script.write_text('print("capture")', encoding='utf-8')
             run = root / 'run'
             run.mkdir()
             child = mock.Mock(stdout=[f'CAPTURE_READY={run}\n'], returncode=0)
@@ -389,6 +391,8 @@ class CaptureTests(unittest.TestCase):
                 '--output-root', str(root / 'output'), '--hdr-tool', str(tool), '--restore-installation',
                 '--nr-hook-point', '2', '--nr-passes', '1', '--telemetry-seconds', '2',
                 '--control-mask-case', 'depth-far-off', '--nr-runtime-path', str(runtime),
+                '--capture-script', str(capture_script),
+                '--start-nr-disabled',
                 '--enable-streamline-fallback', '--xefg-ui-composition', '0']
             print_output = mock.patch('builtins.print')
             printed = print_output.start()
@@ -398,9 +402,8 @@ class CaptureTests(unittest.TestCase):
                     mock.patch.object(fg_acceptance.subprocess, 'Popen', return_value=child) as launch, \
                     mock.patch.object(fg_acceptance, 'capture') as capture:
                 self.assertEqual(fg_acceptance.main(), 1)  # No fake routing/acceptance claim.
-            capture.assert_called_once_with(run, False, False)
+            capture.assert_not_called()
             printed.assert_any_call('CAPTURE_STARTED=' + str(run), flush=True)
-            printed.assert_any_call('CAPTURE_FINISHED; valid completion recorded; protected worker resumes', flush=True)
             command = launch.call_args.args[0]
             self.assertIn('-RestoreInstallation', command)
             self.assertEqual(command[command.index('-NrHookPoint') + 1], '2')
@@ -408,6 +411,9 @@ class CaptureTests(unittest.TestCase):
             self.assertEqual(command[command.index('-TelemetrySeconds') + 1], '2')
             self.assertIn('-ControlMaskCase', command)
             self.assertEqual(command[command.index('-ControlMaskCase') + 1], 'DepthFarOff')
+            self.assertIn('-CaptureScript', command)
+            self.assertEqual(command[command.index('-CaptureScript') + 1], str(capture_script.resolve()))
+            self.assertIn('-StartNrDisabled', command)
             self.assertNotIn('-ControlMaskUseCoreContext', command)
             self.assertIn('-EnableStreamlineFallback', command)
             self.assertEqual(command[command.index('-XeFGUiComposition') + 1], '0')
@@ -418,6 +424,7 @@ class CaptureTests(unittest.TestCase):
     def test_control_mask_diagnostic_cli_rejects_unprotected_requests(self):
         cases = (
             ['--control-mask-use-core-context'],
+            ['--start-nr-disabled'],
             ['--control-mask-case', 'depth-far-off', '--enable-streamline-fallback'],
         )
         for suffix in cases:

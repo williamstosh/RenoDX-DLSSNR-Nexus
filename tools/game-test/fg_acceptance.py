@@ -365,6 +365,10 @@ def main():
         help='Run the protected Present-hook depth-far comparison with XeFG enabled')
     parser.add_argument('--nr-runtime-path', type=Path,
         help='Runtime file to verify for a protected ControlMask game case')
+    parser.add_argument('--capture-script', type=Path,
+        help='Delegate the guarded capture-ready session to a repository tools/ or tmp/ Python script')
+    parser.add_argument('--start-nr-disabled', action='store_true',
+        help='Start NR disabled so a delegated capture script can verify and control the state')
     parser.add_argument('--nr-preset', type=int, choices=(1, 2), default=2,
         help='NR model preset for a protected ControlMask game case (default: B)')
     parser.add_argument('--enable-streamline-fallback', action='store_true',
@@ -377,6 +381,8 @@ def main():
     parser.add_argument('--restore-installation', action='store_true',
         help='Forward the existing full-installation restore switch to the protected wrapper')
     args = parser.parse_args()
+    if args.start_nr_disabled and args.capture_script is None:
+        parser.error('--start-nr-disabled requires --capture-script')
     if not 1 <= args.telemetry_seconds <= 3600:
         parser.error('--telemetry-seconds must be between 1 and 3600')
     if args.xefg_ui_composition is not None and not args.restore_installation:
@@ -420,6 +426,10 @@ def main():
         '-NrHookPoint', str(args.nr_hook_point), '-TelemetrySeconds', str(args.telemetry_seconds)]
     if args.nr_passes is not None:
         command += ['-NrPasses', str(args.nr_passes)]
+    if args.capture_script is not None:
+        command += ['-CaptureScript', str(args.capture_script.resolve(strict=True))]
+    if args.start_nr_disabled:
+        command.append('-StartNrDisabled')
     if args.control_mask_case:
         command += ['-NrPreset', str(args.nr_preset), '-NrRuntimePath', str(args.nr_runtime_path.resolve(strict=True)),
             '-ControlMaskCase', 'DepthFar' if args.control_mask_case == 'depth-far' else 'DepthFarOff']
@@ -457,6 +467,8 @@ def main():
             elif text.startswith('CAPTURE_READY='):
                 run = Path(text.split('=', 1)[1])
                 print('CAPTURE_STARTED=' + str(run), flush=True)
+                if args.capture_script is not None:
+                    continue
                 try:
                     capture(run, args.nr_off_control, args.check_addon_menu)
                 except Exception as error:

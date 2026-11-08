@@ -97,6 +97,7 @@ runner 与 wrapper 复用公共测试产物生命周期。结果写出后自动�
 
 `-ControlMaskUseCoreContext` 仅用于 `-SrOnly`、单 Pass Upscaled 的受保护 ControlMask 诊断。depth-far FG case 固定走 Present，会在临时配置中强制写入 `NRControlMaskUseCoreContext=0`；退出时恢复启动前值。其余 ControlMask case 省略该开关时保留原配置。
 `-ControlMaskAutoMask 0|1` 与 `-ControlMaskBlendMode 0..3` 可在同一受保护 case 上覆盖对应测试参数；省略保留 case 默认值。无显式 case 时提前拒绝，receipt 记录请求值，实际采用仍须核对运行日志。
+`fg_acceptance.py` 可用 `--capture-script <tools/ 或 tmp/ 下的 Python 脚本>` 将 capture-ready 阶段委托给受保护 runner 启动的采样流程；`--start-nr-disabled` 使该流程从 NR OFF 开始，并且必须与采样脚本同时指定。省略时保持原有静态采集。
 
 完整 FG 入口保持原 HDR 显示条件检查、NR 开关／移动及退出流程；显示器名称和性能目标来自本地 target。测试通过仅覆盖相应保护与编排合同，截图仍需单独判断。
 
