@@ -204,7 +204,7 @@ class INPUT(C.Structure):
     _fields_ = [('type', W.DWORD), ('value', INPUTUNION)]
 u.SendInput.argtypes = [W.UINT, C.POINTER(INPUT), C.c_int]
 u.SendInput.restype = W.UINT
-KEYS = dict(ENTER=0x1C, ESC=0x01, SPACE=0x39, UP=0x48, DOWN=0x50, LEFT=0x4B, RIGHT=0x4D, HOME=0x47, W=0x11, A=0x1E, S=0x1F, D=0x20, E=0x12)
+KEYS = dict(ENTER=0x1C, ESC=0x01, SPACE=0x39, UP=0x48, DOWN=0x50, LEFT=0x4B, RIGHT=0x4D, HOME=0x47, SHIFT=0x2A, W=0x11, A=0x1E, S=0x1F, D=0x20, E=0x12)
 
 def key(window, name, seconds=.2):
     ensure_foreground(window)

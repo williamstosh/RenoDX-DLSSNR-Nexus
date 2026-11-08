@@ -271,6 +271,15 @@ class DesktopTests(unittest.TestCase):
             desktop.key(self.window, 'ENTER')
         self.assertEqual(order, [8, .2, 10])
 
+    def test_shift_uses_left_shift_scan_code(self):
+        order = []
+        self.u.SendInput.side_effect = lambda count, value, size: order.append(
+            (value._obj.ki.wVk, value._obj.ki.wScan, value._obj.ki.dwFlags)) or 1
+        with mock.patch.object(desktop, 'ensure_foreground'), \
+                mock.patch.object(desktop.time, 'sleep', side_effect=lambda seconds: order.append(seconds)):
+            desktop.key(self.window, 'SHIFT')
+        self.assertEqual(order, [(0, 0x2A, 8), .2, (0, 0x2A, 10)])
+
     def test_reused_pid_with_same_hwnd_does_not_close(self):
         with mock.patch.object(desktop, '_metrics', return_value=dict(created=101)):
             desktop.close(self.window)
