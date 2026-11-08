@@ -72,7 +72,7 @@ foreach ($parameter in $ast.ParamBlock.Parameters) {
         $defaults[$parameter.Name.VariablePath.UserPath] = $parameter.DefaultValue.SafeGetValue()
     }
 }
-$rows = @(foreach ($ControlMaskCase in @('T0','T1','T2','T3','T4','T5','T6','GRect','BRect')) {
+$rows = @(foreach ($ControlMaskCase in @('T0','T1','T2','T3','T4','T5','T6','GRect','BRect','DepthFar','DepthFarOff')) {
     foreach ($ControlMaskAutoMask in -1,0,1) {
         foreach ($ControlMaskBlendMode in -1,0,1,2,3) {
             $taskModelSettings = @{}
@@ -95,7 +95,7 @@ $rows = @(foreach ($ControlMaskCase in @('T0','T1','T2','T3','T4','T5','T6','GRe
         payload = json.loads(result.stdout)
         self.assertEqual(payload['defaults'], dict(ControlMaskAutoMask=-1, ControlMaskBlendMode=-1))
         rows = payload['rows']
-        self.assertEqual(len(rows), 135)
+        self.assertEqual(len(rows), 165)
         defaults = {row['case']: row['settings'] for row in rows
                     if row['auto'] == -1 and row['blend'] == -1}
         for row in rows:
@@ -107,10 +107,56 @@ $rows = @(foreach ($ControlMaskCase in @('T0','T1','T2','T3','T4','T5','T6','GRe
                     expected['NRAutoMask'] = row['auto']
                 if row['blend'] >= 0:
                     expected['NRControlMaskBlendMode'] = row['blend']
+                if row['case'] in ('DepthFar', 'DepthFarOff'):
+                    self.assertEqual(expected['NRControlMaskUseCoreContext'], 0)
+                else:
+                    self.assertNotIn('NRControlMaskUseCoreContext', expected)
                 self.assertEqual(row['settings'], expected)
                 self.assertEqual(row['receipt_auto'], row['auto'])
                 self.assertEqual(row['receipt_blend'], row['blend'])
         self.assertIn('-Parameters $PSBoundParameters', script.read_text(encoding='utf-8'))
+
+    def test_depth_far_fg_requires_exact_protected_route_before_installation(self):
+        script = fg_acceptance.ROOT / 'tools' / 'run-fg-acceptance.ps1'
+        cases = [
+            ([], 'Depth-far FG requires -RestoreInstallation'),
+            (['-RestoreInstallation'], 'Depth-far FG requires -RestoreInstallation'),
+            (['-RestoreInstallation', '-SrOnly'], 'Depth-far FG requires -RestoreInstallation'),
+            (['-RestoreInstallation', '-NrRuntimePath', 'runtime.dll'], 'Depth-far FG requires -RestoreInstallation'),
+            (['-RestoreInstallation', '-NrRuntimePath', 'runtime.dll', '-NrPreset', '2'], 'Depth-far FG requires -RestoreInstallation'),
+            (['-RestoreInstallation', '-NrRuntimePath', 'runtime.dll', '-NrPreset', '2', '-NrPasses', '1'], 'Depth-far FG requires -RestoreInstallation'),
+            (['-RestoreInstallation', '-NrRuntimePath', 'runtime.dll', '-NrPreset', '2', '-NrPasses', '1', '-NrHookPoint', '2', '-InstallOnly'], 'Depth-far FG requires -RestoreInstallation'),
+        ]
+        with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
+            root = Path(directory)
+            base = ['pwsh.exe', '-NoProfile', '-File', str(script),
+                    '-CandidateManifest', str(root / 'missing-manifest'),
+                    '-GameBinaryDirectory', str(root / 'missing-game'),
+                    '-Python', str(root / 'missing-python'), '-OutputRoot', str(root / 'output'),
+                    '-ControlMaskCase', 'DepthFar']
+            for overrides, message in cases:
+                with self.subTest(overrides=overrides):
+                    result = subprocess.run(base + overrides, capture_output=True, text=True,
+                                            encoding='utf-8', timeout=15)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(message, result.stderr)
+                    self.assertFalse((root / 'output').exists())
+
+    def test_depth_far_cli_requires_restore_runtime_present_and_single_pass(self):
+        for suffix in (
+                ['--control-mask-case', 'depth-far'],
+                ['--control-mask-case', 'depth-far', '--restore-installation'],
+                ['--control-mask-case', 'depth-far', '--restore-installation', '--nr-runtime-path', 'runtime.dll',
+                    '--xefg-ui-composition', '0', '--nr-passes', '1'],
+                ['--control-mask-case', 'depth-far', '--restore-installation', '--nr-runtime-path', 'runtime.dll',
+                    '--xefg-ui-composition', '0', '--nr-passes', '2']):
+            arguments = ['fg_acceptance.py', '--candidate-manifest', 'candidate.json',
+                '--game-binary-directory', 'game', *suffix]
+            with self.subTest(arguments=arguments):
+                with mock.patch.object(fg_acceptance.sys, 'argv', arguments):
+                    with self.assertRaises(SystemExit) as error:
+                        fg_acceptance.main()
+            self.assertEqual(error.exception.code, 2)
 
     def test_core_context_requires_protected_control_mask_case(self):
         script = fg_acceptance.ROOT / 'tools' / 'run-fg-acceptance.ps1'
@@ -121,7 +167,10 @@ $rows = @(foreach ($ControlMaskCase in @('T0','T1','T2','T3','T4','T5','T6','GRe
                 (['-ControlMaskCase', 'T0'], 'ControlMask requires -RestoreInstallation'),
                 (['-ControlMaskCase', 'T0', '-RestoreInstallation', '-SrOnly',
                   '-NrRuntimePath', 'runtime', '-NrPreset', '1', '-NrPasses', '2'],
-                 'ControlMask requires -RestoreInstallation')):
+                 'ControlMask requires -RestoreInstallation'),
+                (['-ControlMaskCase', 'DepthFarOff', '-RestoreInstallation',
+                  '-NrRuntimePath', 'runtime', '-NrPreset', '1', '-NrPasses', '1', '-NrHookPoint', '2'],
+                 'requires a restored, SR-only, single-pass Upscaled ControlMask case')):
             with self.subTest(overrides=overrides):
                 result = subprocess.run(base + overrides, capture_output=True, text=True,
                                         encoding='utf-8', timeout=15)
@@ -320,15 +369,16 @@ class CaptureTests(unittest.TestCase):
                 fg_acceptance.main()
         launch.assert_not_called()
 
-    def test_restore_installation_cli_forwards_existing_wrapper_switch(self):
+    def test_depth_far_diagnostic_cli_forwards_protected_wrapper_overrides(self):
         with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
             root = Path(directory)
             target = root / 'target.json'
             target.write_text(json.dumps(dict(expected_hdr_monitor='fixture monitor')), encoding='utf-8')
-            manifest, game, tool = root / 'manifest.json', root / 'game', root / 'hdr.exe'
+            manifest, game, tool, runtime = root / 'manifest.json', root / 'game', root / 'hdr.exe', root / 'runtime.dll'
             manifest.write_text('{}', encoding='utf-8')
             game.mkdir()
             tool.touch()
+            runtime.touch()
             run = root / 'run'
             run.mkdir()
             child = mock.Mock(stdout=[f'CAPTURE_READY={run}\n'], returncode=0)
@@ -337,8 +387,9 @@ class CaptureTests(unittest.TestCase):
             arguments = ['fg_acceptance.py', '--candidate-manifest', str(manifest),
                 '--game-binary-directory', str(game), '--target', str(target),
                 '--output-root', str(root / 'output'), '--hdr-tool', str(tool), '--restore-installation',
-                '--nr-hook-point', '0', '--nr-passes', '2', '--gpu-timers', '--telemetry-seconds', '2',
-                '--nr-off-control', '--disable-xefg-sdk-detours', '--xefg-ui-composition', '0']
+                '--nr-hook-point', '2', '--nr-passes', '1', '--telemetry-seconds', '2',
+                '--control-mask-case', 'depth-far-off', '--nr-runtime-path', str(runtime),
+                '--enable-streamline-fallback', '--xefg-ui-composition', '0']
             print_output = mock.patch('builtins.print')
             printed = print_output.start()
             self.addCleanup(print_output.stop)
@@ -347,21 +398,35 @@ class CaptureTests(unittest.TestCase):
                     mock.patch.object(fg_acceptance.subprocess, 'Popen', return_value=child) as launch, \
                     mock.patch.object(fg_acceptance, 'capture') as capture:
                 self.assertEqual(fg_acceptance.main(), 1)  # No fake routing/acceptance claim.
-            capture.assert_called_once_with(run, True, False)
+            capture.assert_called_once_with(run, False, False)
             printed.assert_any_call('CAPTURE_STARTED=' + str(run), flush=True)
             printed.assert_any_call('CAPTURE_FINISHED; valid completion recorded; protected worker resumes', flush=True)
             command = launch.call_args.args[0]
             self.assertIn('-RestoreInstallation', command)
-            self.assertEqual(command[command.index('-NrHookPoint') + 1], '0')
-            self.assertEqual(command[command.index('-NrPasses') + 1], '2')
+            self.assertEqual(command[command.index('-NrHookPoint') + 1], '2')
+            self.assertEqual(command[command.index('-NrPasses') + 1], '1')
             self.assertEqual(command[command.index('-TelemetrySeconds') + 1], '2')
-            self.assertIn('-GpuTimers', command)
-            self.assertIn('-StartNrDisabled', command)
-            self.assertIn('-DisableXeFGSdkDetours', command)
+            self.assertIn('-ControlMaskCase', command)
+            self.assertEqual(command[command.index('-ControlMaskCase') + 1], 'DepthFarOff')
+            self.assertNotIn('-ControlMaskUseCoreContext', command)
+            self.assertIn('-EnableStreamlineFallback', command)
             self.assertEqual(command[command.index('-XeFGUiComposition') + 1], '0')
             self.assertEqual(command[command.index('-TargetPath') + 1], str(target.resolve()))
             self.assertEqual(command[command.index('-OutputRoot') + 1], str((root / 'output').resolve()))
             self.assertEqual(command[command.index('-Python') + 1], str(Path(fg_acceptance.sys.executable).resolve()))
+
+    def test_control_mask_diagnostic_cli_rejects_unprotected_requests(self):
+        cases = (
+            ['--control-mask-use-core-context'],
+            ['--control-mask-case', 'depth-far-off', '--enable-streamline-fallback'],
+        )
+        for suffix in cases:
+            arguments = ['fg_acceptance.py', '--candidate-manifest', 'candidate.json',
+                '--game-binary-directory', 'game', *suffix]
+            with self.subTest(arguments=arguments), mock.patch.object(fg_acceptance.sys, 'argv', arguments):
+                with self.assertRaises(SystemExit) as error:
+                    fg_acceptance.main()
+                self.assertEqual(error.exception.code, 2)
 
     def test_addon_menu_capture_error_closes_menu_and_releases_hold(self):
         with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:

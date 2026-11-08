@@ -95,7 +95,7 @@ runner 与 wrapper 复用公共测试产物生命周期。结果写出后自动�
 
 已授权的历史游戏产物清理可运行 `python tools/game-test/cleanup_artifacts.py --root artifacts`，只接入有完整 guard／恢复／退出证据的旧运行；游戏或 CrashReporter 仍在运行时拒绝执行。
 
-受保护的 `-ControlMaskCase` 可显式添加 `-ControlMaskUseCoreContext`，临时请求 Core context 诊断；仍须满足 `-SrOnly`、`-RestoreInstallation`、单 Pass Upscaled 和精确 Runtime 等现有门禁。省略此开关时不修改该配置键，receipt 记录开关请求值。
+`-ControlMaskUseCoreContext` 仅用于 `-SrOnly`、单 Pass Upscaled 的受保护 ControlMask 诊断。depth-far FG case 固定走 Present，会在临时配置中强制写入 `NRControlMaskUseCoreContext=0`；退出时恢复启动前值。其余 ControlMask case 省略该开关时保留原配置。
 `-ControlMaskAutoMask 0|1` 与 `-ControlMaskBlendMode 0..3` 可在同一受保护 case 上覆盖对应测试参数；省略保留 case 默认值。无显式 case 时提前拒绝，receipt 记录请求值，实际采用仍须核对运行日志。
 
 完整 FG 入口保持原 HDR 显示条件检查、NR 开关／移动及退出流程；显示器名称和性能目标来自本地 target。测试通过仅覆盖相应保护与编排合同，截图仍需单独判断。

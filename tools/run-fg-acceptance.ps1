@@ -12,6 +12,7 @@ param(
     [ValidateRange(-1,3600)][int]$TelemetrySeconds = -1,
     [switch]$SdrGameOutput,
     [switch]$StartNrDisabled,
+    [switch]$EnableStreamlineFallback,
     [switch]$SrOnly,
     [switch]$CleanEnvironment,
     [switch]$BlockOptionalHudless,
@@ -27,7 +28,7 @@ param(
     [ValidateRange(-1,3)][int]$NrPass2Stage = -1,
     [ValidateRange(-1,3)][int]$NrPass3Stage = -1,
     [ValidateRange(-1,3)][int]$NrPass4Stage = -1,
-    [ValidateSet('T0','T1','T2','T3','T4','T5','T6','GRect','BRect')][string]$ControlMaskCase,
+    [ValidateSet('T0','T1','T2','T3','T4','T5','T6','GRect','BRect','DepthFar','DepthFarOff')][string]$ControlMaskCase,
     [switch]$ControlMaskUseCoreContext,
     [ValidateRange(-1,1)][int]$ControlMaskAutoMask = -1,
     [ValidateRange(-1,3)][int]$ControlMaskBlendMode = -1,
@@ -63,9 +64,20 @@ if ($ControlMaskGpuSamples -gt 0 -and (-not $ControlMaskCase -or -not $GpuTimers
 if ($ControlMaskGpuSamples -gt 0 -and $ControlMaskGpuWarmupSeconds -ge $ControlMaskGpuSeconds) {
     throw 'ControlMask GPU warmup must be shorter than the bounded sampling window.'
 }
-if ($ControlMaskCase -and (-not $RestoreInstallation -or $InstallOnly -or -not $SrOnly -or
+if ($ControlMaskCase -in @('DepthFar','DepthFarOff') -and
+    (-not $RestoreInstallation -or $InstallOnly -or $SrOnly -or -not $NrRuntimePath -or
+        $NrPreset -notin @(1,2) -or $NrPasses -ne 1 -or $NrHookPoint -ne 2)) {
+    throw 'Depth-far FG requires -RestoreInstallation, exact -NrRuntimePath, model A/B, one pass and Present hook point 2.'
+}
+if ($ControlMaskCase -and $ControlMaskCase -notin @('DepthFar','DepthFarOff') -and
+    (-not $RestoreInstallation -or $InstallOnly -or -not $SrOnly -or
         -not $NrRuntimePath -or $NrPreset -notin @(1,2) -or $NrPasses -gt 1 -or $NrHookPoint -gt 0)) {
     throw 'ControlMask requires -RestoreInstallation, -SrOnly, exact -NrRuntimePath, explicit model A/B and single-pass Upscaled.'
+}
+if ($ControlMaskUseCoreContext -and
+    ($ControlMaskCase -in @('DepthFar','DepthFarOff') -or -not $SrOnly -or
+        -not $RestoreInstallation -or $InstallOnly -or $NrHookPoint -gt 0)) {
+    throw '-ControlMaskUseCoreContext requires a restored, SR-only, single-pass Upscaled ControlMask case.'
 }
 if ($ManualImeSession -and ($Scenario -ne 'menu' -or $CaptureHoldSeconds -eq 0 -or $InstallOnly -or -not $RestoreInstallation)) {
     throw '-ManualImeSession requires menu, a nonzero hold and -RestoreInstallation; installation-only is not supported.'
@@ -78,7 +90,7 @@ if ($XeFGUiComposition -ge 0 -and (-not $RestoreInstallation -or $InstallOnly)) 
     throw 'UI Composition tests require a protected session and -RestoreInstallation'
 }
 if (($TelemetrySeconds -ge 0 -or $SrOnly -or $NrRuntimePath -or $NrPreset -ge 0 -or $NrPass2Preset -ge 0 -or $NrPasses -gt 0 -or
-        $NrHookPoint -ge 0 -or $NrPass2Stage -ge 0 -or $NrPass3Stage -ge 0 -or $NrPass4Stage -ge 0) -and
+        $EnableStreamlineFallback -or $NrHookPoint -ge 0 -or $NrPass2Stage -ge 0 -or $NrPass3Stage -ge 0 -or $NrPass4Stage -ge 0) -and
     (-not $RestoreInstallation -or $InstallOnly)) {
     throw 'Model tests require a protected session and -RestoreInstallation; -InstallOnly is not supported.'
 }
@@ -163,7 +175,7 @@ function Remove-FgAcceptanceBinaryBackups {
     $result.status = if ($result.deleted_files -eq $binaries.Count) { 'cleaned' } else { 'incomplete' }
     return $result
 }
-function Get-ControlMaskSettings([ValidateSet('T0','T1','T2','T3','T4','T5','T6','GRect','BRect')][string]$Case) {
+function Get-ControlMaskSettings([ValidateSet('T0','T1','T2','T3','T4','T5','T6','GRect','BRect','DepthFar','DepthFarOff')][string]$Case) {
     $settings = @{
         NRHookPoint=0; NRPasses=1; NRFollowInputRes=0; NRResolutionScale=1; NRScreenshotSource=2
         NRAutoMask=0; NRControlMaskEnabled=[int]($Case -ne 'T0')
@@ -181,6 +193,21 @@ function Get-ControlMaskSettings([ValidateSet('T0','T1','T2','T3','T4','T5','T6'
         T6 { $settings.NRControlMaskMode = 2 }
         GRect { $settings.NRControlMaskMode = 3 }
         BRect { $settings.NRControlMaskMode = 4 }
+        DepthFar {
+            $settings.NRHookPoint = 2
+            $settings.NRControlMaskMode = 5
+            $settings.NRControlMaskUseCoreContext = 0
+            $settings.NRControlMaskDepthNear = '0.7'
+            $settings.NRControlMaskDepthFar = '0.9'
+        }
+        DepthFarOff {
+            $settings.NRHookPoint = 2
+            $settings.NRControlMaskEnabled = 0
+            $settings.NRControlMaskMode = 5
+            $settings.NRControlMaskUseCoreContext = 0
+            $settings.NRControlMaskDepthNear = '0.7'
+            $settings.NRControlMaskDepthFar = '0.9'
+        }
     }
     return $settings
 }
@@ -243,6 +270,14 @@ function Set-FgPresentSection([string]$Text, [bool]$BlockHudless) {
     }
     return $Text.TrimEnd() + "`r`n$taskPolicy`r`n`r`n"
 }
+function Set-StreamlineFallback([string]$Text) {
+    $pattern = '(?m)^EnableHooks=[^\r\n]*'
+    $matches = [regex]::Matches($Text, $pattern)
+    if ($matches.Count -gt 1) { throw 'Ambiguous EnableHooks setting' }
+    if ($matches.Count -eq 1) { return [regex]::Replace($Text, $pattern, 'EnableHooks=1') }
+    $lineEnding = if ($Text.Contains("`r`n")) { "`r`n" } else { "`n" }
+    return $Text.TrimEnd() + $lineEnding + 'EnableHooks=1' + $lineEnding
+}
 function Set-XeFgUiComposition([string]$Text, [bool]$Enabled) {
     $sections = [regex]::Matches($Text, '(?ms)^\[XeFG\]\r?\n(?:(?!^\[).)*')
     if ($sections.Count -ne 1) { throw 'Expected one XeFG configuration section' }
@@ -294,7 +329,8 @@ if ($NrRuntimePath) {
     $taskRuntimePlan = Get-FgAcceptanceRuntimePlan $NrRuntimePath (Join-Path $taskGame 'nvngx_dlssnr.dll')
     if (-not $taskRuntimePlan.reused) { $taskBackupFiles += Join-Path $taskGame 'nvngx_dlssnr.dll' }
 }
-if ($CleanEnvironment -or $XeFGUiComposition -ge 0 -or $ControlMaskCase) {
+if ($CleanEnvironment -or $XeFGUiComposition -ge 0 -or
+    ($ControlMaskCase -and $ControlMaskCase -notin @('DepthFar','DepthFarOff'))) {
     $taskBackupFiles += Join-Path $taskGame 'OptiScaler.ini'
 }
 if ($CleanEnvironment) {
@@ -368,6 +404,7 @@ $taskReceipt = [ordered]@{
     disable_xefg_sdk_detours=[bool]$DisableXeFGSdkDetours
     temporary_game_hud_visible=[bool]$ShowGameHud
     temporary_overlay_key=$(if ($IsolateOverlayKey) { 'F7' } else { $null })
+    enable_streamline_fallback_requested=[bool]$EnableStreamlineFallback
     install_only=[bool]$InstallOnly
     manual_ime_session=[bool]$ManualImeSession
     candidate_retained=$false; test_changes_restored=$false
@@ -417,7 +454,7 @@ try {
             throw 'Installed NR runtime hash mismatch'
         }
     }
-    if ($ControlMaskCase) {
+    if ($ControlMaskCase -and $ControlMaskCase -notin @('DepthFar','DepthFarOff')) {
         $taskOptiPath = Join-Path $taskGame 'OptiScaler.ini'
         [IO.File]::WriteAllText($taskOptiPath,
             (Set-OptiFgDisabled ([IO.File]::ReadAllText($taskOptiPath))),
@@ -447,6 +484,7 @@ try {
     $taskSectionText = $taskSection.Value
     $taskSectionText = Set-FgPresentSection $taskSectionText ([bool]$BlockOptionalHudless)
     $taskSectionText = Set-XeFgDetourSetting $taskSectionText (-not [bool]$DisableXeFGSdkDetours)
+    if ($EnableStreamlineFallback) { $taskSectionText = Set-StreamlineFallback $taskSectionText }
     $taskModelSettings = @{}
     if ($TelemetrySeconds -ge 0) { $taskModelSettings.NRTelemetrySeconds = $TelemetrySeconds }
     if ($NrPreset -ge 0) { $taskModelSettings.NRPreset = $NrPreset }

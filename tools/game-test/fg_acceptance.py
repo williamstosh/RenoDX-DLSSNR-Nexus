@@ -361,6 +361,14 @@ def main():
         help='Set the temporary NR telemetry interval in seconds (1..3600; default: 1)')
     parser.add_argument('--nr-passes', type=int, choices=(1, 2),
         help='Temporarily select one or two passes; omitted keeps the protected config value')
+    parser.add_argument('--control-mask-case', choices=('depth-far', 'depth-far-off'),
+        help='Run the protected Present-hook depth-far comparison with XeFG enabled')
+    parser.add_argument('--nr-runtime-path', type=Path,
+        help='Runtime file to verify for a protected ControlMask game case')
+    parser.add_argument('--nr-preset', type=int, choices=(1, 2), default=2,
+        help='NR model preset for a protected ControlMask game case (default: B)')
+    parser.add_argument('--enable-streamline-fallback', action='store_true',
+        help='Temporarily enable Streamline hooks for this protected ControlMask case')
     parser.add_argument('--nr-off-control', action='store_true',
         help='Keep NR Off and SDK HUDLess forwarding unchanged for a static flicker control')
     parser.add_argument('--addon-absent-control', action='store_true',
@@ -383,6 +391,13 @@ def main():
         parser.error('--addon-absent-control requires --nr-off-control')
     if args.check_addon_menu and args.nr_off_control:
         parser.error('--check-addon-menu requires the NR comparison run')
+    if args.enable_streamline_fallback and (not args.control_mask_case or not args.restore_installation):
+        parser.error('--enable-streamline-fallback requires a restored ControlMask case')
+    if args.control_mask_case and (not args.restore_installation or args.nr_hook_point != 2
+            or args.block_optional_hudless or args.nr_off_control or args.disable_xefg_sdk_detours
+            or args.xefg_ui_composition != 0 or args.nr_runtime_path is None
+            or not args.nr_runtime_path.is_file() or args.nr_passes != 1):
+        parser.error('depth-far game cases require restore, XeFG UIComposition=0, Present hook, both colors, an NR Runtime and one pass')
     output_root = local_output_root(args.output_root)
     target = json.loads(args.target.read_text(encoding='utf-8'))
     expected_monitor = target['expected_hdr_monitor']
@@ -405,6 +420,11 @@ def main():
         '-NrHookPoint', str(args.nr_hook_point), '-TelemetrySeconds', str(args.telemetry_seconds)]
     if args.nr_passes is not None:
         command += ['-NrPasses', str(args.nr_passes)]
+    if args.control_mask_case:
+        command += ['-NrPreset', str(args.nr_preset), '-NrRuntimePath', str(args.nr_runtime_path.resolve(strict=True)),
+            '-ControlMaskCase', 'DepthFar' if args.control_mask_case == 'depth-far' else 'DepthFarOff']
+    if args.enable_streamline_fallback:
+        command.append('-EnableStreamlineFallback')
     if args.xefg_ui_composition is not None:
         command += ['-XeFGUiComposition', str(args.xefg_ui_composition)]
     if args.gpu_timers:
