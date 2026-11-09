@@ -10,6 +10,26 @@ function Assert-ArtifactTest([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
     $script:checks++
 }
+$sizeTree = Join-Path $OutputDirectory 'size-tree'
+$sizeNested = Join-Path $sizeTree 'nested'
+[void][IO.Directory]::CreateDirectory($sizeNested)
+[IO.File]::WriteAllBytes((Join-Path $sizeTree 'root.bin'), [byte[]]::new(5))
+[IO.File]::WriteAllBytes((Join-Path $sizeNested 'nested.bin'), [byte[]]::new(3))
+[IO.File]::WriteAllText((Join-Path $sizeNested 'artifact-lifecycle.json'), '{"schema":"nr-nexus-test-output/1","keepRawArtifacts":true,"ownerPid":0,"retainedPaths":[]}')
+$sizeOutside = Join-Path $OutputDirectory 'size-outside'
+[void][IO.Directory]::CreateDirectory($sizeOutside)
+[IO.File]::WriteAllBytes((Join-Path $sizeOutside 'outside.bin'), [byte[]]::new(7))
+$sizeLink = Join-Path $sizeTree 'linked'
+try {
+    New-Item -ItemType Junction -Path $sizeLink -Target $sizeOutside | Out-Null
+    $size = Get-TestOutputSize $sizeTree
+    Assert-ArtifactTest ($size.files -eq 2 -and $size.bytes -eq 8) 'Size scan count/bytes, marker exclusion or reparse exclusion'
+} finally {
+    if (Test-Path -LiteralPath $sizeLink) { (Get-Item -LiteralPath $sizeLink -Force).Delete() }
+}
+Remove-Item -LiteralPath (Join-Path $sizeNested 'nested.bin')
+$size = Get-TestOutputSize $sizeTree
+Assert-ArtifactTest ($size.files -eq 1 -and $size.bytes -eq 5) 'Size scan count/bytes after file removal'
 $canonical = Initialize-TestOutput (Join-Path $OutputDirectory 'lowercase') -RetentionMode 'full'
 Assert-ArtifactTest ($global:NexusTestOutputs[$canonical].mode -ceq 'Full') 'Mode spelling not canonical'
 Complete-TestOutput $canonical

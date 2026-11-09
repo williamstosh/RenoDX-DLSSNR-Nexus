@@ -181,15 +181,22 @@ def finish(directory: Path, status: str) -> None:
 
 def _tree_bytes(root: Path) -> int:
     total = 0
-    for directory, folders, files in os.walk(root, followlinks=False):
-        folders[:] = [name for name in folders if not _is_link(Path(directory) / name)]
-        for name in files:
-            path = Path(directory) / name
-            try:
-                if not _is_link(path):
-                    total += path.stat().st_size
-            except OSError:
-                continue
+    pending = [os.fspath(root)]
+    while pending:
+        try:
+            with os.scandir(pending.pop()) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_symlink() or (hasattr(entry, "is_junction") and entry.is_junction()):
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            pending.append(entry.path)
+                        else:
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue
+        except OSError:
+            continue
     return total
 
 

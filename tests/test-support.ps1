@@ -312,18 +312,26 @@ function Register-TestDisposable {
 
 function Get-TestOutputSize {
     param([string]$Directory)
-    $pending = [Collections.Generic.Queue[string]]::new()
-    $pending.Enqueue($Directory)
+    $pending = [Collections.Generic.Stack[string]]::new()
+    $pending.Push($Directory)
     $count = 0
     [long]$bytes = 0
-    while ($pending.Count) {
-        try { $items = @(Get-ChildItem -LiteralPath $pending.Dequeue() -Force -ErrorAction Stop) }
-        catch [Management.Automation.ItemNotFoundException] { continue }
-        foreach ($item in $items) {
-            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
-            if ($item.PSIsContainer) { $pending.Enqueue($item.FullName) }
-            elseif ($item.Name -ne 'artifact-lifecycle.json') { $count++; $bytes += $item.Length }
-        }
+    while ($pending.Count -gt 0) {
+        $directoryPath = $pending.Pop()
+        try { $items = [IO.DirectoryInfo]::new($directoryPath).EnumerateFileSystemInfos() }
+        catch [IO.DirectoryNotFoundException] { continue }
+        catch [IO.FileNotFoundException] { continue }
+        try {
+            foreach ($item in $items) {
+                try {
+                    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+                    if ($item -is [IO.DirectoryInfo]) { $pending.Push($item.FullName) }
+                    elseif ($item.Name -ne 'artifact-lifecycle.json') { $bytes += $item.Length; $count++ }
+                } catch [IO.DirectoryNotFoundException] { continue }
+                  catch [IO.FileNotFoundException] { continue }
+            }
+        } catch [IO.DirectoryNotFoundException] { continue }
+          catch [IO.FileNotFoundException] { continue }
     }
     return @{files=$count;bytes=$bytes;excludes='artifact-lifecycle.json and reparse targets'}
 }

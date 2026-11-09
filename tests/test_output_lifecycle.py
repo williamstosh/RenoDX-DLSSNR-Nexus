@@ -28,6 +28,33 @@ class OutputLifecycleTests(unittest.TestCase):
             process.terminate()
             process.wait(timeout=5)
 
+    def test_tree_bytes_counts_files_and_markers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "tree"
+            root.mkdir()
+            nested = root / "nested"
+            nested.mkdir()
+            (root / "data.bin").write_bytes(b"12345")
+            (nested / "other.bin").write_bytes(b"abc")
+            (nested / "artifact-lifecycle.json").write_bytes(b"excluded marker")
+            self.assertEqual(output_lifecycle._tree_bytes(root), 8 + len(b"excluded marker"))
+            (nested / "other.bin").unlink()
+            self.assertEqual(output_lifecycle._tree_bytes(root), 5 + len(b"excluded marker"))
+
+    def test_tree_bytes_skips_directory_symlinks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "tree"
+            root.mkdir()
+            external = Path(temp) / "external"
+            external.mkdir()
+            (external / "target.bin").write_bytes(b"outside")
+            link = root / "linked"
+            try:
+                link.symlink_to(external, target_is_directory=True)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"directory symlink unavailable: {error}")
+            self.assertEqual(output_lifecycle._tree_bytes(root), 0)
+
     def test_every_retention_mode_cleans_registered_raw_data(self):
         for mode in ("Standard", "Full", "Acceptance"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
