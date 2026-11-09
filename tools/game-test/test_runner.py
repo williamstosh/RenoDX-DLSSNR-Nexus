@@ -625,6 +625,16 @@ class ExitTests(unittest.TestCase):
         obs['lines'].pop()
         self.assertEqual(runner.focused_menu(path, obs, runner.MAIN_MENU), '退出游戏')
 
+    def test_pause_menu_focus_matches_4k_scaled_layout_with_unreadable_gwent_row(self):
+        image = Image.new('RGB', (3840, 2160), 'black')
+        ImageDraw.Draw(image).rectangle((320, 710, 1000, 832), outline='white', width=4)
+        path = self.out / 'pause-4k.png'
+        image.save(path)
+        visible_rows = ['继续', '存储游戏', '读取游戏', '设置', '教程', '巼特牌组', '返回主菜单', '退出游戏']
+        obs = dict(scale=.5, lines=[dict(text=label, words=[dict(x=285,y=375+i*46,width=95,height=23)])
+                                    for i, label in enumerate(visible_rows)])
+        self.assertEqual(runner.focused_menu(path, obs, runner.PAUSE_MENU), '继续')
+
     def test_dim_menu_focus_keeps_two_edge_and_ambiguity_checks(self):
         image = Image.new('RGB', (1920, 1080), 'black')
         draw = ImageDraw.Draw(image)
