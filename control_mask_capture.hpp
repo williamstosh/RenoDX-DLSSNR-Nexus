@@ -23,6 +23,7 @@
 
 #include "gpu_timers.hpp"
 #include "report_bundle.hpp"
+#include "stage_plan.hpp"
 
 namespace renodx::addons::dlss5::control_mask_capture {
 
@@ -243,7 +244,8 @@ inline void Tick(int64_t now_ns) {
 }
 
 inline uint64_t Reserve(const Context& context, uint64_t timer_sequence, int64_t now_ns) {
-  if (!Enabled() || context.stage != 1) return 0;
+  if (!Enabled() || (context.stage != static_cast<uint32_t>(stage_plan::Stage::UPSCALED)
+                     && context.stage != static_cast<uint32_t>(stage_plan::Stage::PRESENT))) return 0;
   Tick(now_ns);
   uint64_t token = 0;
   bool wake = false;
@@ -404,7 +406,8 @@ inline void ProcessPending(const std::filesystem::path& directory, const report:
         Json event{{"token", row.token}, {"timer_sequence", row.timer_sequence}, {"recorded_ns", row.recorded_ns},
                    {"status", row_state}, {"gpu_state", gpu_timers::StateText(row.gpu_state)},
                    {"context", {{"runtime_version", c.runtime_version}, {"requested_model", c.requested_model},
-                                {"stage", "Upscaled"}, {"mask_enabled", c.mask_enabled}, {"mask_mode", c.mask_mode},
+                                {"stage", stage_plan::Name(static_cast<stage_plan::Stage>(c.stage))},
+                                {"mask_enabled", c.mask_enabled}, {"mask_mode", c.mask_mode},
                                 {"mask_blend", c.mask_blend}, {"mask_rgb", {c.mask_r, c.mask_g, c.mask_b}},
                                 {"auto_mask", c.auto_mask}, {"style", c.style}, {"intensity", c.intensity},
                                 {"local_tone", c.local_tone}, {"sent_structure", c.sent_structure}, {"sent_skin", c.sent_skin},

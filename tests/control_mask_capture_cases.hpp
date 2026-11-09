@@ -97,7 +97,9 @@ inline int Run() {
   Check(cap::Configure(1, 2, 0.1), "capture configures warmup");
   auto wrong_stage = context;
   wrong_stage.stage = 0;
-  Check(cap::Reserve(wrong_stage, 1, 0) == 0 && !cap::CapturePending(), "only Upscaled starts the window");
+  Check(cap::Reserve(wrong_stage, 1, 0) == 0 && !cap::CapturePending(), "Render cannot start the window");
+  wrong_stage.stage = 3;
+  Check(cap::Reserve(wrong_stage, 1, 0) == 0 && !cap::CapturePending(), "unknown stage cannot start the window");
   wakes = 0;
   Check(cap::Reserve(context, 1, 0) == 0, "first eligible evaluate starts warmup without a sample");
   Check(wakes == 1 && cap::WorkPending(), "start wakes the existing worker exactly once");
@@ -131,7 +133,43 @@ inline int Run() {
         "available source generation is exported without a synthetic game frame");
   Check(event["timing_us"]["total"] == 110 && event["samples"] == 1,
         "raw timing units and single-sample count are retained");
+  Check(event["context"]["stage"] == "Upscaled", "Upscaled stage identity is retained");
   Check(frozen_output.dump().find("CaptureTest") == std::string::npos, "final JSON crosses RedactJson boundary");
+
+  auto present_context = context;
+  present_context.stage = static_cast<uint32_t>(renodx::addons::dlss5::stage_plan::Stage::PRESENT);
+  for (uint32_t pass_count : {1u, 2u}) {
+    Check(cap::Configure(1, 20, 6), "Present configures the real capture window and warmup");
+    wakes = 0;
+    cap::Tick(30'000'000'000);
+    Check(!cap::CapturePending() && !cap::GetSummary().active && wakes == 0,
+          "configuration and idle ticks do not start the Present clock");
+    Check(cap::Reserve(present_context, 100, 30'000'000'000) == 0, "first Present starts warmup");
+    Check(cap::GetSummary().started_ns == 30'000'000'000 && wakes == 1, "Present starts its clock at first evaluate");
+    flush();
+    Check(cap::GetSummary().marker_written && terminal_for(cap::GetSummary().capture_id).empty(),
+          "Present writes a marker before any valid sample or terminal");
+    Check(cap::Reserve(present_context, 101, 35'999'999'999) == 0, "Present excludes the full six-second warmup");
+    const auto present_token = cap::Reserve(present_context, 102, 36'000'000'000);
+    Check(present_token != 0 && cap::Reserve(present_context, 102, 36'000'000'001) == 0,
+          "Present timer sequence reserves once across same-stage passes");
+    auto present_stats = valid(102);
+    for (uint32_t pass = 0; pass < pass_count; ++pass) {
+      present_stats.passes[pass].id = pass;
+      present_stats.passes[pass].state = timers::SampleState::VALID;
+    }
+    cap::Observe(present_stats, present_token);
+    Check(cap::GetSummary().recorded == 1 && cap::GetSummary().valid == 1
+              && std::string(cap::GetSummary().reason) == "target_reached" && wakes == 2,
+          "Present token observes one completed segment and reaches the unchanged target");
+    expect_written();
+    const auto present_output = read_json(terminal_for(cap::GetSummary().capture_id));
+    Check(present_output["events"].size() == 1 && present_output["events"][0]["context"]["stage"] == "Present"
+              && present_output["events"][0]["passes"].size() == pass_count
+              && present_output["summary"]["warmup_seconds"] == 6
+              && present_output["summary"]["window_seconds"] == 20,
+          "Present terminal preserves actual stage, per-pass timings and requested window");
+  }
 
   Check(cap::Configure(2, 1, 0), "capture can configure after successful export");
   auto token = cap::Reserve(changed, 10, 0);

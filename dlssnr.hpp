@@ -10858,8 +10858,8 @@ inline bool ProcessInline(
       && (!plan.mixed || control_mask_render_upscaled_chain))
       || control_mask_present_route)
       && nr_model::SupportsControlMask(direct_runtime_requirements.file_version);
-  const bool control_mask_capture_route_eligible = present == nullptr
-      && execution_stage == stage_plan::Stage::UPSCALED
+  const bool control_mask_capture_route_eligible = ((present == nullptr
+      && execution_stage == stage_plan::Stage::UPSCALED) || control_mask_present_route)
       && !plan.mixed && group.begin == 0
       && nr_model::SupportsControlMask(direct_runtime_requirements.file_version);
   const bool control_mask_depth_has_provenance = present == nullptr || present->guide_serial != 0;
@@ -12025,7 +12025,10 @@ inline bool ProcessInline(
                     direct_runtime_requirements.file_version.c_str());
       if (timers_active && gpu_timers::internal::current.active) {
         auto& timing = gpu_timers::internal::segments[gpu_timers::internal::current.idx];
-        timing.diagnostic_token = control_mask_capture::Reserve(context, timing.sequence, gpu_timers::NowNs());
+        // Same-stage passes share one timer segment and its first captured context.
+        if (timing.diagnostic_token == 0) {
+          timing.diagnostic_token = control_mask_capture::Reserve(context, timing.sequence, gpu_timers::NowNs());
+        }
       } else {
         const uint64_t token = control_mask_capture::Reserve(context, 0, gpu_timers::NowNs());
         control_mask_capture::Observe(gpu_timers::Stats{
