@@ -39,8 +39,8 @@
 //              reaches our detour any more; nothing is written.
 //   kUnmapped  the target cannot be read: the module is gone.
 //
-// Every read goes through ReadCode, which catches the access violation an
-// unmapped target raises, so a sweep can run on every present.
+// Every read goes through ReadCode, which reports an unmapped target without
+// dispatching an access violation to the host, so a sweep can run on every present.
 
 #pragma once
 
@@ -56,7 +56,6 @@
 #include <detours.h>
 
 #include "../../utils/vtable.hpp"
-#include "lastgasp.hpp"
 
 namespace renodx::addons::dlss5::detour_guard {
 
@@ -82,23 +81,12 @@ struct Hook {
   Record* record = nullptr;
 };
 
-// Reads `size` bytes, or reports that they are not readable.  The access
-// violation an unmapped page raises is the expected failure; anything else
-// propagates.  Inside lastgasp's expected-fault depth, so that expected
-// fault is not a [first-chance] crash-log record (memcpy runs in this
-// addon's image, which the recorder watches).
+// A target may already be unmapped during teardown. Local SEH around memcpy
+// cannot keep a host's vectored handler from seeing the access violation first.
+// ReadProcessMemory reports that failure without raising it in the host thread.
 inline bool ReadCode(const void* at, void* out, size_t size) noexcept {
-  ++lastgasp::expected_fault_depth;
-  bool read = true;
-  __try {
-    std::memcpy(out, at, size);
-  } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
-                  ? EXCEPTION_EXECUTE_HANDLER
-                  : EXCEPTION_CONTINUE_SEARCH) {
-    read = false;
-  }
-  --lastgasp::expected_fault_depth;
-  return read;
+  SIZE_T read = 0;
+  return ReadProcessMemory(GetCurrentProcess(), at, out, size, &read) != FALSE && read == size;
 }
 
 // TimeDateStamp and SizeOfImage from the PE header at `module`'s base, or 0

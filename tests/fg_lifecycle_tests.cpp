@@ -8,6 +8,8 @@
 #include <cstring>
 #include <stdexcept>
 
+#include <detour_guard.hpp>
+
 namespace {
 constexpr std::array<const char*, 8> EXPORTS{
     "xefgSwapChainD3D12InitFromSwapChain", "xefgSwapChainD3D12InitFromSwapChainDesc",
@@ -20,12 +22,49 @@ void Check(bool passed, const char* message) {
   std::printf("%s: %s (win32=%lu)\n", passed ? "PASS" : "FAIL", message, GetLastError());
   if (!passed) throw std::runtime_error(message);
 }
+LONG access_violations = 0;
+LONG CALLBACK ObserveAccessViolation(EXCEPTION_POINTERS* info) {
+  if (info->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+    ++access_violations;
+  }
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
 }
 
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
   try {
+    {
+      namespace guard = renodx::addons::dlss5::detour_guard;
+      SYSTEM_INFO system_info = {};
+      GetSystemInfo(&system_info);
+      const size_t page_size = system_info.dwPageSize;
+      auto* pages = static_cast<uint8_t*>(VirtualAlloc(nullptr, page_size * 2,
+                                                    MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+      Check(pages != nullptr, "allocate hook target pages");
+      pages[0] = 0xE9;
+      guard::Record record = {.target = pages};
+      std::memcpy(record.ours, pages, guard::kJmpBytes);
+      Check(guard::Classify(record) == guard::Head::kOurs, "readable hook head is recognized");
+      DWORD protection = 0;
+      Check(VirtualProtect(pages + page_size, page_size, PAGE_NOACCESS, &protection) != FALSE,
+            "protect second target page");
+      void* observer = AddVectoredExceptionHandler(1, ObserveAccessViolation);
+      Check(observer != nullptr, "observe host first-chance access violations");
+      uint8_t bytes[guard::kJmpBytes] = {};
+      Check(!guard::ReadCode(pages + page_size - 2, bytes, sizeof(bytes)),
+            "read across unreadable boundary fails");
+      record.target = pages + page_size;
+      Check(guard::Classify(record) == guard::Head::kUnmapped, "unreadable hook head is unmapped");
+      Check(VirtualFree(pages, 0, MEM_RELEASE) != FALSE, "release hooked module pages");
+      record.target = pages;
+      Check(guard::Classify(record) == guard::Head::kUnmapped, "released hook head is unmapped");
+      const LONG observed = access_violations;
+      Check(RemoveVectoredExceptionHandler(observer) != 0, "remove host exception observer");
+      Check(observed == 0, "unmapped code probes never dispatch access violations to host handlers");
+    }
     auto sdk = LoadLibraryW(L".\\libxess_fg.dll");
     Check(sdk != nullptr, "load real fake-SDK DLL");
     std::array<FARPROC, EXPORTS.size()> exports{};
