@@ -31,6 +31,25 @@ HostRoot、ShaderIncludeDirectory、Fxc、EmbedFile 参数可显式指定已有�
 专项确需完整原始数据集时，在启动前显式设置 `$env:NR_NEXUS_TEST_KEEP_RAW='1'`。
 工具将选择写入本次生命周期标记，后续维护继续尊重该选择；Full／Acceptance 本身不会开启它。
 
+## 阴影调整复用核验
+
+~~~powershell
+& ./tests/run-look-shadow-tests.ps1 -Adapter @('warp','nvidia')
+~~~
+
+该入口复用 `tests/d3d12_test_gpu.hpp` 和生产 `look_stage.hpp`，从当前源码编译并执行
+`look_compose`，比较阴影 1／0.5／0。包含暗—中—亮、floor 过渡、提亮／压暗／偏色及分通道
+floor 的 60 个合成输入；采用生产 RGBA16F 存储，CPU float32 参考允许最多 1 个 half ULP。
+阴影 1 沿生产中性设置旁路并精确复制 neural，其余两档真实派发，提交及 Fence 完成后读回。
+默认只运行 WARP；指定 `-Adapter nvidia` 或两者才使用 NVIDIA GPU，无硬件时不降级。
+Python 只需标准库，可用 `-PythonExecutable` 指定；编译器及固定宿主前提与其他定向测试相同。
+
+输出保留 fixture、逐项比较、Shader／编译输入身份、后端／驱动及完成凭据，编译中间文件自动收尾。
+`tools/look/shadow_reference.py selftest` 与 `tests/test_look_shadow_reference.py` 可独立验证参考数学和
+比较器。神经结果为合成输入：WARP／NATIVE_GPU 只证明结果编辑的响应，不记 NATIVE_NGX、
+完整 codec 输出、动态稳定性或游戏视觉通过。恢复参考为送入模型的 proxy；floor 及逐通道
+下限附近的残留沿生产保护保留。
+
 ## Fixture、合成序列与原始数据
 
 nr-nexus-offline-fixture/1 的 ControlMask case 规范化及验证以 control_mask_contracts.py 为准；

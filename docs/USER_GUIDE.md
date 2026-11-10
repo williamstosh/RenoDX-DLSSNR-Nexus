@@ -320,13 +320,15 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 | 基础：压暗 | **1** | **0–2** | 保留多少模型压暗，也包括不需要的暗晕。 |
 | 基础：颜色（Colour） | **1** | **0–2** | 模型饱和度改变量；0 保留游戏饱和度。 |
 | 基础：色相偏移 | **1** | **0–2** | 模型色调改变量；0 保留游戏色相。 |
-| 基础：阴影／中间调／高光 | **各 1** | **各 0–2** | 按原始图像的明暗区域缩放改变量。 |
+| 基础：阴影／中间调／高光 | **各 1** | **各 0–2** | 按送入模型的图像明暗区域缩放改变量。 |
 | 限制：最大提亮／最大压暗 | **各 0** | **各 0–4 档** | 亮度变化的柔性上／下限；**0 表示不限**，不是没有效果。 |
 | 限制：最大颜色变化 | **0** | **0–2 档** | 柔性颜色变化限制，**0 表示不限**。 |
 | 细节：大范围色调／精细细节 | **各 1** | **各 0–2** | 分别缩放宽广照明与小尺度变化。精细细节重塑输出，模型结构改变模型合成。 |
 | 细节半径 | **1%** | **0.25–4%** | 大范围与精细变化的分界，以图像高度为基准；增大可触及更宽光晕。 |
 | 光晕抑制 | **0** | **0–1** | 减少亮物体旁的暗晕，保留大范围表面压暗与预期阴影。 |
 | 暗物体旁的光晕 | **0** | **0–1** | 减少暗物体较亮一侧的暗裙边，该问题可能随叠层累积。 |
+
+想减少暗部的 NR 效果，可开启**调整 NR 的外观**，先将**阴影设为 0.5**，中间调与高光保持 1，再按画面需要降至 0。阴影参数同时缩减该区域的亮暗和颜色变化；极暗处仍可能保留模型变化，设为 0 也不等于在暗部完全关闭 NR。模型仍照常运行。
 
 | 时序控件 | 默认／范围或选项 | 依赖与用途 |
 | --- | --- | --- |
@@ -847,13 +849,15 @@ Upsampling is shared, reconstructing NR below output size. Inspect detail and st
 | Basic: Darkening | **1** | **0–2** | Amount of darkening retained, including unwanted dark halos. |
 | Basic: Colour | **1** | **0–2** | Scale of the model's saturation change; 0 keeps game saturation. |
 | Basic: Hue shift | **1** | **0–2** | Scale of the model's tint change; 0 keeps game hues. |
-| Basic: Shadows / Midtones / Highlights | **1 each** | **0–2 each** | Scale of the change in each tonal range of the original image. |
+| Basic: Shadows / Midtones / Highlights | **1 each** | **0–2 each** | Scale of the change in each tonal range of the image fed to the model. |
 | Limits: Max brightening / Max darkening | **0 each** | **0–4 stops each** | Soft ceiling/floor on brightness changes. **0 means no limit**, not no effect. |
 | Limits: Max colour change | **0** | **0–2 stops** | Soft colour-change limit; **0 means no limit**. |
 | Detail: Large-scale tone / Fine detail | **1 each** | **0–2 each** | Scale broad lighting changes or small-scale changes separately. Fine detail reshapes output; Model structure changes synthesis. |
 | Detail radius | **1%** | **0.25–4%** | Boundary between broad and fine change, relative to image height. A larger radius can reach wider halos. |
 | Halo suppression | **0** | **0–1** | Reduces dark halos next to bright objects while retaining broad surface darkening and intended shadows. |
 | Halo next to dark objects | **0** | **0–1** | Reduces the dark skirt on the brighter side of dark objects, which can accumulate with extra passes. |
+
+To reduce NR's effect in dark areas, enable **Adjust NR's look**, start with **Shadows at 0.5**, and leave Midtones and Highlights at 1. Lower Shadows toward 0 as needed. It reduces both brightness and colour changes in that range; very dark areas can retain model changes even at 0, so this does not fully disable NR there. The model still runs as usual.
 
 | Temporal control | Default / range or options | Dependency and use |
 | --- | --- | --- |
