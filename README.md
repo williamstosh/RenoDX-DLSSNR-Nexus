@@ -176,8 +176,9 @@ pwsh ./tools/build.ps1 -ToolRoot .local/shader-tools -Configuration Release
 产物为 **`build/Release/renodx-dlss5.addon64`**。
 
 软件回归入口为 `pwsh ./tools/run-tests.ps1 -Suite all -SoftwareOnly`。
-Vulkan 测试会在 `.local/` 准备固定且校验 SHA-256 的公开头文件；软件测试不需要
-NGX SDK 库，显式原生 NGX 用例才需要指定 SDK 库及 Runtime。
+Vulkan 测试会在 `.local/` 准备固定且校验 SHA-256 的公开头文件；`SoftwareOnly`
+只编译该原生 GPU 用例，省略此开关才能运行。软件测试不需要 NGX SDK 库，
+显式原生 NGX 用例才需要指定 SDK 库及 Runtime。
 
 开发时可用 `pwsh ./tools/preview-ui.ps1` 离屏查看生产菜单，Python 需 NumPy／Pillow
 （可传 `-PythonExecutable <python.exe>`）。直接打开 `artifacts/ui-snapshots/latest/index.html`。
@@ -398,8 +399,9 @@ The output is **`build/Release/renodx-dlss5.addon64`**.
 
 Run software regressions with `pwsh ./tools/run-tests.ps1 -Suite all -SoftwareOnly`.
 Vulkan tests prepare pinned, SHA-256-checked public headers under `.local/`.
-Software tests need no NGX SDK library; explicit native NGX cases require the
-SDK library and runtime paths.
+`SoftwareOnly` compiles this native GPU case without running it; omit that switch
+to execute it. Software tests need no NGX SDK library; explicit native NGX cases
+require the SDK library and runtime paths.
 
 For an offscreen view of the production menu, run `pwsh ./tools/preview-ui.ps1`
 with a Python containing NumPy/Pillow (`-PythonExecutable <python.exe>`).

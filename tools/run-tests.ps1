@@ -164,7 +164,11 @@ foreach ($item in $Suite) {
         @{path=$_; sha256=(Get-FileHash -LiteralPath $_).Hash}
     })
     $hashes | ConvertTo-Json | Set-Content -LiteralPath "$directory/inputs.json" -Encoding utf8
-    if (-not $BuildOnly) {
+    $skipVulkanRun = -not $BuildOnly -and $SoftwareOnly -and $item -eq 'vulkan-control-mask'
+    if ($skipVulkanRun) {
+        Write-Host 'vulkan-control-mask compiled; execution skipped under -SoftwareOnly because it requires a native Vulkan GPU and loader.'
+    }
+    if (-not $BuildOnly -and -not $skipVulkanRun) {
         if ($item -eq 'bridge-motion') {
             $bridgeCases = if ($BridgeCase.Count) { $BridgeCase } else { @('') }
             foreach ($case in $bridgeCases) {
@@ -201,8 +205,9 @@ foreach ($item in $Suite) {
             if ((Get-FileHash -LiteralPath $inputHash.path).Hash -ne $inputHash.sha256) { throw "Test input changed: $($inputHash.path)" }
         }
     }
-    @{suite=$item; build='passed'; run=$(if ($BuildOnly) { 'not_run' } else { 'passed' })} |
-        ConvertTo-Json | Set-Content -LiteralPath "$directory/result.json" -Encoding utf8
+    $result = @{suite=$item; build='passed'; run=$(if ($BuildOnly -or $skipVulkanRun) { 'not_run' } else { 'passed' })}
+    if ($skipVulkanRun) { $result.skip_reason = 'software_only_native_gpu_required' }
+    $result | ConvertTo-Json | Set-Content -LiteralPath "$directory/result.json" -Encoding utf8
     if (-not $BuildOnly) { Complete-TestOutput $directory }
 }
 if (-not $BuildOnly) { Complete-TestOutput $OutputDirectory }
