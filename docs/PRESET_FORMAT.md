@@ -28,11 +28,11 @@ JSON 与插件内部文本使用 UTF-8，Windows 文件操作使用宽路径；�
 
 | `scope` | 包含内容 |
 | --- | --- |
-| `quality` | `QUALITY`：基础模型强度、模型、style/tone/structure/skin/mask/model UI correction、基础层的全局 Look 结果，以及介入点、跟随输入尺寸、共同分辨率比例和上采样 |
-| `quality-multipass` | 上述画质，加 `MULTIPASS`：`NRPasses`（含基础层的总数）以及当前启用层的阶段、工作分辨率模式／比例、模型、强度、Transfer/Color、steering、独立结果和两组继承开关 |
+| `quality` | `QUALITY`：基础模型强度、模型、style/tone/structure/skin/mask/model UI correction、全局 ControlMask 参数、基础层的全局 Look 结果，以及介入点、跟随输入尺寸、共同分辨率比例和上采样 |
+| `quality-multipass` | 上述画质，加 `MULTIPASS`：`NRPasses`（含基础层的总数）以及当前启用层的阶段、工作分辨率模式／比例、模型、强度、Transfer/Color、steering、独立结果和继承开关 |
 | `full` | 所有非 `EXCLUDED` 字段，包括未启用层保存的独立值、`COMPATIBILITY` 和 `GENERAL`；仅已接入读取／应用入口的字段能够实际恢复 |
 
-`NRHookPoint`（整数 `0..2`）、`NRFollowInputRes`（boolean）、`NRResolutionScale`（数值 `0.33..1`）、`NRLookUpsample`（整数 `0..3`）现在归 `QUALITY`。这是既有 schema 1 的字段分类扩展，不升 schema；旧文件缺少这些字段时保留当前值。画质范围不包含 HDR、运动／深度、FG 策略、界面偏好、快捷键或诊断；`NRUICorrection` 仅指模型的图像 UI correction。基础 `NRTransferStrength`／`NRColorStrength` 归 `QUALITY`，附加层 `Transfer`／`Color` 归 `MULTIPASS`。上述全局分辨率键保留，上采样仍全链共享；逐层分辨率覆盖范围见下文。
+`NRHookPoint`（整数 `0..2`）、`NRFollowInputRes`（boolean）、`NRResolutionScale`（数值 `0.33..1`）、`NRLookUpsample`（整数 `0..3`）及全局 ControlMask 选项现在归 `QUALITY`。这是既有 schema 1 的字段分类扩展，不升 schema；旧文件缺少这些字段时保留当前值。ControlMask 模式范围为整数 `0..5`，blend 为整数 `0..3`，通道及 Depth Near/Far 为数值 `0..1`；Depth Far 必须大于 Depth Near。游戏 Depth/MVec 接入、HDR、FG 策略、界面偏好、快捷键和诊断仍不属于画质范围；`NRUICorrection` 仅指模型的图像 UI correction。基础 `NRTransferStrength`／`NRColorStrength` 归 `QUALITY`，附加层 `Transfer`／`Color` 归 `MULTIPASS`。上述全局分辨率键保留，上采样仍全链共享；逐层分辨率覆盖范围见下文。
 
 0.2.0 新增 `MULTIPASS` 字段 `NRPass2Stage`、`NRPass3Stage`、`NRPass4Stage`：整数 `0..3`，`0` 与上一层相同、`1` Render、`2` Upscaled、`3` Present；默认 `0`。`NRHookPoint` 保持旧映射，继续表示第 1 层。Stage 与模型、外观和结果继承独立；导入缺失字段不重置当前值，Full 包含未启用层，Quality + Multi-Pass 仅包含启用层。倒序或不可用组合保留请求并停用执行，由 Planner／诊断说明原因，不在持久化时改写请求。NR 模型选择及旧 Runtime 回退格式不变。
 
@@ -43,7 +43,10 @@ JSON 与插件内部文本使用 UTF-8，Windows 文件操作使用宽路径；�
 | `NRIntensity`、`NRLocalTone`、`NRLocalStructure` | 数值 `0..2` |
 | `NRTransferStrength`、`NRColorStrength` | 数值 `0..1` |
 | `NRSkinStructure` | 数值 `-1..1`，包括 UI 滑条不显示的负值语义 |
-| `NRSkinIndependent`、`NRAutoMask`、`NRUICorrection` | boolean |
+| `NRSkinIndependent`、`NRAutoMask`、`NRUICorrection`、`NRControlMaskEnabled` | boolean |
+| `NRControlMaskMode` | 整数 `0..5` |
+| `NRControlMaskBlendMode` | 整数 `0..3` |
+| `NRControlMaskRed`、`NRControlMaskGreen`、`NRControlMaskBlue`、`NRControlMaskDepthNear`、`NRControlMaskDepthFar` | 数值 `0..1`；Depth Far 必须大于 Depth Near |
 | `NRLookMode`、`NRLookStabilizeDetail` | boolean |
 | `NRLookStrength`、`NRLookBrighten`、`NRLookDarken`、`NRLookColour`、`NRLookHue`、`NRLookMaxColour`、`NRLookShadows`、`NRLookMidtones`、`NRLookHighlights`、`NRLookTone`、`NRLookDetail` | 数值 `0..2` |
 | `NRLookMaxBrighten`、`NRLookMaxDarken` | 数值 `0..4` |
@@ -63,7 +66,10 @@ JSON 与插件内部文本使用 UTF-8，Windows 文件操作使用宽路径；�
 | `Transfer`、`Color` | 数值 `0..1` |
 | `Style` | 整数 `0..2` |
 | `Skin` | 数值 `-1..1` |
-| `FollowPass1`、`AutoMask`、`UICorrection`、`LookFollowPass1` | boolean；继承不删除保存的独立值 |
+| `FollowPass1`、`AutoMask`、`UICorrection`、`LookFollowPass1`、`ControlMaskFollowPass1` | boolean；继承不删除保存的独立值 |
+| `ControlMaskMode` | 整数 `0..5` |
+| `ControlMaskBlendMode` | 整数 `0..3` |
+| `ControlMaskRed`、`ControlMaskGreen`、`ControlMaskBlue`、`ControlMaskDepthNear`、`ControlMaskDepthFar` | 数值 `0..1`；Depth Far 必须大于 Depth Near |
 | `LookMode` 至 `DetailStability` 的结果字段 | 与上表对应基础层字段同类型、同范围；没有逐层 `LookUpsample` |
 
 ## 工作分辨率覆盖 / Working-resolution overrides

@@ -2278,6 +2278,63 @@ inline std::atomic<float> control_mask_blue = 1.f;
 inline std::atomic<float> control_mask_depth_near = 0.7f;
 inline std::atomic<float> control_mask_depth_far = 0.9f;
 inline std::atomic_uint32_t control_mask_blend_mode = 0;
+struct ControlMaskParameters {
+  uint32_t mode;
+  uint32_t blend_mode;
+  std::array<float, 3> rgb;
+  float depth_near;
+  float depth_far;
+};
+struct PassControlMask {
+  std::atomic_bool follow{true};
+  std::atomic_uint32_t mode{kControlMaskRgb};
+  std::atomic_uint32_t blend_mode{0};
+  std::atomic<float> red{1.f};
+  std::atomic<float> green{1.f};
+  std::atomic<float> blue{1.f};
+  std::atomic<float> depth_near{0.7f};
+  std::atomic<float> depth_far{0.9f};
+};
+inline PassControlMask pass_control_mask[kMaxNrPasses - 1];
+inline ControlMaskParameters ResolveControlMaskParameters(uint32_t pass_index) {
+  if (pass_index > 0 && pass_index < kMaxNrPasses
+      && !pass_control_mask[pass_index - 1].follow.load(std::memory_order_relaxed)) {
+    const PassControlMask& pass = pass_control_mask[pass_index - 1];
+    return {pass.mode.load(std::memory_order_relaxed),
+            pass.blend_mode.load(std::memory_order_relaxed),
+            {std::clamp(pass.red.load(std::memory_order_relaxed), 0.f, 1.f),
+             std::clamp(pass.green.load(std::memory_order_relaxed), 0.f, 1.f),
+             std::clamp(pass.blue.load(std::memory_order_relaxed), 0.f, 1.f)},
+            pass.depth_near.load(std::memory_order_relaxed),
+            pass.depth_far.load(std::memory_order_relaxed)};
+  }
+  return {control_mask_mode.load(std::memory_order_relaxed),
+          control_mask_blend_mode.load(std::memory_order_relaxed),
+          {std::clamp(control_mask_red.load(std::memory_order_relaxed), 0.f, 1.f),
+           std::clamp(control_mask_green.load(std::memory_order_relaxed), 0.f, 1.f),
+           std::clamp(control_mask_blue.load(std::memory_order_relaxed), 0.f, 1.f)},
+          control_mask_depth_near.load(std::memory_order_relaxed),
+          control_mask_depth_far.load(std::memory_order_relaxed)};
+}
+inline bool ControlMaskModeEligible(
+    const ControlMaskParameters& parameters, bool depth_usable,
+    bool depth_has_provenance = true) {
+  return parameters.mode != kControlMaskDepthFar
+      || (depth_usable && depth_has_provenance);
+}
+inline bool AnyControlMaskPassEligible(
+    uint32_t first_pass, uint32_t pass_count, bool depth_usable,
+    bool depth_has_provenance, bool* depth_far_requested = nullptr) {
+  bool any_eligible = false;
+  bool any_depth_far = false;
+  for (uint32_t pass = 0; pass < pass_count; ++pass) {
+    const ControlMaskParameters parameters = ResolveControlMaskParameters(first_pass + pass);
+    any_depth_far |= parameters.mode == kControlMaskDepthFar;
+    any_eligible |= ControlMaskModeEligible(parameters, depth_usable, depth_has_provenance);
+  }
+  if (depth_far_requested != nullptr) *depth_far_requested = any_depth_far;
+  return any_eligible;
+}
 inline std::atomic_bool control_mask_refusal_logged{false};
 inline std::atomic_bool control_mask_failure_logged{false};
 inline std::atomic_bool control_mask_active_logged[2]{};
@@ -8397,10 +8454,9 @@ inline bool DispatchControlMask(
     ID3D12Device* device, ID3D12GraphicsCommandList* command_list,
     FinalResources& resources, ID3D12Resource* depth,
     const D3D12_RESOURCE_DESC& depth_desc, const EvaluationContract& frame,
-    uint32_t width, uint32_t height, uint32_t mode,
-    const std::array<float, 3>& rgb) {
+    uint32_t width, uint32_t height, const ControlMaskParameters& parameters) {
   uint32_t depth_ring = kControlMaskDepthRingSize;
-  if (mode == kControlMaskDepthFar) {
+  if (parameters.mode == kControlMaskDepthFar) {
     depth_ring = RingSlot(resources.control_mask_depth_views, depth,
                           &control_mask_depth_ring_recycled,
                           &control_mask_depth_ring_full,
@@ -8420,7 +8476,7 @@ inline bool DispatchControlMask(
   command_list->SetComputeRootDescriptorTable(
       1, DescriptorHeapSlot(heap_start, kDescriptorControlMaskUav, resources.descriptor_size));
   uint32_t depth_descriptor = kDescriptorControlMaskDepthNullSrv;
-  if (mode == kControlMaskDepthFar) {
+  if (parameters.mode == kControlMaskDepthFar) {
     if (resources.control_mask_depth_views[depth_ring] == nullptr) {
       depth->AddRef();
       resources.control_mask_depth_views[depth_ring] = depth;
@@ -8447,11 +8503,11 @@ inline bool DispatchControlMask(
     float depth_near, depth_far;
     uint32_t padding;
   } constants{
-      width, height, mode, width / 2, height / 2, rgb[0], rgb[1], rgb[2],
+      width, height, parameters.mode, width / 2, height / 2,
+      parameters.rgb[0], parameters.rgb[1], parameters.rgb[2],
       frame.depth_x, frame.depth_y, frame.input_width, frame.input_height,
       ResolveDepthInverted(frame.create_flags) ? 1u : 0u,
-      control_mask_depth_near.load(std::memory_order_relaxed),
-      control_mask_depth_far.load(std::memory_order_relaxed), 0};
+      parameters.depth_near, parameters.depth_far, 0};
   command_list->SetComputeRoot32BitConstants(2, 16, &constants, 0);
   command_list->Dispatch((width + 15) / 16, (height + 15) / 16, 1);
   UavBarrier(command_list, resources.control_mask);
@@ -10827,7 +10883,6 @@ inline bool ProcessInline(
     return false;
   }
   const uint32_t requested_stack = group.count;
-  const uint32_t control_mask_mode_snapshot = control_mask_mode.load(std::memory_order_relaxed);
   const bool control_mask_depth_format_supported =
       ControlMaskDepthViewFormat(depth_desc.Format) != DXGI_FORMAT_UNKNOWN;
   const bool control_mask_depth_usable = depth_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D
@@ -10835,7 +10890,12 @@ inline bool ProcessInline(
       && (depth_desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0
       && SubrectFits(current.depth_x, current.depth_y, current.input_width, current.input_height, depth_desc)
       && control_mask_depth_format_supported;
-  if (control_mask_mode_snapshot == kControlMaskDepthFar && !control_mask_depth_usable
+  const bool control_mask_depth_has_provenance = present == nullptr || present->guide_serial != 0;
+  bool control_mask_depth_far_requested = false;
+  const bool control_mask_mode_eligible = AnyControlMaskPassEligible(
+      group.begin, group.count, control_mask_depth_usable,
+      control_mask_depth_has_provenance, &control_mask_depth_far_requested);
+  if (control_mask_depth_far_requested && !control_mask_depth_usable
       && !control_mask_depth_refusal_logged.exchange(true, std::memory_order_relaxed)) {
     Log(reshade::log::level::warning,
         "ControlMask depth-far rule skipped: current depth format or subrect is unsupported");
@@ -10864,15 +10924,12 @@ inline bool ProcessInline(
       && execution_stage == stage_plan::Stage::UPSCALED) || control_mask_present_route)
       && !plan.mixed && group.begin == 0
       && nr_model::SupportsControlMask(direct_runtime_requirements.file_version);
-  const bool control_mask_depth_has_provenance = present == nullptr || present->guide_serial != 0;
-  if (control_mask_mode_snapshot == kControlMaskDepthFar && present != nullptr
+  if (control_mask_depth_far_requested && present != nullptr
       && !control_mask_depth_has_provenance
       && !control_mask_depth_refusal_logged.exchange(true, std::memory_order_relaxed)) {
     Log(reshade::log::level::warning,
         "ControlMask depth-far rule skipped: this Present has no real depth guide");
   }
-  const bool control_mask_mode_eligible = control_mask_mode_snapshot != kControlMaskDepthFar
-      || (control_mask_depth_usable && control_mask_depth_has_provenance);
   const bool control_mask_capture_eligible = control_mask_capture::Enabled()
       && gpu_timers_enabled.load(std::memory_order_relaxed)
       && control_mask_capture_route_eligible && control_mask_mode_eligible;
@@ -11674,6 +11731,8 @@ inline bool ProcessInline(
       history_reset_epoch.load(std::memory_order_relaxed);
   int32_t executed = -1;
   int32_t last_model_pass = -1;
+  bool last_model_used_control_mask = false;
+  uint32_t last_model_control_mask_mode = kControlMaskRgb;
   // v6 audit issue 23: `executed` alone cannot distinguish a frame that ran
   // the model from a rule-3 bypass frame whose passes only copied through.
   bool model_evaluated = false;
@@ -11899,21 +11958,14 @@ inline bool ProcessInline(
     if (timers_active) {
       gpu_timers::Mark(command_list, gpu_timers::PassEvalStart(pass));
     }
-    uint32_t mask_mode = kControlMaskRgb;
-    uint32_t mask_blend = 0;
-    std::array<float, 3> mask_rgb{1.f, 1.f, 1.f};
-    bool pass_control_mask_eligible = control_mask_eligible;
-    if (control_mask_eligible || control_mask_capture_eligible) {
-      mask_mode = control_mask_mode_snapshot;
-      mask_blend = control_mask_blend_mode.load(std::memory_order_relaxed);
-      if (mask_mode == kControlMaskRgb || mask_mode == kControlMaskRect
-          || mask_mode == kControlMaskDepthFar) {
-        mask_rgb = {
-            std::clamp(control_mask_red.load(std::memory_order_relaxed), 0.f, 1.f),
-            std::clamp(control_mask_green.load(std::memory_order_relaxed), 0.f, 1.f),
-            std::clamp(control_mask_blue.load(std::memory_order_relaxed), 0.f, 1.f)};
-      }
-    }
+    const ControlMaskParameters mask_parameters =
+        ResolveControlMaskParameters(group.begin + pass);
+    const uint32_t mask_mode = mask_parameters.mode;
+    const uint32_t mask_blend = mask_parameters.blend_mode;
+    const std::array<float, 3>& mask_rgb = mask_parameters.rgb;
+    bool pass_control_mask_eligible = control_mask_eligible
+        && ControlMaskModeEligible(mask_parameters, control_mask_depth_usable,
+                                   control_mask_depth_has_provenance);
     if (pass_control_mask_eligible) {
       const uint32_t model_bucket = feature.slots[pass].nr_preset == 2u ? 1u : 0u;
       if (!control_mask_active_logged[model_bucket].exchange(true, std::memory_order_relaxed)) {
@@ -11930,6 +11982,10 @@ inline bool ProcessInline(
                 << " auto_mask=" << PassModel(group.begin + pass, use_auto_mask, pass_auto_mask)
                 << " stage=DX12-Upscaled passes=" << requested_stack
                 << "; cost is included in the existing per-pass evaluate GPU timer";
+        if (mask_mode == kControlMaskDepthFar) {
+          message << " depth_range=" << mask_parameters.depth_near << ','
+                  << mask_parameters.depth_far;
+        }
         if (mask_mode == kControlMaskGreenRect || mask_mode == kControlMaskBlueRect) {
           message << " configured_rgb_ignored=1 base_rgba=1,1,1,1 local_zero_channel="
                   << (mask_mode == kControlMaskGreenRect ? 'G' : 'B')
@@ -11939,7 +11995,7 @@ inline bool ProcessInline(
       }
       pass_control_mask_eligible = DispatchControlMask(
           device, command_list, res, frame.depth, depth_desc, frame,
-          nr_input_width, nr_input_height, mask_mode, mask_rgb);
+          nr_input_width, nr_input_height, mask_parameters);
     }
     SetEvaluationParameters(
         feature,
@@ -12050,6 +12106,8 @@ inline bool ProcessInline(
       break;
     }
     last_model_pass = static_cast<int32_t>(pass);
+    last_model_used_control_mask = pass_control_mask_eligible;
+    last_model_control_mask_mode = mask_parameters.mode;
     if (recording != nullptr) {
       recording->model_recorded = true;
       recording->model_pass_mask |= 1u << pass;
@@ -12191,10 +12249,37 @@ inline bool ProcessInline(
   if (executed >= 0 && !NVSDK_NGX_FAILED(stack_failure)) {
     if (executed + 1 == static_cast<int32_t>(requested_stack) && last_model_pass >= 0) {
       const auto& model_resources = (last_model_pass == 1 && second_workset != nullptr ? *second_workset : res);
+      const uint64_t previous_capture_serial = (last_model_used_control_mask
+          ? screenshot::PendingModelCaptureSerial(command_list) : 0);
       screenshot::CaptureModelPair(
           device, command_list, model_resources.proxy, model_resources.proxy_state, model_resources.nr_output,
           model_resources.nr_output_state, present_generation, path_name,
           static_cast<uint32_t>(last_model_pass), requested_stack);
+      if (last_model_used_control_mask) {
+        const uint64_t capture_serial = screenshot::PendingModelCaptureSerial(command_list);
+        if (capture_serial != 0 && capture_serial != previous_capture_serial
+            && screenshot::PrepareDiagnosticPlane(
+                device, "control_mask", model_resources.control_mask,
+                model_resources.input_width, model_resources.input_height, std::nullopt, true, capture_serial)) {
+          Transition(command_list, model_resources.control_mask, model_resources.control_mask_state,
+                     D3D12_RESOURCE_STATE_COPY_SOURCE, 0u);
+          screenshot::RecordDiagnosticPlaneCopy(command_list, "control_mask",
+                                                model_resources.control_mask, capture_serial);
+          Transition(command_list, model_resources.control_mask, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                     model_resources.control_mask_state, 0u);
+          if (last_model_control_mask_mode == kControlMaskDepthFar
+              && screenshot::PrepareDiagnosticPlane(
+                  device, "control_mask_depth", frame.depth, frame.input_width, frame.input_height,
+                  screenshot::CaptureRect{frame.depth_x, frame.depth_y, frame.input_width, frame.input_height},
+                  true, capture_serial)) {
+            Transition(command_list, frame.depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                       D3D12_RESOURCE_STATE_COPY_SOURCE, 0u);
+            screenshot::RecordDiagnosticPlaneCopy(command_list, "control_mask_depth", frame.depth, capture_serial);
+            Transition(command_list, frame.depth, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, 0u);
+          }
+        }
+      }
     }
     if (res.hdr_mode != 0) {
       // v6 single encode-back: estimate the model's dark pedestal per block
@@ -12987,13 +13072,16 @@ inline bool ProcessInlinePreSR(
   const DXGI_FORMAT color_format = ConcreteResourceFormat(color_desc.Format);
   const uint8_t hdr_mode = FrameHdrMode(color_format, feature.create_flags);
   const uint32_t requested_stack = group.count;
-  const uint32_t control_mask_mode_snapshot = control_mask_mode.load(std::memory_order_relaxed);
   const bool control_mask_depth_usable = depth_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D
       && depth_desc.DepthOrArraySize == 1 && depth_desc.SampleDesc.Count == 1
       && (depth_desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0
       && SubrectFits(current.depth_x, current.depth_y, width, height, depth_desc)
       && ControlMaskDepthViewFormat(depth_desc.Format) != DXGI_FORMAT_UNKNOWN;
-  if (control_mask_mode_snapshot == kControlMaskDepthFar && !control_mask_depth_usable
+  bool control_mask_depth_far_requested = false;
+  const bool control_mask_mode_eligible = AnyControlMaskPassEligible(
+      group.begin, group.count, control_mask_depth_usable, true,
+      &control_mask_depth_far_requested);
+  if (control_mask_depth_far_requested && !control_mask_depth_usable
       && !control_mask_depth_refusal_logged.exchange(true, std::memory_order_relaxed)) {
     Log(reshade::log::level::warning,
         "ControlMask depth-far rule skipped: current depth format or subrect is unsupported");
@@ -13002,8 +13090,6 @@ inline bool ProcessInlinePreSR(
       && !direct_api.borrowed_core_context
       && group.stage == stage_plan::Stage::RENDER
       && nr_model::SupportsControlMask(direct_runtime_requirements.file_version);
-  const bool control_mask_mode_eligible = control_mask_mode_snapshot != kControlMaskDepthFar
-      || control_mask_depth_usable;
   const bool control_mask_requested = control_mask_enabled.load(std::memory_order_relaxed);
   const bool control_mask_eligible = control_mask_requested
       && control_mask_route_eligible && control_mask_mode_eligible;
@@ -13785,16 +13871,15 @@ inline bool ProcessInlinePreSR(
         res.nr_output_state,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     res.nr_output_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    bool pass_control_mask_eligible = control_mask_eligible;
-    const uint32_t mask_blend = control_mask_blend_mode.load(std::memory_order_relaxed);
-    const std::array<float, 3> mask_rgb{
-        std::clamp(control_mask_red.load(std::memory_order_relaxed), 0.f, 1.f),
-        std::clamp(control_mask_green.load(std::memory_order_relaxed), 0.f, 1.f),
-        std::clamp(control_mask_blue.load(std::memory_order_relaxed), 0.f, 1.f)};
+    const ControlMaskParameters mask_parameters =
+        ResolveControlMaskParameters(group.begin + pass);
+    bool pass_control_mask_eligible = control_mask_eligible
+        && ControlMaskModeEligible(mask_parameters, control_mask_depth_usable);
+    const uint32_t mask_blend = mask_parameters.blend_mode;
     if (pass_control_mask_eligible) {
       pass_control_mask_eligible = DispatchControlMask(
           device, command_list, res, frame.depth, depth_desc, frame,
-          nr_input_width, nr_input_height, control_mask_mode_snapshot, mask_rgb);
+          nr_input_width, nr_input_height, mask_parameters);
     }
     SetEvaluationParameters(
         feature,
@@ -22736,6 +22821,56 @@ inline constexpr Setting kSetPresentFgSource{
     "NRPresentFgSource", &present_fg_source, defaults::kPresentFgSource, SettingEffect::kNone};
 inline constexpr Setting kSetPresentBlockHudless{
     "NRPresentBlockHudless", &present_block_hudless, true, SettingEffect::kNone};
+// ControlMask parameters are sampled by the next eligible NR evaluation. They
+// do not trigger a general history reset or require a game restart.
+inline constexpr Setting kSetControlMaskEnabled{
+    "NRControlMaskEnabled", &control_mask_enabled, false, SettingEffect::kNone};
+inline constexpr Setting kSetControlMaskMode{
+    "NRControlMaskMode", &control_mask_mode, kControlMaskRgb, SettingEffect::kNone};
+inline constexpr Setting kSetControlMaskBlendMode{
+    "NRControlMaskBlendMode", &control_mask_blend_mode, 0u, SettingEffect::kNone};
+inline constexpr Setting kSetControlMaskRed{
+    "NRControlMaskRed", &control_mask_red, 1.f, SettingEffect::kNone};
+inline constexpr Setting kSetControlMaskGreen{
+    "NRControlMaskGreen", &control_mask_green, 1.f, SettingEffect::kNone};
+inline constexpr Setting kSetControlMaskBlue{
+    "NRControlMaskBlue", &control_mask_blue, 1.f, SettingEffect::kNone};
+inline constexpr Setting kSetControlMaskDepthNear{
+    "NRControlMaskDepthNear", &control_mask_depth_near, 0.7f, SettingEffect::kNone};
+inline constexpr Setting kSetControlMaskDepthFar{
+    "NRControlMaskDepthFar", &control_mask_depth_far, 0.9f, SettingEffect::kNone};
+inline constexpr Setting kSetPassControlMaskFollow[] = {
+    {"NRPass2ControlMaskFollowPass1", &pass_control_mask[0].follow, 1.f, SettingEffect::kNone},
+    {"NRPass3ControlMaskFollowPass1", &pass_control_mask[1].follow, 1.f, SettingEffect::kNone},
+    {"NRPass4ControlMaskFollowPass1", &pass_control_mask[2].follow, 1.f, SettingEffect::kNone}};
+inline constexpr Setting kSetPassControlMaskMode[] = {
+    {"NRPass2ControlMaskMode", &pass_control_mask[0].mode, kControlMaskRgb, SettingEffect::kNone},
+    {"NRPass3ControlMaskMode", &pass_control_mask[1].mode, kControlMaskRgb, SettingEffect::kNone},
+    {"NRPass4ControlMaskMode", &pass_control_mask[2].mode, kControlMaskRgb, SettingEffect::kNone}};
+inline constexpr Setting kSetPassControlMaskBlendMode[] = {
+    {"NRPass2ControlMaskBlendMode", &pass_control_mask[0].blend_mode, 0u, SettingEffect::kNone},
+    {"NRPass3ControlMaskBlendMode", &pass_control_mask[1].blend_mode, 0u, SettingEffect::kNone},
+    {"NRPass4ControlMaskBlendMode", &pass_control_mask[2].blend_mode, 0u, SettingEffect::kNone}};
+inline constexpr Setting kSetPassControlMaskRed[] = {
+    {"NRPass2ControlMaskRed", &pass_control_mask[0].red, 1.f, SettingEffect::kNone},
+    {"NRPass3ControlMaskRed", &pass_control_mask[1].red, 1.f, SettingEffect::kNone},
+    {"NRPass4ControlMaskRed", &pass_control_mask[2].red, 1.f, SettingEffect::kNone}};
+inline constexpr Setting kSetPassControlMaskGreen[] = {
+    {"NRPass2ControlMaskGreen", &pass_control_mask[0].green, 1.f, SettingEffect::kNone},
+    {"NRPass3ControlMaskGreen", &pass_control_mask[1].green, 1.f, SettingEffect::kNone},
+    {"NRPass4ControlMaskGreen", &pass_control_mask[2].green, 1.f, SettingEffect::kNone}};
+inline constexpr Setting kSetPassControlMaskBlue[] = {
+    {"NRPass2ControlMaskBlue", &pass_control_mask[0].blue, 1.f, SettingEffect::kNone},
+    {"NRPass3ControlMaskBlue", &pass_control_mask[1].blue, 1.f, SettingEffect::kNone},
+    {"NRPass4ControlMaskBlue", &pass_control_mask[2].blue, 1.f, SettingEffect::kNone}};
+inline constexpr Setting kSetPassControlMaskDepthNear[] = {
+    {"NRPass2ControlMaskDepthNear", &pass_control_mask[0].depth_near, 0.7f, SettingEffect::kNone},
+    {"NRPass3ControlMaskDepthNear", &pass_control_mask[1].depth_near, 0.7f, SettingEffect::kNone},
+    {"NRPass4ControlMaskDepthNear", &pass_control_mask[2].depth_near, 0.7f, SettingEffect::kNone}};
+inline constexpr Setting kSetPassControlMaskDepthFar[] = {
+    {"NRPass2ControlMaskDepthFar", &pass_control_mask[0].depth_far, 0.9f, SettingEffect::kNone},
+    {"NRPass3ControlMaskDepthFar", &pass_control_mask[1].depth_far, 0.9f, SettingEffect::kNone},
+    {"NRPass4ControlMaskDepthFar", &pass_control_mask[2].depth_far, 0.9f, SettingEffect::kNone}};
 inline constexpr Setting kSetFollowInputRes{
     "NRFollowInputRes", &nr_follow_input_res, defaults::kFollowInputRes,
     SettingEffect::kNone};
@@ -23208,7 +23343,10 @@ inline constexpr Setting kSetChainedHistory{
 
 // The sections, as the modern layout groups them.
 using SettingGroup = std::span<const Setting* const>;
-inline constexpr const Setting* kCoreSettings[] = {&kSetEnabled};
+inline constexpr const Setting* kCoreSettings[] = {
+    &kSetEnabled, &kSetControlMaskEnabled, &kSetControlMaskMode,
+    &kSetControlMaskBlendMode, &kSetControlMaskRed, &kSetControlMaskGreen,
+    &kSetControlMaskBlue, &kSetControlMaskDepthNear, &kSetControlMaskDepthFar};
 inline constexpr const Setting* kStrengthSettings[] = {&kSetIntensity};
 inline constexpr const Setting* kLookSettings[] = {
     &kSetPreset,         &kSetStyle,         &kSetLocalTone,
@@ -23243,7 +23381,19 @@ inline constexpr const Setting* kStackingSettings[] = {
     &kSetPassIntensity[2], &kSetPassTransfer[0], &kSetPassTransfer[1],
     &kSetPassTransfer[2], &kSetPassColor[0],     &kSetPassColor[1],
     &kSetPassColor[2],    &kSetPassFollow[0],    &kSetPassFollow[1],
-    &kSetPassFollow[2],   &kSetPassStyle[0],     &kSetPassStyle[1],
+    &kSetPassFollow[2],   &kSetPassControlMaskFollow[0],
+    &kSetPassControlMaskMode[0], &kSetPassControlMaskBlendMode[0],
+    &kSetPassControlMaskRed[0], &kSetPassControlMaskGreen[0],
+    &kSetPassControlMaskBlue[0], &kSetPassControlMaskDepthNear[0],
+    &kSetPassControlMaskDepthFar[0], &kSetPassControlMaskFollow[1],
+    &kSetPassControlMaskMode[1], &kSetPassControlMaskBlendMode[1],
+    &kSetPassControlMaskRed[1], &kSetPassControlMaskGreen[1],
+    &kSetPassControlMaskBlue[1], &kSetPassControlMaskDepthNear[1],
+    &kSetPassControlMaskDepthFar[1], &kSetPassControlMaskFollow[2],
+    &kSetPassControlMaskMode[2], &kSetPassControlMaskBlendMode[2],
+    &kSetPassControlMaskRed[2], &kSetPassControlMaskGreen[2],
+    &kSetPassControlMaskBlue[2], &kSetPassControlMaskDepthNear[2],
+    &kSetPassControlMaskDepthFar[2], &kSetPassStyle[0],     &kSetPassStyle[1],
     &kSetPassStyle[2],    &kSetPassLocalTone[0], &kSetPassLocalTone[1],
     &kSetPassLocalTone[2], &kSetPassStructure[0], &kSetPassStructure[1],
     &kSetPassStructure[2], &kSetPassSkin[0],      &kSetPassSkin[1],
@@ -23839,9 +23989,67 @@ inline void DrawNrToggle(const ui::PanelText& text) {
 
 }
 
+inline void DrawControlMaskValues(
+    const ui::PanelText& text, const Setting& mode_setting,
+    const Setting& blend_setting, const Setting& red_setting,
+    const Setting& green_setting, const Setting& blue_setting,
+    const Setting& depth_near_setting, const Setting& depth_far_setting,
+    const std::atomic_uint32_t& mode_value,
+    const std::atomic<float>& red_value, const std::atomic<float>& green_value,
+    const std::atomic<float>& blue_value, const std::atomic<float>& depth_near_value,
+    const std::atomic<float>& depth_far_value) {
+  constexpr const char* kControlMaskModes[] = {
+      "Solid RGB", "All 1s", "Black rectangle test", "Green rectangle test",
+      "Blue rectangle test", "Depth-far"};
+  ChoiceSetting(text, mode_setting, ui::text::kControlMaskMode,
+                kControlMaskModes, ui::text::kControlMaskModeTip);
+  constexpr const char* kControlMaskBlendModes[] = {"0", "1", "2", "3"};
+  ChoiceSetting(text, blend_setting, ui::text::kBlendMode,
+                kControlMaskBlendModes, ui::text::kControlMaskBlendTip);
+
+  const uint32_t mode = mode_value.load(std::memory_order_relaxed);
+  const bool rgb_values_used = mode == kControlMaskRgb || mode == kControlMaskRect
+      || mode == kControlMaskDepthFar;
+  ImGui::BeginDisabled(!rgb_values_used);
+  SliderSetting(text, red_setting, "R", 0.f, 1.f, "%.2f",
+                ui::text::kControlMaskChannelTip);
+  SliderSetting(text, green_setting, "G", 0.f, 1.f, "%.2f",
+                ui::text::kControlMaskChannelTip);
+  SliderSetting(text, blue_setting, "B", 0.f, 1.f, "%.2f",
+                ui::text::kControlMaskChannelTip);
+  ImGui::EndDisabled();
+
+  ImGui::BeginDisabled(mode != kControlMaskDepthFar);
+  const float depth_near = depth_near_value.load(std::memory_order_relaxed);
+  const float depth_far = depth_far_value.load(std::memory_order_relaxed);
+  SliderSetting(text, depth_near_setting, ui::text::kNearDepth,
+                0.f, std::max(0.f, depth_far - 0.000001f), "%.6f",
+                ui::text::kControlMaskDepthTip);
+  SliderSetting(text, depth_far_setting, ui::text::kFarDepth,
+                std::min(1.f, depth_near + 0.000001f), 1.f, "%.6f",
+                ui::text::kControlMaskDepthTip);
+  ImGui::EndDisabled();
+}
+
 inline void DrawSectionNrCore(const ui::PanelText& text) {
   SliderSetting(text, kSetIntensity, text.intensity, 0.f, 2.f, "%.2f",
                 ui::text::kModelStrengthTip);
+  ToggleSetting(text, kSetControlMaskEnabled, ui::text::kControlMask,
+                ui::text::kControlMaskTip);
+  bool settings_open = false;
+  if (text.modern) {
+    settings_open = ui::TreeNode("control_mask_settings", ui::text::kControlMaskSettings);
+  } else {
+    settings_open = ImGui::TreeNode(ui::ControlLabel(ui::text::kControlMaskSettings).c_str());
+  }
+  if (!settings_open) return;
+  DrawControlMaskValues(
+      text, kSetControlMaskMode, kSetControlMaskBlendMode,
+      kSetControlMaskRed, kSetControlMaskGreen, kSetControlMaskBlue,
+      kSetControlMaskDepthNear, kSetControlMaskDepthFar, control_mask_mode,
+      control_mask_red, control_mask_green, control_mask_blue,
+      control_mask_depth_near, control_mask_depth_far);
+  ImGui::TreePop();
 }
 
 // The model's steering rows of one stack pass (PLAN_NR_LOOK_V71.md 3 G):
@@ -24677,8 +24885,17 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
               &kModelSteering[pass].style, &kModelSteering[pass].local_tone,
               &kModelSteering[pass].structure, &kModelSteering[pass].skin,
               &kModelSteering[pass].auto_mask, &kModelSteering[pass].ui_correction};
+          const Setting* mask_settings[] = {
+              &(pass == 0 ? kSetControlMaskEnabled : kSetPassControlMaskFollow[pass - 1]),
+              &(pass == 0 ? kSetControlMaskMode : kSetPassControlMaskMode[pass - 1]),
+              &(pass == 0 ? kSetControlMaskBlendMode : kSetPassControlMaskBlendMode[pass - 1]),
+              &(pass == 0 ? kSetControlMaskRed : kSetPassControlMaskRed[pass - 1]),
+              &(pass == 0 ? kSetControlMaskGreen : kSetPassControlMaskGreen[pass - 1]),
+              &(pass == 0 ? kSetControlMaskBlue : kSetPassControlMaskBlue[pass - 1]),
+              &(pass == 0 ? kSetControlMaskDepthNear : kSetPassControlMaskDepthNear[pass - 1]),
+              &(pass == 0 ? kSetControlMaskDepthFar : kSetPassControlMaskDepthFar[pass - 1])};
           const size_t result_count = std::size(kPassLookResultSettings) / (kMaxNrPasses - 1);
-          const bool modified = AnyModified({node_settings})
+          const bool modified = AnyModified({node_settings}) || AnyModified({mask_settings})
               || (pass != 0 && (kSetPassResolutionMode[pass - 1].Modified() || kSetPassResolutionScale[pass - 1].Modified()))
               || (pass != 0 && AnyModified({SettingGroup(kPassLookResultSettings).subspan((pass - 1) * result_count, result_count)}))
               || (pass != 0 && (kSetPassFollow[pass - 1].Modified() || kSetPassLookFollow[pass - 1].Modified()))
@@ -24939,6 +25156,32 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
       } else {
         DrawSectionLookResult(text, pass, false);
       }
+    if (pass != 0) {
+      if (text.modern) {
+        ui::SectionCaption(ui::text::kControlMaskSettings, nullptr, false);
+      } else {
+        ui::SubCaption(ui::text::kControlMaskSettings);
+      }
+      ToggleSetting(text, kSetPassControlMaskFollow[pass - 1],
+                    ui::text::kControlMaskFollowPass1,
+                    ui::text::kControlMaskFollowTip);
+      if (!pass_control_mask[pass - 1].follow.load(std::memory_order_relaxed)) {
+        DrawControlMaskValues(
+            text, kSetPassControlMaskMode[pass - 1],
+            kSetPassControlMaskBlendMode[pass - 1],
+            kSetPassControlMaskRed[pass - 1],
+            kSetPassControlMaskGreen[pass - 1],
+            kSetPassControlMaskBlue[pass - 1],
+            kSetPassControlMaskDepthNear[pass - 1],
+            kSetPassControlMaskDepthFar[pass - 1],
+            pass_control_mask[pass - 1].mode,
+            pass_control_mask[pass - 1].red,
+            pass_control_mask[pass - 1].green,
+            pass_control_mask[pass - 1].blue,
+            pass_control_mask[pass - 1].depth_near,
+            pass_control_mask[pass - 1].depth_far);
+      }
+    }
     ImGui::PopID();
   }
 
@@ -27665,6 +27908,16 @@ inline void LoadConfiguration() {
     bool auto_mask = defaults::kAutoMask;
     bool ui_correction = defaults::kUiCorrection;
   } saved_steering[kMaxNrPasses - 1];
+  struct SavedControlMask {
+    bool follow = true;
+    uint32_t mode = kControlMaskRgb;
+    uint32_t blend_mode = 0;
+    float red = 1.f;
+    float green = 1.f;
+    float blue = 1.f;
+    float depth_near = 0.7f;
+    float depth_far = 0.9f;
+  } saved_pass_control_mask[kMaxNrPasses - 1];
 
   // Reads are unconditional (targeted migration, not reset): presence of the
   // first-party keys drives the migration decisions below.
@@ -27913,6 +28166,23 @@ inline void LoadConfiguration() {
         nullptr, kConfigSection, (prefix + "AutoMask").c_str(), steering.auto_mask);
     reshade::get_config_value(
         nullptr, kConfigSection, (prefix + "UICorrection").c_str(), steering.ui_correction);
+    SavedControlMask& mask = saved_pass_control_mask[pass - 1];
+    reshade::get_config_value(nullptr, kConfigSection,
+        (prefix + "ControlMaskFollowPass1").c_str(), mask.follow);
+    reshade::get_config_value(nullptr, kConfigSection,
+        (prefix + "ControlMaskMode").c_str(), mask.mode);
+    reshade::get_config_value(nullptr, kConfigSection,
+        (prefix + "ControlMaskBlendMode").c_str(), mask.blend_mode);
+    reshade::get_config_value(nullptr, kConfigSection,
+        (prefix + "ControlMaskRed").c_str(), mask.red);
+    reshade::get_config_value(nullptr, kConfigSection,
+        (prefix + "ControlMaskGreen").c_str(), mask.green);
+    reshade::get_config_value(nullptr, kConfigSection,
+        (prefix + "ControlMaskBlue").c_str(), mask.blue);
+    reshade::get_config_value(nullptr, kConfigSection,
+        (prefix + "ControlMaskDepthNear").c_str(), mask.depth_near);
+    reshade::get_config_value(nullptr, kConfigSection,
+        (prefix + "ControlMaskDepthFar").c_str(), mask.depth_far);
   }
   reshade::get_config_value(
       nullptr, kConfigSection, "NRFollowInputRes", saved_follow_input);
@@ -28348,6 +28618,30 @@ inline void LoadConfiguration() {
         steering.skin, defaults::kSkinStructure, -1.f, 1.f, kSetPassSkin[pass - 1].key);
     pass_auto_mask[pass - 1] = steering.auto_mask;
     pass_ui_correction[pass - 1] = steering.ui_correction;
+    const SavedControlMask& mask = saved_pass_control_mask[pass - 1];
+    PassControlMask& pass_mask = pass_control_mask[pass - 1];
+    pass_mask.follow = mask.follow;
+    pass_mask.mode = SanitizeEnumKey(mask.mode, kControlMaskRgb,
+        kControlMaskRgb, kControlMaskDepthFar, kSetPassControlMaskMode[pass - 1].key);
+    pass_mask.blend_mode = SanitizeEnumKey(mask.blend_mode, 0u, 0u, 3u,
+        kSetPassControlMaskBlendMode[pass - 1].key);
+    pass_mask.red = SanitizeFloatKey(mask.red, 1.f, 0.f, 1.f,
+        kSetPassControlMaskRed[pass - 1].key);
+    pass_mask.green = SanitizeFloatKey(mask.green, 1.f, 0.f, 1.f,
+        kSetPassControlMaskGreen[pass - 1].key);
+    pass_mask.blue = SanitizeFloatKey(mask.blue, 1.f, 0.f, 1.f,
+        kSetPassControlMaskBlue[pass - 1].key);
+    pass_mask.depth_near = SanitizeFloatKey(mask.depth_near, 0.7f, 0.f, 1.f,
+        kSetPassControlMaskDepthNear[pass - 1].key);
+    pass_mask.depth_far = SanitizeFloatKey(mask.depth_far, 0.9f, 0.f, 1.f,
+        kSetPassControlMaskDepthFar[pass - 1].key);
+    if (pass_mask.depth_far.load() <= pass_mask.depth_near.load()) {
+      pass_mask.depth_near = 0.7f;
+      pass_mask.depth_far = 0.9f;
+      Log(reshade::log::level::warning,
+          std::string(kSetPassControlMaskDepthFar[pass - 1].key)
+              + " must be greater than its Near threshold; using 0.7 and 0.9");
+    }
   }
   nr_follow_input_res = saved_follow_input;
   nr_resolution_scale = SanitizeFloatKey(

@@ -38,6 +38,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
                            .action = "r7-common", .width = width});
     }
     scenarios.push_back({.id = "r7-quality-expanded", .action = "r7-expanded", .language = 1});
+    scenarios.push_back({.id = "r7-control-mask-depth-fine", .action = "r7-depth-fine", .language = 1});
     scenarios.push_back({.id = "r7-quality-collapsed", .action = "r7-collapsed"});
     for (unsigned count = 1; count <= 4; ++count) {
       scenarios.push_back({.id = "r7-pass" + std::to_string(count) + (count == 2 ? "-p2" : ""),
@@ -351,7 +352,8 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     const bool round_seven = scenario.action.starts_with("r7-");
     std::vector<std::pair<const runtime::Setting*, float>> round_seven_restore;
     if (round_seven) {
-      for (const runtime::SettingGroup group : {runtime::SettingGroup(runtime::kStrengthSettings),
+      for (const runtime::SettingGroup group : {runtime::SettingGroup(runtime::kCoreSettings),
+               runtime::SettingGroup(runtime::kStrengthSettings),
                runtime::SettingGroup(runtime::kLookSettings), runtime::SettingGroup(runtime::kLookResultSettings),
                runtime::SettingGroup(runtime::kPassLookResultSettings), runtime::SettingGroup(runtime::kHookPointSettings),
                runtime::SettingGroup(runtime::kPerformanceSettings), runtime::SettingGroup(runtime::kStackingSettings)}) {
@@ -453,6 +455,12 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       runtime::stack_passes = scenario.passes;
       runtime::ui_selected_pass = scenario.selected_pass;
       runtime::look_mode = scenario.action != "r7-common";
+      if (scenario.action == "r7-depth-fine") {
+        runtime::control_mask_enabled = true;
+        runtime::control_mask_mode = runtime::kControlMaskDepthFar;
+        runtime::control_mask_depth_near = 0.9999f;
+        runtime::control_mask_depth_far = 0.99995f;
+      }
       for (unsigned pass = 0; pass < 3; ++pass) {
         runtime::pass_follow[pass] = true;
         runtime::pass_look_result[pass].follow = scenario.action != "r7-results";
@@ -1164,7 +1172,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
               .metadata = {{"name", "Synthetic snapshot import"}},
               .scope = (full_scope ? renodx::addons::dlss5::presets::Scope::FULL
                                   : renodx::addons::dlss5::presets::Scope::QUALITY_MULTIPASS),
-              .settings = {{"NRIntensity", 1.25}}};
+              .settings = {{"NRControlMaskMode", 5}}};
           check(runtime::CopyReportText(renodx::addons::dlss5::presets::Serialize(document)),
                 "seed isolated synthetic clipboard");
           click(find("paste_preset"));

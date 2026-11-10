@@ -2562,31 +2562,22 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
       GetUInt(parameters, NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X);
   const uint32_t depth_base_y =
       GetUInt(parameters, NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y);
-  const uint32_t control_mask_mode_snapshot = control_mask_mode.load(std::memory_order_relaxed);
   const NVSDK_NGX_ImageViewInfo_VK& depth_info = depth->Resource.ImageViewInfo;
   const bool control_mask_depth_usable = ControlMaskDepthFormat(depth_info.Format)
       && depth_info.Width != 0 && depth_info.Height != 0
       && depth_base_x <= depth_info.Width && render_width <= depth_info.Width - depth_base_x
       && depth_base_y <= depth_info.Height && render_height <= depth_info.Height - depth_base_y;
-  if (control_mask_requested && control_mask_mode_snapshot == kControlMaskDepthFar
+  bool control_mask_depth_far_requested = false;
+  const bool control_mask_mode_eligible = AnyControlMaskPassEligible(
+      0, passes, control_mask_depth_usable, true, &control_mask_depth_far_requested);
+  if (control_mask_requested && control_mask_depth_far_requested
       && !control_mask_depth_usable
       && !control_mask_depth_logged.exchange(true, std::memory_order_relaxed)) {
     Log(reshade::log::level::warning,
         "ControlMask depth-far is skipped on Vulkan because the current depth format or subrect is unsupported");
   }
-  std::array<float, 3> control_mask_rgb{1.f, 1.f, 1.f};
-  if (control_mask_mode_snapshot == kControlMaskRgb
-      || control_mask_mode_snapshot == kControlMaskRect
-      || control_mask_mode_snapshot == kControlMaskDepthFar) {
-    control_mask_rgb = {
-        std::clamp(control_mask_red.load(std::memory_order_relaxed), 0.f, 1.f),
-        std::clamp(control_mask_green.load(std::memory_order_relaxed), 0.f, 1.f),
-        std::clamp(control_mask_blue.load(std::memory_order_relaxed), 0.f, 1.f)};
-  }
-  const uint32_t control_mask_blend = control_mask_blend_mode.load(std::memory_order_relaxed);
   const bool control_mask_eligible = control_mask_requested && control_mask_version_supported
-      && control_mask_surface_ready
-      && (control_mask_mode_snapshot != kControlMaskDepthFar || control_mask_depth_usable);
+      && control_mask_surface_ready && control_mask_mode_eligible;
   const uint32_t motion_x = GetUInt(parameters, NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X);
   const uint32_t motion_y = GetUInt(parameters, NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y);
   // The shared contract helper uses only Width/Height from this description.
@@ -2610,15 +2601,14 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
   // Every pass of this frame resets against the same epoch (ProcessInline).
   const uint64_t chain_reset_epoch = history_reset_epoch.load(std::memory_order_relaxed);
   const resource_view output_view = {reinterpret_cast<uint64_t>(out.ImageView)};
-  const auto dispatch_control_mask = [&] {
+  const auto dispatch_control_mask = [&](const ControlMaskParameters& mask_parameters) {
     transition(kControlMask, resource_usage::unordered_access);
     const ControlMaskConstants constants{
-        width, height, control_mask_mode_snapshot, width / 2, height / 2,
-        control_mask_rgb[0], control_mask_rgb[1], control_mask_rgb[2],
+        width, height, mask_parameters.mode, width / 2, height / 2,
+        mask_parameters.rgb[0], mask_parameters.rgb[1], mask_parameters.rgb[2],
         depth_base_x, depth_base_y, render_width, render_height,
         ResolveDepthInverted(feature.create_flags) ? 1u : 0u,
-        control_mask_depth_near.load(std::memory_order_relaxed),
-        control_mask_depth_far.load(std::memory_order_relaxed), 0};
+        mask_parameters.depth_near, mask_parameters.depth_far, 0};
     const resource_view depth_view{reinterpret_cast<uint64_t>(depth_info.ImageView)};
     RecordControlMaskDispatch(cmd, depth, depth_view, views[kControlMask], constants);
     transition(kControlMask, resource_usage::shader_resource);
@@ -2671,12 +2661,15 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
     NrFeatureSlot& slot = feature.slots[pass];
     NVSDK_NGX_Parameter* const nr = slot.parameters;
     NVSDK_NGX_Resource_VK control_mask_vk{};
-    bool pass_control_mask_eligible = control_mask_eligible;
+    const ControlMaskParameters mask_parameters =
+        ResolveControlMaskParameters(pass);
+    bool pass_control_mask_eligible = control_mask_eligible
+        && ControlMaskModeEligible(mask_parameters, control_mask_depth_usable);
     if (pass_control_mask_eligible) {
-      dispatch_control_mask();
+      dispatch_control_mask(mask_parameters);
       control_mask_vk = ImageResource(views[kControlMask], images[kControlMask], width, height, false,
                                       VK_FORMAT_R8G8B8A8_UNORM);
-      SetControlMaskParameters(nr, &control_mask_vk, width, height, control_mask_blend);
+      SetControlMaskParameters(nr, &control_mask_vk, width, height, mask_parameters.blend_mode);
       slot.control_mask_bound = true;
       if (!control_mask_active_logged.exchange(true, std::memory_order_relaxed)) {
         Log(reshade::log::level::info,

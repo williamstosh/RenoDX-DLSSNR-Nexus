@@ -1318,8 +1318,16 @@ int main() {
       return false;
     };
     const auto switch_for_label = [&](const char* label) {
+      const std::string translated_label = ui::Tr(label);
+      const auto matches_label = [&](const std::string& displayed) {
+        if (displayed == label || displayed == translated_label) return true;
+        if (!displayed.ends_with("...")) return false;
+        const std::string_view prefix(displayed.data(), displayed.size() - 3);
+        return std::string_view(label).starts_with(prefix)
+            || std::string_view(translated_label).starts_with(prefix);
+      };
       for (const auto& text : rendered_text) {
-        if (text.text != label) continue;
+        if (!matches_label(text.text)) continue;
         for (const auto& [id, item] : items) {
           if (item.label == "##value" && std::abs(item.rect.GetCenter().y - text.rect.GetCenter().y) < 5.f) return item;
         }
@@ -1471,6 +1479,83 @@ int main() {
     click(switch_for_label(ui::text::kInheritResult));
     check(runtime::LookSettingsSnapshots(false)[1].halo == 0.7f,
           "custom results were not restored after disabling inheritance");
+    const auto saved_mask_mode = runtime::control_mask_mode.load();
+    const auto saved_mask_blend = runtime::control_mask_blend_mode.load();
+    const float saved_mask_red = runtime::control_mask_red.load();
+    const auto saved_pass_mask_mode = runtime::pass_control_mask[0].mode.load();
+    const auto saved_pass_mask_blend = runtime::pass_control_mask[0].blend_mode.load();
+    const float saved_pass_mask_red = runtime::pass_control_mask[0].red.load();
+    const float saved_pass_mask_near = runtime::pass_control_mask[0].depth_near.load();
+    const float saved_pass_mask_far = runtime::pass_control_mask[0].depth_far.load();
+    const float saved_panel_height = panel_height;
+    const ImVec2 saved_display_size = io.DisplaySize;
+    panel_height = 2400.f;
+    io.DisplaySize = ImVec2(panel_width, panel_height);
+    check(runtime::pass_control_mask[0].follow.load(),
+          "extra-pass ControlMask settings default to Pass 1");
+    frame();
+    const Item mask_follow_switch = switch_for_label(ui::text::kControlMaskFollowPass1);
+    check(!has_text(ui::text::kControlMaskMode),
+          "following pass exposes its inheritance switch and hides independent values");
+    click(mask_follow_switch);
+    frame();
+    check(!runtime::pass_control_mask[0].follow.load()
+              && has_text(ui::text::kControlMaskMode),
+          "turning off ControlMask inheritance exposes that pass's controls");
+    runtime::kSetPassControlMaskMode[0].Commit(runtime::kControlMaskDepthFar);
+    runtime::kSetPassControlMaskBlendMode[0].Commit(3.f);
+    runtime::kSetPassControlMaskRed[0].Commit(0.37f);
+    runtime::kSetPassControlMaskDepthNear[0].Commit(0.35f);
+    runtime::kSetPassControlMaskDepthFar[0].Commit(0.85f);
+    const auto independent_mask = runtime::ResolveControlMaskParameters(1);
+    check(independent_mask.mode == runtime::kControlMaskDepthFar
+              && independent_mask.blend_mode == 3
+              && std::abs(independent_mask.rgb[0] - 0.37f) < 0.001f
+              && std::abs(independent_mask.depth_near - 0.35f) < 0.001f
+              && std::abs(independent_mask.depth_far - 0.85f) < 0.001f,
+          "independent pass ControlMask resolves its own mode and numeric values");
+    char saved_mask_value[32]{};
+    GetPrivateProfileStringA(runtime::kConfigSection, "NRPass2ControlMaskMode",
+                              "missing", saved_mask_value, sizeof(saved_mask_value), ".\\ReShade.ini");
+    check(std::string(saved_mask_value) == "5",
+          "per-pass ControlMask choice persists under its own config key");
+    runtime::kSetPassControlMaskDepthFar[0].Commit(0.99995f);
+    runtime::kSetPassControlMaskDepthNear[0].Commit(0.9998f);
+    frame(); frame();
+    io.AddKeyEvent(ImGuiMod_Ctrl, true);
+    frame();
+    click(switch_for_label(ui::text::kNearDepth));
+    io.AddKeyEvent(ImGuiMod_Ctrl, false);
+    io.AddInputCharactersUTF8("0.999900");
+    frame(); frame();
+    io.AddKeyEvent(ImGuiKey_Enter, true);
+    frame();
+    io.AddKeyEvent(ImGuiKey_Enter, false);
+    frame(); frame();
+    check(std::abs(runtime::pass_control_mask[0].depth_near.load() - 0.9999f) < 0.000001f
+              && std::abs(runtime::pass_control_mask[0].depth_far.load() - 0.99995f) < 0.000001f,
+          "depth sliders accept distinct near-one thresholds through direct numeric input");
+    runtime::control_mask_mode = runtime::kControlMaskRect;
+    runtime::control_mask_blend_mode = 1;
+    runtime::control_mask_red = 0.25f;
+    runtime::kSetPassControlMaskFollow[0].Commit(1.f);
+    const auto followed_mask = runtime::ResolveControlMaskParameters(1);
+    check(followed_mask.mode == runtime::kControlMaskRect
+              && followed_mask.blend_mode == 1
+              && std::abs(followed_mask.rgb[0] - 0.25f) < 0.001f,
+          "following pass resolves the current Pass 1 settings immediately");
+    runtime::control_mask_mode = saved_mask_mode;
+    runtime::control_mask_blend_mode = saved_mask_blend;
+    runtime::control_mask_red = saved_mask_red;
+    runtime::kSetPassControlMaskFollow[0].Commit(1.f);
+    runtime::kSetPassControlMaskMode[0].Commit(static_cast<float>(saved_pass_mask_mode));
+    runtime::kSetPassControlMaskBlendMode[0].Commit(static_cast<float>(saved_pass_mask_blend));
+    runtime::kSetPassControlMaskRed[0].Commit(saved_pass_mask_red);
+    runtime::kSetPassControlMaskDepthNear[0].Commit(saved_pass_mask_near);
+    runtime::kSetPassControlMaskDepthFar[0].Commit(saved_pass_mask_far);
+    panel_height = saved_panel_height;
+    io.DisplaySize = saved_display_size;
+    frame();
     bool model_combo = false;
     for (const auto& [id, item] : items)
       if (item.label == "##model") model_combo = true;

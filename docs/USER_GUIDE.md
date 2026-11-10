@@ -232,6 +232,19 @@ F6 立即提示开关操作，随后状态更新为正在检查、正常运行�
 
 运行时未识别时模型选择不可用。不兼容的已保存 B 会回退 A 并保留选择。旧预设 3 仅作“自定义”兼容项，在双模型运行时解析为 A。
 
+#### 控制遮罩（ControlMask）
+
+ControlMask 是传给兼容 NR 运行时的遮罩图。开发版可在**画质 → 核心画质 → 控制遮罩**中实时开关；它只切换遮罩，不会关闭 NR，也不需要重启游戏。遮罩仅在支持的运行时和处理路径上生效。
+
+| 控件 | 默认／选项 | 用途 |
+| --- | --- | --- |
+| 遮罩模式 | **纯色 RGB** | 也可选全 1（白色）、矩形诊断图案或远景深度。诊断图案用于确认遮罩路径。 |
+| 混合模式（Blend mode） | **0**，**0–3** | 原值传给 NR 运行时；每个值的含义由运行时定义。 |
+| RGB | **1／1／1**，各 **0–1** | 设置纯色及黑矩形诊断模式的 RGB；远景深度模式按深度衰减红色通道。 |
+| Near／Far 深度 | **0.70／0.90** | 仅远景深度模式使用。在 Near 之前保留 NR 强度，在 Near 到 Far 之间逐渐衰减，到 Far 后降为零；Near 必须小于 Far。数值是游戏深度，不表示世界距离。 |
+
+开发版深度控件显示六位小数，可按住 **Ctrl 单击数值**精确输入。透视深度常集中在接近 1 的窄区间；若开启后连近处也失去 NR 效果，应将 Near／Far 向 1 调整并保留过渡区间，例如从 `0.990000／0.999900` 开始比较近处地面与远处物体，再按该游戏调整。默认阈值与示例都不是通用距离标定。
+
 #### 模型风格
 
 | 控件 | 默认／范围或选项 | 含义与依赖 |
@@ -324,6 +337,7 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 | 阶段 | **与上一层相同** | 上一层请求的阶段；与模型、外观和结果独立。 |
 | 工作分辨率 | **继承基础分辨率**；独立比例 **100%** | 继承基础值（非上一层）／Follow input／固定比例；固定比例 **33–100%**，不受 Stage、模型、外观或结果继承控制。 |
 | NR 模型：继承主模型／A／B | **继承主模型** | 主模型选择，包括自动解析与回退；与另外两种继承独立。 |
+| 遮罩设置继承（Use Pass 1 mask settings） | **开** | 默认使用 Pass 1 的遮罩模式、混合模式、RGB 和深度阈值。关闭后可为此 Pass 分别设置这些值。 |
 | 继承第 1 层外观（Same as pass 1） | **开** | 仅模型风格参数：风格、局部色调、模型结构、人物／皮肤、人物遮罩、UI 修正。不继承模型选择、模型强度、HDR 传递、Color 或结果。独立皮肤仍是全链设置。 |
 | 继承第 1 层结果设置 | **开** | 结果开关、强度、基础／限制／细节／光晕、稳定设置与细节稳定。关闭后可编辑本层结果；上采样仍全链共用。 |
 
@@ -738,6 +752,19 @@ The tables list individual setting defaults. Initial Balanced setup overrides mo
 
 Selection is unavailable before runtime identification. Incompatible saved B falls back to A while retaining the choice. Legacy preset 3 is a Custom compatibility entry and resolves to A on the dual-model runtime.
 
+#### Control mask
+
+ControlMask is a mask image sent to compatible NR runtimes. In development builds, toggle it live at **Quality → Core quality → Control mask**. This switch controls the mask only; Neural Rendering stays on, and the game does not need to restart. The mask is used only on supported runtimes and processing paths.
+
+| Control | Default / options | What it does |
+| --- | --- | --- |
+| Mask mode | **Solid RGB** | Also offers all 1s (white), rectangle diagnostic patterns and Depth-far. Diagnostic patterns help confirm that the mask path is active. |
+| Blend mode | **0**, **0–3** | Forwarded unchanged to the NR runtime; each value is defined by that runtime. |
+| RGB | **1 / 1 / 1**, each **0–1** | Sets RGB for Solid RGB and the black rectangle test; Depth-far fades the red channel according to depth. |
+| Near / Far depth | **0.70 / 0.90** | Used only by Depth-far. Retains NR strength before Near, fades it between Near and Far, and reaches zero beyond Far. Near must be lower than Far. Values use game depth, not world distance. |
+
+Development builds show six decimal places; **Ctrl-click a value** to enter it precisely. Perspective depth often occupies a narrow range near 1. If enabling the mask also removes NR from nearby objects, move Near / Far towards 1 while keeping a transition range. For example, start with `0.990000 / 0.999900`, compare nearby ground with distant objects, then adjust for the game. Defaults and examples are not universal distance calibrations.
+
 #### Model styling
 
 | Control | Default / range or choices | Meaning and dependency |
@@ -830,6 +857,7 @@ Turning result edits off keeps values; **Detail stability and shared upsampling 
 | Stage | **Same as previous** | The preceding pass's requested stage; independent of model, styling and results. |
 | Working resolution | **Inherit base resolution**; local scale **100%** | Base values (not the preceding pass) / Follow input / fixed scale **33–100%**. Independent of Stage, model, styling and result inheritance. |
 | NR model: Inherit Main Model / A / B | **Inherit Main Model** | The main model selection, including Auto resolution and fallback. Independent of the other inheritance switches. |
+| Use Pass 1 mask settings | **On** | Uses Pass 1's mask mode, blend mode, RGB and depth thresholds by default. Turn it off to tune these values for this pass. |
 | Same as pass 1 | **On** | Model steering only: Style, Local tone, Model structure, Character / skin, Character mask, UI correction. It does not inherit model choice, model strength, HDR transfer, Color or result settings. Independent skin remains a chain-wide setting. |
 | Inherit Pass 1 result settings | **On** | Result enable, strength, all shaping/limit/detail/halo settings, Stabilize settings and Detail stability. Turn off to edit this pass's own result controls. Shared upsampling remains shared. |
 
