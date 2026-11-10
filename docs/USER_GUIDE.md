@@ -236,6 +236,8 @@ F6 立即提示开关操作，随后状态更新为正在检查、正常运行�
 
 ControlMask 是传给兼容 NR 运行时的遮罩图。开发版可在**画质 → 核心画质 → 控制遮罩**中实时开关；它只切换遮罩，不会关闭 NR，也不需要重启游戏。遮罩仅在支持的运行时和处理路径上生效。
 
+当前开发版会忽略旧诊断配置 `NRControlMaskUseCoreContext=1`，使残留该配置的玩家也能正常选择 Render／Upscaled／Present。无需手动删除此键；更新插件并重启游戏后生效。
+
 | 控件 | 默认／选项 | 用途 |
 | --- | --- | --- |
 | 遮罩模式 | **纯色 RGB** | 也可选全 1（白色）、矩形诊断图案或远景深度。诊断图案用于确认遮罩路径。 |
@@ -755,6 +757,8 @@ Selection is unavailable before runtime identification. Incompatible saved B fal
 #### Control mask
 
 ControlMask is a mask image sent to compatible NR runtimes. In development builds, toggle it live at **Quality → Core quality → Control mask**. This switch controls the mask only; Neural Rendering stays on, and the game does not need to restart. The mask is used only on supported runtimes and processing paths.
+
+Current development builds ignore the old diagnostic setting `NRControlMaskUseCoreContext=1`, allowing players with this leftover setting to select Render / Upscaled / Present normally. There is no need to delete the key; update the addon and restart the game.
 
 | Control | Default / options | What it does |
 | --- | --- | --- |

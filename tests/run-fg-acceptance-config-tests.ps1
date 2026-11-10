@@ -144,8 +144,20 @@ $upscaledDepthFar = Get-ControlMaskSettings 'DepthFar' 0 $true
 $upscaledDepthFarOff = Get-ControlMaskSettings 'DepthFarOff' 0 $true
 if ($upscaledDepthFar.NRHookPoint -ne 0 -or $upscaledDepthFar.NRControlMaskUseCoreContext -ne 1 -or
     $upscaledDepthFarOff.NRHookPoint -ne 0 -or $upscaledDepthFarOff.NRControlMaskUseCoreContext -ne 1) {
-    throw 'Upscaled depth-far case did not preserve the requested Core Context route'
+    throw 'Legacy settings helper did not preserve the historical Core Context value'
 }
+$coreGuard = $ast.Find({param($node)
+    $node -is [Management.Automation.Language.IfStatementAst] -and
+    $node.Extent.Text.StartsWith('if ($ControlMaskUseCoreContext)')
+}, $true)
+if ($null -eq $coreGuard) { throw 'Missing retired Core Context entry guard' }
+$validateCore = [scriptblock]::Create('param($ControlMaskUseCoreContext)' + [Environment]::NewLine + $coreGuard.Extent.Text)
+& $validateCore $false
+$rejected = $false
+try { & $validateCore $true } catch {
+    $rejected = $_.Exception.Message -like '*is retired*owned backend*offline*fg-native*'
+}
+if (-not $rejected) { throw 'Retired Core Context request was not explicitly rejected' }
 $depthFarGuard = $ast.Find({param($node)
     $node -is [Management.Automation.Language.IfStatementAst] -and
     $node.Extent.Text.StartsWith('if ($ControlMaskCase -in @(''DepthFar''')
@@ -157,7 +169,6 @@ $ControlMaskCase = 'DepthFar'
 $Save = 'ManualSave_outdoor.sav'
 '@ + [Environment]::NewLine + $depthFarGuard.Extent.Text)
 & $validateDepthFar $true $false $false 'runtime.dll' 2 1 2 $false
-& $validateDepthFar $true $false $true 'runtime.dll' 2 1 0 $true
 foreach ($invalid in @(
     @($false,$false,$false,'runtime.dll',2,1,2,$false),
     @($true,$true,$false,'runtime.dll',2,1,2,$false),
@@ -168,6 +179,7 @@ foreach ($invalid in @(
     @($true,$false,$false,'runtime.dll',2,1,0,$false),
     @($true,$false,$false,'runtime.dll',2,1,2,$true),
     @($true,$false,$true,'runtime.dll',2,1,0,$false),
+    @($true,$false,$true,'runtime.dll',2,1,0,$true),
     @($true,$false,$false,'runtime.dll',2,1,0,$true))) {
     $rejected = $false
     try { & $validateDepthFar @invalid } catch { $rejected = $true }

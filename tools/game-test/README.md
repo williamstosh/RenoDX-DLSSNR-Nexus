@@ -111,7 +111,7 @@ runner 与 wrapper 复用公共测试产物生命周期。结果写出后自动�
 
 已授权的历史游戏产物清理可运行 `python tools/game-test/cleanup_artifacts.py --root artifacts`，只接入有完整 guard／恢复／退出证据的旧运行；游戏或 CrashReporter 仍在运行时拒绝执行。
 
-`-ControlMaskUseCoreContext` 用于 `-SrOnly`、单 Pass Upscaled 的受保护 ControlMask 诊断。depth-far case 可走 Present，或走 Upscaled + Core Context；后一路径同样要求 `-SrOnly`。退出时恢复启动前值。
+生产路径使用 owned backend。旧诊断参数 `-ControlMaskUseCoreContext`／`--control-mask-use-core-context` 保留名称，但在安装和游戏启动前明确拒绝；不再通过游戏入口启用 P0 Core 借用。depth-far 游戏 case 使用 Present 路径。P0 Core 诊断改用离线 `tools/run-tests.ps1 -Suite fg-native -NativeCase control-mask-safety`；真实 NGX 单阶段诊断可选 `control-mask-native-ngx-toggle`，沿用该入口要求的 SDK／Runtime／ProjectID 参数。
 `-ControlMaskAutoMask 0|1` 与 `-ControlMaskBlendMode 0..3` 可在同一受保护 case 上覆盖对应测试参数；省略保留 case 默认值。无显式 case 时提前拒绝，receipt 记录请求值，实际采用仍须核对运行日志。
 `fg_acceptance.py` 可用 `--capture-script <tools/ 或 tmp/ 下的 Python 脚本>` 将 capture-ready 阶段委托给受保护 runner 启动的采样流程；`--start-nr-disabled` 使该流程从 NR OFF 开始，并且必须与采样脚本同时指定。省略时保持原有静态采集。
 

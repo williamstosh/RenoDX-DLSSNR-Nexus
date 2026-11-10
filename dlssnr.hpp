@@ -28242,10 +28242,13 @@ inline void LoadConfiguration() {
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskEnabled", saved_control_mask_enabled);
   bool saved_control_mask_use_core_context = false;
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskUseCoreContext", saved_control_mask_use_core_context);
-  control_mask_use_core_context.store(saved_control_mask_use_core_context);
+  // The P0 backend is scoped to a successful Upscaled SR callback. Production
+  // supports Render/Present and stage changes through its owned runtime.
+  // Keep the old INI key intact; offline fixtures still select P0 directly.
+  control_mask_use_core_context.store(false);
   if (saved_control_mask_use_core_context) {
     Log(reshade::log::level::warning,
-        "NRControlMaskUseCoreContext enabled: diagnostic Upscaled P0 only; requires current successful SR, no Init/Shutdown");
+        "NRControlMaskUseCoreContext is a retired P0 diagnostic setting; ignored, using the production runtime for all stages");
   }
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskMode", saved_control_mask_mode);
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskBlendMode", saved_control_mask_blend_mode);

@@ -249,6 +249,11 @@ int main(int argc, char** argv) {
         } else if (test_case == "pass-result-invalid") {
           addon += "NRPass2LookFollowPass1=0\r\nNRPass2LookMode=1\r\nNRPass2LookStrength=nan\r\nNRPass2LookHalo=99\r\nNRPass2LookDetailRadius=-1\r\nNRPass2LookStabilize=9\r\nNRPass2LookStabilizeMs=9999\r\nNRPass2DetailStability=9\r\n";
         }
+      } else if (test_case.starts_with("legacy-core-")) {
+        addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\n"
+                 "NRControlMaskUseCoreContext=1\r\nNRControlMaskEnabled=1\r\nNRHookPoint=";
+        addon += (test_case == "legacy-core-render" ? "1" : test_case == "legacy-core-present" ? "2" : "0");
+        addon += "\r\n";
       } else if (test_case == "capability-ui") {
         addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\n";
       } else if (test_case.starts_with("nr-resolution-") || test_case == "profiles") {
@@ -304,6 +309,27 @@ int main(int argc, char** argv) {
     if (test_case == "fail-sdr-version") failed_key = "NRPresentSdrRestoreConfigVersion";
     if (test_case == "fail-hdr-version") failed_key = "NRPresentHdrPedestalConfigVersion";
     runtime::LoadConfiguration();
+    if (test_case.starts_with("legacy-core-")) {
+      const uint32_t expected_hook = (test_case == "legacy-core-render" ? 1u
+          : test_case == "legacy-core-present" ? 2u : 0u);
+      Check(!runtime::control_mask_use_core_context.load(), "legacy P0 key cannot select the production backend");
+      Check(runtime::hook_point.load() == expected_hook && runtime::control_mask_enabled.load(),
+            "legacy P0 key preserves the requested stage and enabled mask");
+      Check(Read("NRControlMaskUseCoreContext") == "1" && !WasWritten("NRControlMaskUseCoreContext"),
+            "legacy diagnostic key is retained without writing it back");
+      for (const char* value : {"0", static_cast<const char*>(nullptr)}) {
+        Check(WritePrivateProfileStringA("RenoDX.DLSS5", "NRControlMaskUseCoreContext", value, ini_path.c_str()),
+              "set disabled or absent legacy diagnostic key");
+        Check(WritePrivateProfileStringA("RenoDX.DLSS5", "NRControlMaskEnabled", "0", ini_path.c_str()),
+              "disable mask independently of the backend");
+        runtime::control_mask_use_core_context = true;
+        runtime::LoadConfiguration();
+        Check(!runtime::control_mask_use_core_context.load() && !runtime::control_mask_enabled.load()
+                  && runtime::hook_point.load() == expected_hook,
+              "disabled and missing P0 keys use production backend without changing the stage");
+        Check(!WasWritten("NRControlMaskUseCoreContext"), "configuration reload does not persist the diagnostic key");
+      }
+    }
     if (test_case == "native-prefg-resolution-config") {
       Check(runtime::experimental_native_prefg_resolution.load(), "explicit INI enables the experimental PreFG pair");
       Check(Read("NRExperimentalNativePreFgResolution") == "1", "registered experimental key survives configuration load");
@@ -1221,7 +1247,7 @@ int main(int argc, char** argv) {
       Check(Read("UnregisteredPersistentKnob") == "42", "reset preserves unregistered key");
     } else if (test_case.starts_with("nr-model-") || test_case.starts_with("nr-stage-") || test_case.starts_with("pass-result-")
                || test_case.starts_with("nr-resolution-") || test_case == "profiles" || test_case == "capability-ui"
-               || test_case == "native-prefg-resolution-config") {
+               || test_case == "native-prefg-resolution-config" || test_case.starts_with("legacy-core-")) {
       CheckPair("1");
       Check(!Configuration().inherited && Configuration().scope == scope::Scope::FINAL_PRESENT_AND_PRE_FG,
             "model selection leaves explicit restore scope unchanged");

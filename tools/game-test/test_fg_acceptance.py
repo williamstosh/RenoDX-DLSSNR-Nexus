@@ -216,9 +216,9 @@ $upscaled = @{settings=$taskModelSettings
                         fg_acceptance.main()
             self.assertEqual(error.exception.code, 2)
 
-    def test_depth_far_route_accepts_present_or_upscaled_core_context(self):
+    def test_depth_far_route_accepts_only_owned_present(self):
         self.assertTrue(fg_acceptance.supported_control_mask_route(2, False, 0))
-        self.assertTrue(fg_acceptance.supported_control_mask_route(0, True, None))
+        self.assertFalse(fg_acceptance.supported_control_mask_route(0, True, None))
         self.assertFalse(fg_acceptance.supported_control_mask_route(2, True, 0))
         self.assertFalse(fg_acceptance.supported_control_mask_route(2, False, 1))
         self.assertFalse(fg_acceptance.supported_control_mask_route(0, False, 0))
@@ -260,32 +260,60 @@ $upscaled = @{settings=$taskModelSettings
             self.assertEqual(error.exception.code, 2)
             self.assertFalse((root / 'output').exists())
 
-    def test_core_context_requires_protected_control_mask_case(self):
+    def test_core_context_powershell_rejected_before_installation(self):
         script = fg_acceptance.ROOT / 'tools' / 'run-fg-acceptance.ps1'
         base = ['pwsh.exe', '-NoProfile', '-File', str(script),
                 '-CandidateManifest', 'missing-test-manifest', '-GameBinaryDirectory', 'missing-test-game',
                 '-Python', 'missing-test-python', '-ControlMaskUseCoreContext',
                 '-Save', 'ManualSave_outdoor.sav']
-        for overrides, message in (([], 'requires an explicit protected -ControlMaskCase'),
-                (['-ControlMaskCase', 'T0'], 'ControlMask requires -RestoreInstallation'),
-                (['-ControlMaskCase', 'T0', '-RestoreInstallation', '-SrOnly',
-                  '-NrRuntimePath', 'runtime', '-NrPreset', '1', '-NrPasses', '2'],
-                 'ControlMask requires -RestoreInstallation'),
-                (['-ControlMaskCase', 'DepthFarOff', '-RestoreInstallation',
-                  '-NrRuntimePath', 'runtime', '-NrPreset', '1', '-NrPasses', '1', '-NrHookPoint', '2'],
-                 'Depth-far requires a restored one-pass A/B case')):
+        for overrides in ([],
+                ['-ControlMaskCase', 'T0'],
+                ['-ControlMaskCase', 'T0', '-RestoreInstallation', '-SrOnly',
+                 '-NrRuntimePath', 'runtime', '-NrPreset', '1', '-NrPasses', '2'],
+                ['-ControlMaskCase', 'DepthFarOff', '-RestoreInstallation',
+                 '-NrRuntimePath', 'runtime', '-NrPreset', '1', '-NrPasses', '1', '-NrHookPoint', '2'],
+                ['-ControlMaskCase', 'DepthFar', '-RestoreInstallation', '-SrOnly',
+                 '-NrRuntimePath', 'runtime', '-NrPreset', '2', '-NrPasses', '1', '-NrHookPoint', '0'],
+                ['-InstallOnly']):
             with self.subTest(overrides=overrides):
                 result = subprocess.run(base + overrides, capture_output=True, text=True,
                                         encoding='utf-8', timeout=15)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn(message, result.stderr)
+                self.assertIn('-ControlMaskUseCoreContext is retired', result.stderr)
+                self.assertIn('production uses the owned backend', result.stderr)
+                self.assertIn('offline tools/run-tests.ps1', result.stderr)
+                self.assertIn('-Suite fg-native', result.stderr)
 
-    def test_core_context_static_request_and_restart_contract(self):
+    def test_core_context_cli_rejected_before_output_or_processes(self):
+        for suffix in ([], ['--control-mask-case', 'depth-far'],
+                ['--control-mask-case', 'depth-far-off', '--restore-installation',
+                 '--nr-hook-point', '0', '--nr-passes', '1', '--nr-runtime-path', 'runtime.dll',
+                 '--save', 'ManualSave_outdoor.sav']):
+            arguments = ['fg_acceptance.py', '--candidate-manifest', 'missing-manifest',
+                '--game-binary-directory', 'missing-game', '--control-mask-use-core-context', *suffix]
+            with self.subTest(suffix=suffix), \
+                    mock.patch.object(fg_acceptance.sys, 'argv', arguments), \
+                    mock.patch.object(fg_acceptance, 'local_output_root') as output, \
+                    mock.patch.object(fg_acceptance.subprocess, 'run') as run, \
+                    mock.patch.object(fg_acceptance.subprocess, 'Popen') as launch, \
+                    mock.patch('sys.stderr') as stderr:
+                with self.assertRaises(SystemExit) as error:
+                    fg_acceptance.main()
+                self.assertEqual(error.exception.code, 2)
+                message = ''.join(call.args[0] for call in stderr.write.call_args_list)
+                self.assertIn('--control-mask-use-core-context is retired', message)
+                self.assertIn('production uses the owned backend', message)
+                self.assertIn('offline tools/run-tests.ps1 -Suite fg-native', message)
+                output.assert_not_called()
+                run.assert_not_called()
+                launch.assert_not_called()
+
+    def test_core_context_not_enabled_by_model_overrides(self):
         script = (fg_acceptance.ROOT / 'tools' / 'run-fg-acceptance.ps1').read_text(encoding='utf-8')
-        self.assertIn('if ($ControlMaskUseCoreContext) { $taskModelSettings.NRControlMaskUseCoreContext = 1 }', script)
+        self.assertNotIn('$taskModelSettings.NRControlMaskUseCoreContext = 1', script)
         self.assertIn('requested_control_mask_use_core_context=[bool]$ControlMaskUseCoreContext', script)
         self.assertIn('-Parameters $PSBoundParameters', script)
-        self.assertEqual(script.count('$taskModelSettings.NRControlMaskUseCoreContext'), 1)
+        self.assertEqual(script.count('$taskModelSettings.NRControlMaskUseCoreContext'), 0)
 
     def test_model_overrides_require_full_restoration_before_input_access(self):
         script = fg_acceptance.ROOT / 'tools' / 'run-fg-acceptance.ps1'
@@ -554,9 +582,8 @@ class CaptureTests(unittest.TestCase):
                 '--game-binary-directory', str(game), '--target', str(target),
                 '--save', 'ManualSave_outdoor.sav',
                 '--output-root', str(root / 'output'), '--hdr-tool', str(tool), '--restore-installation',
-                '--nr-hook-point', '0', '--nr-passes', '1', '--telemetry-seconds', '2',
+                '--nr-hook-point', '2', '--nr-passes', '1', '--telemetry-seconds', '2',
                 '--control-mask-case', 'depth-far-off', '--nr-runtime-path', str(runtime),
-                '--control-mask-use-core-context',
                 '--capture-script', str(capture_script),
                 '--start-nr-disabled',
                 '--enable-streamline-fallback', '--xefg-ui-composition', '0']
@@ -575,7 +602,7 @@ class CaptureTests(unittest.TestCase):
             printed.assert_any_call('CAPTURE_STARTED=' + str(run), flush=True)
             command = launch.call_args.args[0]
             self.assertIn('-RestoreInstallation', command)
-            self.assertEqual(command[command.index('-NrHookPoint') + 1], '0')
+            self.assertEqual(command[command.index('-NrHookPoint') + 1], '2')
             self.assertEqual(command[command.index('-NrPasses') + 1], '1')
             self.assertEqual(command[command.index('-TelemetrySeconds') + 1], '2')
             self.assertIn('-ControlMaskCase', command)
@@ -583,8 +610,8 @@ class CaptureTests(unittest.TestCase):
             self.assertIn('-CaptureScript', command)
             self.assertEqual(command[command.index('-CaptureScript') + 1], str(capture_script.resolve()))
             self.assertIn('-StartNrDisabled', command)
-            self.assertIn('-ControlMaskUseCoreContext', command)
-            self.assertIn('-SrOnly', command)
+            self.assertNotIn('-ControlMaskUseCoreContext', command)
+            self.assertNotIn('-SrOnly', command)
             self.assertIn('-EnableStreamlineFallback', command)
             self.assertEqual(command[command.index('-XeFGUiComposition') + 1], '0')
             self.assertEqual(command[command.index('-TargetPath') + 1], str(target.resolve()))

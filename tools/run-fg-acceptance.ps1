@@ -45,6 +45,9 @@ param(
     [switch]$AddonAbsentControl
 )
 $ErrorActionPreference = 'Stop'
+if ($ControlMaskUseCoreContext) {
+    throw '-ControlMaskUseCoreContext is retired: production uses the owned backend. Use the offline tools/run-tests.ps1 -Suite fg-native entry for P0 Core diagnostics.'
+}
 if ($ModelDiagnosticCapture -and ($InstallOnly -or -not $RestoreInstallation)) {
     throw '-ModelDiagnosticCapture requires a restored test session, not InstallOnly.'
 }
@@ -79,9 +82,6 @@ if ($taskHasMaskNear) {
         throw 'ControlMask depth thresholds must satisfy 0 <= Near < Far <= 1.'
     }
 }
-if ($ControlMaskUseCoreContext -and -not $ControlMaskCase) {
-    throw '-ControlMaskUseCoreContext requires an explicit protected -ControlMaskCase.'
-}
 if ($ControlMaskGpuSamples -gt 0 -and (-not $ControlMaskCase -or -not $GpuTimers)) {
     throw 'ControlMask raw capture requires an explicit protected ControlMask case and existing -GpuTimers.'
 }
@@ -91,9 +91,8 @@ if ($ControlMaskGpuSamples -gt 0 -and $ControlMaskGpuWarmupSeconds -ge $ControlM
 if ($ControlMaskCase -in @('DepthFar','DepthFarOff') -and
     (-not $RestoreInstallation -or $InstallOnly -or -not $NrRuntimePath -or
         $NrPreset -notin @(1,2) -or $NrPasses -ne 1 -or
-        -not ((($NrHookPoint -eq 2) -and -not $SrOnly -and -not $ControlMaskUseCoreContext) -or
-            (($NrHookPoint -eq 0) -and $SrOnly -and $ControlMaskUseCoreContext)))) {
-    throw 'Depth-far requires a restored one-pass A/B case using either Present hook or Upscaled with Core Context.'
+        $NrHookPoint -ne 2 -or $SrOnly -or $ControlMaskUseCoreContext)) {
+    throw 'Depth-far requires a restored one-pass A/B case using the Present hook and owned backend.'
 }
 if ($ControlMaskCase -and [string]::IsNullOrWhiteSpace($Save)) {
     throw 'ControlMask game cases require an explicit -Save for this launch.'
@@ -105,13 +104,6 @@ if ($ControlMaskCase -and $ControlMaskCase -notin @('DepthFar','DepthFarOff') -a
     (-not $RestoreInstallation -or $InstallOnly -or -not $SrOnly -or
         -not $NrRuntimePath -or $NrPreset -notin @(1,2) -or $NrPasses -gt 1 -or $NrHookPoint -gt 0)) {
     throw 'ControlMask requires -RestoreInstallation, -SrOnly, exact -NrRuntimePath, explicit model A/B and single-pass Upscaled.'
-}
-if ($ControlMaskUseCoreContext -and
-    (($ControlMaskCase -in @('DepthFar','DepthFarOff') -and
-        (-not $SrOnly -or -not $RestoreInstallation -or $InstallOnly -or $NrHookPoint -ne 0)) -or
-        ($ControlMaskCase -notin @('DepthFar','DepthFarOff') -and
-            (-not $SrOnly -or -not $RestoreInstallation -or $InstallOnly -or $NrHookPoint -gt 0)))) {
-    throw '-ControlMaskUseCoreContext requires a restored, SR-only, single-pass Upscaled ControlMask case.'
 }
 if ($ManualImeSession -and ($Scenario -ne 'menu' -or $CaptureHoldSeconds -eq 0 -or $InstallOnly -or -not $RestoreInstallation)) {
     throw '-ManualImeSession requires menu, a nonzero hold and -RestoreInstallation; installation-only is not supported.'
@@ -557,7 +549,6 @@ try {
         foreach ($taskSetting in (Get-ControlMaskSettings $ControlMaskCase $NrHookPoint ([bool]$ControlMaskUseCoreContext)).GetEnumerator()) {
             $taskModelSettings[$taskSetting.Key] = $taskSetting.Value
         }
-        if ($ControlMaskUseCoreContext) { $taskModelSettings.NRControlMaskUseCoreContext = 1 }
         if ($ControlMaskAutoMask -ge 0) { $taskModelSettings.NRAutoMask = $ControlMaskAutoMask }
         if ($ControlMaskBlendMode -ge 0) { $taskModelSettings.NRControlMaskBlendMode = $ControlMaskBlendMode }
         if ($taskHasMaskNear) {

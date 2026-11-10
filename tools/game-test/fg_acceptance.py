@@ -151,8 +151,7 @@ def capture(run, nr_off_control=False, check_addon_menu=False):
 
 
 def supported_control_mask_route(nr_hook_point, use_core_context, xefg_ui_composition):
-    return ((nr_hook_point == 2 and not use_core_context and xefg_ui_composition == 0)
-            or (nr_hook_point == 0 and use_core_context))
+    return nr_hook_point == 2 and not use_core_context and xefg_ui_composition == 0
 
 
 def capture_events_for_verification(run, receipt):
@@ -439,9 +438,9 @@ def main():
     parser.add_argument('--nr-passes', type=int, choices=(1, 2),
         help='Temporarily select one or two passes; omitted keeps the protected config value')
     parser.add_argument('--control-mask-case', choices=('depth-far', 'depth-far-off'),
-        help='Run a protected depth-far comparison at Present or Upscaled')
+        help='Run a protected depth-far comparison at Present using the owned backend')
     parser.add_argument('--control-mask-use-core-context', action='store_true',
-        help='Use the successful host SR Core context for an Upscaled depth-far case')
+        help='Retired diagnostic option; rejected before installation (use offline fg-native P0 tests)')
     parser.add_argument('--control-mask-depth-near', type=float,
         help='Override the normalized near threshold for a protected depth-far case; requires --control-mask-depth-far')
     parser.add_argument('--control-mask-depth-far', type=float,
@@ -464,10 +463,11 @@ def main():
     parser.add_argument('--restore-installation', action='store_true',
         help='Forward the existing full-installation restore switch to the protected wrapper')
     args = parser.parse_args()
+    if args.control_mask_use_core_context:
+        parser.error('--control-mask-use-core-context is retired: production uses the owned backend. '
+                     'Use the offline tools/run-tests.ps1 -Suite fg-native entry for P0 Core diagnostics.')
     if args.start_nr_disabled and args.capture_script is None:
         parser.error('--start-nr-disabled requires --capture-script')
-    if args.control_mask_use_core_context and not args.control_mask_case:
-        parser.error('--control-mask-use-core-context requires a protected depth-far case')
     if not 1 <= args.telemetry_seconds <= 3600:
         parser.error('--telemetry-seconds must be between 1 and 3600')
     if args.xefg_ui_composition is not None and not args.restore_installation:
@@ -535,8 +535,6 @@ def main():
             '-ControlMaskCase', 'DepthFar' if args.control_mask_case == 'depth-far' else 'DepthFarOff']
         if args.nr_hook_point == 0:
             command.append('-SrOnly')
-    if args.control_mask_use_core_context:
-        command.append('-ControlMaskUseCoreContext')
     if args.control_mask_depth_near is not None:
         command += ['-ControlMaskDepthNear', format(args.control_mask_depth_near, '.9g'),
             '-ControlMaskDepthFar', format(args.control_mask_depth_far, '.9g')]
