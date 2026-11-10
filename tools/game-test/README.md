@@ -99,6 +99,8 @@ runner 与 wrapper 复用公共测试产物生命周期。结果写出后自动�
 `-ControlMaskAutoMask 0|1` 与 `-ControlMaskBlendMode 0..3` 可在同一受保护 case 上覆盖对应测试参数；省略保留 case 默认值。无显式 case 时提前拒绝，receipt 记录请求值，实际采用仍须核对运行日志。
 `fg_acceptance.py` 可用 `--capture-script <tools/ 或 tmp/ 下的 Python 脚本>` 将 capture-ready 阶段委托给受保护 runner 启动的采样流程；`--start-nr-disabled` 使该流程从 NR OFF 开始，并且必须与采样脚本同时指定。省略时保持原有静态采集。
 
+需要同帧模型／遮罩定位时，PowerShell 包装器可显式传 `-ModelDiagnosticCapture`：本轮截图键临时改为 F10，捕获来源为 Evaluated model buffers，并开启可选诊断平面；整个 ReShade.ini 仍按原流程备份和恢复。F5 在巫师 3 同时会快存，诊断采集不使用它。成功执行遮罩的 Inline 最后求值层可随同帧模型输入／输出导出 `control_mask`，远景模式另导出本次实际 Depth Subrect 的 `control_mask_depth`。仅在有模型诊断请求且开启平面时读回；一般场景图、API 成功或请求参数不能代替这些 GPU 数据。
+
 完整 FG 入口保持原 HDR 显示条件检查、NR 开关／移动及退出流程；显示器名称和性能目标来自本地 target。测试通过仅覆盖相应保护与编排合同，截图仍需单独判断。
 
 性能对照前核对原 `NRPresentBlockHudless` 值：入口省略 `--block-optional-hudless` 时临时设为 `0`，传入时临时设为 `1`。应与既有验收条件一致，分别记录两个颜色面和单面路由，不能将不同路由的 FPS 直接比较；完整恢复开关会在退出后恢复原值。

@@ -20,6 +20,7 @@ param(
     [switch]$DisableXeFGSdkDetours,
     [switch]$ShowGameHud,
     [switch]$IsolateOverlayKey,
+    [switch]$ModelDiagnosticCapture,
     [string]$NrRuntimePath,
     [ValidateRange(-1,3)][int]$NrPreset = -1,
     [ValidateRange(-1,2)][int]$NrPass2Preset = -1,
@@ -41,6 +42,9 @@ param(
     [switch]$AddonAbsentControl
 )
 $ErrorActionPreference = 'Stop'
+if ($ModelDiagnosticCapture -and ($InstallOnly -or -not $RestoreInstallation)) {
+    throw '-ModelDiagnosticCapture requires a restored test session, not InstallOnly.'
+}
 if ($CaptureScript) {
     if ($CaptureHoldSeconds -eq 0 -or $ManualImeSession -or $InstallOnly) { throw '-CaptureScript requires an automatic capture hold, not ManualImeSession or InstallOnly.' }
     $taskCapturePath = [IO.Path]::GetFullPath($CaptureScript)
@@ -210,6 +214,21 @@ function Get-ControlMaskSettings([ValidateSet('T0','T1','T2','T3','T4','T5','T6'
         }
     }
     return $settings
+}
+function Set-ModelDiagnosticSection([string]$Text) {
+    if ($Text -match '(?m)^NRToggleKey=121\r?$') {
+        throw 'F10 is already the NR toggle; choose another profile before model diagnostics.'
+    }
+    foreach ($entry in @{NRScreenshotKey=121; NRScreenshotSource=2; NRDebugCapturePlanes=1}.GetEnumerator()) {
+        $pattern = '(?m)^' + $entry.Key + '=[^\r\n]*'
+        $line = $entry.Key + '=' + $entry.Value
+        if ($Text -match $pattern) {
+            $Text = [regex]::Replace($Text, $pattern, $line)
+        } else {
+            $Text = $Text.TrimEnd() + "`r`n$line`r`n"
+        }
+    }
+    return $Text
 }
 function Set-OptiFgDisabled([string]$Text) {
     $sections = [regex]::Matches($Text, '(?ms)^\[FrameGen\]\r?\n(?:(?!^\[).)*')
@@ -404,6 +423,7 @@ $taskReceipt = [ordered]@{
     disable_xefg_sdk_detours=[bool]$DisableXeFGSdkDetours
     temporary_game_hud_visible=[bool]$ShowGameHud
     temporary_overlay_key=$(if ($IsolateOverlayKey) { 'F7' } else { $null })
+    model_diagnostic_capture=[bool]$ModelDiagnosticCapture
     enable_streamline_fallback_requested=[bool]$EnableStreamlineFallback
     install_only=[bool]$InstallOnly
     manual_ime_session=[bool]$ManualImeSession
@@ -527,6 +547,11 @@ try {
             [ordered]@{path=$_;sha256=(Get-FileHash -LiteralPath $_).Hash}
         })
         $taskReceipt.retained_overlays = @('NVIDIA game overlay (user requested)', 'OptiScaler FPS overlay (user requested)')
+    }
+    if ($ModelDiagnosticCapture) {
+        # F5 also quicksaves in Witcher 3. This backed-up session uses F10
+        # for the existing model diagnostic and enables its optional planes.
+        $taskSectionText = Set-ModelDiagnosticSection $taskSectionText
     }
     if ($StartNrDisabled) {
         if ($taskSectionText -notmatch '(?m)^NeuralUplift=') { throw 'NeuralUplift is missing' }

@@ -876,6 +876,32 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   mature();
   Check(mask_dispatches == depth_recovery_dispatches + 1 && saw_mask,
         "valid current depth subrect resumes the depth rule without stale state");
+  if (safety) {
+    namespace shot = renodx::addons::dlss5::screenshot;
+    const auto previous_source = shot::source_mode.exchange(2);
+    const bool previous_planes = shot::stage_planes_enabled.exchange(true);
+    Check(shot::RequestCapture() && record() == 1, "evaluate a masked model diagnostic frame");
+    {
+      const auto& workset = addon::worksets.at({owner, output.Get(), false});
+      std::scoped_lock lock(shot::internal::state_mutex);
+      Check(shot::internal::pending.has_value(), "masked model diagnostic is pending");
+      auto& capture = *shot::internal::pending;
+      Check(capture.planes.size() == 2 && capture.planes.front().name == "control_mask"
+                && capture.planes.front().recorded
+                && capture.planes.front().source_identity == reinterpret_cast<uintptr_t>(workset.control_mask)
+                && capture.planes.back().name == "control_mask_depth"
+                && capture.planes.back().recorded
+                && capture.planes.back().source_identity == reinterpret_cast<uintptr_t>(depth.Get())
+                && workset.control_mask_state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            "model diagnostic copies the evaluated ControlMask and depth, restoring resource states");
+      shot::internal::ReleaseReadbacks(capture);
+      shot::internal::pending.reset();
+      shot::internal::has_pending.store(false);
+      shot::internal::stage_busy.store(false);
+    }
+    shot::source_mode.store(previous_source);
+    shot::stage_planes_enabled.store(previous_planes);
+  }
   const auto run_stack_case = [&](uint32_t pass_count, uint32_t resolution_mode,
                                   float resolution_scale, uint32_t expected_second_width) {
     const uint32_t saved_stack_passes = addon::stack_passes.exchange(pass_count);
@@ -1160,11 +1186,32 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   ID3D12CommandList* queued[]{gpu.list.Get()};
   gpu.queue->ExecuteCommandLists(1, queued);
   auto* queued_mask = addon::worksets.at(key).control_mask;
+  auto* queued_history = slot.handle;
   try {
+    Check(queued_mask != nullptr && queued_history != nullptr,
+          "in-flight ControlMask frame owns mask and NR History");
     Check(!submission::HasUnprovenSubmissions(), "valid delayed Fence is not an unknown submission");
     const auto saved_list = gpu.list;
     gpu.list = other_list;
+    const auto toggle_calls = model_calls;
+    const auto toggle_dispatches = mask_dispatches;
+    addon::control_mask_enabled = false;
     assert_gate(gpu.list.Get(), false);
+    Check(model_calls == toggle_calls && mask_dispatches == toggle_dispatches
+              && addon::worksets.at(key).control_mask == queued_mask
+              && slot.handle == queued_history
+              && !submission::ResourceReleasable(queued_mask)
+              && !submission::ResourceReleasable(queued_history),
+          "OFF during pending masked work retains its mask and NR History without evaluating");
+    addon::control_mask_enabled = true;
+    assert_gate(gpu.list.Get(), false);
+    Check(model_calls == toggle_calls && mask_dispatches == toggle_dispatches
+              && addon::worksets.at(key).control_mask == queued_mask
+              && slot.handle == queued_history
+              && !submission::ResourceReleasable(queued_mask)
+              && !submission::ResourceReleasable(queued_history)
+              && gate->GetCompletedValue() < 1,
+          "ON again returns while the queue is pending and preserves the same mask and NR History");
     gpu.list = saved_list;
     Check(model_calls == queued_before + 1 && addon::worksets.at(key).control_mask == queued_mask,
           "healthy pending submission rejects reuse without being classified unknown");
@@ -1198,7 +1245,7 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   Check(addon::control_mask_reuse_stats.checks == gate_before_reset_recovery.checks + 1
             && addon::control_mask_reuse_stats.admitted == gate_before_reset_recovery.admitted + 1,
         "Reset recovery contributes exactly one admitted reuse check");
-  std::cout << "CASE location=healthy-queued evidence=GPU+MOCK size=8x8 pending=declined replayable=declined complete-closed=reused resource=retained no_cpu_wait=1\n";
+  std::cout << "CASE location=healthy-queued evidence=GPU+MOCK size=8x8 pending=declined replayable=declined complete-closed=reused hot_toggle=ON-OFF-ON resource=mask+history-retained no_cpu_wait=1\n";
 
   // Exercise the actual detour's exception boundary, not manual null receipts.
   for (int stage : {0, 1, 2}) {
@@ -1879,7 +1926,7 @@ NVSDK_NGX_Result NVSDK_CONV ObserveNativeRuntimeEvaluate(
   return result;
 }
 
-int RunNativeNgx(const char* project_id_path) {
+int RunNativeNgx(const char* project_id_path, bool hot_toggle = false) {
   try {
     reshade::internal::get_reshade_module_handle(GetModuleHandleW(nullptr));
     addon::addon_module = GetModuleHandleW(nullptr);
@@ -1987,6 +2034,8 @@ int RunNativeNgx(const char* project_id_path) {
           "production loader observes the SDK-initialized public NGX Core");
     {
       std::scoped_lock runtime_lock(addon::runtime_mutex);
+      addon::control_mask_use_core_context = hot_toggle;
+      addon::SuccessfulSrCoreScope host_sr(hot_toggle ? gpu.list.Get() : nullptr);
       Check(addon::EnsureDirectRuntime(gpu.list.Get()),
             "production direct Runtime initializes with the public Core loaded");
       Check(addon::parameter_runtime_via_core.load()
@@ -1997,8 +2046,8 @@ int RunNativeNgx(const char* project_id_path) {
     }
     addon::enabled = true;
     addon::hooks_enabled = true;
-    addon::hook_point = addon::kHookRender;
-    addon::stack_passes = 2;
+    addon::hook_point = (hot_toggle ? addon::kHookUpscaled : addon::kHookRender);
+    addon::stack_passes = (hot_toggle ? 1 : 2);
     addon::pass_stage[0] = 2u;
     addon::configuration_generation.fetch_add(1);
     addon::nr_follow_input_res = false;
@@ -2007,9 +2056,9 @@ int RunNativeNgx(const char* project_id_path) {
     addon::transfer_strength = 1.f;
     addon::color_strength = 1.f;
     addon::intensity = 1.f;
-    addon::preset = 1u;
+    addon::preset = (hot_toggle ? 2u : 1u);
     addon::codec_mode = 0u;
-    const bool mask_enabled = std::getenv("NR_NEXUS_TEST_CONTROL_MASK_OFF") == nullptr;
+    const bool mask_enabled = hot_toggle || std::getenv("NR_NEXUS_TEST_CONTROL_MASK_OFF") == nullptr;
     addon::control_mask_enabled = mask_enabled;
     addon::control_mask_mode = addon::kControlMaskDepthFar;
     addon::control_mask_depth_near = 0.7f;
@@ -2053,9 +2102,20 @@ int RunNativeNgx(const char* project_id_path) {
       Check(NVSDK_NGX_SUCCEED(result), "mock host SR succeeds around production Render and Upscaled hooks");
       gpu.Submit();
       addon::DrainRetiredResources(true);
-      if (native_runtime_masks.size() != 2 || native_runtime_results.size() != 2) continue;
+      const size_t expected_evaluates = (hot_toggle ? 1u : 2u);
+      if (native_runtime_masks.size() != expected_evaluates
+          || native_runtime_results.size() != expected_evaluates) continue;
 
       auto& feature = addon::features.at(owner);
+      if (hot_toggle) {
+        Check(feature.slots[0].via_core && addon::direct_api.borrowed_core_context,
+              "hot-toggle fixture uses the successful host SR Core path");
+        Check(native_runtime_results[0] == NVSDK_NGX_Result_Success
+                  && native_runtime_masks[0] == addon::worksets.at({owner, output.Get(), false}).control_mask,
+              "initial borrowed Core frame binds and evaluates its production mask");
+        production_chain_completed = true;
+        break;
+      }
       Check(feature.render_session != nullptr
                 && feature.render_session->slots[0].handle != nullptr
                 && feature.slots[0].handle != nullptr,
@@ -2083,6 +2143,122 @@ int RunNativeNgx(const char* project_id_path) {
     }
     Check(production_chain_completed,
           "real Runtime completes both production Render and Upscaled stages within the debounce window");
+    if (hot_toggle) {
+      ComPtr<ID3D12CommandAllocator> probe_allocator;
+      ComPtr<ID3D12GraphicsCommandList> probe_list;
+      ComPtr<ID3D12Fence> gate;
+      Check(SUCCEEDED(gpu.device->CreateCommandAllocator(
+                D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&probe_allocator)))
+                && SUCCEEDED(gpu.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                    probe_allocator.Get(), nullptr, IID_PPV_ARGS(&probe_list)))
+                && SUCCEEDED(gpu.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gate))),
+            "native hot-toggle pending fixture allocation");
+      native_runtime_results.clear();
+      addon::ngx_slot_real[0].evaluate = reinterpret_cast<void*>(SuccessfulHostEvaluate);
+      addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), owner, &parameters, nullptr);
+      addon::ngx_slot_real[0].evaluate = nullptr;
+      Check(native_runtime_results.size() == 1 && NVSDK_NGX_SUCCEED(native_runtime_results[0]),
+            "record native masked work before delaying its GPU execution");
+      const auto* pending_history = addon::features.at(owner).slots[0].handle;
+      auto* pending_mask = addon::worksets.at({owner, output.Get(), false}).control_mask;
+      Check(SUCCEEDED(gpu.list->Close()), "close native pending model recording");
+      const auto finish_pending = [&] {
+        Check(SUCCEEDED(gate->Signal(1)), "release native pending GPU gate");
+        Check(SUCCEEDED(gpu.queue->Signal(gpu.fence.Get(), ++gpu.serial)),
+              "native pending completion signal");
+        HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        Check(event != nullptr, "native pending completion event");
+        const auto armed = gpu.fence->SetEventOnCompletion(gpu.serial, event);
+        const auto wait = (SUCCEEDED(armed) ? WaitForSingleObject(event, 10000) : WAIT_FAILED);
+        CloseHandle(event);
+        Check(wait == WAIT_OBJECT_0, "native pending work completes after releasing its gate");
+        gpu.submission_pending = false;
+      };
+      try {
+        Check(SUCCEEDED(gpu.queue->Wait(gate.Get(), 1)), "delay native model GPU execution");
+        ID3D12CommandList* lists[]{gpu.list.Get()};
+        const auto pending = submission::BeginSubmission(1, lists);
+        gpu.queue->ExecuteCommandLists(1, lists);
+        gpu.submission_pending = true;
+        Check(SUCCEEDED(gpu.queue->Signal(gpu.fence.Get(), ++gpu.serial)), "signal native queued work");
+        submission::CompleteSubmission(pending, gpu.fence.Get(), gpu.serial);
+        for (const bool enabled : {false, true}) {
+          addon::control_mask_enabled = enabled;
+          native_runtime_masks.clear();
+          native_runtime_results.clear();
+          std::cout << "HOT_TOGGLE pending probe enabled=" << enabled << std::endl;
+          addon::ngx_slot_real[0].evaluate = reinterpret_cast<void*>(SuccessfulHostEvaluate);
+          addon::HookedEvaluateFeatureSlot<0>(probe_list.Get(), owner, &parameters, nullptr);
+          addon::ngx_slot_real[0].evaluate = nullptr;
+          Check(native_runtime_results.size() == 1 && NVSDK_NGX_SUCCEED(native_runtime_results[0])
+                    && (native_runtime_masks.back() != nullptr) == enabled
+                    && gate->GetCompletedValue() == 0
+                    && addon::features.at(owner).slots[0].handle == pending_history
+                    && !submission::ResourceReleasable(pending_mask)
+                    && !submission::ResourceReleasable(pending_history),
+                "ordered borrowed Core records one native OFF/ON Evaluate while retaining pending mask and History");
+          std::cout << "HOT_TOGGLE pending probe returned enabled=" << enabled << std::endl;
+        }
+        Check(SUCCEEDED(probe_list->Close()), "close ordered native OFF/ON recording");
+        ID3D12CommandList* probes[]{probe_list.Get()};
+        const auto probe_submission = submission::BeginSubmission(1, probes);
+        gpu.queue->ExecuteCommandLists(1, probes);
+        Check(SUCCEEDED(gpu.queue->Signal(gpu.fence.Get(), ++gpu.serial)), "signal ordered native OFF/ON work");
+        submission::CompleteSubmission(probe_submission, gpu.fence.Get(), gpu.serial);
+      } catch (...) {
+        finish_pending();
+        throw;
+      }
+      finish_pending();
+      Check(SUCCEEDED(probe_allocator->Reset())
+                && SUCCEEDED(probe_list->Reset(probe_allocator.Get(), nullptr))
+                && SUCCEEDED(gpu.allocator->Reset())
+                && SUCCEEDED(gpu.list->Reset(gpu.allocator.Get(), nullptr)),
+            "reset completed native pending recording");
+      submission::OnCommandListReset(probe_list.Get());
+      submission::OnCommandListReset(gpu.list.Get());
+      addon::DrainRetiredResources(true);
+      constexpr uint32_t transitions = 16;
+      for (uint32_t transition = 0; transition < transitions; ++transition) {
+        const bool enabled = (transition % 2) != 0;
+        addon::control_mask_enabled = enabled;
+        uint64_t stable_workset = 0;
+        uint32_t completed_frames = 0;
+        std::cout << "HOT_TOGGLE begin transition=" << transition << " enabled=" << enabled << std::endl;
+        for (uint32_t attempt = 0; attempt < addon::kContractDebounceFrames + 32; ++attempt) {
+          native_runtime_masks.clear();
+          native_runtime_results.clear();
+          addon::ngx_slot_real[0].evaluate = reinterpret_cast<void*>(SuccessfulHostEvaluate);
+          const auto result = addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), owner, &parameters, nullptr);
+          addon::ngx_slot_real[0].evaluate = nullptr;
+          Check(NVSDK_NGX_SUCCEED(result), "hot-toggle host SR returns success");
+          gpu.Submit();
+          addon::DrainRetiredResources(true);
+          if (native_runtime_results.empty()) continue;
+          Check(native_runtime_results.size() == 1 && NVSDK_NGX_SUCCEED(native_runtime_results[0]),
+                "hot-toggle records exactly one accepted native NGX Evaluate");
+          const auto& workset = addon::worksets.at({owner, output.Get(), false});
+          Check((native_runtime_masks[0] != nullptr) == enabled
+                    && (workset.control_mask != nullptr) == enabled,
+                "hot-toggle binds only the requested mask state");
+          if (completed_frames == 0) {
+            stable_workset = workset.id;
+          }
+          Check(workset.id == stable_workset, "stable hot-toggle frames retain the same workset");
+          Check(!addon::features.at(owner).slots[0].control_mask_bound
+                    && gpu.fence->GetCompletedValue() >= gpu.serial
+                    && SUCCEEDED(gpu.device->GetDeviceRemovedReason()),
+                "hot-toggle clears CPU bindings after native GPU completion");
+          if (++completed_frames == 3) break;
+        }
+        Check(completed_frames == 3, "hot-toggle reaches three completed frames without reallocation");
+        std::cout << "HOT_TOGGLE complete transition=" << transition << " frames=" << completed_frames
+                  << " workset=" << stable_workset << std::endl;
+      }
+      std::cout << "PASS ControlMask hot-toggle evidence=NATIVE_GPU+NATIVE_NGX host_sr=MOCK"
+                   " backend=borrowed-Core model_request=B pending_OFF_ON=ordered_native_evaluations"
+                   " transitions=16 completed_frames=48 size=960x540\n";
+    }
     const D3D12_RESOURCE_DESC final_output_desc = output->GetDesc();
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT output_footprint{};
     UINT64 output_readback_size = 0;
@@ -2125,8 +2301,9 @@ int RunNativeNgx(const char* project_id_path) {
                         static_cast<std::streamsize>(output_bytes.size()));
       Check(output_file.good(), "production output bytes are saved");
     }
-    std::cout << "PASS ControlMask production chain stages=Render+Upscaled"
-                 " evidence=NATIVE_GPU+NATIVE_NGX host_sr=MOCK frames=1 size=960x540 mask="
+    std::cout << "PASS ControlMask production chain stages=" << (hot_toggle ? "Upscaled" : "Render+Upscaled")
+              << " evidence=NATIVE_GPU+NATIVE_NGX host_sr=MOCK frames=" << (hot_toggle ? 52 : 1)
+              << " size=960x540 mask="
               << (mask_enabled ? "depthfar" : "off") << " output_readback=rgba16f raw="
               << (keep_raw_output ? "retained" : "discarded") << "\n";
 
@@ -2137,8 +2314,10 @@ int RunNativeNgx(const char* project_id_path) {
       addon::FlushRetiredResources();
       if (addon::direct_device != nullptr) {
         renodx::addons::dlss5::DirectCallScope direct_call;
-        const auto shutdown = addon::direct_api.shutdown(addon::direct_device);
-        Check(NVSDK_NGX_SUCCEED(shutdown), "production Runtime shutdown");
+        if (addon::direct_api.shutdown != nullptr) {
+          const auto shutdown = addon::direct_api.shutdown(addon::direct_device);
+          Check(NVSDK_NGX_SUCCEED(shutdown), "production Runtime shutdown");
+        }
         addon::direct_device->Release();
         addon::direct_device = nullptr;
       }

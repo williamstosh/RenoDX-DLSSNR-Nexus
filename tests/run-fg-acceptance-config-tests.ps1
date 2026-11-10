@@ -5,11 +5,32 @@ $parseErrors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile(
     (Join-Path $PSScriptRoot '../tools/run-fg-acceptance.ps1'), [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count) { throw $parseErrors[0] }
-foreach ($name in @('Set-FgPresentSection','Set-StreamlineFallback','Set-XeFgUiComposition','Get-ControlMaskSettings','Set-OptiFgDisabled','Copy-ControlMaskGpuEvidence')) {
+foreach ($name in @('Set-FgPresentSection','Set-StreamlineFallback','Set-XeFgUiComposition','Get-ControlMaskSettings','Set-ModelDiagnosticSection','Set-OptiFgDisabled','Copy-ControlMaskGpuEvidence')) {
     $definition = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name}, $true)
     if ($null -eq $definition) { throw "Missing production transform: $name" }
     . ([scriptblock]::Create($definition.Extent.Text))
 }
+$diagnosticFixture = "[RenoDX.DLSS5]`nNRToggleKey=117`nNRScreenshotKey=116`nNRScreenshotSource=0`nNRDebugCapturePlanes=0`nNRIntensity=0.75`n"
+$diagnosticExpected = $diagnosticFixture.Replace('NRScreenshotKey=116','NRScreenshotKey=121').Replace('NRScreenshotSource=0','NRScreenshotSource=2').Replace('NRDebugCapturePlanes=0','NRDebugCapturePlanes=1')
+if ((Set-ModelDiagnosticSection $diagnosticFixture) -cne $diagnosticExpected) {
+    throw 'Model diagnostic override changed an unrelated setting or left its capture configuration incomplete'
+}
+if ((Set-ModelDiagnosticSection $diagnosticExpected) -cne $diagnosticExpected) {
+    throw 'Model diagnostic override does not preserve an already configured session'
+}
+$diagnosticConflictRejected = $false
+try { Set-ModelDiagnosticSection ($diagnosticFixture.Replace('NRToggleKey=117','NRToggleKey=121')) | Out-Null }
+catch { $diagnosticConflictRejected = $true }
+if (-not $diagnosticConflictRejected) { throw 'Model diagnostic hotkey conflicts with the NR toggle' }
+foreach ($invalidSession in @(@(), @('-RestoreInstallation','-InstallOnly'))) {
+    $rejection = & pwsh.exe -NoProfile -File (Join-Path $PSScriptRoot '../tools/run-fg-acceptance.ps1') `
+        -CandidateManifest 'unused-synthetic-candidate' -GameBinaryDirectory 'unused-synthetic-game' -Python 'unused-synthetic-python' `
+        -ModelDiagnosticCapture @invalidSession 2>&1
+    if ($LASTEXITCODE -eq 0 -or ($rejection -join "`n") -notmatch 'ModelDiagnosticCapture requires a restored test session') {
+        throw 'Model diagnostic session did not reject before inspecting or changing installation inputs'
+    }
+}
+$global:LASTEXITCODE = 0
 $fixture = "[Other]`nUIComposition = true`n[XeFG]`nUIComposition = true`nInterpolationCount = 3`n[After]`nUIComposition = true`n"
 $fgFixture = "[Other]`nEnabled = true`n[FrameGen]`nEnabled = true`nFGOutput = XeFG`n[After]`nEnabled = true`n"
 if ((Set-OptiFgDisabled $fgFixture) -cne $fgFixture.Replace("[FrameGen]`nEnabled = true", "[FrameGen]`nEnabled = false")) {
