@@ -39,6 +39,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     }
     scenarios.push_back({.id = "r7-quality-expanded", .action = "r7-expanded", .language = 1});
     scenarios.push_back({.id = "r7-control-mask-depth-fine", .action = "r7-depth-fine", .language = 1});
+    scenarios.push_back({.id = "control-mask-depth-zh", .action = "r7-depth-fine", .width = 600.f});
     scenarios.push_back({.id = "r7-quality-collapsed", .action = "r7-collapsed"});
     for (unsigned count = 1; count <= 4; ++count) {
       scenarios.push_back({.id = "r7-pass" + std::to_string(count) + (count == 2 ? "-p2" : ""),

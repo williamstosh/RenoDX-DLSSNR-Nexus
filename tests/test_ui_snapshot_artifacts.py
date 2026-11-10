@@ -203,7 +203,7 @@ class SnapshotArtifacts(unittest.TestCase):
         result = self.build(documentation=self.root / 'docs')
         self.assertEqual(result['status'], 'complete', result['failures'])
         with Image.open(self.root / 'docs/themes-zh.webp') as sheet:
-            self.assertEqual(sheet.size, (48, 144))
+            self.assertEqual(sheet.size, (48, 288))
             with Image.open(self.root / 'docs/theme-cyber_neon-zh.webp') as tile:
                 self.assertEqual(sheet.crop((0, 40, 24, 72)).tobytes(), tile.convert('RGB').tobytes())
 

@@ -446,6 +446,7 @@ int main() {
     bool preset_latin_font = false;
     const ui::MonitorInputs* monitor_fixture = nullptr;
     const ui::MonitorInputs* resolution_observed_fixture = nullptr;
+    float resolution_observed_bottom = 0.f;
     bool hud_fixture = false;
     bool independent_hud_fixture = false;
     ui::MonitorState synthetic_monitor_state;
@@ -475,6 +476,7 @@ int main() {
         const auto* saved_view = runtime::ui_monitor_view;
         runtime::ui_monitor_view = resolution_observed_fixture;
         runtime::DrawResolutionObserved(ui::kModernText);
+        resolution_observed_bottom = ImGui::GetCursorPosY();
         runtime::ui_monitor_view = saved_view;
       } else if (independent_hud_fixture) {
         ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0.f, 0.f), io.DisplaySize, IM_COL32(6, 14, 25, 255));
@@ -848,9 +850,11 @@ int main() {
       resolution_observed_fixture = &resolution_view;
       io.AddMousePosEvent(-100.f, -100.f);
       frame(); frame();
-      check(rendered_text.size() == 1 && rendered_text[0].text.starts_with("P1 | ")
-                && rendered_text[0].text.find("1715 x 965") != std::string::npos,
-            "matching actual and estimated Render dimensions form one explicit P1 line");
+      check(rendered_text.size() == 2 && rendered_text[0].text.starts_with("P1 | ")
+                && rendered_text[0].text.find("1715 x 965") != std::string::npos
+                && rendered_text[1].text.find("1715x965") != std::string::npos,
+            "matching actual and estimated Render dimensions retain both resolution rows");
+      const float matching_bottom = resolution_observed_bottom;
       capture("resolution-observed-matching-zh");
       const auto matching_target = rendered_text[0].rect.GetCenter();
       io.AddMousePosEvent(matching_target.x, matching_target.y);
@@ -865,8 +869,9 @@ int main() {
       resolution_view.passes[0].actual_size = "1600 x 900";
       frame(); frame();
       check(rendered_text.size() == 2 && rendered_text[0].text.find("1600 x 900") != std::string::npos
-                && rendered_text[1].text.find("1715x965") != std::string::npos,
-            "different working dimensions show actual and estimate on separate lines");
+                && rendered_text[1].text.find("1715x965") != std::string::npos
+                && resolution_observed_bottom == matching_bottom,
+            "different working dimensions retain the same space below both resolution rows");
       const auto resolution_target = rendered_text[0].rect.GetCenter();
       io.AddMousePosEvent(resolution_target.x, resolution_target.y);
       for (int hover_frame = 0; hover_frame < 45; ++hover_frame) frame();
@@ -889,6 +894,46 @@ int main() {
       ++sample.identity.source_generation;
       check(runtime::CurrentPassWorkingEstimate(0, timers::NowNs()) == renodx::addons::dlss5::capability::Size{},
             "another source cannot supply the current Render estimate");
+      for (const int language : {0, 13}) {
+        ui::SelectLanguage(language);
+        for (const float width : {480.f, 1000.f}) {
+          panel_width = width;
+          runtime::hook_point = runtime::kHookRender;
+          sample.identity.source_generation = 42;
+          sample.recorded_ns = sample.measured_ns = timers::NowNs();
+          resolution_view.passes[0].execution_confirmed = true;
+          resolution_view.passes[0].actual_size = "1715 x 965";
+          frame(); frame();
+          const float settled_bottom = resolution_observed_bottom;
+          for (const uint32_t hook : {runtime::kHookUpscaled, runtime::kHookPresent, runtime::kHookRender}) {
+            runtime::hook_point = hook;
+            resolution_view.passes[0].execution_confirmed = false;
+            frame(); frame();
+            check(rendered_text.size() == 2
+                      && rendered_text[0].text.find(ui::Tr("Pending confirmation")) != std::string::npos
+                      && resolution_observed_bottom == settled_bottom,
+                  "stage switch keeps pending actual dimensions visible without moving following controls");
+          }
+          sample.recorded_ns -= timers::internal::kSampleAgeNs + 1;
+          frame(); frame();
+          check(rendered_text.size() == 2
+                    && rendered_text[1].text.find(ui::Tr("Pending confirmation")) != std::string::npos
+                    && resolution_observed_bottom == settled_bottom,
+                "expired estimate retains its pending row and stable following-control position");
+          sample.recorded_ns = sample.measured_ns = timers::NowNs();
+          resolution_view.passes[0].execution_confirmed = true;
+          resolution_view.passes[0].actual_size = "1600 x 900";
+          frame(); frame();
+          check(rendered_text.size() == 2 && rendered_text[1].text.find("1715x965") != std::string::npos
+                    && resolution_observed_bottom == settled_bottom,
+                "recovered differing dimensions retain the estimate without shifting following controls");
+          resolution_view.passes[0].actual_size = "1715 x 965";
+          frame(); frame();
+          check(rendered_text.size() == 2 && resolution_observed_bottom == settled_bottom,
+                "converged actual and estimate do not remove a row or shift following controls");
+        }
+      }
+      panel_width = 1000.f;
       resolution_observed_fixture = nullptr;
       runtime::hook_point = saved_hook;
       runtime::stack_passes = saved_count;
@@ -1489,7 +1534,7 @@ int main() {
     const float saved_pass_mask_far = runtime::pass_control_mask[0].depth_far.load();
     const float saved_panel_height = panel_height;
     const ImVec2 saved_display_size = io.DisplaySize;
-    panel_height = 2400.f;
+    panel_height = 4000.f;
     io.DisplaySize = ImVec2(panel_width, panel_height);
     check(runtime::pass_control_mask[0].follow.load(),
           "extra-pass ControlMask settings default to Pass 1");
@@ -1502,6 +1547,22 @@ int main() {
     check(!runtime::pass_control_mask[0].follow.load()
               && has_text(ui::text::kControlMaskMode),
           "turning off ControlMask inheritance exposes that pass's controls");
+    const bool saved_auto_mask = runtime::use_auto_mask.load();
+    const bool saved_pass_auto_mask = runtime::pass_auto_mask[0].load();
+    const bool saved_style_follow = runtime::pass_follow[0].load();
+    runtime::use_auto_mask = true;
+    runtime::pass_auto_mask[0] = false;
+    runtime::pass_follow[0] = true;
+    frame();
+    check(!has_text(ui::text::kControlMaskCharacterOff),
+          "blend guidance resolves inherited Character mask settings");
+    runtime::pass_follow[0] = false;
+    frame();
+    check(has_text(ui::text::kControlMaskCharacterOff),
+          "blend guidance resolves independent Character mask settings");
+    runtime::use_auto_mask = saved_auto_mask;
+    runtime::pass_auto_mask[0] = saved_pass_auto_mask;
+    runtime::pass_follow[0] = saved_style_follow;
     runtime::kSetPassControlMaskMode[0].Commit(runtime::kControlMaskDepthFar);
     runtime::kSetPassControlMaskBlendMode[0].Commit(3.f);
     runtime::kSetPassControlMaskRed[0].Commit(0.37f);
@@ -1521,6 +1582,28 @@ int main() {
           "per-pass ControlMask choice persists under its own config key");
     runtime::kSetPassControlMaskDepthFar[0].Commit(0.99995f);
     runtime::kSetPassControlMaskDepthNear[0].Commit(0.9998f);
+    frame(); frame();
+    check(has_text("Fade start") && has_text("Fade end"),
+          "depth mode exposes stable, usable range controls");
+    click(switch_for_label("Fade start"));
+    check(runtime::pass_control_mask[0].depth_far.load() == 0.99995f,
+          "editing fade start must not move the end");
+    click(find("Far scenery"));
+    check(runtime::pass_control_mask[0].depth_near.load() == runtime::kControlMaskDepthNearDefault
+              && runtime::pass_control_mask[0].depth_far.load() == runtime::kControlMaskDepthFarDefault,
+          "distant starting point restores both endpoints without resetting RGB or blend");
+    check(runtime::pass_control_mask[0].red.load() == 0.37f
+              && runtime::pass_control_mask[0].blend_mode.load() == 3,
+          "recovering depth keeps the independent channel and blend choices");
+    click(find("Sky / far plane"));
+    check(runtime::pass_control_mask[0].depth_near.load() == 0.99999f
+              && runtime::pass_control_mask[0].depth_far.load() == 1.f,
+          "far-plane starting point retains a non-empty transition");
+    click(find("Far scenery"));
+    const Item exact_depth = find("Exact depth values");
+    if (exact_depth.window->StateStorage.GetInt(exact_depth.id, 0) == 0) {
+      click(exact_depth);
+    }
     frame(); frame();
     io.AddKeyEvent(ImGuiMod_Ctrl, true);
     frame();

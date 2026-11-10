@@ -2275,8 +2275,10 @@ inline std::atomic_uint32_t control_mask_mode = kControlMaskRgb;
 inline std::atomic<float> control_mask_red = 1.f;
 inline std::atomic<float> control_mask_green = 1.f;
 inline std::atomic<float> control_mask_blue = 1.f;
-inline std::atomic<float> control_mask_depth_near = 0.7f;
-inline std::atomic<float> control_mask_depth_far = 0.9f;
+inline constexpr float kControlMaskDepthNearDefault = 0.9999f;
+inline constexpr float kControlMaskDepthFarDefault = 0.99995f;
+inline std::atomic<float> control_mask_depth_near = kControlMaskDepthNearDefault;
+inline std::atomic<float> control_mask_depth_far = kControlMaskDepthFarDefault;
 inline std::atomic_uint32_t control_mask_blend_mode = 0;
 struct ControlMaskParameters {
   uint32_t mode;
@@ -2292,8 +2294,8 @@ struct PassControlMask {
   std::atomic<float> red{1.f};
   std::atomic<float> green{1.f};
   std::atomic<float> blue{1.f};
-  std::atomic<float> depth_near{0.7f};
-  std::atomic<float> depth_far{0.9f};
+  std::atomic<float> depth_near{kControlMaskDepthNearDefault};
+  std::atomic<float> depth_far{kControlMaskDepthFarDefault};
 };
 inline PassControlMask pass_control_mask[kMaxNrPasses - 1];
 inline ControlMaskParameters ResolveControlMaskParameters(uint32_t pass_index) {
@@ -22833,9 +22835,9 @@ inline constexpr Setting kSetControlMaskGreen{
 inline constexpr Setting kSetControlMaskBlue{
     "NRControlMaskBlue", &control_mask_blue, 1.f, SettingEffect::kNone};
 inline constexpr Setting kSetControlMaskDepthNear{
-    "NRControlMaskDepthNear", &control_mask_depth_near, 0.7f, SettingEffect::kNone};
+    "NRControlMaskDepthNear", &control_mask_depth_near, kControlMaskDepthNearDefault, SettingEffect::kNone};
 inline constexpr Setting kSetControlMaskDepthFar{
-    "NRControlMaskDepthFar", &control_mask_depth_far, 0.9f, SettingEffect::kNone};
+    "NRControlMaskDepthFar", &control_mask_depth_far, kControlMaskDepthFarDefault, SettingEffect::kNone};
 inline constexpr Setting kSetPassControlMaskFollow[] = {
     {"NRPass2ControlMaskFollowPass1", &pass_control_mask[0].follow, 1.f, SettingEffect::kNone},
     {"NRPass3ControlMaskFollowPass1", &pass_control_mask[1].follow, 1.f, SettingEffect::kNone},
@@ -22861,13 +22863,13 @@ inline constexpr Setting kSetPassControlMaskBlue[] = {
     {"NRPass3ControlMaskBlue", &pass_control_mask[1].blue, 1.f, SettingEffect::kNone},
     {"NRPass4ControlMaskBlue", &pass_control_mask[2].blue, 1.f, SettingEffect::kNone}};
 inline constexpr Setting kSetPassControlMaskDepthNear[] = {
-    {"NRPass2ControlMaskDepthNear", &pass_control_mask[0].depth_near, 0.7f, SettingEffect::kNone},
-    {"NRPass3ControlMaskDepthNear", &pass_control_mask[1].depth_near, 0.7f, SettingEffect::kNone},
-    {"NRPass4ControlMaskDepthNear", &pass_control_mask[2].depth_near, 0.7f, SettingEffect::kNone}};
+    {"NRPass2ControlMaskDepthNear", &pass_control_mask[0].depth_near, kControlMaskDepthNearDefault, SettingEffect::kNone},
+    {"NRPass3ControlMaskDepthNear", &pass_control_mask[1].depth_near, kControlMaskDepthNearDefault, SettingEffect::kNone},
+    {"NRPass4ControlMaskDepthNear", &pass_control_mask[2].depth_near, kControlMaskDepthNearDefault, SettingEffect::kNone}};
 inline constexpr Setting kSetPassControlMaskDepthFar[] = {
-    {"NRPass2ControlMaskDepthFar", &pass_control_mask[0].depth_far, 0.9f, SettingEffect::kNone},
-    {"NRPass3ControlMaskDepthFar", &pass_control_mask[1].depth_far, 0.9f, SettingEffect::kNone},
-    {"NRPass4ControlMaskDepthFar", &pass_control_mask[2].depth_far, 0.9f, SettingEffect::kNone}};
+    {"NRPass2ControlMaskDepthFar", &pass_control_mask[0].depth_far, kControlMaskDepthFarDefault, SettingEffect::kNone},
+    {"NRPass3ControlMaskDepthFar", &pass_control_mask[1].depth_far, kControlMaskDepthFarDefault, SettingEffect::kNone},
+    {"NRPass4ControlMaskDepthFar", &pass_control_mask[2].depth_far, kControlMaskDepthFarDefault, SettingEffect::kNone}};
 inline constexpr Setting kSetFollowInputRes{
     "NRFollowInputRes", &nr_follow_input_res, defaults::kFollowInputRes,
     SettingEffect::kNone};
@@ -23341,14 +23343,15 @@ inline constexpr Setting kSetChainedHistory{
 // The sections, as the modern layout groups them.
 using SettingGroup = std::span<const Setting* const>;
 inline constexpr const Setting* kCoreSettings[] = {
-    &kSetEnabled, &kSetControlMaskEnabled, &kSetControlMaskMode,
-    &kSetControlMaskBlendMode, &kSetControlMaskRed, &kSetControlMaskGreen,
-    &kSetControlMaskBlue, &kSetControlMaskDepthNear, &kSetControlMaskDepthFar};
+    &kSetEnabled};
 inline constexpr const Setting* kStrengthSettings[] = {&kSetIntensity};
 inline constexpr const Setting* kLookSettings[] = {
     &kSetPreset,         &kSetStyle,         &kSetLocalTone,
     &kSetLocalStructure, &kSetSkinStructure, &kSetSkinIndependent,
-    &kSetAutoMask,       &kSetUiCorrection};
+    &kSetAutoMask,       &kSetUiCorrection,
+    &kSetControlMaskEnabled, &kSetControlMaskMode, &kSetControlMaskBlendMode,
+    &kSetControlMaskRed, &kSetControlMaskGreen, &kSetControlMaskBlue,
+    &kSetControlMaskDepthNear, &kSetControlMaskDepthFar};
 inline constexpr const Setting* kLookResultSettings[] = {
     &kSetDetailStability,
     &kSetLookMode,        &kSetLookStrength,     &kSetLookBrighten,
@@ -23992,50 +23995,103 @@ inline void DrawControlMaskValues(
     const Setting& green_setting, const Setting& blue_setting,
     const Setting& depth_near_setting, const Setting& depth_far_setting,
     const std::atomic_uint32_t& mode_value,
-    const std::atomic<float>& red_value, const std::atomic<float>& green_value,
-    const std::atomic<float>& blue_value, const std::atomic<float>& depth_near_value,
-    const std::atomic<float>& depth_far_value) {
+    const std::atomic<float>& depth_near_value,
+    const std::atomic<float>& depth_far_value, uint32_t pass = 0) {
   constexpr const char* kControlMaskModes[] = {
-      "Solid RGB", "All 1s", "Black rectangle test", "Green rectangle test",
-      "Blue rectangle test", "Depth-far"};
+      "Uniform control", "Full-frame mask", "Depth fade"};
+  constexpr uint32_t kControlMaskModeValues[] = {
+      kControlMaskRgb, kControlMaskNeutral, kControlMaskDepthFar};
   ChoiceSetting(text, mode_setting, ui::text::kControlMaskMode,
-                kControlMaskModes, ui::text::kControlMaskModeTip);
-  constexpr const char* kControlMaskBlendModes[] = {"0", "1", "2", "3"};
+                kControlMaskModes, ui::text::kControlMaskModeTip,
+                ui::text::kControlMaskModeTips, kControlMaskModeValues);
   ChoiceSetting(text, blend_setting, ui::text::kBlendMode,
-                kControlMaskBlendModes, ui::text::kControlMaskBlendTip);
+                ui::text::kControlMaskBlendModes, ui::text::kControlMaskBlendTip,
+                ui::text::kControlMaskBlendTips);
+  if (!PassModel(pass, use_auto_mask, pass_auto_mask)) {
+    ImGui::TextWrapped("%s", text.Tr(ui::text::kControlMaskCharacterOff));
+  }
 
   const uint32_t mode = mode_value.load(std::memory_order_relaxed);
   const bool rgb_values_used = mode == kControlMaskRgb || mode == kControlMaskRect
       || mode == kControlMaskDepthFar;
   ImGui::BeginDisabled(!rgb_values_used);
   SliderSetting(text, red_setting, "R", 0.f, 1.f, "%.2f",
-                ui::text::kControlMaskChannelTip);
+                ui::text::kControlMaskRedTip);
   SliderSetting(text, green_setting, "G", 0.f, 1.f, "%.2f",
-                ui::text::kControlMaskChannelTip);
+                ui::text::kControlMaskGreenTip);
   SliderSetting(text, blue_setting, "B", 0.f, 1.f, "%.2f",
-                ui::text::kControlMaskChannelTip);
+                ui::text::kControlMaskBlueTip);
   ImGui::EndDisabled();
 
-  ImGui::BeginDisabled(mode != kControlMaskDepthFar);
-  const float depth_near = depth_near_value.load(std::memory_order_relaxed);
-  const float depth_far = depth_far_value.load(std::memory_order_relaxed);
-  SliderSetting(text, depth_near_setting, ui::text::kNearDepth,
-                0.f, std::max(0.f, depth_far - 0.000001f), "%.6f",
-                ui::text::kControlMaskDepthTip);
-  SliderSetting(text, depth_far_setting, ui::text::kFarDepth,
-                std::min(1.f, depth_near + 0.000001f), 1.f, "%.6f",
-                ui::text::kControlMaskDepthTip);
-  ImGui::EndDisabled();
+  if (mode != kControlMaskDepthFar) return;
+  ImGui::TextWrapped("%s", text.Tr(ui::text::kControlMaskDepthGuide));
+  if (ImGui::Button(text.Tr("Far scenery"))) {
+    SettleSlider(true);
+    depth_near_setting.Commit(kControlMaskDepthNearDefault);
+    depth_far_setting.Commit(kControlMaskDepthFarDefault);
+  }
+  ui::ItemTooltip("%s", text.Tr("Restore the distant-scene starting point (0.999900 / 0.999950). Use this to recover if too much of the picture loses NR."));
+  ImGui::SameLine();
+  if (ImGui::Button(text.Tr("Sky / far plane"))) {
+    SettleSlider(true);
+    depth_near_setting.Commit(0.99999f);
+    depth_far_setting.Commit(1.f);
+  }
+  ui::ItemTooltip("%s", text.Tr("Fade only very close to the game's far depth limit (0.999990 / 1.000000). This selects depth, not semantic sky detection."));
+
+  auto depth_slider = [&](const Setting& setting, const char* label, const char* tip,
+                          bool near_endpoint, bool precise) {
+    ImGui::PushID(precise ? "exact_depth" : "depth_range");
+    ImGui::PushID(setting.key);
+    const float depth = setting.Get();
+    // A fixed logarithmic scale gives distant perspective depths usable mouse
+    // travel. Unlike changing slider bounds, editing one end keeps the other still.
+    float value = (precise ? depth : -std::log10(std::max(1.f - depth, 0.000001f)) * (100.f / 6.f));
+    const char* format = (precise ? "%.6f" : "%.1f");
+    bool changed;
+    if (text.modern) {
+      ui::RowLabel(label, tip);
+      changed = ui::Slider("##value", &value, 0.f, precise ? 1.f : 100.f, format, tip);
+    } else {
+      changed = ImGui::SliderFloat(ui::ControlLabel(label).c_str(), &value, 0.f, precise ? 1.f : 100.f, format);
+      ui::ItemTooltip("%s", text.Tr(tip));
+    }
+    if (changed && std::isfinite(value)) {
+      const float requested = (precise ? value : (value >= 100.f ? 1.f : 1.f - std::pow(10.f, -value * 0.06f)));
+      const float near_depth = depth_near_value.load(std::memory_order_relaxed);
+      const float far_depth = depth_far_value.load(std::memory_order_relaxed);
+      const float adjusted = (near_endpoint
+          ? std::clamp(requested, 0.f, std::nextafter(far_depth, 0.f))
+          : std::clamp(requested, std::nextafter(near_depth, 1.f), 1.f));
+      if (slider_pending != &setting) SettleSlider(true);
+      setting.Store(adjusted);
+      slider_pending = &setting;
+    }
+    SettleSlider(false);
+    ImGui::PopID();
+    ImGui::PopID();
+  };
+  depth_slider(depth_near_setting, "Fade start", ui::text::kControlMaskNearTip, true, false);
+  depth_slider(depth_far_setting, "Fade end", ui::text::kControlMaskFarTip, false, false);
+  if (ui::TreeNode("exact_control_mask_depth", text.Tr("Exact depth values"))) {
+    ImGui::TextWrapped("%s", text.Tr(ui::text::kControlMaskRawDepthTip));
+    depth_slider(depth_near_setting, ui::text::kNearDepth, ui::text::kControlMaskNearTip, true, true);
+    depth_slider(depth_far_setting, ui::text::kFarDepth, ui::text::kControlMaskFarTip, false, true);
+    ImGui::TreePop();
+  }
 }
 
 inline void DrawSectionNrCore(const ui::PanelText& text) {
   SliderSetting(text, kSetIntensity, text.intensity, 0.f, 2.f, "%.2f",
                 ui::text::kModelStrengthTip);
+}
+
+inline void DrawControlMaskSettings(const ui::PanelText& text) {
   ToggleSetting(text, kSetControlMaskEnabled, ui::text::kControlMask,
                 ui::text::kControlMaskTip);
   bool settings_open = false;
   if (text.modern) {
-    settings_open = ui::TreeNode("control_mask_settings", ui::text::kControlMaskSettings);
+    settings_open = ui::TreeNode("control_mask_settings", text.Tr(ui::text::kControlMaskSettings));
   } else {
     settings_open = ImGui::TreeNode(ui::ControlLabel(ui::text::kControlMaskSettings).c_str());
   }
@@ -24044,7 +24100,6 @@ inline void DrawSectionNrCore(const ui::PanelText& text) {
       text, kSetControlMaskMode, kSetControlMaskBlendMode,
       kSetControlMaskRed, kSetControlMaskGreen, kSetControlMaskBlue,
       kSetControlMaskDepthNear, kSetControlMaskDepthFar, control_mask_mode,
-      control_mask_red, control_mask_green, control_mask_blue,
       control_mask_depth_near, control_mask_depth_far);
   ImGui::TreePop();
 }
@@ -24585,10 +24640,13 @@ inline void DrawResolutionObserved(const ui::PanelText& text, uint32_t pass = 0,
     ImGui::TextWrapped("P%u | %s: %s", pass + 1, text.Tr("Actual working resolution"),
         current ? ui_monitor_view->passes[pass].actual_size.c_str() : text.Tr("Pending confirmation"));
     bool hovered = ImGui::IsItemHovered();
-    if (differs) {
+    // Keep both rows present while stage samples settle so controls below do not move.
+    if (estimate.width != 0 && estimate.height != 0) {
       ImGui::TextWrapped(text.Tr("Estimated working resolution: %ux%u"), estimate.width, estimate.height);
-      hovered |= ImGui::IsItemHovered();
+    } else {
+      ImGui::TextWrapped("%s: %s", text.Tr("Estimated working resolution"), text.Tr("Pending confirmation"));
     }
+    hovered |= ImGui::IsItemHovered();
     if (hovered) {
       ImGui::BeginTooltip();
       ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.f);
@@ -25172,11 +25230,8 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
             kSetPassControlMaskDepthNear[pass - 1],
             kSetPassControlMaskDepthFar[pass - 1],
             pass_control_mask[pass - 1].mode,
-            pass_control_mask[pass - 1].red,
-            pass_control_mask[pass - 1].green,
-            pass_control_mask[pass - 1].blue,
             pass_control_mask[pass - 1].depth_near,
-            pass_control_mask[pass - 1].depth_far);
+            pass_control_mask[pass - 1].depth_far, pass);
       }
     }
     ImGui::PopID();
@@ -26970,6 +27025,7 @@ inline void DrawClassicLayout(reshade::api::effect_runtime* runtime, const ui::S
     DrawSectionNrCore(text);
     if (ui::TreeNode("Model styling (advanced)", "Model styling (advanced)", ImGuiTreeNodeFlags_CollapsingHeader)) {
       DrawSectionModelStyling(text);
+      DrawControlMaskSettings(text);
     }
     if (ui::TreeNode("Look result (advanced)", "Look result (advanced)", ImGuiTreeNodeFlags_CollapsingHeader)) {
       DrawSectionLookResult(text);
@@ -27100,6 +27156,7 @@ inline void DrawModernLayout(reshade::api::effect_runtime* runtime,
         ImGui::TableNextColumn();
         ui::SubCaption("Model styling");
         DrawModelSteering(text, 0);
+        DrawControlMaskSettings(text);
         ImGui::TableNextColumn();
         DrawSectionLookResult(text);
         ImGui::EndTable();
@@ -27912,8 +27969,8 @@ inline void LoadConfiguration() {
     float red = 1.f;
     float green = 1.f;
     float blue = 1.f;
-    float depth_near = 0.7f;
-    float depth_far = 0.9f;
+    float depth_near = kControlMaskDepthNearDefault;
+    float depth_far = kControlMaskDepthFarDefault;
   } saved_pass_control_mask[kMaxNrPasses - 1];
 
   // Reads are unconditional (targeted migration, not reset): presence of the
@@ -28234,8 +28291,8 @@ inline void LoadConfiguration() {
   float saved_control_mask_red = 1.f;
   float saved_control_mask_green = 1.f;
   float saved_control_mask_blue = 1.f;
-  float saved_control_mask_depth_near = 0.7f;
-  float saved_control_mask_depth_far = 0.9f;
+  float saved_control_mask_depth_near = kControlMaskDepthNearDefault;
+  float saved_control_mask_depth_far = kControlMaskDepthFarDefault;
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskEnabled", saved_control_mask_enabled);
   bool saved_control_mask_use_core_context = false;
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskUseCoreContext", saved_control_mask_use_core_context);
@@ -28262,13 +28319,14 @@ inline void LoadConfiguration() {
   control_mask_red = SanitizeFloatKey(saved_control_mask_red, 1.f, 0.f, 1.f, "NRControlMaskRed");
   control_mask_green = SanitizeFloatKey(saved_control_mask_green, 1.f, 0.f, 1.f, "NRControlMaskGreen");
   control_mask_blue = SanitizeFloatKey(saved_control_mask_blue, 1.f, 0.f, 1.f, "NRControlMaskBlue");
-  control_mask_depth_near = SanitizeFloatKey(saved_control_mask_depth_near, 0.7f, 0.f, 1.f, "NRControlMaskDepthNear");
-  control_mask_depth_far = SanitizeFloatKey(saved_control_mask_depth_far, 0.9f, 0.f, 1.f, "NRControlMaskDepthFar");
-  if (control_mask_depth_far.load() <= control_mask_depth_near.load()) {
-    control_mask_depth_near = 0.7f;
-    control_mask_depth_far = 0.9f;
+  control_mask_depth_near = SanitizeFloatKey(saved_control_mask_depth_near, kControlMaskDepthNearDefault, 0.f, 1.f, "NRControlMaskDepthNear");
+  control_mask_depth_far = SanitizeFloatKey(saved_control_mask_depth_far, kControlMaskDepthFarDefault, 0.f, 1.f, "NRControlMaskDepthFar");
+  if (control_mask_depth_far.load() <= control_mask_depth_near.load()
+      || (control_mask_depth_near.load() == 0.7f && control_mask_depth_far.load() == 0.9f)) {
+    control_mask_depth_near = kControlMaskDepthNearDefault;
+    control_mask_depth_far = kControlMaskDepthFarDefault;
     Log(reshade::log::level::warning,
-        "NRControlMaskDepthFar must be greater than NRControlMaskDepthNear; using 0.7 and 0.9");
+        "ControlMask depth range is invalid or uses legacy defaults; using 0.999900 and 0.999950");
   }
   uint32_t capture_samples = 0, capture_seconds = 120, capture_warmup = 6;
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskGpuCaptureSamples", capture_samples);
@@ -28631,16 +28689,17 @@ inline void LoadConfiguration() {
         kSetPassControlMaskGreen[pass - 1].key);
     pass_mask.blue = SanitizeFloatKey(mask.blue, 1.f, 0.f, 1.f,
         kSetPassControlMaskBlue[pass - 1].key);
-    pass_mask.depth_near = SanitizeFloatKey(mask.depth_near, 0.7f, 0.f, 1.f,
+    pass_mask.depth_near = SanitizeFloatKey(mask.depth_near, kControlMaskDepthNearDefault, 0.f, 1.f,
         kSetPassControlMaskDepthNear[pass - 1].key);
-    pass_mask.depth_far = SanitizeFloatKey(mask.depth_far, 0.9f, 0.f, 1.f,
+    pass_mask.depth_far = SanitizeFloatKey(mask.depth_far, kControlMaskDepthFarDefault, 0.f, 1.f,
         kSetPassControlMaskDepthFar[pass - 1].key);
-    if (pass_mask.depth_far.load() <= pass_mask.depth_near.load()) {
-      pass_mask.depth_near = 0.7f;
-      pass_mask.depth_far = 0.9f;
+    if (pass_mask.depth_far.load() <= pass_mask.depth_near.load()
+        || (pass_mask.depth_near.load() == 0.7f && pass_mask.depth_far.load() == 0.9f)) {
+      pass_mask.depth_near = kControlMaskDepthNearDefault;
+      pass_mask.depth_far = kControlMaskDepthFarDefault;
       Log(reshade::log::level::warning,
           std::string(kSetPassControlMaskDepthFar[pass - 1].key)
-              + " must be greater than its Near threshold; using 0.7 and 0.9");
+              + " range is invalid or uses legacy defaults; using 0.999900 and 0.999950");
     }
   }
   nr_follow_input_res = saved_follow_input;

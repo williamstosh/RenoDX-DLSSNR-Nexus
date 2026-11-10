@@ -212,7 +212,9 @@ int main(int argc, char** argv) {
       // Empty add-on settings; other ReShade sections do not make it an old add-on.
     } else {
       addon = current_global + policy_keys;
-      if (test_case == "native-prefg-resolution-config") {
+      if (test_case == "control-mask-depth") {
+        addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\n";
+      } else if (test_case == "native-prefg-resolution-config") {
         addon += "NRPresentRestoreScope=1\r\nNRPresentRestoreScopeConfigVersion=1\r\n"
                  "NRExperimentalNativePreFgResolution=1\r\n";
       } else if (test_case == "presets") {
@@ -309,6 +311,64 @@ int main(int argc, char** argv) {
     if (test_case == "fail-sdr-version") failed_key = "NRPresentSdrRestoreConfigVersion";
     if (test_case == "fail-hdr-version") failed_key = "NRPresentHdrPedestalConfigVersion";
     runtime::LoadConfiguration();
+    if (test_case == "control-mask-depth") {
+      constexpr float near_default = 0.9999f;
+      constexpr float far_default = 0.99995f;
+      auto check_pair = [](float near_value, float far_value, float expected_near, float expected_far, const char* description) {
+        Check(near_value == expected_near && far_value == expected_far, description);
+      };
+      auto check_all = [&](float expected_near, float expected_far, const char* description) {
+        check_pair(runtime::control_mask_depth_near.load(), runtime::control_mask_depth_far.load(),
+                   expected_near, expected_far, description);
+        for (const auto& mask : runtime::pass_control_mask) {
+          check_pair(mask.depth_near.load(), mask.depth_far.load(), expected_near, expected_far, description);
+        }
+      };
+      auto set_all = [&](const char* near_value, const char* far_value) {
+        for (const std::string prefix : {std::string("NR"), std::string("NRPass2"),
+                                        std::string("NRPass3"), std::string("NRPass4")}) {
+          Check(WritePrivateProfileStringA(runtime::kConfigSection, (prefix + "ControlMaskDepthNear").c_str(),
+                                          near_value, ini_path.c_str()) != FALSE, "write depth near fixture");
+          Check(WritePrivateProfileStringA(runtime::kConfigSection, (prefix + "ControlMaskDepthFar").c_str(),
+                                          far_value, ini_path.c_str()) != FALSE, "write depth far fixture");
+        }
+        runtime::LoadConfiguration();
+      };
+      check_all(near_default, far_default, "missing depth values use new defaults");
+      check_pair(runtime::kSetControlMaskDepthNear.fallback, runtime::kSetControlMaskDepthFar.fallback,
+                 near_default, far_default, "global setting fallbacks use new defaults");
+      for (uint32_t pass = 0; pass < runtime::kMaxNrPasses - 1; ++pass) {
+        check_pair(runtime::kSetPassControlMaskDepthNear[pass].fallback, runtime::kSetPassControlMaskDepthFar[pass].fallback,
+                   near_default, far_default, "pass setting fallbacks use new defaults");
+      }
+      set_all("0.7", "0.9");
+      check_all(near_default, far_default, "legacy depth pair migrates to new defaults");
+      set_all("0.7", "0.91");
+      check_all(0.7f, 0.91f, "legal custom pair with legacy near is preserved");
+      set_all("0.8", "0.9");
+      check_all(0.8f, 0.9f, "legal custom pair with legacy far is preserved");
+      set_all("0.9", "0.9");
+      check_all(near_default, far_default, "equal depth values use new defaults");
+      set_all("0.95", "0.8");
+      check_all(near_default, far_default, "reversed depth values use new defaults");
+      set_all("-1", "2");
+      check_all(0.f, 1.f, "out-of-range finite depth values retain the existing clamp policy");
+      set_all("0.2", "0.8");
+      Check(WritePrivateProfileStringA(runtime::kConfigSection, "NRPass2ControlMaskFollowPass1", "0", ini_path.c_str()) != FALSE
+                && WritePrivateProfileStringA(runtime::kConfigSection, "NRPass2ControlMaskDepthNear", "0.3", ini_path.c_str()) != FALSE
+                && WritePrivateProfileStringA(runtime::kConfigSection, "NRPass2ControlMaskDepthFar", "0.7", ini_path.c_str()) != FALSE
+                && WritePrivateProfileStringA(runtime::kConfigSection, "NRPass4ControlMaskFollowPass1", "1", ini_path.c_str()) != FALSE
+                && WritePrivateProfileStringA(runtime::kConfigSection, "NRPass4ControlMaskDepthNear", "0.4", ini_path.c_str()) != FALSE
+                && WritePrivateProfileStringA(runtime::kConfigSection, "NRPass4ControlMaskDepthFar", "0.6", ini_path.c_str()) != FALSE,
+            "write independent and inherited pass fixtures");
+      runtime::LoadConfiguration();
+      const auto pass2 = runtime::ResolveControlMaskParameters(1);
+      const auto pass4 = runtime::ResolveControlMaskParameters(3);
+      check_pair(pass2.depth_near, pass2.depth_far, 0.3f, 0.7f, "pass 2 resolves independent depth values");
+      check_pair(pass4.depth_near, pass4.depth_far, 0.2f, 0.8f, "pass 4 inherits global depth values");
+      check_pair(runtime::pass_control_mask[2].depth_near.load(), runtime::pass_control_mask[2].depth_far.load(),
+                 0.4f, 0.6f, "inheritance preserves pass 4 stored custom values");
+    }
     if (test_case.starts_with("legacy-core-")) {
       const uint32_t expected_hook = (test_case == "legacy-core-render" ? 1u
           : test_case == "legacy-core-present" ? 2u : 0u);
@@ -1247,7 +1307,8 @@ int main(int argc, char** argv) {
       Check(Read("UnregisteredPersistentKnob") == "42", "reset preserves unregistered key");
     } else if (test_case.starts_with("nr-model-") || test_case.starts_with("nr-stage-") || test_case.starts_with("pass-result-")
                || test_case.starts_with("nr-resolution-") || test_case == "profiles" || test_case == "capability-ui"
-               || test_case == "native-prefg-resolution-config" || test_case.starts_with("legacy-core-")) {
+               || test_case == "native-prefg-resolution-config" || test_case == "control-mask-depth"
+               || test_case.starts_with("legacy-core-")) {
       CheckPair("1");
       Check(!Configuration().inherited && Configuration().scope == scope::Scope::FINAL_PRESENT_AND_PRE_FG,
             "model selection leaves explicit restore scope unchanged");

@@ -569,6 +569,23 @@ int main() {
       }
       return true;
     };
+    const char* control_mask_strings[] = {
+        text::kControlMaskSettings, text::kControlMaskModeTip, text::kControlMaskBlendTip,
+        "Uniform control", "Full-frame mask", "Depth fade",
+        text::kControlMaskModeTips[0], text::kControlMaskModeTips[1], text::kControlMaskModeTips[2],
+        text::kControlMaskBlendModes[0], text::kControlMaskBlendModes[1],
+        text::kControlMaskBlendModes[2], text::kControlMaskBlendModes[3],
+        text::kControlMaskBlendTips[0], text::kControlMaskBlendTips[1],
+        text::kControlMaskBlendTips[2], text::kControlMaskBlendTips[3],
+        text::kControlMaskRedTip, text::kControlMaskGreenTip, text::kControlMaskBlueTip,
+        text::kControlMaskNearTip, text::kControlMaskFarTip, text::kControlMaskDepthGuide,
+        text::kControlMaskRawDepthTip, text::kControlMaskCharacterOff,
+        "Far scenery", "Sky / far plane", "Fade start", "Fade end", "Exact depth values",
+        "Restore the distant-scene starting point (0.999900 / 0.999950). Use this to recover if too much of the picture loses NR.",
+        "Fade only very close to the game's far depth limit (0.999990 / 1.000000). This selects depth, not semantic sky detection."};
+    for (const char* english : control_mask_strings) {
+      if (!check_preset_translation(english)) return 7;
+    }
     for (const char* english : preset_strings) {
       if (!check_preset_translation(english)) return 7;
     }

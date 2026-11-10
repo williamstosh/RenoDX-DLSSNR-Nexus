@@ -148,7 +148,7 @@ try {
         'pre8-malformed-sdr-version', 'pre8-future-sdr-version', 'pre8-fail-sdr-bypass', 'v8-legacy-key', 'reset',
         'nr-model-default', 'nr-model-explicit', 'nr-model-invalid', 'nr-model-legacy',
         'nr-stage-default', 'nr-stage-explicit', 'nr-stage-invalid',
-        'pass-result-default', 'pass-result-custom', 'pass-result-invalid', 'presets',
+        'pass-result-default', 'pass-result-custom', 'pass-result-invalid', 'control-mask-depth', 'presets',
         'nr-resolution-default', 'nr-resolution-explicit', 'nr-resolution-invalid', 'native-prefg-resolution-config', 'profiles', 'capability-ui',
         'legacy-core-upscaled', 'legacy-core-render', 'legacy-core-present')
     if ($Case.Count) {

@@ -104,10 +104,26 @@ inline constexpr const char* kBlendMode = "Blend mode";
 inline constexpr const char* kNearDepth = "Near depth";
 inline constexpr const char* kFarDepth = "Far depth";
 inline constexpr const char* kControlMaskTip = "Applies the selected control mask on supported NR routes. Switches take effect in-game without restarting; Neural Rendering remains on.";
-inline constexpr const char* kControlMaskModeTip = "Depth-far uses game depth to fade the red channel between the near and far thresholds. It is normalized depth, not world distance.";
-inline constexpr const char* kControlMaskBlendTip = "Forwarded to the DLSS NR runtime as ControlMask blend mode (0-3). The selected runtime defines each value.";
-inline constexpr const char* kControlMaskChannelTip = "RGB values range from 0 to 1. Solid RGB, black rectangle and Depth-far use them; Depth-far changes red only.";
-inline constexpr const char* kControlMaskDepthTip = "Normalized game depth from 0 to 1. Near must remain lower than Far.";
+inline constexpr const char* kControlMaskModeTip = "Choose uniform control for the whole picture, a full-strength mask, or a gradual depth fade that keeps NR nearby and reduces it in the distance.";
+inline constexpr const char* kControlMaskBlendTip = "Combines the blue structure channel with the runtime's Character mask. With Character mask off, modes 1-3 have no automatic mask to combine with and can look the same. Red intensity and green tone are separate.";
+inline constexpr const char* kControlMaskModeTips[] = {
+    "Apply the R, G and B values uniformly across the picture. Use this to tune NR intensity, tone and structure separately.",
+    "Send a full-frame mask with all three channels at full strength. This keeps their scale at 1; Character mask interaction still follows the blend mode. It does not turn the control mask off.",
+    "Keep the red intensity up to the fade start, reduce it smoothly towards the fade end, then keep the original picture beyond it. G and B remain adjustable across the whole picture."};
+inline constexpr const char* kControlMaskBlendModes[] = {"Replace", "Average", "Minimum", "Maximum"};
+inline constexpr const char* kControlMaskBlendTips[] = {
+    "0: Use the control mask instead of the automatic Character mask. Character / skin settings do not apply through that automatic mask.",
+    "1: Average the blue structure value and the automatic Character mask values. Requires Character mask on.",
+    "2: Keep the lower of the blue structure value and the automatic Character mask values. Useful for reducing structure while retaining automatic skin handling. Requires Character mask on.",
+    "3: Keep the higher of the blue structure value and the automatic Character mask values. Reducing blue alone may then have little effect. Requires Character mask on."};
+inline constexpr const char* kControlMaskRedTip = "R is the red channel: how much of the NR result is used. 1 keeps the model intensity; 0 keeps the original picture. Depth fade gradually reduces this channel in the distance.";
+inline constexpr const char* kControlMaskGreenTip = "G is the green channel: scales the model's local tone input. 1 keeps the current local tone; 0 removes this input, but does not remove the style's colour grade.";
+inline constexpr const char* kControlMaskBlueTip = "B is the blue channel: scales the model's structure input. 1 keeps the current structure; 0 reduces it. With Character mask on, the blend mode determines how it combines with automatic skin and structure values.";
+inline constexpr const char* kControlMaskNearTip = "Fade start: nearer pixels keep the selected red intensity. Move right to retain NR over more of the scene; move left to start reducing it sooner. This is a depth range scale, not metres.";
+inline constexpr const char* kControlMaskFarTip = "Fade end: pixels beyond this depth keep the original picture. Between start and end, NR fades smoothly. Move right to finish the fade farther away and widen the transition; the start stays fixed.";
+inline constexpr const char* kControlMaskDepthGuide = "Start with Far scenery. Move Fade start right if NR disappears nearby; adjust Fade end for a softer transition. The 0-100 range scale spreads out depth values close to 1; it is not a distance percentage.";
+inline constexpr const char* kControlMaskRawDepthTip = "Exact normalized game depth, 0-1. Perspective depth often clusters near 1. Start must be lower than end; editing one endpoint never moves the other. Ctrl-click a value to type it.";
+inline constexpr const char* kControlMaskCharacterOff = "Character mask is off: Average, Minimum and Maximum have no automatic mask to combine with.";
 inline constexpr const char* kResultStrength = "Result adjustment strength";
 inline constexpr const char* kModelStrengthTip = "Controls the NR model before result adjustment. Values 0-2 are sent unchanged; 1 is the default. Response above 1 depends on the model/runtime and is unverified. Changes reset NR history.";
 inline constexpr const char* kResultStrengthTip = "Scales the NR edit after the model: 0 removes the edit, 1 keeps its scale, 2 doubles its scale before limits. Requires result adjustment. Changes apply live without restarting NR history.";

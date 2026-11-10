@@ -23,8 +23,10 @@ SCHEMA = 'nr-nexus-ui-snapshot/1'
 CAVEAT = '真实生产 ImGui 绘制逻辑；合成测试状态，不代表真实游戏运行、GPU 画质或性能验收。'
 SAFE_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z')
 DOC_ROLES = {'quality', 'multipass', 'results', 'diagnostics', 'advanced', 'presets', 'gpu-comparison'}
-THEMES = ('cyber_neon', 'nexus_dark', 'fluent_light', 'midnight_oled')
-THEME_TITLES = ('Cyber Neon', 'Nexus Dark', 'Fluent Light', 'Midnight OLED')
+THEMES = ('cyber_neon', 'nexus_dark', 'fluent_light', 'midnight_oled',
+          'neon_violet', 'tactical_amber', 'aurora_glass')
+THEME_TITLES = ('Cyber Neon', 'Nexus Dark', 'Fluent Light', 'Midnight OLED',
+                'Neon Violet', 'Tactical Amber', 'Aurora Glass')
 PAGE_NAMES = {0: '画质', 1: '叠层', 2: '诊断', 3: '高级'}
 REQUIRED_DOC_ROLES = {'quality', 'multipass', 'results', 'diagnostics', 'advanced'} | {
     'theme-' + slug for slug in THEMES}
@@ -184,14 +186,14 @@ def documentation_candidates(entries, output, existing, renderer):
             with Image.open(output / name) as image:
                 tiles.append(image.convert('RGB'))
         # Native pixel sizes, no resizing: each row/column accommodates its largest tile.
-        widths = [max(tiles[i].width for i in (col, col + 2)) for col in (0, 1)]
-        heights = [max(tile.height for tile in tiles[row:row + 2]) + 40 for row in (0, 2)]
+        widths = [max(tile.width for tile in tiles[col::2]) for col in (0, 1)]
+        heights = [max(tile.height for tile in tiles[row:row + 2]) + 40 for row in range(0, len(tiles), 2)]
         sheet = Image.new('RGB', (sum(widths), sum(heights)), '#10141b')
         draw = ImageDraw.Draw(sheet)
         font_path = Path('C:/Windows/Fonts/segoeui.ttf')
         font = ImageFont.truetype(str(font_path), 24) if font_path.is_file() else ImageFont.load_default()
         for index, tile in enumerate(tiles):
-            x, y = (widths[0] if index % 2 else 0), (heights[0] if index >= 2 else 0)
+            x, y = (widths[0] if index % 2 else 0), sum(heights[:index // 2])
             draw.text((x + 8, y + 6), THEME_TITLES[index], font=font, fill='white')
             sheet.paste(tile, (x, y + 40))
         name = 'themes' + suffix + '.webp'

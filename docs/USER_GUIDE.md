@@ -68,7 +68,7 @@
 <a id="zh-quality"></a>
 #### 画质：模型、位置与外观
 
-![画质页完整界面](images/ui/quality-zh.webp)
+![画质页的核心画质与处理入口](images/ui/quality-zh.webp)
 
 用 **Neural Rendering／F6** 比较关／开。**Auto** 是未应用方案时的基础模型默认值；兼容的 **310.9.16.0** 运行时支持 **A（Legacy）／B（Small FP8）**，可比较两者外观和成本。
 
@@ -234,18 +234,20 @@ F6 立即提示开关操作，随后状态更新为正在检查、正常运行�
 
 #### 控制遮罩（ControlMask）
 
-ControlMask 是传给兼容 NR 运行时的遮罩图。开发版可在**画质 → 核心画质 → 控制遮罩**中实时开关；它只切换遮罩，不会关闭 NR，也不需要重启游戏。遮罩仅在支持的运行时和处理路径上生效。
+控制遮罩可以分别调节 NR 的应用量、色调和结构，也可以让 NR 在远处逐渐减弱，保留原画面。开发版入口在**画质 → 外观与结果 → 模型风格 → 控制遮罩**，与“角色遮罩”相邻。开关和参数即时生效，无需重启游戏；关闭遮罩后仍继续运行 NR。需要兼容的 NR 运行时和处理路径。
 
 当前开发版会忽略旧诊断配置 `NRControlMaskUseCoreContext=1`，并修复已有处理历史在切回 Upscaled 或逐层处理时阻止 NR 继续运行的问题。无需手动删除此键；更新插件并重启游戏后生效。
 
 | 控件 | 默认／选项 | 用途 |
 | --- | --- | --- |
-| 遮罩模式 | **纯色 RGB** | 也可选全 1（白色）、矩形诊断图案或远景深度。诊断图案用于确认遮罩路径。 |
-| 混合模式（Blend mode） | **0**，**0–3** | 原值传给 NR 运行时；每个值的含义由运行时定义。 |
-| RGB | **1／1／1**，各 **0–1** | 设置纯色及黑矩形诊断模式的 RGB；远景深度模式按深度衰减红色通道。 |
-| Near／Far 深度 | **0.70／0.90** | 仅远景深度模式使用。在 Near 之前保留 NR 强度，在 Near 到 Far 之间逐渐衰减，到 Far 后降为零；Near 必须小于 Far。数值是游戏深度，不表示世界距离。 |
+| 遮罩模式 | **全画面自定义** | 统一使用 RGB 设置；“全画面标准遮罩”固定三个通道为 1；“按深度衰减”只在远处逐渐减弱红色通道，G／B 仍可独立调整。 |
+| 混合模式 | **替换**／平均／取较小值／取较大值 | 替换（0）使用控制遮罩代替自动角色遮罩；其余三项（1／2／3）将蓝色结构值与角色遮罩按平均／最小／最大组合。角色遮罩关闭时，后三项通常没有区别；它们不改变红色强度或绿色色调的组合方式。 |
+| R／G／B | **1／1／1**，各 **0–1** | R 为红色通道，控制 NR 结果应用量；G 为绿色通道，缩放局部色调输入；B 为蓝色通道，缩放结构输入。G 降到 0 仍可能保留风格调色，B 的效果还取决于角色遮罩与混合模式。 |
+| 淡出起点／淡出终点 | 精确深度 **0.999900／0.999950** | 起点之前保留选定的 NR 强度，起点到终点之间平滑减弱，终点之后保留原画面。两个控件采用固定的 0–100 范围刻度，让接近 1 的深度更容易调节；刻度不是距离百分比或米数。 |
 
-开发版深度控件显示六位小数，可按住 **Ctrl 单击数值**精确输入。透视深度常集中在接近 1 的窄区间；若开启后连近处也失去 NR 效果，应将 Near／Far 向 1 调整并保留过渡区间，例如从 `0.990000／0.999900` 开始比较近处地面与远处物体，再按该游戏调整。默认阈值与示例都不是通用距离标定。
+调节时先选**远景起步**：若近处地面也失去 NR，将“淡出起点”向右移；再把“淡出终点”向右移可扩大柔和过渡。修改一个端点不会推动另一个，起点始终小于终点。调乱后再次点击“远景起步”，即可只恢复深度范围，保留 RGB 和混合选择。**仅远平面**使用 `0.999990／1.000000`，只在非常接近游戏远深度极限处淡出；它按深度选择区域，不识别语义天空。
+
+展开**精确深度值**可查看六位小数，并按住 **Ctrl 单击数值**输入归一化游戏深度。不同游戏的深度分布不同，起步值仍需按画面调整。旧默认 `0.7／0.9` 会更新为新的远景起步值，其他有效自定义范围保留。矩形测试图案已从玩家菜单移除。
 
 #### 模型风格
 
@@ -590,7 +592,7 @@ There are four main tabs: **Quality, Multi-Pass, Diagnostics and Advanced**. **M
 <a id="en-quality"></a>
 #### Quality: model, location and look
 
-![Full Quality page](images/ui/quality.webp)
+![Quality page: core quality and processing](images/ui/quality.webp)
 
 Compare off/on with **Neural Rendering/F6**. **Auto** is the base model default before applying a profile. Compatible runtime **310.9.16.0** supports **A (Legacy)/B (Small FP8)** for comparing appearance and cost.
 
@@ -756,18 +758,20 @@ Selection is unavailable before runtime identification. Incompatible saved B fal
 
 #### Control mask
 
-ControlMask is a mask image sent to compatible NR runtimes. In development builds, toggle it live at **Quality → Core quality → Control mask**. This switch controls the mask only; Neural Rendering stays on, and the game does not need to restart. The mask is used only on supported runtimes and processing paths.
+Control mask lets you tune NR intensity, tone and structure separately, or gradually reduce NR in the distance to keep the original picture there. In development builds, find it at **Quality → Appearance & result → Model styling → Control mask**, beside Character mask. The switch and settings apply live without restarting the game; NR keeps running when the mask is off. A compatible NR runtime and processing path are required.
 
 Current development builds ignore the old diagnostic setting `NRControlMaskUseCoreContext=1` and fix existing processing history blocking NR when switching back to Upscaled or using stages per pass. There is no need to delete the key; update the addon and restart the game.
 
 | Control | Default / options | What it does |
 | --- | --- | --- |
-| Mask mode | **Solid RGB** | Also offers all 1s (white), rectangle diagnostic patterns and Depth-far. Diagnostic patterns help confirm that the mask path is active. |
-| Blend mode | **0**, **0–3** | Forwarded unchanged to the NR runtime; each value is defined by that runtime. |
-| RGB | **1 / 1 / 1**, each **0–1** | Sets RGB for Solid RGB and the black rectangle test; Depth-far fades the red channel according to depth. |
-| Near / Far depth | **0.70 / 0.90** | Used only by Depth-far. Retains NR strength before Near, fades it between Near and Far, and reaches zero beyond Far. Near must be lower than Far. Values use game depth, not world distance. |
+| Mask mode | **Uniform control** | Uses the RGB settings across the picture. Full-frame mask fixes all three channels at 1. Depth fade gradually reduces red in the distance; G and B remain independently adjustable. |
+| Blend mode | **Replace** / Average / Minimum / Maximum | Replace (0) uses the control mask instead of the automatic Character mask. Modes 1 / 2 / 3 combine the blue structure value with the Character mask by average / minimum / maximum. With Character mask off, these three modes usually look the same. Red intensity and green tone remain separate. |
+| R / G / B | **1 / 1 / 1**, each **0–1** | R is red: how much of the NR result is used. G is green: scales the local tone input. B is blue: scales the structure input. G at 0 can retain style colour grading; B also depends on Character mask and blend mode. |
+| Fade start / Fade end | Exact depth **0.999900 / 0.999950** | Keeps the selected NR intensity before the start, fades smoothly between start and end, and keeps the original picture beyond the end. A fixed 0–100 range scale makes depths close to 1 easier to adjust; this is not a distance percentage or metres. |
 
-Development builds show six decimal places; **Ctrl-click a value** to enter it precisely. Perspective depth often occupies a narrow range near 1. If enabling the mask also removes NR from nearby objects, move Near / Far towards 1 while keeping a transition range. For example, start with `0.990000 / 0.999900`, compare nearby ground with distant objects, then adjust for the game. Defaults and examples are not universal distance calibrations.
+Start with **Far scenery**. If nearby ground loses NR, move Fade start right. Move Fade end right to widen the soft transition. Editing one endpoint never moves the other, and start remains below end. Click Far scenery again to restore only the depth range while keeping RGB and blend choices. **Sky / far plane** uses `0.999990 / 1.000000` to fade only near the game's far depth limit; this selects depth rather than detecting semantic sky.
+
+Expand **Exact depth values** to see six decimal places, and **Ctrl-click a number** to enter normalized game depth. Games have different depth distributions, so adjust the starting point to the picture. The old `0.7 / 0.9` defaults are updated to the new distant starting point; other valid custom ranges are kept. Rectangle test patterns have been removed from the player menu.
 
 #### Model styling
 
