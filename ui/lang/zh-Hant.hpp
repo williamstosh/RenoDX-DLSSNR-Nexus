@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kZhHant[] = {
+    {"Region mask", "區域遮罩"},
+    {"Region mask settings", "區域遮罩設定"},
+    {"Use Pass 1 region mask settings", "沿用第 1 層區域遮罩設定"},
+    {"Controls NR intensity, tone and structure across the picture, with an optional depth fade. Separate from Character mask. This switch enables the region mask for every pass; each pass can use its own settings.", "控制整個畫面中 NR 的強度、色調和結構，並可依深度逐漸減弱。此功能獨立於角色遮罩，並非角色遮罩強度。此開關會為所有層啟用區域遮罩；各層可使用各自的設定。"},
+    {"The other endpoint prevents this default. Use Far scenery to restore both depth endpoints.", "另一端點阻止套用此預設值。使用「遠景起步」可還原兩個深度端點。"},
     {"Choose uniform control for the whole picture, a full-strength mask, or a gradual depth fade that keeps NR nearby and reduces it in the distance.", "選擇全畫面自訂、全畫面標準遮罩，或依深度衰減：近處保留 NR，遠處減弱 NR。"},
     {"Combines the blue structure channel with the runtime's Character mask. With Character mask off, modes 1-3 have no automatic mask to combine with and can look the same. Red intensity and green tone are separate.", "將藍色結構通道與執行階段的角色遮罩混合。關閉角色遮罩時，模式 1–3 沒有自動遮罩可供混合，效果可能相同。紅色強度和綠色色調各自獨立。"},
     {"Apply the R, G and B values uniformly across the picture. Use this to tune NR intensity, tone and structure separately.", "在全畫面均勻套用 R、G、B 值，分別調整 NR 強度、色調和結構。"},

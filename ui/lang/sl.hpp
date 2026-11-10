@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kSl[] = {
+    {"Region mask", "Maska območja"},
+    {"Region mask settings", "Nastavitve maske območja"},
+    {"Use Pass 1 region mask settings", "Uporabi nastavitve maske območja prvega prehoda"},
+    {"Controls NR intensity, tone and structure across the picture, with an optional depth fade. Separate from Character mask. This switch enables the region mask for every pass; each pass can use its own settings.", "Upravlja intenzivnost, ton in strukturo NR na celotni sliki z izbirnim pojemanjem glede na globino. Ločena je od maske lika. To stikalo omogoči masko območja za vse prehode; vsak ima lahko svoje nastavitve."},
+    {"The other endpoint prevents this default. Use Far scenery to restore both depth endpoints.", "Drugo krajišče preprečuje to privzeto vrednost. Z možnostjo »Oddaljena pokrajina« obnovite obe krajišči globine."},
     {"Choose uniform control for the whole picture, a full-strength mask, or a gradual depth fade that keeps NR nearby and reduces it in the distance.", "Izberite enoten nadzor za celotno sliko, masko s polno močjo ali postopno bledenje globine, ki ohranja NR v bližini in ga zmanjša na daljavo."},
     {"Combines the blue structure channel with the runtime's Character mask. With Character mask off, modes 1-3 have no automatic mask to combine with and can look the same. Red intensity and green tone are separate.", "Združuje kanal modre strukture z Maska likov izvajalnega okolja. Ko je Maska likov izklopljen, načini 1-3 nimajo samodejne maske za kombiniranje in so lahko videti enako. Intenzivnost rdeče in zeleni ton sta ločena."},
     {"Apply the R, G and B values uniformly across the picture. Use this to tune NR intensity, tone and structure separately.", "Enakomerno nanesite vrednosti R, G in B po sliki. Uporabite to za ločeno nastavitev intenzivnosti, tona in strukture NR."},

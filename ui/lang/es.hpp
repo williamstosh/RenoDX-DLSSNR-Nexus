@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kEs[] = {
+    {"Region mask", "Máscara de región"},
+    {"Region mask settings", "Ajustes de la máscara de región"},
+    {"Use Pass 1 region mask settings", "Usar los ajustes de máscara de región de la pasada 1"},
+    {"Controls NR intensity, tone and structure across the picture, with an optional depth fade. Separate from Character mask. This switch enables the region mask for every pass; each pass can use its own settings.", "Controla la intensidad, el tono y la estructura de NR en toda la imagen, con atenuación opcional por profundidad. Es independiente de la máscara de personaje. Este interruptor activa la máscara de región para todas las pasadas; cada una puede tener sus propios ajustes."},
+    {"The other endpoint prevents this default. Use Far scenery to restore both depth endpoints.", "El otro extremo impide aplicar este valor predeterminado. Usa «Paisaje lejano» para restaurar ambos extremos de profundidad."},
     {"Choose uniform control for the whole picture, a full-strength mask, or a gradual depth fade that keeps NR nearby and reduces it in the distance.", "Elija un control uniforme para toda la imagen, una máscara de máxima intensidad o un desvanecimiento de profundidad gradual que mantenga a NR cerca y lo reduzca en la distancia."},
     {"Combines the blue structure channel with the runtime's Character mask. With Character mask off, modes 1-3 have no automatic mask to combine with and can look the same. Red intensity and green tone are separate.", "Combina el canal de estructura azul con Máscara de personajes del tiempo de ejecución. Con Máscara de personajes desactivado, los modos 1-3 no tienen máscara automática para combinar y pueden verse iguales. La intensidad del rojo y el tono verde están separados."},
     {"Apply the R, G and B values uniformly across the picture. Use this to tune NR intensity, tone and structure separately.", "Aplique los valores R, G y B uniformemente en toda la imagen. Utilícelo para sintonizar la intensidad, el tono y la estructura de NR por separado."},

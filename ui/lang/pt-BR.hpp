@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kPtBr[] = {
+    {"Region mask", "Máscara de região"},
+    {"Region mask settings", "Configurações da máscara de região"},
+    {"Use Pass 1 region mask settings", "Usar as configurações da máscara de região do Pass 1"},
+    {"Controls NR intensity, tone and structure across the picture, with an optional depth fade. Separate from Character mask. This switch enables the region mask for every pass; each pass can use its own settings.", "Controla a intensidade, o tom e a estrutura do NR em toda a imagem, com atenuação opcional por profundidade. É independente da máscara de personagem. Esta opção ativa a máscara de região em todos os passes; cada um pode ter suas próprias configurações."},
+    {"The other endpoint prevents this default. Use Far scenery to restore both depth endpoints.", "O outro extremo impede este valor padrão. Use “Cenário distante” para restaurar os dois extremos de profundidade."},
     {"Choose uniform control for the whole picture, a full-strength mask, or a gradual depth fade that keeps NR nearby and reduces it in the distance.", "Escolha um controle uniforme para toda a imagem, uma máscara de força total ou um desvanecimento gradual de profundidade que mantém NR próximo e o reduz à distância."},
     {"Combines the blue structure channel with the runtime's Character mask. With Character mask off, modes 1-3 have no automatic mask to combine with and can look the same. Red intensity and green tone are separate.", "Combina o canal de estrutura azul com o Máscara de personagem do tempo de execução. Com Máscara de personagem desligado, os modos 1-3 não têm máscara automática para combinar e podem ter a mesma aparência. A intensidade vermelha e o tom verde são separados."},
     {"Apply the R, G and B values uniformly across the picture. Use this to tune NR intensity, tone and structure separately.", "Aplique os valores R, G e B uniformemente em toda a imagem. Use isto para ajustar a intensidade, tom e estrutura do NR separadamente."},

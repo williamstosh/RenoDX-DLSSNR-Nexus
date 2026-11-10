@@ -277,13 +277,26 @@ inline presets::Document DefaultsDocument(int target) {
 inline std::vector<Difference> Preview(const presets::Document& document, bool compatibility, bool builtin_reset = false) {
   RuntimeLock lock(runtime_mutex);
   std::vector<Difference> differences;
+  Json settings = document.settings;
+  for (uint32_t pass = 0; pass < kMaxNrPasses; ++pass) {
+    const char* near_key = (pass == 0 ? kSetControlMaskDepthNear.key : kSetPassControlMaskDepthNear[pass - 1].key);
+    const char* far_key = (pass == 0 ? kSetControlMaskDepthFar.key : kSetPassControlMaskDepthFar[pass - 1].key);
+    if (!settings.contains(near_key) || !settings.contains(far_key)
+        || !settings[near_key].is_number() || !settings[far_key].is_number()) continue;
+    float depth_near = settings[near_key].get<float>();
+    float depth_far = settings[far_key].get<float>();
+    if (MigrateControlMaskDepthDefaults(&depth_near, &depth_far)) {
+      settings[near_key] = depth_near;
+      settings[far_key] = depth_far;
+    }
+  }
   unsigned passes = stack_passes.load();
   if (const auto selected = document.settings.find("NRPasses"); selected != document.settings.end()) {
     if (const auto* rule = presets::FindRule("NRPasses"); rule != nullptr && ValidateValue(*rule, *selected)) {
       passes = selected->get<unsigned>();
     }
   }
-  for (const auto& [key, value] : document.settings.items()) {
+  for (const auto& [key, value] : settings.items()) {
     const auto* rule = presets::FindRule(key);
     Difference row{.key = key, .before = ReadSetting(key), .after = value, .rule = rule};
     bool inherited_scope = false;

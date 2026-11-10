@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kFr[] = {
+    {"Region mask", "Masque de région"},
+    {"Region mask settings", "Réglages du masque de région"},
+    {"Use Pass 1 region mask settings", "Utiliser les réglages du masque de région de la passe 1"},
+    {"Controls NR intensity, tone and structure across the picture, with an optional depth fade. Separate from Character mask. This switch enables the region mask for every pass; each pass can use its own settings.", "Contrôle l’intensité, les tons et la structure de NR sur toute l’image, avec une atténuation facultative selon la profondeur. Indépendant du masque de personnage. Ce commutateur active le masque de région pour toutes les passes ; chacune peut avoir ses propres réglages."},
+    {"The other endpoint prevents this default. Use Far scenery to restore both depth endpoints.", "L’autre extrémité empêche l’application de cette valeur par défaut. Utilisez « Paysage lointain » pour rétablir les deux extrémités de profondeur."},
     {"Choose uniform control for the whole picture, a full-strength mask, or a gradual depth fade that keeps NR nearby and reduces it in the distance.", "Choisissez un contrôle uniforme pour l'ensemble de l'image, un masque à pleine puissance ou un fondu de profondeur progressif qui maintient NR à proximité et le réduit à distance."},
     {"Combines the blue structure channel with the runtime's Character mask. With Character mask off, modes 1-3 have no automatic mask to combine with and can look the same. Red intensity and green tone are separate.", "Combine le canal de structure bleu avec le Masque personnages du runtime. Lorsque Masque personnages est désactivé, les modes 1 à 3 n'ont pas de masque automatique avec lequel se combiner et peuvent se ressembler. L'intensité du rouge et le ton vert sont distincts."},
     {"Apply the R, G and B values uniformly across the picture. Use this to tune NR intensity, tone and structure separately.", "Appliquez les valeurs R, V et B uniformément sur l’image. Utilisez-le pour régler l'intensité, le ton et la structure du NR séparément."},

@@ -459,8 +459,8 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       if (scenario.action == "r7-depth-fine") {
         runtime::control_mask_enabled = true;
         runtime::control_mask_mode = runtime::kControlMaskDepthFar;
-        runtime::control_mask_depth_near = 0.9999f;
-        runtime::control_mask_depth_far = 0.99995f;
+        runtime::control_mask_depth_near = 0.99989f;
+        runtime::control_mask_depth_far = 0.99997f;
       }
       for (unsigned pass = 0; pass < 3; ++pass) {
         runtime::pass_follow[pass] = true;

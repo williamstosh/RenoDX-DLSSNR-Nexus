@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kBg[] = {
+    {"Region mask", "Маска на областта"},
+    {"Region mask settings", "Настройки на маската на областта"},
+    {"Use Pass 1 region mask settings", "Използвай настройките на маската на областта от Pass 1"},
+    {"Controls NR intensity, tone and structure across the picture, with an optional depth fade. Separate from Character mask. This switch enables the region mask for every pass; each pass can use its own settings.", "Управлява силата, тоновете и структурата на NR в цялата картина с незадължително затихване по дълбочина. Отделна е от маската на персонажа. Превключвателят включва маската на областта за всички проходи; всеки може да има собствени настройки."},
+    {"The other endpoint prevents this default. Use Far scenery to restore both depth endpoints.", "Другият край не позволява тази стойност по подразбиране. Използвайте „Далечен пейзаж“, за да възстановите двата края на диапазона на дълбочината."},
     {"Choose uniform control for the whole picture, a full-strength mask, or a gradual depth fade that keeps NR nearby and reduces it in the distance.", "Изберете еднообразно управление за цялата картина, маска с пълна сила или постепенно избледняване на дълбочината, което държи NR наблизо и го намалява в далечината."},
     {"Combines the blue structure channel with the runtime's Character mask. With Character mask off, modes 1-3 have no automatic mask to combine with and can look the same. Red intensity and green tone are separate.", "Комбинира синия структурен канал с Маска на персонажи на средата за изпълнение. При изключен Маска на персонажи режими 1-3 нямат автоматична маска, с която да се комбинират, и могат да изглеждат по същия начин. Червеният интензитет и зеленият тон са отделни."},
     {"Apply the R, G and B values uniformly across the picture. Use this to tune NR intensity, tone and structure separately.", "Приложете равномерно стойностите на R, G и B върху картината. Използвайте това, за да настроите отделно интензитета, тона и структурата на NR."},

@@ -191,6 +191,15 @@
   auto independent = inherited;
   independent["NRPass2FollowPass1"] = false;
   check(profile::Snapshot() == independent, "r7 appearance inheritance only changes its own setting");
+  const auto reveal_result = [&]() {
+    auto* window = settings_window();
+    const auto count = std::size(runtime::kPassLookResultSettings) / 3;
+    const bool changed = runtime::AnyModified({runtime::SettingGroup(runtime::kPassLookResultSettings).subspan(0, count)});
+    const auto heading = text_item(changed ? ui::text::kResultChanged : ui::text::kResultShaping);
+    ImGui::SetScrollY(window, window->Scroll.y + heading.rect.Min.y - window->InnerRect.Min.y);
+    frame(); frame();
+  };
+  reveal_result();
   click(switch_for_label(ui::text::kInheritResult));
   check(runtime::pass_look_result[0].follow.load() && has_text(ui::text::kInheritedResult)
             && !has_text("Adjust NR's look") && !has_text("Detail stability"),
@@ -198,6 +207,7 @@
   check(!runtime::pass_follow[0].load() && runtime::kLookResult[1].halo.Get() == .7f
             && runtime::kLookResult[1].detail_stability.Get() == 2.f,
         "r7 result inheritance preserves independent appearance and stored result values");
+  reveal_result();
   click(switch_for_label(ui::text::kInheritResult));
   click(find("expand_all"));
   ImGui::SetScrollY(settings_window(), settings_window()->ScrollMax.y);

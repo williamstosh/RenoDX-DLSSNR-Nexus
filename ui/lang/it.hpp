@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kIt[] = {
+    {"Region mask", "Maschera regione"},
+    {"Region mask settings", "Impostazioni della maschera regione"},
+    {"Use Pass 1 region mask settings", "Usa le impostazioni della maschera regione del passaggio 1"},
+    {"Controls NR intensity, tone and structure across the picture, with an optional depth fade. Separate from Character mask. This switch enables the region mask for every pass; each pass can use its own settings.", "Controlla intensità, tonalità e struttura di NR sull’intera immagine, con attenuazione facoltativa in base alla profondità. È separata dalla maschera del personaggio. Questo interruttore attiva la maschera regione per tutti i passaggi; ognuno può avere impostazioni proprie."},
+    {"The other endpoint prevents this default. Use Far scenery to restore both depth endpoints.", "L’altro estremo impedisce questo valore predefinito. Usa «Scenario lontano» per ripristinare entrambi gli estremi di profondità."},
     {"Choose uniform control for the whole picture, a full-strength mask, or a gradual depth fade that keeps NR nearby and reduces it in the distance.", "Scegli il controllo uniforme per l'intera immagine, una maschera a piena potenza o una dissolvenza graduale della profondità che mantiene NR nelle vicinanze e lo riduce in lontananza."},
     {"Combines the blue structure channel with the runtime's Character mask. With Character mask off, modes 1-3 have no automatic mask to combine with and can look the same. Red intensity and green tone are separate.", "Combina il canale della struttura blu con Maschera personaggi del runtime. Con Maschera personaggi disattivato, le modalità 1-3 non hanno una maschera automatica con cui combinarsi e possono avere lo stesso aspetto. L'intensità del rosso e il tono del verde sono separati."},
     {"Apply the R, G and B values uniformly across the picture. Use this to tune NR intensity, tone and structure separately.", "Applicare i valori R, G e B in modo uniforme su tutta l'immagine. Usalo per regolare separatamente l'intensità, il tono e la struttura di NR."},

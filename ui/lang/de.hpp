@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kDe[] = {
+    {"Region mask", "Bereichsmaske"},
+    {"Region mask settings", "Bereichsmaskeneinstellungen"},
+    {"Use Pass 1 region mask settings", "Bereichsmaskeneinstellungen von Pass 1 übernehmen"},
+    {"Controls NR intensity, tone and structure across the picture, with an optional depth fade. Separate from Character mask. This switch enables the region mask for every pass; each pass can use its own settings.", "Steuert Stärke, Ton und Struktur von NR im gesamten Bild, optional mit tiefenabhängiger Ausblendung. Unabhängig von der Charaktermaske. Dieser Schalter aktiviert die Bereichsmaske für alle Durchgänge; jeder Durchgang kann eigene Einstellungen verwenden."},
+    {"The other endpoint prevents this default. Use Far scenery to restore both depth endpoints.", "Der andere Endpunkt verhindert diesen Standardwert. Mit „Ferne Landschaft“ stellen Sie beide Tiefenendpunkte wieder her."},
     {"Choose uniform control for the whole picture, a full-strength mask, or a gradual depth fade that keeps NR nearby and reduces it in the distance.", "Wählen Sie eine einheitliche Steuerung für das gesamte Bild, eine Maske voller Stärke oder eine allmähliche Tiefenüberblendung, die NR in der Nähe hält und in der Ferne reduziert."},
     {"Combines the blue structure channel with the runtime's Character mask. With Character mask off, modes 1-3 have no automatic mask to combine with and can look the same. Red intensity and green tone are separate.", "Kombiniert den blauen Strukturkanal mit dem Figurmaske der Laufzeit. Wenn Figurmaske ausgeschaltet ist, haben die Modi 1–3 keine automatische Maske zum Kombinieren und können gleich aussehen. Rotintensität und Grünton sind getrennt."},
     {"Apply the R, G and B values uniformly across the picture. Use this to tune NR intensity, tone and structure separately.", "Wenden Sie die R-, G- und B-Werte gleichmäßig auf das Bild an. Verwenden Sie dies, um die Intensität, den Ton und die Struktur von NR separat einzustellen."},

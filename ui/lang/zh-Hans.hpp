@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kZhHans[] = {
+    {"Region mask", "区域遮罩"},
+    {"Region mask settings", "区域遮罩设置"},
+    {"Use Pass 1 region mask settings", "继承第 1 层区域遮罩设置"},
+    {"Controls NR intensity, tone and structure across the picture, with an optional depth fade. Separate from Character mask. This switch enables the region mask for every pass; each pass can use its own settings.", "控制整幅画面中 NR 的强度、色调和结构，并可按深度逐渐减弱。此功能独立于角色遮罩，并非角色遮罩强度。此开关为所有层启用区域遮罩；各层可使用各自的设置。"},
+    {"The other endpoint prevents this default. Use Far scenery to restore both depth endpoints.", "另一端点阻止应用此默认值。使用“远景起步”可恢复两个深度端点。"},
     {"Uniform control", "全画面自定义"},
     {"Full-frame mask", "全画面标准遮罩"},
     {"Depth fade", "按深度衰减"},

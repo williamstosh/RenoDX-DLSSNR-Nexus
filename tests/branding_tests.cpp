@@ -571,6 +571,7 @@ int main() {
     };
     const char* control_mask_strings[] = {
         text::kControlMaskSettings, text::kControlMaskModeTip, text::kControlMaskBlendTip,
+        text::kControlMaskTip, text::kControlMaskResetBlocked,
         "Uniform control", "Full-frame mask", "Depth fade",
         text::kControlMaskModeTips[0], text::kControlMaskModeTips[1], text::kControlMaskModeTips[2],
         text::kControlMaskBlendModes[0], text::kControlMaskBlendModes[1],

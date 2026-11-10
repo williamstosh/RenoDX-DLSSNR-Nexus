@@ -232,22 +232,24 @@ F6 立即提示开关操作，随后状态更新为正在检查、正常运行�
 
 运行时未识别时模型选择不可用。不兼容的已保存 B 会回退 A 并保留选择。旧预设 3 仅作“自定义”兼容项，在双模型运行时解析为 A。
 
-#### 控制遮罩（ControlMask）
+#### 区域遮罩（ControlMask）
 
-控制遮罩可以分别调节 NR 的应用量、色调和结构，也可以让 NR 在远处逐渐减弱，保留原画面。开发版入口在**画质 → 外观与结果 → 模型风格 → 控制遮罩**，与“角色遮罩”相邻。开关和参数即时生效，无需重启游戏；关闭遮罩后仍继续运行 NR。需要兼容的 NR 运行时和处理路径。
+区域遮罩可以分别调节 NR 的应用量、色调和结构，也可以让 NR 在远处逐渐减弱，保留原画面。它与用于识别人物的“角色遮罩”分别设置。开发版入口在**画质 → 外观与结果 → 模型风格 → 区域遮罩**；叠层页的每一层也都有同一组设置，位于模型外观之后、结果调整之前。开关作用于全部层，Pass 1 与画质页共用设置，后续层可继承或独立调整。开关和参数即时生效，无需重启游戏；关闭遮罩后仍继续运行 NR。需要兼容的 NR 运行时和处理路径。
 
 当前开发版会忽略旧诊断配置 `NRControlMaskUseCoreContext=1`，并修复已有处理历史在切回 Upscaled 或逐层处理时阻止 NR 继续运行的问题。无需手动删除此键；更新插件并重启游戏后生效。
 
 | 控件 | 默认／选项 | 用途 |
 | --- | --- | --- |
 | 遮罩模式 | **全画面自定义** | 统一使用 RGB 设置；“全画面标准遮罩”固定三个通道为 1；“按深度衰减”只在远处逐渐减弱红色通道，G／B 仍可独立调整。 |
-| 混合模式 | **替换**／平均／取较小值／取较大值 | 替换（0）使用控制遮罩代替自动角色遮罩；其余三项（1／2／3）将蓝色结构值与角色遮罩按平均／最小／最大组合。角色遮罩关闭时，后三项通常没有区别；它们不改变红色强度或绿色色调的组合方式。 |
+| 混合模式 | **替换**／平均／取较小值／取较大值 | 替换（0）使用区域遮罩代替自动角色遮罩；其余三项（1／2／3）将蓝色结构值与角色遮罩按平均／最小／最大组合。角色遮罩关闭时，后三项通常没有区别；它们不改变红色强度或绿色色调的组合方式。 |
 | R／G／B | **1／1／1**，各 **0–1** | R 为红色通道，控制 NR 结果应用量；G 为绿色通道，缩放局部色调输入；B 为蓝色通道，缩放结构输入。G 降到 0 仍可能保留风格调色，B 的效果还取决于角色遮罩与混合模式。 |
 | 淡出起点／淡出终点 | 精确深度 **0.999900／0.999950** | 起点之前保留选定的 NR 强度，起点到终点之间平滑减弱，终点之后保留原画面。两个控件采用固定的 0–100 范围刻度，让接近 1 的深度更容易调节；刻度不是距离百分比或米数。 |
 
 调节时先选**远景起步**：若近处地面也失去 NR，将“淡出起点”向右移；再把“淡出终点”向右移可扩大柔和过渡。修改一个端点不会推动另一个，起点始终小于终点。调乱后再次点击“远景起步”，即可只恢复深度范围，保留 RGB 和混合选择。**仅远平面**使用 `0.999990／1.000000`，只在非常接近游戏远深度极限处淡出；它按深度选择区域，不识别语义天空。
 
-展开**精确深度值**可查看六位小数，并按住 **Ctrl 单击数值**输入归一化游戏深度。不同游戏的深度分布不同，起步值仍需按画面调整。旧默认 `0.7／0.9` 会更新为新的远景起步值，其他有效自定义范围保留。矩形测试图案已从玩家菜单移除。
+展开**精确深度值**可查看六位小数，并按住 **Ctrl 单击数值**输入归一化游戏深度。“近景深度／远景深度”与“淡出起点／淡出终点”编辑的是同一对端点。四行数值修改后均可用右侧恢复按钮重置该项；若另一端限制了单项恢复，可点“远景起步”恢复整个范围。
+
+新默认值只用于初始化及迁移精确旧默认 `0.7／0.9`；启动、应用方案或导入时均采用同一迁移规则，其他有效自定义范围保留。若已保存的自定义值让 NR 过早淡出，请主动选择“远景起步”。不同游戏的深度分布不同，起步值仍需按画面调整。矩形测试图案已从玩家菜单移除。
 
 #### 模型风格
 
@@ -756,9 +758,9 @@ The tables list individual setting defaults. Initial Balanced setup overrides mo
 
 Selection is unavailable before runtime identification. Incompatible saved B falls back to A while retaining the choice. Legacy preset 3 is a Custom compatibility entry and resolves to A on the dual-model runtime.
 
-#### Control mask
+#### Region mask
 
-Control mask lets you tune NR intensity, tone and structure separately, or gradually reduce NR in the distance to keep the original picture there. In development builds, find it at **Quality → Appearance & result → Model styling → Control mask**, beside Character mask. The switch and settings apply live without restarting the game; NR keeps running when the mask is off. A compatible NR runtime and processing path are required.
+Region mask lets you tune NR intensity, tone and structure separately, or gradually reduce NR in the distance to keep the original picture there. It is separate from Character mask, which identifies people. In development builds, find it at **Quality → Appearance & result → Model styling → Region mask**. Every pass on Multi-Pass has the same controls, after model appearance and before result adjustment. The switch applies to all passes; Pass 1 shares Quality's settings, while later passes can inherit or use independent values. Changes apply live without restarting the game; NR keeps running when the mask is off. A compatible NR runtime and processing path are required.
 
 Current development builds ignore the old diagnostic setting `NRControlMaskUseCoreContext=1` and fix existing processing history blocking NR when switching back to Upscaled or using stages per pass. There is no need to delete the key; update the addon and restart the game.
 
@@ -771,7 +773,9 @@ Current development builds ignore the old diagnostic setting `NRControlMaskUseCo
 
 Start with **Far scenery**. If nearby ground loses NR, move Fade start right. Move Fade end right to widen the soft transition. Editing one endpoint never moves the other, and start remains below end. Click Far scenery again to restore only the depth range while keeping RGB and blend choices. **Sky / far plane** uses `0.999990 / 1.000000` to fade only near the game's far depth limit; this selects depth rather than detecting semantic sky.
 
-Expand **Exact depth values** to see six decimal places, and **Ctrl-click a number** to enter normalized game depth. Games have different depth distributions, so adjust the starting point to the picture. The old `0.7 / 0.9` defaults are updated to the new distant starting point; other valid custom ranges are kept. Rectangle test patterns have been removed from the player menu.
+Expand **Exact depth values** to see six decimal places, and **Ctrl-click a number** to enter normalized game depth. Near / Far depth edit the same two endpoints as Fade start / Fade end. All four changed rows have a reset button on the right that restores that endpoint. If the other endpoint prevents an individual reset, use Far scenery to restore the pair.
+
+New defaults initialize missing values and migrate the exact old `0.7 / 0.9` defaults. Startup, profile selection and imports use the same migration rule; other valid custom ranges are preserved. If a saved custom range fades NR too early, select Far scenery explicitly. Games have different depth distributions, so adjust the starting point to the picture. Rectangle test patterns have been removed from the player menu.
 
 #### Model styling
 

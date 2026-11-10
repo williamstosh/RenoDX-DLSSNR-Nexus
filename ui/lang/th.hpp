@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kTh[] = {
+    {"Region mask", "มาสก์พื้นที่"},
+    {"Region mask settings", "การตั้งค่ามาสก์พื้นที่"},
+    {"Use Pass 1 region mask settings", "ใช้การตั้งค่ามาสก์พื้นที่ของ Pass 1"},
+    {"Controls NR intensity, tone and structure across the picture, with an optional depth fade. Separate from Character mask. This switch enables the region mask for every pass; each pass can use its own settings.", "ควบคุมความเข้ม โทนสี และโครงสร้างของ NR ทั่วทั้งภาพ โดยเลือกให้ค่อย ๆ ลดลงตามความลึกได้ แยกจากมาสก์ตัวละคร สวิตช์นี้เปิดใช้มาสก์พื้นที่สำหรับทุก Pass โดยแต่ละ Pass ตั้งค่าแยกกันได้"},
+    {"The other endpoint prevents this default. Use Far scenery to restore both depth endpoints.", "จุดปลายอีกด้านทำให้ใช้ค่าเริ่มต้นนี้ไม่ได้ ใช้ “ทิวทัศน์ไกล” เพื่อคืนค่าจุดปลายความลึกทั้งสองด้าน"},
     {"Choose uniform control for the whole picture, a full-strength mask, or a gradual depth fade that keeps NR nearby and reduces it in the distance.", "เลือกการควบคุมที่สม่ำเสมอสำหรับทั้งภาพ หน้ากากเต็มกำลัง หรือการค่อยๆ จางลงที่ช่วยให้ NR อยู่ใกล้ๆ และลดระยะห่างลง"},
     {"Combines the blue structure channel with the runtime's Character mask. With Character mask off, modes 1-3 have no automatic mask to combine with and can look the same. Red intensity and green tone are separate.", "รวมช่องโครงสร้างสีน้ำเงินเข้ากับ มาสก์ตัวละคร ของรันไทม์ เมื่อปิด มาสก์ตัวละคร โหมด 1-3 จะไม่มีมาสก์อัตโนมัติให้รวมเข้าด้วยกันและจะมีลักษณะเหมือนเดิมได้ ความเข้มของสีแดงและโทนสีเขียวแยกจากกัน"},
     {"Apply the R, G and B values uniformly across the picture. Use this to tune NR intensity, tone and structure separately.", "ใช้ค่า R, G และ B ทั่วทั้งภาพอย่างสม่ำเสมอ ใช้ตัวเลือกนี้เพื่อปรับความเข้ม โทนเสียง และโครงสร้าง NR แยกกัน"},

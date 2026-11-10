@@ -38,14 +38,14 @@ inline const std::vector<FieldRule>& FieldRules() {
     {.key = "NRPass" #PASS "Transfer", .label = "HDR transfer", .group = "Model", .minimum = 0, .maximum = 1, .category = FieldRule::MULTIPASS, .pass = PASS}, \
     {.key = "NRPass" #PASS "Color", .label = "Color", .group = "Model", .minimum = 0, .maximum = 1, .category = FieldRule::MULTIPASS, .pass = PASS}, \
     {.key = "NRPass" #PASS "FollowPass1", .label = "Same as pass 1", .group = "Steering", .minimum = 0, .maximum = 1, .category = FieldRule::MULTIPASS, .pass = PASS}, \
-    {.key = "NRPass" #PASS "ControlMaskFollowPass1", .label = "Use Pass 1 mask settings", .group = "Control mask", .minimum = 0, .maximum = 1, .category = FieldRule::MULTIPASS, .pass = PASS}, \
-    {.key = "NRPass" #PASS "ControlMaskMode", .label = "Mask mode", .group = "Control mask", .minimum = 0, .maximum = 5, .category = FieldRule::MULTIPASS, .pass = PASS}, \
-    {.key = "NRPass" #PASS "ControlMaskBlendMode", .label = "Blend mode", .group = "Control mask", .minimum = 0, .maximum = 3, .category = FieldRule::MULTIPASS, .pass = PASS}, \
-    {.key = "NRPass" #PASS "ControlMaskRed", .label = "Red channel", .group = "Control mask", .minimum = 0, .maximum = 1, .category = FieldRule::MULTIPASS, .pass = PASS}, \
-    {.key = "NRPass" #PASS "ControlMaskGreen", .label = "Green channel", .group = "Control mask", .minimum = 0, .maximum = 1, .category = FieldRule::MULTIPASS, .pass = PASS}, \
-    {.key = "NRPass" #PASS "ControlMaskBlue", .label = "Blue channel", .group = "Control mask", .minimum = 0, .maximum = 1, .category = FieldRule::MULTIPASS, .pass = PASS}, \
-    {.key = "NRPass" #PASS "ControlMaskDepthNear", .label = "Near depth", .group = "Control mask", .minimum = 0, .maximum = 1, .category = FieldRule::MULTIPASS, .pass = PASS}, \
-    {.key = "NRPass" #PASS "ControlMaskDepthFar", .label = "Far depth", .group = "Control mask", .minimum = 0, .maximum = 1, .category = FieldRule::MULTIPASS, .pass = PASS}, \
+    {.key = "NRPass" #PASS "ControlMaskFollowPass1", .label = "Use Pass 1 region mask settings", .group = "Region mask", .minimum = 0, .maximum = 1, .category = FieldRule::MULTIPASS, .pass = PASS}, \
+    {.key = "NRPass" #PASS "ControlMaskMode", .label = "Mask mode", .group = "Region mask", .minimum = 0, .maximum = 5, .category = FieldRule::MULTIPASS, .pass = PASS}, \
+    {.key = "NRPass" #PASS "ControlMaskBlendMode", .label = "Blend mode", .group = "Region mask", .minimum = 0, .maximum = 3, .category = FieldRule::MULTIPASS, .pass = PASS}, \
+    {.key = "NRPass" #PASS "ControlMaskRed", .label = "Red channel", .group = "Region mask", .minimum = 0, .maximum = 1, .category = FieldRule::MULTIPASS, .pass = PASS}, \
+    {.key = "NRPass" #PASS "ControlMaskGreen", .label = "Green channel", .group = "Region mask", .minimum = 0, .maximum = 1, .category = FieldRule::MULTIPASS, .pass = PASS}, \
+    {.key = "NRPass" #PASS "ControlMaskBlue", .label = "Blue channel", .group = "Region mask", .minimum = 0, .maximum = 1, .category = FieldRule::MULTIPASS, .pass = PASS}, \
+    {.key = "NRPass" #PASS "ControlMaskDepthNear", .label = "Near depth", .group = "Region mask", .minimum = 0, .maximum = 1, .category = FieldRule::MULTIPASS, .pass = PASS}, \
+    {.key = "NRPass" #PASS "ControlMaskDepthFar", .label = "Far depth", .group = "Region mask", .minimum = 0, .maximum = 1, .category = FieldRule::MULTIPASS, .pass = PASS}, \
     {.key = "NRPass" #PASS "Style", .label = "Style", .group = "Steering", .minimum = 0, .maximum = 2, .category = FieldRule::MULTIPASS, .pass = PASS}, \
     {.key = "NRPass" #PASS "LocalTone", .label = "Local tone", .group = "Steering", .minimum = 0, .maximum = 2, .category = FieldRule::MULTIPASS, .pass = PASS}, \
     {.key = "NRPass" #PASS "Structure", .label = "Structure", .group = "Steering", .minimum = 0, .maximum = 2, .category = FieldRule::MULTIPASS, .pass = PASS}, \
@@ -85,14 +85,14 @@ inline const std::vector<FieldRule>& FieldRules() {
       {.key = "NRSkinIndependent", .label = "Independent skin", .group = "Steering", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY},
       {.key = "NRAutoMask", .label = "Character mask", .group = "Steering", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY, .pass = 1},
       {.key = "NRUICorrection", .label = "UI correction", .group = "Steering", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY, .pass = 1},
-      {.key = "NRControlMaskEnabled", .label = "Control mask", .group = "Control mask", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY},
-      {.key = "NRControlMaskMode", .label = "Mask mode", .group = "Control mask", .minimum = 0, .maximum = 5, .category = FieldRule::QUALITY},
-      {.key = "NRControlMaskBlendMode", .label = "Blend mode", .group = "Control mask", .minimum = 0, .maximum = 3, .category = FieldRule::QUALITY},
-      {.key = "NRControlMaskRed", .label = "Red channel", .group = "Control mask", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY},
-      {.key = "NRControlMaskGreen", .label = "Green channel", .group = "Control mask", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY},
-      {.key = "NRControlMaskBlue", .label = "Blue channel", .group = "Control mask", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY},
-      {.key = "NRControlMaskDepthNear", .label = "Near depth", .group = "Control mask", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY},
-      {.key = "NRControlMaskDepthFar", .label = "Far depth", .group = "Control mask", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY},
+      {.key = "NRControlMaskEnabled", .label = "Region mask", .group = "Region mask", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY},
+      {.key = "NRControlMaskMode", .label = "Mask mode", .group = "Region mask", .minimum = 0, .maximum = 5, .category = FieldRule::QUALITY},
+      {.key = "NRControlMaskBlendMode", .label = "Blend mode", .group = "Region mask", .minimum = 0, .maximum = 3, .category = FieldRule::QUALITY},
+      {.key = "NRControlMaskRed", .label = "Red channel", .group = "Region mask", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY},
+      {.key = "NRControlMaskGreen", .label = "Green channel", .group = "Region mask", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY},
+      {.key = "NRControlMaskBlue", .label = "Blue channel", .group = "Region mask", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY},
+      {.key = "NRControlMaskDepthNear", .label = "Near depth", .group = "Region mask", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY},
+      {.key = "NRControlMaskDepthFar", .label = "Far depth", .group = "Region mask", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY},
       {.key = "NRLookMode", .label = "Adjust NR's look", .group = "Result", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY, .pass = 1},
       {.key = "NRLookStrength", .label = "Result adjustment strength", .group = "Result", .minimum = 0, .maximum = 2, .category = FieldRule::QUALITY, .pass = 1},
       {.key = "NRLookBrighten", .label = "Brightening", .group = "Result", .minimum = 0, .maximum = 2, .category = FieldRule::QUALITY, .pass = 1},

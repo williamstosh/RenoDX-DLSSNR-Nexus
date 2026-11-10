@@ -368,6 +368,28 @@ int main(int argc, char** argv) {
       check_pair(pass4.depth_near, pass4.depth_far, 0.2f, 0.8f, "pass 4 inherits global depth values");
       check_pair(runtime::pass_control_mask[2].depth_near.load(), runtime::pass_control_mask[2].depth_far.load(),
                  0.4f, 0.6f, "inheritance preserves pass 4 stored custom values");
+      namespace adapter = runtime::preset_ui;
+      namespace presets = renodx::addons::dlss5::presets;
+      presets::Document document;
+      document.scope = presets::Scope::FULL;
+      for (uint32_t pass = 0; pass < runtime::kMaxNrPasses; ++pass) {
+        document.settings[pass == 0 ? runtime::kSetControlMaskDepthNear.key : runtime::kSetPassControlMaskDepthNear[pass - 1].key] = 0.7f;
+        document.settings[pass == 0 ? runtime::kSetControlMaskDepthFar.key : runtime::kSetPassControlMaskDepthFar[pass - 1].key] = 0.9f;
+      }
+      for (const auto& row : adapter::Preview(document, true)) {
+        if (!document.settings.contains(row.key)) continue;
+        Check(row.after.get<float>() == (row.key.ends_with("DepthNear") ? near_default : far_default),
+              "legacy preset preview shows migrated endpoints");
+      }
+      std::string import_error;
+      Check(adapter::Apply(document, true, false, &import_error), "legacy depth preset applies");
+      check_all(near_default, far_default, "legacy preset cannot bypass startup depth migration");
+      runtime::LoadConfiguration();
+      check_all(near_default, far_default, "migrated preset persists and reloads consistently");
+      document.settings["NRControlMaskDepthFar"] = 0.91f;
+      Check(adapter::Apply(document, true, false, &import_error), "custom depth preset applies");
+      check_pair(runtime::control_mask_depth_near.load(), runtime::control_mask_depth_far.load(),
+                 0.7f, 0.91f, "custom preset pair is preserved");
     }
     if (test_case.starts_with("legacy-core-")) {
       const uint32_t expected_hook = (test_case == "legacy-core-render" ? 1u

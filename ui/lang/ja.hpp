@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kJa[] = {
+    {"Region mask", "領域マスク"},
+    {"Region mask settings", "領域マスク設定"},
+    {"Use Pass 1 region mask settings", "パス 1 の領域マスク設定を使用"},
+    {"Controls NR intensity, tone and structure across the picture, with an optional depth fade. Separate from Character mask. This switch enables the region mask for every pass; each pass can use its own settings.", "画面全体の NR の強度、色調、構造を調整し、必要に応じて深度に応じた減衰を適用します。キャラクターマスクとは別の機能です。このスイッチはすべてのパスで領域マスクを有効にし、各パスで個別に設定できます。"},
+    {"The other endpoint prevents this default. Use Far scenery to restore both depth endpoints.", "もう一方の端点により、この既定値を設定できません。「遠景」で深度範囲の両端を復元してください。"},
     {"Choose uniform control for the whole picture, a full-strength mask, or a gradual depth fade that keeps NR nearby and reduces it in the distance.", "画像全体の均一な制御、最大強度のマスク、または NR を近くに保ち、遠くにあるものを減らす段階的な深度フェードを選択します。"},
     {"Combines the blue structure channel with the runtime's Character mask. With Character mask off, modes 1-3 have no automatic mask to combine with and can look the same. Red intensity and green tone are separate.", "青色の構造チャネルとランタイムの キャラクターマスク を組み合わせます。 キャラクターマスク がオフの場合、モード 1 ～ 3 には組み合わせる自動マスクがなく、同じように見えます。赤の強度と緑のトーンは別のものです。"},
     {"Apply the R, G and B values uniformly across the picture. Use this to tune NR intensity, tone and structure separately.", "R、G、B の値を画像全体に均一に適用します。これを使用して、NR の強度、トーン、構造を個別に調整します。"},

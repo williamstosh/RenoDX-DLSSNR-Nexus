@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kRu[] = {
+    {"Region mask", "Маска области"},
+    {"Region mask settings", "Настройки маски области"},
+    {"Use Pass 1 region mask settings", "Использовать настройки маски области прохода 1"},
+    {"Controls NR intensity, tone and structure across the picture, with an optional depth fade. Separate from Character mask. This switch enables the region mask for every pass; each pass can use its own settings.", "Управляет интенсивностью, тоном и структурой NR по всему изображению с необязательным затуханием по глубине. Не связана с маской персонажа. Этот переключатель включает маску области для всех проходов; каждый проход может иметь собственные настройки."},
+    {"The other endpoint prevents this default. Use Far scenery to restore both depth endpoints.", "Другая граница не позволяет установить это значение по умолчанию. Используйте «Дальний пейзаж», чтобы восстановить обе границы глубины."},
     {"Choose uniform control for the whole picture, a full-strength mask, or a gradual depth fade that keeps NR nearby and reduces it in the distance.", "Выберите единый контроль для всего изображения, полномасштабную маску или постепенное затухание глубины, которое удерживает NR рядом и уменьшает его на расстоянии."},
     {"Combines the blue structure channel with the runtime's Character mask. With Character mask off, modes 1-3 have no automatic mask to combine with and can look the same. Red intensity and green tone are separate.", "Сочетает синий канал структуры с Маска персонажей среды выполнения. Если Маска персонажей отключен, режимы 1–3 не имеют автоматической маски для комбинирования и могут выглядеть одинаково. Интенсивность красного и зеленый тон разделены."},
     {"Apply the R, G and B values uniformly across the picture. Use this to tune NR intensity, tone and structure separately.", "Примените значения R, G и B равномерно по всему изображению. Используйте это для индивидуальной настройки интенсивности, тона и структуры NR."},

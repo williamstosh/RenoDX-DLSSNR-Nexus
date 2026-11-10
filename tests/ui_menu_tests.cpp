@@ -1511,7 +1511,12 @@ int main() {
     check(runtime::kSetPassStage[0].Get() == 1.f, "rejected stage request must remain editable and saved");
     runtime::kSetPassStage[0].Commit(0.f);
     runtime::hook_point = saved_hook;
-    frame();
+    const float saved_panel_height = panel_height;
+    const ImVec2 saved_display_size = io.DisplaySize;
+    panel_height = 4000.f;
+    io.DisplaySize = ImVec2(panel_width, panel_height);
+    frame(); frame();
+    std::puts("production menu phase=region-mask inheritance");
     click(switch_for_label(ui::text::kInheritResult));
     check(!runtime::pass_look_result[0].follow.load(), "result inheritance switch failed");
     click(switch_for_label("Adjust NR's look"));
@@ -1532,10 +1537,21 @@ int main() {
     const float saved_pass_mask_red = runtime::pass_control_mask[0].red.load();
     const float saved_pass_mask_near = runtime::pass_control_mask[0].depth_near.load();
     const float saved_pass_mask_far = runtime::pass_control_mask[0].depth_far.load();
-    const float saved_panel_height = panel_height;
-    const ImVec2 saved_display_size = io.DisplaySize;
-    panel_height = 4000.f;
-    io.DisplaySize = ImVec2(panel_width, panel_height);
+    click(chain_nodes().at(0));
+    click(find("expand_all"));
+    frame(); frame();
+    check(has_text(ui::text::kControlMask) && has_text(ui::text::kControlMaskMode),
+          "Pass 1 exposes the same region mask controls as Quality");
+    click(chain_nodes().at(1));
+    click(find("expand_all"));
+    frame(); frame();
+    float region_y = -1.f, result_y = -1.f;
+    for (const auto& text : rendered_text) {
+      if (text.text == ui::text::kControlMask) region_y = text.rect.Min.y;
+      if (text.text == ui::text::kResultChanged || text.text == ui::text::kResultShaping) result_y = text.rect.Min.y;
+    }
+    check(region_y >= 0.f && result_y > region_y,
+          "later-pass region mask belongs to model appearance before result adjustment");
     check(runtime::pass_control_mask[0].follow.load(),
           "extra-pass ControlMask settings default to Pass 1");
     frame();
@@ -1618,6 +1634,36 @@ int main() {
     check(std::abs(runtime::pass_control_mask[0].depth_near.load() - 0.9999f) < 0.000001f
               && std::abs(runtime::pass_control_mask[0].depth_far.load() - 0.99995f) < 0.000001f,
           "depth sliders accept distinct near-one thresholds through direct numeric input");
+    const auto depth_reset = [&](const char* label) {
+      const Item slider = switch_for_label(label);
+      for (const auto& [id, item] : items) {
+        if (item.window == slider.window && item.label == ui::icons::kUndo
+            && std::abs(item.rect.Min.y - slider.rect.Min.y) < 1.f) return item;
+      }
+      throw std::runtime_error(std::string("depth reset missing: ") + label);
+    };
+    for (const char* label : {"Fade start", "Fade end", ui::text::kNearDepth, ui::text::kFarDepth}) {
+      const bool near_endpoint_case = std::string_view(label) == "Fade start" || label == ui::text::kNearDepth;
+      runtime::kSetPassControlMaskDepthNear[0].Commit(0.99989f);
+      runtime::kSetPassControlMaskDepthFar[0].Commit(0.99997f);
+      frame(); frame();
+      check(runtime::kSetPassControlMaskDepthNear[0].Modified()
+                && runtime::kSetPassControlMaskDepthFar[0].Modified(),
+            "meaningful near-one depth changes are not hidden by generic slider tolerance");
+      click(depth_reset(label));
+      check(runtime::pass_control_mask[0].depth_near.load() == (near_endpoint_case ? runtime::kControlMaskDepthNearDefault : 0.99989f)
+                && runtime::pass_control_mask[0].depth_far.load() == (near_endpoint_case ? 0.99997f : runtime::kControlMaskDepthFarDefault),
+            "each range and exact-depth row restores only its own endpoint");
+    }
+    runtime::kSetPassControlMaskDepthNear[0].Commit(0.5f);
+    runtime::kSetPassControlMaskDepthFar[0].Commit(0.8f);
+    frame(); frame();
+    check(depth_reset("Fade start").disabled,
+          "an endpoint reset cannot cross the other endpoint");
+    click(find("Far scenery"));
+    check(runtime::pass_control_mask[0].depth_near.load() == runtime::kControlMaskDepthNearDefault
+              && runtime::pass_control_mask[0].depth_far.load() == runtime::kControlMaskDepthFarDefault,
+          "paired recovery remains available for incompatible custom endpoints");
     runtime::control_mask_mode = runtime::kControlMaskRect;
     runtime::control_mask_blend_mode = 1;
     runtime::control_mask_red = 0.25f;

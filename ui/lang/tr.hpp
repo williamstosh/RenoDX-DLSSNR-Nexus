@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kTr[] = {
+    {"Region mask", "Bölge maskesi"},
+    {"Region mask settings", "Bölge maskesi ayarları"},
+    {"Use Pass 1 region mask settings", "Geçiş 1 bölge maskesi ayarlarını kullan"},
+    {"Controls NR intensity, tone and structure across the picture, with an optional depth fade. Separate from Character mask. This switch enables the region mask for every pass; each pass can use its own settings.", "İsteğe bağlı derinlik azalmasıyla NR yoğunluğunu, tonunu ve yapısını tüm görüntüde kontrol eder. Karakter maskesinden ayrıdır. Bu anahtar tüm geçişlerde bölge maskesini etkinleştirir; her geçiş kendi ayarlarını kullanabilir."},
+    {"The other endpoint prevents this default. Use Far scenery to restore both depth endpoints.", "Diğer uç nokta bu varsayılan değeri engelliyor. Her iki derinlik uç noktasını geri yüklemek için “Uzak manzara” seçeneğini kullanın."},
     {"Choose uniform control for the whole picture, a full-strength mask, or a gradual depth fade that keeps NR nearby and reduces it in the distance.", "Resmin tamamı için tek tip kontrol, tam güçlü bir maske veya NR'i yakınınızda tutan ve mesafeden azaltan kademeli bir derinlik soldurmayı seçin."},
     {"Combines the blue structure channel with the runtime's Character mask. With Character mask off, modes 1-3 have no automatic mask to combine with and can look the same. Red intensity and green tone are separate.", "Mavi yapı kanalını çalışma zamanının Karakter maskesi'su ile birleştirir. Karakter maskesi kapalıyken, 1-3 modlarının birleştirilecek otomatik maskesi yoktur ve aynı görünebilir. Kırmızı yoğunluğu ve yeşil tonu ayrıdır."},
     {"Apply the R, G and B values uniformly across the picture. Use this to tune NR intensity, tone and structure separately.", "R, G ve B değerlerini resim boyunca eşit şekilde uygulayın. NR'in yoğunluğunu, tonunu ve yapısını ayrı ayrı ayarlamak için bunu kullanın."},
