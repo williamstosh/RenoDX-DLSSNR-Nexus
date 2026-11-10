@@ -726,7 +726,8 @@ class ExitTests(unittest.TestCase):
 
     def test_crash_or_guard_failure_prevents_retry(self):
         cfg = dict(executable='game.exe', scenario='smoke')
-        for extra in [dict(crashes=['crash']), dict(guard='failed'), dict(error='menu_focus_unknown')]:
+        for extra in [dict(crashes=['crash']), dict(owned_process_dumps=[dict(source='game.exe.123.dmp')]),
+                      dict(guard='failed'), dict(error='menu_focus_unknown')]:
             failure = dict(result='failed', guard='verified_original_hashes_and_released', error='scene_load_timeout') | extra
             with self.subTest(extra=extra), mock.patch.object(runner, 'process_inventory', return_value=[]), \
                     mock.patch.object(runner, 'run_attempt', return_value=failure) as attempt, mock.patch('builtins.print'):

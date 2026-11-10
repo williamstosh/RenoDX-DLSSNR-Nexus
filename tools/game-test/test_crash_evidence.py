@@ -11,6 +11,21 @@ import crash_evidence
 
 
 class CrashEvidenceTests(unittest.TestCase):
+    def test_owned_dump_is_a_failure_signal_even_when_copy_budget_skips_it(self):
+        process = dict(path="C:/synthetic/game.exe", pid=123)
+        copied = dict(source="C:/dumps/game.exe.123.dmp", bytes=32)
+        oversized = dict(source="C:/dumps/game.exe.123.dmp", bytes=429321636,
+                         status="skipped", reason="copy_budget_or_file_size_limit")
+        unrelated = [
+            dict(source="C:/dumps/game.exe.456.dmp", bytes=32),
+            dict(source="C:/dumps/game.exe.123.dmp", status="skipped", reason="outside_attempt_time"),
+            dict(source="C:/dumps/game.exe.123.dmp", bytes=32, error="copy failed"),
+            dict(source="C:/dumps/other.exe.123.dmp", bytes=32),
+        ]
+        self.assertEqual(crash_evidence.owned_process_dumps([copied, oversized, *unrelated], process),
+                         [copied, oversized])
+        self.assertEqual(crash_evidence.owned_process_dumps([copied], None), [])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

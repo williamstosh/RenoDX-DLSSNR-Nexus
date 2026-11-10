@@ -131,6 +131,18 @@ def modules(process, enumerate_modules, required_module=None):
     return result
 
 
+def owned_process_dumps(records, process):
+    if not process:
+        return []
+    executable = Path(str(process["path"]).replace("\\", "/")).name
+    expected = f"{executable}.{process['pid']}.dmp".casefold()
+    return [record for record in records
+            if Path(str(record.get("source", "")).replace("\\", "/")).name.casefold() == expected
+            and "bytes" in record and "error" not in record
+            and (not record.get("status")
+                 or record.get("reason") == "copy_budget_or_file_size_limit")]
+
+
 def collect(cfg, out, started, phase, run=subprocess.run):
     destination = out / 'crash-evidence' / phase
     destination.mkdir(parents=True, exist_ok=False)

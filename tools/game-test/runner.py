@@ -1173,7 +1173,11 @@ def run_attempt(cfg, out):
         try:
             crashes = collect_crashes(crashes_before, out)
             freeze_logs(cfg, out / 'final-logs')
-            crash_evidence.collect(cfg, out, final['started'], 'post-exit')
+            diagnostics = crash_evidence.collect(cfg, out, final['started'], 'post-exit')
+            process_dumps = crash_evidence.owned_process_dumps(diagnostics, owned)
+            if process_dumps:
+                problem = problem or 'owned_process_crash_dump'
+                final['owned_process_dumps'] = process_dumps
             if crashes:
                 problem = problem or 'crash_report_created'
                 final['crashes'] = crashes
@@ -1191,7 +1195,7 @@ def run_attempt(cfg, out):
 
 def should_retry(final, scenario):
     if (scenario == 'calibrate' or final.get('guard') != 'verified_original_hashes_and_released'
-            or final.get('crashes') or final.get('diagnostic_error')):
+            or final.get('crashes') or final.get('owned_process_dumps') or final.get('diagnostic_error')):
         return False
     if final.get('parent_problem'):
         return final['parent_problem'] in ('run_timeout', 'persistent_unresponsive')
