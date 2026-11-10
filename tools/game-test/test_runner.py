@@ -73,6 +73,7 @@ class ExitTests(unittest.TestCase):
         self.assertTrue(all(entry['hash_status'] == 'hashed' for entry in entries))
         self.assertEqual(entries[1]['disk_sha256'], runner.sha(runtime))
 
+
     def test_smoke_pause_uses_observed_focus_without_requiring_full_ocr_sentence(self):
         order = []
         with mock.patch.object(self.session, 'main_menu'), \
@@ -86,9 +87,8 @@ class ExitTests(unittest.TestCase):
                 mock.patch.object(self.session, 'scene_health', side_effect=lambda: order.append('health')), \
                 mock.patch.object(self.session, 'wait_text', side_effect=AssertionError('redundant ordered OCR gate')):
             self.session.smoke()
-        self.assertEqual(select_menu.call_args_list,
-            [mock.call('读取游戏', runner.MAIN_MENU), mock.call('继续', runner.PAUSE_MENU)])
-        self.assertEqual(key.call_args_list, [mock.call('ENTER'), mock.call('ESC'), mock.call('ESC')])
+        self.assertEqual(select_menu.call_args_list, [mock.call('继续', runner.PAUSE_MENU)])
+        self.assertEqual(key.call_args_list, [mock.call('ESC'), mock.call('ESC')])
         self.assertEqual(order, ['health', 'capture'])
         self.assertEqual(self.session.status['functionality'],
             'pause_and_resume_input_response_confirmed_mod_features_not_tested')
@@ -244,7 +244,7 @@ class ExitTests(unittest.TestCase):
         result = mock.Mock(returncode=0, stdout=b'{"text":"target","lines":[]}')
         with mock.patch.object(runner.desktop, 'same_process', return_value=True), \
                 mock.patch.object(self.session, 'activate'), \
-                mock.patch.object(runner.desktop, 'capture', side_effect=lambda *a: order.append('capture') or {}), \
+                mock.patch.object(runner.desktop, 'capture', side_effect=lambda *a, **k: order.append('capture') or {}), \
                 mock.patch.object(runner.subprocess, 'run', return_value=result), \
                 mock.patch.object(runner.desktop, 'click') as click:
             obs = self.session.observe('save-list')
@@ -432,13 +432,14 @@ class ExitTests(unittest.TestCase):
         with mock.patch.object(runner.desktop, 'ensure_foreground', return_value=receipt), \
                 mock.patch.object(runner.desktop, 'same_process', return_value=True), \
                 mock.patch.object(runner.desktop, 'modules', return_value=[]), \
+                mock.patch.object(runner.desktop.u, 'GetForegroundWindow', return_value=456), \
                 mock.patch.object(runner.desktop, 'capture') as capture, \
                 mock.patch.object(runner.desktop, 'key') as key, \
                 mock.patch.object(runner.time, 'monotonic', return_value=0), \
                 mock.patch.object(runner.time, 'sleep', side_effect=collect_when_ready) as sleep:
             self.session.capture_hold()
         sleep.assert_called_once_with(1)
-        capture.assert_called_once()
+        capture.assert_called_once_with(self.session.window, self.out / 'hdr-control-nr-off.png', activate=False)
         key.assert_not_called()
         self.assertTrue(runner.capture_complete(self.out, 123))
         self.assertEqual(self.session.status['capture_hold'], 'completed_by_signal')
@@ -684,13 +685,31 @@ class ExitTests(unittest.TestCase):
                 with mock.patch.object(runner.desktop, 'same_process', return_value=True), \
                         mock.patch.object(self.session, 'activate'), \
                         mock.patch.object(runner.desktop, 'park_cursor',
-                                          side_effect=lambda *_: order.append('park')), \
+                                          side_effect=lambda *_, **__: order.append('park')), \
                         mock.patch.object(runner.desktop, 'capture',
-                                          side_effect=lambda *_: order.append('capture') or {}), \
+                                          side_effect=lambda *_, **__: order.append('capture') or {}), \
                         mock.patch.object(runner.Image, 'open', return_value=image), \
                         mock.patch.object(runner.subprocess, 'run', return_value=result):
                     self.session.observe('cursor-test', region_state=region_state)
                 self.assertEqual(order, ['park', 'capture'] if should_park else ['capture'])
+
+    def test_capture_hold_observation_never_reactivates_foreground(self):
+        self.session.ui_state = 'capture_hold'
+        self.session.cfg['ocr_executable'] = 'ocr.exe'
+        image = mock.MagicMock()
+        image.__enter__.return_value = image
+        image.width, image.height = 1920, 1080
+        image.resize.return_value = image
+        image.crop.return_value = image
+        result = mock.Mock(returncode=0, stdout=b'{"text":"","lines":[]}')
+        with mock.patch.object(runner.desktop, 'same_process', return_value=True), \
+                mock.patch.object(self.session, 'activate') as activate, \
+                mock.patch.object(runner.desktop, 'capture', return_value={}) as capture, \
+                mock.patch.object(runner.Image, 'open', return_value=image), \
+                mock.patch.object(runner.subprocess, 'run', return_value=result):
+            self.session.observe('capture-hold-scene', region_state='scene')
+        activate.assert_not_called()
+        capture.assert_called_once_with(self.session.window, self.out / 'latest.png', activate=False)
 
     def test_worker_diagnostic_failure_still_writes_result(self):
         runner.dump(self.out / 'target.json', self.session.cfg | dict(scenario='menu'))
@@ -767,7 +786,7 @@ class ExitTests(unittest.TestCase):
         window = dict(hwnd=456, pid=123, created=1, path='game.exe')
         order = []
 
-        def capture_fixture(target, path):
+        def capture_fixture(target, path, *, activate=True):
             order.append(('capture', target))
             Image.new('RGB', (1920, 1080)).save(path)
             return dict(width=1920, height=1080)
@@ -828,6 +847,327 @@ class ExitTests(unittest.TestCase):
                     raise ValueError('body')
             with runner.runner_lock():
                 pass
+
+
+class ScriptBackendTests(unittest.TestCase):
+    def test_manual_ime_uses_legacy_backend_without_script_mod_staging(self):
+        with mock.patch.object(runner.temporary_mod, 'TemporaryScriptMod') as mod:
+            lease, files = runner.stage_script_mod(
+                {'control_backend': 'desktop', 'install': 'game'}, Path('unused-source'))
+        self.assertIsNone(lease)
+        self.assertEqual(files, [])
+        mod.assert_not_called()
+
+    def test_manual_ime_cli_selects_backend_without_debugger_cli_preflight(self):
+        with mock.patch.object(runner.sys, 'argv', [
+                'runner.py', '--manual-ime-session', '--scenario', 'menu',
+                '--capture-hold-seconds', '10']):
+            with mock.patch.object(runner.normal_process, 'require_normal_context', return_value={}):
+                with mock.patch.object(runner, 'resolve_target', return_value={
+                        'executable': 'game.exe', 'control_backend': 'desktop'}) as resolve:
+                    with mock.patch.object(runner, 'local_output_root', return_value=Path('tmp')):
+                        with mock.patch.object(runner.output_lifecycle, 'maintain_workspace'):
+                            with mock.patch.object(runner, 'process_inventory', return_value=[]):
+                                with mock.patch.object(runner, 'run_trials', return_value=0) as run_trials:
+                                    with mock.patch.object(runner, 'prepare_ocr',
+                                                           side_effect=AssertionError('Manual session built OCR')):
+                                        runner.main()
+        self.assertEqual(resolve.call_args.kwargs['control_backend'], 'desktop')
+        self.assertEqual(run_trials.call_args.args[0]['control_backend'], 'desktop')
+
+    def test_smoke_requires_a_per_run_save_filename(self):
+        with self.assertRaisesRegex(ValueError, '--save is required'):
+            runner.validate_scenario_save('smoke', None)
+        runner.validate_scenario_save('smoke', 'ManualSave_test.sav')
+        runner.validate_scenario_save('menu', None)
+
+    def test_default_smoke_cli_rejects_missing_save_before_target_resolution(self):
+        with mock.patch.object(runner.sys, 'argv', ['runner.py']):
+            with mock.patch.object(runner.normal_process, 'require_normal_context', return_value={}):
+                with mock.patch.object(runner.argparse.ArgumentParser, 'error', side_effect=ValueError) as error:
+                    with mock.patch.object(runner, 'resolve_target') as resolve:
+                        with self.assertRaises(ValueError):
+                            runner.main()
+        error.assert_called_once_with('--save is required for every smoke run')
+        resolve.assert_not_called()
+
+    def test_script_backend_builds_ocr_for_title_and_intro_startup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            # build-ocr.ps1 creates this directory; the subprocess mock must model that output.
+            (Path(directory) / 'ocr-tool').mkdir()
+            build = mock.Mock(stdout='fixture-ocr.exe\n')
+            check = mock.Mock(stdout='{"text":"Load Game 123"}')
+            with mock.patch.object(runner.subprocess, 'run', side_effect=[build, check]) as run:
+                self.assertEqual(runner.prepare_ocr({'control_backend': 'script'}, Path(directory)),
+                                 'fixture-ocr.exe')
+            self.assertEqual(run.call_count, 2)
+
+    def test_script_backend_ocr_is_limited_to_intro_and_title_before_bridge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = runner.Session(dict(executable=str(root / 'game.exe'), logs=[],
+                                          control_backend='script', startup_timeout=10), root)
+            session.window = dict(pid=123, created=1, hwnd=456, path='game.exe')
+            observations = iter((dict(text='跳过'), dict(text='读取游戏 新游戏 退出游戏')))
+            with mock.patch.object(runner.desktop, 'same_process', return_value=True):
+                with mock.patch.object(runner.desktop, 'window_alive', return_value=True):
+                    with mock.patch.object(session, 'observe', side_effect=lambda *a, **k: next(observations)) as observe:
+                        with mock.patch.object(session, 'activate') as activate:
+                            with mock.patch.object(session, 'bridge_call', return_value=['ready', '1']) as bridge:
+                                with mock.patch.object(session, 'evidence'), \
+                                        mock.patch.object(session, 'event'), \
+                                        mock.patch.object(runner.desktop, 'key') as key, \
+                                        mock.patch.object(runner.time, 'sleep'):
+                                    session.main_menu(timeout=10)
+            self.assertEqual(observe.call_count, 2)
+            self.assertTrue(all(call.kwargs['script_startup'] for call in observe.call_args_list))
+            activate.assert_called_once_with()
+            key.assert_called_once_with(session.window, 'SPACE', .2, activate=True)
+            bridge.assert_called_once_with('NRNX_TestBridgeReady')
+            self.assertEqual(session.status['startup'], 'script_start_screen_confirmed')
+            self.assertEqual(session.status['script_mod_reload'], 'not_requested_predeployed_mod')
+
+    def test_startup_script_compilation_error_fails_immediately(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = runner.Session(dict(executable=str(root / 'game.exe'), logs=[],
+                                          control_backend='script', startup_timeout=120), root)
+            session.window = dict(pid=123, created=1, hwnd=456, path='game.exe')
+            observation = dict(text='unexpected TOKEN_STATE expecting TOKEN_IDENT near state')
+            with mock.patch.object(runner.desktop, 'same_process', return_value=True):
+                with mock.patch.object(runner.desktop, 'window_alive', return_value=True):
+                    with mock.patch.object(session, 'observe', return_value=observation):
+                        with mock.patch.object(session, 'event') as event:
+                            with mock.patch.object(runner.time, 'monotonic', side_effect=[0, 0, 1]):
+                                with self.assertRaisesRegex(RuntimeError, 'script_compilation_error'):
+                                    session.wait_main_menu_ocr(timeout=1, script_startup=True)
+            event.assert_called_once_with('script_compilation_error', ocr_text=runner.compact(observation['text']))
+
+    def test_startup_rebinds_recreated_window_with_same_process_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = runner.Session(dict(executable=str(root / 'game.exe'), logs=[],
+                                          control_backend='script'), root)
+            session.window = dict(hwnd=101, pid=123, created=456, path='game.exe',
+                                  command_line='game.exe -debugscripts')
+            replacement = dict(hwnd=202, pid=123, created=456, path='game.exe')
+            with mock.patch.object(runner.desktop, 'same_process', return_value=True):
+                with mock.patch.object(runner.desktop, 'window_alive', return_value=False):
+                    with mock.patch.object(runner.desktop, 'windows', return_value=[replacement]):
+                        with mock.patch.object(session, 'event') as event:
+                            self.assertTrue(session.refresh_startup_window())
+            self.assertEqual(session.window['hwnd'], 202)
+            self.assertEqual(session.window['command_line'], 'game.exe -debugscripts')
+            event.assert_called_once_with('startup_window_rebound', previous_hwnd=101,
+                                          hwnd=202, pid=123, created=456)
+
+    def test_preflight_does_not_build_startup_ocr(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = dict(executable=str(root / 'game.exe'), control_backend='script')
+            with mock.patch.object(runner.sys, 'argv', ['runner.py', '--scenario', 'menu',
+                                                         '--output-root', str(root), '--preflight']), \
+                    mock.patch.object(runner.normal_process, 'require_normal_context', return_value={}), \
+                    mock.patch.object(runner, 'resolve_target', return_value=target), \
+                    mock.patch.object(runner, 'local_output_root', return_value=root), \
+                    mock.patch.object(runner, 'process_inventory', return_value=[]), \
+                    mock.patch.object(runner.output_lifecycle, 'maintain_workspace'), \
+                    mock.patch.object(runner, 'prepare_ocr', side_effect=AssertionError('preflight built OCR')):
+                with mock.patch('builtins.print') as print_output:
+                    self.assertEqual(runner.main(), 0)
+            cfg = json.loads(print_output.call_args.args[0])
+            self.assertIsNone(cfg['ocr_executable'])
+
+    def test_script_backend_rejects_desktop_observation_and_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = runner.Session(dict(executable=str(Path(directory) / 'game.exe'), logs=[],
+                                          control_backend='script'), Path(directory))
+            for action in (session.observe, lambda: session.key('ESC'),
+                           lambda: session.click_text({}, 'target')):
+                with self.subTest(action=action):
+                    with self.assertRaisesRegex(RuntimeError, 'script_backend_disallows'):
+                        action()
+
+    def test_script_load_waits_for_explicit_game_save_initialization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            save = 'ManualSave_fixture.sav'
+            save_path = root / 'profile' / 'gamesaves' / save
+            save_path.parent.mkdir(parents=True)
+            save_path.write_bytes(b'fixture save')
+            session = runner.Session(dict(
+                executable=str(root / 'game.exe'), profile=str(root / 'profile'),
+                save_dir='gamesaves', save=save, save_sha256=runner.sha(save_path),
+                load_timeout=5, logs=[], control_backend='script'), root)
+            game_filename = 'manualsave_fixture'
+            responses = iter((['load', 'pending', 'saves_not_initialized'],
+                              ['load', 'requested', game_filename]))
+            with mock.patch.object(session, 'bridge_call', side_effect=lambda *_args: next(responses)) as call:
+                with mock.patch.object(runner.time, 'monotonic', side_effect=(0, 1)):
+                    with mock.patch.object(runner.time, 'sleep') as sleep:
+                        session.load_save()
+            self.assertEqual(call.call_count, 2)
+            sleep.assert_called_once_with(1)
+            self.assertEqual(session.ui_state, 'loading')
+            call.assert_called_with('NRNX_TestBridgeLoadSave', game_filename)
+            selected = json.loads((root / 'save-selection.json').read_text(encoding='utf-8'))
+            self.assertEqual(selected['filename'], save)
+            self.assertEqual(selected['game_filename'], game_filename)
+
+    def test_deterministic_bridge_rejection_surfaces_without_startup_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = runner.Session(dict(executable=str(Path(directory) / 'game.exe'), logs=[],
+                                          control_backend='script', startup_timeout=120,
+                                          load_timeout=120), Path(directory))
+            rejection = runner.witcher_debug.RemoteExecutionError('bridge function rejected')
+            session.ui_state = 'loading'
+            with mock.patch.object(session, 'wait_main_menu_ocr'):
+                with mock.patch.object(session, 'bridge_call', side_effect=rejection):
+                    with mock.patch.object(runner.time, 'sleep') as sleep:
+                        with self.assertRaises(runner.witcher_debug.RemoteExecutionError):
+                            session.main_menu()
+                        with self.assertRaises(runner.witcher_debug.RemoteExecutionError):
+                            session.wait_scene()
+                    sleep.assert_not_called()
+
+    def test_script_bridge_transport_timeout_is_not_retried(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = runner.Session(dict(executable=str(Path(directory) / 'game.exe'), logs=[],
+                                          control_backend='script', startup_timeout=120), Path(directory))
+            with mock.patch.object(session, 'wait_main_menu_ocr'):
+                with mock.patch.object(session, 'bridge_call', side_effect=TimeoutError('no reply')) as call:
+                    with mock.patch.object(runner.time, 'sleep') as sleep:
+                        with self.assertRaisesRegex(RuntimeError, 'script_bridge_ready_transport_failure'):
+                            session.main_menu()
+                call.assert_called_once_with('NRNX_TestBridgeReady')
+                sleep.assert_not_called()
+
+    def test_first_script_bridge_call_records_listener_pid_and_game_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = runner.Session(dict(executable=str(root / 'game.exe'), logs=[],
+                                          control_backend='script'), root)
+            session.window = dict(pid=123, created=1, hwnd=456, path='game.exe')
+            with mock.patch.object(runner.witcher_debug, 'listener_snapshot', return_value=dict(
+                    port=37001, listeners=[dict(local_address='127.0.0.1:37001', pid=123)])):
+                with mock.patch.object(session.debugger, 'exec_bridge',
+                        side_effect=lambda _function, *args: 'NRNX|' + args[-1] + '|ready|1'):
+                    self.assertEqual(session.bridge_call('NRNX_TestBridgeReady'), ['ready', '1'])
+            endpoint = json.loads((root / 'script-bridge-endpoint.json').read_text())
+            self.assertTrue(endpoint['game_pid_matches_listener'])
+            events = [json.loads(line) for line in (root / 'events.jsonl').read_text().splitlines()]
+            self.assertEqual(events[0]['kind'], 'script_bridge_endpoint')
+            self.assertEqual(events[1]['kind'], 'script_bridge_receipt')
+
+    def test_script_bridge_rejects_listener_not_owned_by_game(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = runner.Session(dict(executable=str(root / 'game.exe'), logs=[],
+                                          control_backend='script'), root)
+            session.window = dict(pid=123, created=1, hwnd=456, path='game.exe')
+            with mock.patch.object(runner.witcher_debug, 'listener_snapshot', return_value=dict(
+                    port=37001, listeners=[dict(local_address='127.0.0.1:37001', pid=999)])):
+                with mock.patch.object(session.debugger, 'exec_bridge') as exec_bridge:
+                    with self.assertRaisesRegex(RuntimeError, 'script_bridge_listener_not_owned_by_game'):
+                        session.bridge_call('NRNX_TestBridgeReady')
+            exec_bridge.assert_not_called()
+
+    def test_script_bridge_ready_precedes_menu_use_without_full_script_reload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = runner.Session(dict(executable=str(root / 'game.exe'), logs=[],
+                                          control_backend='script', startup_timeout=120), root)
+            order = []
+            with mock.patch.object(session, 'wait_main_menu_ocr',
+                    side_effect=lambda *_args, **_kwargs: order.append('title')):
+                with mock.patch.object(session, 'bridge_call',
+                        side_effect=lambda _fn: order.append('ready') or ['ready', '1']):
+                    self.assertEqual(session.main_menu(), ['ready', '1'])
+            self.assertEqual(order, ['title', 'ready'])
+            self.assertEqual(session.status['script_bridge'], 'ready_receipt_confirmed')
+            self.assertEqual(session.status['script_mod_reload'], 'not_requested_predeployed_mod')
+
+    def test_script_exit_accepts_lost_cli_response_only_with_matching_game_log_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = runner.Session(dict(executable=str(root / 'game.exe'), logs=[],
+                                          control_backend='script'), root)
+            session.window = dict(pid=123, created=1, hwnd=456, path='game.exe')
+            session.script_log_path = root / 'scriptslog.txt'
+            request_id = 'exit-request-123'
+            session.last_script_bridge_request = dict(function='NRNX_TestBridgeExit', request_id=request_id)
+            session.script_log_path.write_text(
+                '[NRNXTestBridge] NRNX|' + request_id + '|exit|requested\n', encoding='utf-8')
+            with mock.patch.object(session, 'bridge_call', side_effect=RuntimeError('response lost')), \
+                 mock.patch.object(runner.desktop, 'same_process', side_effect=[True, False, False, False]):
+                session.request_exit()
+            self.assertTrue(session.exit_requested)
+            self.assertEqual(session.status['safe_exit'], 'script_exit_requested_process_exit_confirmed')
+
+    def test_script_exit_response_loss_without_matching_game_log_receipt_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = runner.Session(dict(executable=str(root / 'game.exe'), logs=[],
+                                          control_backend='script'), root)
+            session.window = dict(pid=123, created=1, hwnd=456, path='game.exe')
+            session.script_log_path = root / 'scriptslog.txt'
+            session.last_script_bridge_request = dict(
+                function='NRNX_TestBridgeExit', request_id='exit-request-123')
+            session.script_log_path.write_text('unrelated script output\n', encoding='utf-8')
+            with mock.patch.object(session, 'bridge_call', side_effect=RuntimeError('response lost')), \
+                 mock.patch.object(runner.desktop, 'same_process', side_effect=[True, False]):
+                with self.assertRaisesRegex(RuntimeError, 'game_exited_without_receipt'):
+                    session.request_exit()
+            self.assertFalse(session.exit_requested)
+            self.assertEqual(session.status['safe_exit'],
+                             'unexpected_exit_before_script_exit_confirmation')
+
+    def test_script_log_diagnostics_capture_appended_bytes_after_start_offset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / 'scriptslog.txt'
+            log.write_bytes(b'old compiler output\n')
+            session = runner.Session(dict(executable=str(root / 'game.exe'), logs=[],
+                                          control_backend='script'), root)
+            session.begin_script_log_capture()
+            with log.open('ab') as stream:
+                stream.write(b'new compile result\n')
+            session.finish_script_log_capture()
+            self.assertEqual((root / 'scriptslog-delta.txt').read_bytes(), b'new compile result\n')
+            diagnostic = json.loads((root / 'script-log-diagnostic.json').read_text())
+            self.assertEqual(diagnostic['change'], 'appended')
+            self.assertEqual(diagnostic['captured_bytes'], len(b'new compile result\n'))
+
+    def test_script_log_diagnostics_capture_rewritten_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / 'scriptslog.txt'
+            log.write_bytes(b'old compiler output\n')
+            session = runner.Session(dict(executable=str(root / 'game.exe'), logs=[],
+                                          control_backend='script'), root)
+            session.begin_script_log_capture()
+            log.write_bytes(b'new compiler output\n')
+            session.finish_script_log_capture()
+            self.assertEqual((root / 'scriptslog-delta.txt').read_bytes(), b'new compiler output\n')
+            diagnostic = json.loads((root / 'script-log-diagnostic.json').read_text())
+            self.assertEqual(diagnostic['change'], 'rewritten')
+
+    def test_script_log_capture_uses_the_game_documents_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            install = root / 'install' / 'bin'
+            profile = root / 'documents' / 'The Witcher 3'
+            install.mkdir(parents=True)
+            profile.mkdir(parents=True)
+            (profile / 'scriptslog.txt').write_bytes(b'baseline\n')
+            session = runner.Session(dict(executable=str(install / 'game.exe'), profile=str(profile),
+                                          logs=[], control_backend='script'), root)
+            session.begin_script_log_capture()
+            self.assertEqual(session.script_log_path, profile / 'scriptslog.txt')
+            with (profile / 'scriptslog.txt').open('ab') as stream:
+                stream.write(b'new script compiler output\n')
+            session.finish_script_log_capture()
+            self.assertEqual((root / 'scriptslog-delta.txt').read_bytes(), b'new script compiler output\n')
 
 
 if __name__ == '__main__':

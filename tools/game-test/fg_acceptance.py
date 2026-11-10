@@ -2,6 +2,7 @@
 import argparse
 from datetime import datetime, timedelta
 import hashlib
+import math
 import json
 from pathlib import Path
 import re
@@ -83,8 +84,11 @@ def capture(run, nr_off_control=False, check_addon_menu=False):
             raise RuntimeError('capture-ready automatic foreground identity mismatch')
         if not desktop.same_process(window):
             raise RuntimeError('Game identity changed after automatic foreground activation')
-        foreground = desktop.ensure_foreground(window)
-        events.append(dict(time=stamp(), action='automatic_foreground_confirmed', **foreground))
+        if desktop.u.GetForegroundWindow() != window['hwnd']:
+            raise RuntimeError('Game lost foreground after runner capture activation')
+        events.append(dict(time=stamp(), action='automatic_foreground_confirmed',
+                           hwnd=window['hwnd'], pid=window['pid'], created=window['created'],
+                           activation='runner_capture_ready'))
         paths = desktop.modules(window)
         rejected = [p for p in paths if 'rtsshooks' in p.lower()
             or (p.lower().endswith(('.addon', '.addon64')) and Path(p).name.lower() != 'renodx-dlss5.addon64')]
@@ -99,30 +103,28 @@ def capture(run, nr_off_control=False, check_addon_menu=False):
             time.sleep(seconds)
             if not desktop.same_process(window):
                 raise RuntimeError('Game identity changed; comparison stopped')
-            desktop.ensure_foreground(window)
-            desktop.capture(window, run / (label + '.png'))
+            desktop.capture(window, run / (label + '.png'), activate=False)
             events.append(dict(time=stamp(), action='capture', name=label))
             if next_state:
                 game_input_attempted = True
-                desktop.key(window, 'F6', .25)
+                desktop.key(window, 'F6', .25, activate=False)
                 events.append(dict(time=stamp(), action='F6', intended_state=next_state))
         if not nr_off_control:
             game_input_attempted = True
-            desktop.key(window, 'D', .3)
+            desktop.key(window, 'D', .3, activate=False)
             time.sleep(2)
-            desktop.capture(window, run / 'hdr-short-move.png')
+            desktop.capture(window, run / 'hdr-short-move.png', activate=False)
             events.append(dict(time=stamp(), action='capture', name='hdr-short-move'))
         if check_addon_menu:
             game_input_attempted = True
-            desktop.key(window, 'HOME')
+            desktop.key(window, 'HOME', activate=False)
             menu_open = True
             events.append(dict(time=stamp(), action='HOME', intended_state='open_addon_menu'))
             for index in (1, 2):
                 time.sleep(6)
                 if not desktop.same_process(window):
                     raise RuntimeError('Game identity changed during addon menu check')
-                desktop.ensure_foreground(window)
-                desktop.capture(window, run / f'addon-menu-{index}.png')
+                desktop.capture(window, run / f'addon-menu-{index}.png', activate=False)
                 events.append(dict(time=stamp(), action='capture', name=f'addon-menu-{index}'))
     except Exception as error:
         failure = error
@@ -130,7 +132,7 @@ def capture(run, nr_off_control=False, check_addon_menu=False):
         try:
             if menu_open and desktop.same_process(window) and desktop.u.GetForegroundWindow() == window['hwnd']:
                 game_input_attempted = True
-                desktop.key(window, 'HOME')
+                desktop.key(window, 'HOME', activate=False)
                 events.append(dict(time=stamp(), action='HOME', intended_state='close_addon_menu'))
         except Exception as error:
             failure = failure or error
@@ -141,38 +143,107 @@ def capture(run, nr_off_control=False, check_addon_menu=False):
     if failure:
         dump(run / 'capture-failed.json', dict(time=stamp(), phase='capture_ready',
             stage='capture_actions', error=repr(failure),
+            diagnostics=getattr(failure, 'diagnostics', None),
             no_game_input_sent=not game_input_attempted,
             game_input_may_have_been_sent=game_input_attempted))
         raise failure
     dump(run / 'capture-complete.json', dict(pid=ready['pid'], completed=True))
 
 
-def verify(run, acceptance, block_hudless, nr_hook_point, nr_off_control=False, addon_absent_control=False):
-    receipt = json.loads((acceptance / 'receipt.json').read_text(encoding='utf-8-sig'))
-    result = json.loads((run / 'result.json').read_text(encoding='utf-8'))
+def supported_control_mask_route(nr_hook_point, use_core_context, xefg_ui_composition):
+    return ((nr_hook_point == 2 and not use_core_context and xefg_ui_composition == 0)
+            or (nr_hook_point == 0 and use_core_context))
+
+
+def capture_events_for_verification(run, receipt):
+    toggle_events = run / 'nr-toggle-captures.json'
+    if toggle_events.is_file():
+        return json.loads(toggle_events.read_text(encoding='utf-8'))
+
+    sequence_path = run / 'live-control-mask-sequence.json'
+    if not sequence_path.is_file():
+        raise RuntimeError('Capture event record is missing')
+    sequence = json.loads(sequence_path.read_text(encoding='utf-8'))
+    if sequence.get('candidate_sha256', '').lower() != receipt['candidate_sha256'].lower():
+        raise RuntimeError('Capture sequence candidate identity mismatch')
+
+    selection = json.loads((run / 'save-selection.json').read_text(encoding='utf-8'))
+    if sequence.get('save_sha256', '').lower() != selection['sha256'].lower():
+        raise RuntimeError('Capture sequence save identity mismatch')
+
+    transitions = [(entry.get('from_state'), entry.get('state'))
+        for entry in sequence.get('transitions', [])]
+    turned_on = next((index for index, pair in enumerate(transitions) if pair == ('off', 'on')), None)
+    if turned_on is None or ('on', 'off') not in transitions[turned_on + 1:]:
+        raise RuntimeError('Capture sequence did not confirm ControlMask OFF-ON-OFF')
+
+    scene_events = [json.loads(line) for line in (run / 'events.jsonl').read_text(encoding='utf-8').splitlines()
+        if line.strip()]
+    captures = [event for event in scene_events if event.get('kind') == 'live_control_mask_scene_capture']
+    names = [event.get('name') for event in captures]
+    if names != ['mask-off-before.png', 'mask-on.png', 'mask-off-after.png']:
+        raise RuntimeError('Live ControlMask scene captures are incomplete or out of order')
+    return [dict(time=event['time'], action='capture', name=event['name']) for event in captures]
+
+
+def file_sha256(path):
+    with Path(path).open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest().lower()
+
+
+def verify_restoration(run, receipt, result):
     if not (receipt['restored'] or receipt.get('test_changes_restored')) or result['guard'] != 'verified_original_hashes_and_released':
         raise RuntimeError('Restoration not verified')
 
-    def digest(path):
-        with Path(path).open('rb') as stream:
-            return hashlib.file_digest(stream, 'sha256').hexdigest().lower()
-
     guard = json.loads((run / 'protected-files.json').read_text(encoding='utf-8'))
-    outer = {str(Path(e['path'])).lower(): e for e in receipt['original_files']}
-    retained = {str(Path(e['path'])).lower(): e for e in receipt.get('retained_files', [])}
+    outer = {str(Path(e['path'])).replace('\\', '/').casefold(): e for e in receipt['original_files']}
+    retained = {str(Path(e['path'])).replace('\\', '/').casefold(): e for e in receipt.get('retained_files', [])}
+    owned_temporary_files = {}
+    temporary_manifest_path = run / 'temporary-mod.json'
+    if temporary_manifest_path.is_file():
+        temporary_manifest = json.loads(temporary_manifest_path.read_text(encoding='utf-8'))
+        if temporary_manifest.get('installed_by_runner'):
+            restored_path = run / 'temporary-mod-restored.json'
+            restored = json.loads(restored_path.read_text(encoding='utf-8')) if restored_path.is_file() else {}
+            if not restored.get('restored') or not restored.get('installed_by_runner'):
+                raise RuntimeError('Runner-owned temporary script mod cleanup was not verified')
+            for item in temporary_manifest.get('files', []):
+                key = str(Path(item['path'])).replace('\\', '/').casefold()
+                if key in owned_temporary_files:
+                    raise RuntimeError('Temporary script mod manifest contains duplicate paths')
+                owned_temporary_files[key] = item['sha256'].lower()
+
+    guard_by_path = {str(Path(e['path'])).replace('\\', '/').casefold(): e for e in guard}
+    if not owned_temporary_files.keys() <= guard_by_path.keys():
+        raise RuntimeError('Temporary script mod files are missing from the protection record')
     for entry in guard:
-        original = outer.get(str(Path(entry['path'])).lower())
+        key = str(Path(entry['path'])).replace('\\', '/').casefold()
+        original = outer.get(key)
         if original:
-            if digest(entry['backup_path']) != entry['sha256'].lower():
+            if file_sha256(entry['backup_path']) != entry['sha256'].lower():
                 raise RuntimeError('Guard backup changed')
-        elif digest(entry['path']) != entry['sha256'].lower():
+        elif key in owned_temporary_files:
+            expected = owned_temporary_files[key]
+            if entry['sha256'].lower() != expected:
+                raise RuntimeError('Temporary script mod protection hash mismatch')
+            if Path(entry['path']).exists():
+                raise RuntimeError('Runner-owned temporary script mod was not removed')
+        elif file_sha256(entry['path']) != entry['sha256'].lower():
             raise RuntimeError('Protected original changed')
     for entry in receipt['original_files'] + receipt.get('isolated_addons', []):
-        expected = retained.get(str(Path(entry['path'])).lower(), entry)
-        if digest(entry['path']) != expected['sha256'].lower():
+        key = str(Path(entry['path'])).replace('\\', '/').casefold()
+        expected = retained.get(key, entry)
+        if file_sha256(entry['path']) != expected['sha256'].lower():
             raise RuntimeError('Installation original changed')
         if entry.get('disabled_path') and Path(entry['disabled_path']).exists():
             raise RuntimeError('Isolated add-on not restored')
+    return guard
+
+
+def verify(run, acceptance, block_hudless, nr_hook_point, nr_off_control=False, addon_absent_control=False):
+    receipt = json.loads((acceptance / 'receipt.json').read_text(encoding='utf-8-sig'))
+    result = json.loads((run / 'result.json').read_text(encoding='utf-8'))
+    guard = verify_restoration(run, receipt, result)
     loaded = json.loads((run / 'loaded-modules.json').read_text(encoding='utf-8'))
     if addon_absent_control:
         if loaded.get('matching_paths') or result['mod_load'] != 'baseline_addon_absence_confirmed':
@@ -193,7 +264,7 @@ def verify(run, acceptance, block_hudless, nr_hook_point, nr_off_control=False, 
         raise RuntimeError('Loaded candidate identity mismatch')
     ready = json.loads((run / 'capture-ready.json').read_text(encoding='utf-8'))
     start = datetime.fromisoformat(ready['time']).astimezone()
-    events = json.loads((run / 'nr-toggle-captures.json').read_text(encoding='utf-8'))
+    events = capture_events_for_verification(run, receipt)
     capture_times = [datetime.fromisoformat(event['time']).astimezone()
                      for event in events if event.get('action') == 'capture']
     if not capture_times:
@@ -350,6 +421,7 @@ def main():
     parser.add_argument('--candidate-manifest', required=True, type=Path)
     parser.add_argument('--game-binary-directory', required=True, type=Path)
     parser.add_argument('--target', type=Path, default=ROOT / '.local/game-test/witcher3-steam.json')
+    parser.add_argument('--save', help='Explicit save filename for this game launch; required for ControlMask cases')
     parser.add_argument('--python', type=Path, default=Path(sys.executable))
     parser.add_argument('--output-root', type=Path, default=ROOT / 'artifacts/game-tests')
     parser.add_argument('--hdr-tool', type=Path, default=ROOT / 'tmp/hdr-state/hdr-state.exe')
@@ -367,7 +439,13 @@ def main():
     parser.add_argument('--nr-passes', type=int, choices=(1, 2),
         help='Temporarily select one or two passes; omitted keeps the protected config value')
     parser.add_argument('--control-mask-case', choices=('depth-far', 'depth-far-off'),
-        help='Run the protected Present-hook depth-far comparison with XeFG enabled')
+        help='Run a protected depth-far comparison at Present or Upscaled')
+    parser.add_argument('--control-mask-use-core-context', action='store_true',
+        help='Use the successful host SR Core context for an Upscaled depth-far case')
+    parser.add_argument('--control-mask-depth-near', type=float,
+        help='Override the normalized near threshold for a protected depth-far case; requires --control-mask-depth-far')
+    parser.add_argument('--control-mask-depth-far', type=float,
+        help='Override the normalized far threshold for a protected depth-far case; requires --control-mask-depth-near')
     parser.add_argument('--nr-runtime-path', type=Path,
         help='Runtime file to verify for a protected ControlMask game case')
     parser.add_argument('--capture-script', type=Path,
@@ -388,6 +466,8 @@ def main():
     args = parser.parse_args()
     if args.start_nr_disabled and args.capture_script is None:
         parser.error('--start-nr-disabled requires --capture-script')
+    if args.control_mask_use_core_context and not args.control_mask_case:
+        parser.error('--control-mask-use-core-context requires a protected depth-far case')
     if not 1 <= args.telemetry_seconds <= 3600:
         parser.error('--telemetry-seconds must be between 1 and 3600')
     if args.xefg_ui_composition is not None and not args.restore_installation:
@@ -402,13 +482,26 @@ def main():
         parser.error('--addon-absent-control requires --nr-off-control')
     if args.check_addon_menu and args.nr_off_control:
         parser.error('--check-addon-menu requires the NR comparison run')
+    if args.save is not None and (Path(args.save).name != args.save or not args.save.endswith('.sav')):
+        parser.error('--save must be a .sav filename within the configured save directory')
+    if args.control_mask_case and not args.save:
+        parser.error('--control-mask-case requires an explicit --save for this launch')
+    if (args.control_mask_depth_near is None) != (args.control_mask_depth_far is None):
+        parser.error('depth threshold overrides require both --control-mask-depth-near and --control-mask-depth-far')
+    if args.control_mask_depth_near is not None:
+        if args.control_mask_case not in ('depth-far', 'depth-far-off'):
+            parser.error('depth threshold overrides require --control-mask-case depth-far or depth-far-off')
+        if (not math.isfinite(args.control_mask_depth_near) or not math.isfinite(args.control_mask_depth_far)
+                or not 0 <= args.control_mask_depth_near < args.control_mask_depth_far <= 1):
+            parser.error('depth thresholds must satisfy 0 <= near < far <= 1')
     if args.enable_streamline_fallback and (not args.control_mask_case or not args.restore_installation):
         parser.error('--enable-streamline-fallback requires a restored ControlMask case')
-    if args.control_mask_case and (not args.restore_installation or args.nr_hook_point != 2
+    if args.control_mask_case and (not args.restore_installation
+            or not supported_control_mask_route(args.nr_hook_point,
+                args.control_mask_use_core_context, args.xefg_ui_composition)
             or args.block_optional_hudless or args.nr_off_control or args.disable_xefg_sdk_detours
-            or args.xefg_ui_composition != 0 or args.nr_runtime_path is None
-            or not args.nr_runtime_path.is_file() or args.nr_passes != 1):
-        parser.error('depth-far game cases require restore, XeFG UIComposition=0, Present hook, both colors, an NR Runtime and one pass')
+            or args.nr_runtime_path is None or not args.nr_runtime_path.is_file() or args.nr_passes != 1):
+        parser.error('depth-far cases require restore, a supported one-pass route, both colors and an NR Runtime')
     output_root = local_output_root(args.output_root)
     target = json.loads(args.target.read_text(encoding='utf-8'))
     expected_monitor = target['expected_hdr_monitor']
@@ -429,6 +522,8 @@ def main():
         '-OutputRoot', str(output_root),
         '-CaptureHoldSeconds', '90', '-CleanEnvironment', '-ShowGameHud',
         '-NrHookPoint', str(args.nr_hook_point), '-TelemetrySeconds', str(args.telemetry_seconds)]
+    if args.save:
+        command += ['-Save', args.save]
     if args.nr_passes is not None:
         command += ['-NrPasses', str(args.nr_passes)]
     if args.capture_script is not None:
@@ -438,6 +533,13 @@ def main():
     if args.control_mask_case:
         command += ['-NrPreset', str(args.nr_preset), '-NrRuntimePath', str(args.nr_runtime_path.resolve(strict=True)),
             '-ControlMaskCase', 'DepthFar' if args.control_mask_case == 'depth-far' else 'DepthFarOff']
+        if args.nr_hook_point == 0:
+            command.append('-SrOnly')
+    if args.control_mask_use_core_context:
+        command.append('-ControlMaskUseCoreContext')
+    if args.control_mask_depth_near is not None:
+        command += ['-ControlMaskDepthNear', format(args.control_mask_depth_near, '.9g'),
+            '-ControlMaskDepthFar', format(args.control_mask_depth_far, '.9g')]
     if args.enable_streamline_fallback:
         command.append('-EnableStreamlineFallback')
     if args.xefg_ui_composition is not None:
@@ -480,13 +582,14 @@ def main():
                     capture(run, args.nr_off_control, args.check_addon_menu)
                 except Exception as error:
                     capture_error = repr(error)
-                    dump(out / 'capture-error.json', dict(time=stamp(), error=capture_error))
+                    dump(out / 'capture-error.json', dict(time=stamp(), error=capture_error,
+                        diagnostics=getattr(error, 'diagnostics', None)))
                     print('CAPTURE_FAILED; automatic game input is blocked; protected recovery will restore', flush=True)
                 else:
                     print('CAPTURE_FINISHED; valid completion recorded; protected worker resumes', flush=True)
     child.wait()
     summary = dict(time=stamp(), exit_code=child.returncode, acceptance=str(acceptance), run=str(run),
-        capture_error=capture_error)
+        selected_save=args.save, capture_error=capture_error)
     if acceptance and run and (run / 'capture-ready.json').exists():
         try:
             summary.update(verify(run, acceptance, args.block_optional_hudless, args.nr_hook_point,

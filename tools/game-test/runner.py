@@ -22,6 +22,8 @@ import desktop
 import normal_process
 import crash_evidence
 import hang_evidence
+import temporary_mod
+import witcher_debug
 try:
     import output_lifecycle
 except ModuleNotFoundError:
@@ -56,6 +58,10 @@ def parse_capture_hold_seconds(value):
 def validate_capture_hold_scenario(scenario, seconds):
     if seconds and scenario not in ('smoke', 'menu'):
         raise ValueError('--capture-hold-seconds is only supported for smoke or menu scenarios')
+
+def validate_scenario_save(scenario, save):
+    if scenario == 'smoke' and not save:
+        raise ValueError('--save is required for every smoke run')
 
 def capture_script_path(path):
     path = Path(path).resolve(strict=True)
@@ -102,7 +108,7 @@ def sha(path):
     with open(path, 'rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
-def resolve_target(game, platform, save, addon_absent_control=False, target_path=None):
+def resolve_target(game, platform, save, addon_absent_control=False, target_path=None, control_backend='script'):
     if not re.fullmatch(r'[a-z0-9-]+', game) or not re.fullmatch(r'[a-z0-9-]+', platform):
         raise ValueError('Invalid target name')
     target_path = target_path or ROOT / '.local/game-test' / f'{game}-{platform}.json'
@@ -133,21 +139,35 @@ def resolve_target(game, platform, save, addon_absent_control=False, target_path
         documents = Path(os.path.expandvars(winreg.QueryValueEx(key, 'Personal')[0]))
     profile = documents / cfg['documents_dir']
     save = save or cfg['default_save']
-    if Path(save).name != save or not save.endswith('.sav'):
-        raise ValueError('Save must be a filename within the target save directory')
+    if (Path(save).name != save or not re.fullmatch(r'[A-Za-z0-9_.-]+\.sav', save, re.IGNORECASE)):
+        raise ValueError('Save must be a plain ASCII .sav filename within the target save directory')
     cfg.update(steam=str(steam / 'steam.exe'), install=str(install), executable=str(install / cfg['exe']),
                profile=str(profile), save=save, manifest_sha256=sha(manifest))
+    if control_backend == 'script':
+        debugger_cli = Path(cfg.get('debugger_cli') or ROOT / '.local/game-test/rw3d_cli.exe')
+        if not debugger_cli.is_absolute():
+            debugger_cli = ROOT / debugger_cli
+        if not debugger_cli.is_file():
+            raise FileNotFoundError('Place the verified Witcher debugger CLI at ' + str(debugger_cli))
+        debugger_cli_sha256 = sha(debugger_cli)
+        if debugger_cli_sha256 != witcher_debug.CLI_SHA256:
+            raise RuntimeError('Unexpected Witcher debugger CLI SHA-256: ' + debugger_cli_sha256)
+        cfg.update(debugger_cli=str(debugger_cli.resolve()), debugger_cli_sha256=debugger_cli_sha256)
     for path in (cfg['steam'], cfg['executable'], profile / cfg['save_dir'] / save):
         if not Path(path).is_file():
             raise FileNotFoundError(path)
     cfg['save_sha256'] = sha(profile / cfg['save_dir'] / save)
     cfg['save_modified'] = datetime.fromtimestamp((profile / cfg['save_dir'] / save).stat().st_mtime).isoformat()
-    selected_time = datetime.fromisoformat(cfg['save_modified']).replace(microsecond=0)
-    collisions = [p.name for p in (profile / cfg['save_dir']).glob('*.sav')
-                  if datetime.fromtimestamp(p.stat().st_mtime).replace(microsecond=0) == selected_time]
-    if collisions != [save]:
-        raise RuntimeError('Save timestamp is not unique; UI identity cannot safely select this file')
+    if control_backend == 'desktop':
+        selected_time = datetime.fromisoformat(cfg['save_modified']).replace(microsecond=0)
+        collisions = [p.name for p in (profile / cfg['save_dir']).glob('*.sav')
+                      if datetime.fromtimestamp(p.stat().st_mtime).replace(microsecond=0) == selected_time]
+        if collisions != [save]:
+            raise RuntimeError('Save timestamp is not unique; legacy desktop selection cannot safely identify this file')
+    elif control_backend != 'script':
+        raise ValueError('Unknown Witcher game control backend')
     cfg['addon_absent_control'] = addon_absent_control
+    cfg['control_backend'] = control_backend
     if addon_absent_control:
         if (Path(cfg['executable']).parent / cfg['required_module']).exists():
             raise RuntimeError('Baseline control requires the add-on file to be absent')
@@ -155,6 +175,23 @@ def resolve_target(game, platform, save, addon_absent_control=False, target_path
     else:
         cfg['addon_sha256'] = sha(Path(cfg['executable']).parent / cfg['required_module'])
     return cfg
+
+def prepare_ocr(cfg, output_root):
+    if cfg['control_backend'] not in ('desktop', 'script'):
+        raise ValueError('Unknown Witcher game control backend')
+    ocr_output = output_root / 'ocr-tool'
+    build = subprocess.run(['pwsh.exe', '-NoProfile', '-File', str(HERE / 'build-ocr.ps1'),
+                            '-OutputDirectory', str(ocr_output)], capture_output=True, text=True, timeout=60, check=True)
+    executable = build.stdout.strip()
+    fixture = ocr_output / 'selftest.png'
+    img = Image.new('RGB', (600, 100), 'white')
+    ImageDraw.Draw(img).text((15, 15), 'Load Game 123', fill='black',
+        font=ImageFont.truetype(str(Path(os.environ['WINDIR']) / 'Fonts/arial.ttf'), 40))
+    img.save(fixture)
+    check = subprocess.run([executable, str(fixture)], capture_output=True, encoding='utf-8', timeout=25, check=True)
+    if '123' not in json.loads(check.stdout)['text']:
+        raise RuntimeError('OCR self-test did not recognize the fixture')
+    return executable
 
 def process_inventory(exe):
     # Query every matching process, including those without a window; never adopt a prior session.
@@ -210,9 +247,60 @@ def freeze_logs(cfg, out):
                 records.append(dict(name=name, error=str(error)))
     dump(out / 'files.json', records)
 
+def script_log_identity(path):
+    try:
+        size = path.stat().st_size
+        digest = hashlib.sha256()
+        with path.open('rb') as stream:
+            remaining = size
+            while remaining:
+                block = stream.read(min(1024 * 1024, remaining))
+                if not block:
+                    return dict(exists=True, size=size, error='short_read')
+                digest.update(block)
+                remaining -= len(block)
+        return dict(exists=True, size=size, sha256=digest.hexdigest())
+    except FileNotFoundError:
+        return dict(exists=False)
+    except OSError as error:
+        return dict(exists=None, error=repr(error))
+
+
+def script_log_prefix_sha256(path, size):
+    digest = hashlib.sha256()
+    remaining = size
+    try:
+        with path.open('rb') as stream:
+            while remaining:
+                block = stream.read(min(1024 * 1024, remaining))
+                if not block:
+                    return None
+                digest.update(block)
+                remaining -= len(block)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def stage_script_mod(cfg, source_root):
+    if cfg.get('control_backend', 'desktop') != 'script':
+        return None, []
+    lease = temporary_mod.TemporaryScriptMod(cfg['install'], source_root)
+    return lease, lease.install()
+
+
 class Session:
     def __init__(self, cfg, out):
         self.cfg, self.out, self.window, self.number = cfg, out, None, 0
+        self.control_backend = cfg.get('control_backend', 'desktop')
+        self.debugger = (witcher_debug.WitcherDebugger(
+            cfg.get('debugger_cli', ROOT / '.local/game-test/rw3d_cli.exe'),
+            timeout=cfg.get('debug_timeout', 3))
+                         if self.control_backend == 'script' else None)
+        self.script_bridge_endpoint_recorded = False
+        self.last_script_bridge_request = None
+        self.script_log_path = None
+        self.script_log_baseline = None
         self.crashes_before = crash_reports()
         self.exit_requested = False
         self.automation_input_blocked = False
@@ -220,6 +308,7 @@ class Session:
         crash_log = Path(cfg['executable']).parent / 'RenoDX-DLSS5-crash.log'
         self.log_offset = crash_log.stat().st_size if crash_log.exists() else 0
         self.status = dict(started=stamp(), startup='not_tested', save_load='not_tested', mod_load='not_tested',
+                           script_mod_reload='not_tested', script_bridge='not_tested',
                            functionality='not_tested', visual_quality='not_tested', stability='not_tested', safe_exit='not_tested')
 
     def event(self, kind, **data):
@@ -230,14 +319,40 @@ class Session:
         try:
             receipt = desktop.ensure_foreground(self.window)
             self.event('automatic_foreground_confirmed', phase='runner_input', **receipt)
-        except Exception:
+        except Exception as error:
             self.automation_input_blocked = True
+            self.event('automatic_foreground_failed', phase='runner_input', error=repr(error),
+                       diagnostics=getattr(error, 'diagnostics', None))
             raise
 
-    def observe(self, label='observe', *, region_state=None):
+    def refresh_startup_window(self):
+        """Rebind a recreated startup HWND only while process identity is unchanged."""
+        if not self.window or not desktop.same_process(self.window):
+            return False
+        if desktop.window_alive(self.window):
+            return True
+        candidates = [window for window in desktop.windows(self.cfg['executable'])
+                      if window['pid'] == self.window['pid']
+                      and window['created'] == self.window['created']]
+        if len(candidates) != 1:
+            return False
+        previous = dict(self.window)
+        self.window = candidates[0]
+        self.window['command_line'] = previous.get('command_line')
+        dump(self.out / 'owned-process.json', self.window)
+        self.event('startup_window_rebound', previous_hwnd=previous['hwnd'],
+                   hwnd=self.window['hwnd'], pid=self.window['pid'],
+                   created=self.window['created'])
+        return True
+
+    def observe(self, label='observe', *, region_state=None, script_startup=False):
+        if self.control_backend == 'script' and not script_startup:
+            raise RuntimeError('script_backend_disallows_ocr_observation')
         if not desktop.same_process(self.window):
             raise RuntimeError('unexpected_exit')
-        self.activate()
+        capture_hold = self.ui_state == 'capture_hold'
+        if not capture_hold:
+            self.activate()
         self.number += 1
         path = self.out / 'latest.png'
         if region_state is None and self.ui_state in ('main_menu', 'pause_menu', 'load_menu'):
@@ -247,7 +362,7 @@ class Session:
                 self.automation_input_blocked = True
                 raise
         region_state = region_state or self.ui_state
-        metrics = desktop.capture(self.window, path)
+        metrics = desktop.capture(self.window, path, activate=not capture_hold)
         region = {
             'main_menu': (.08, .31, .27, .73), 'pause_menu': (.08, .31, .27, .73),
             'load_menu': (.29, .15, .84, .80), 'scene': (.78, .25, .995, .37),
@@ -281,27 +396,176 @@ class Session:
         shutil.copyfile(self.out / 'latest.png', self.out / f'{label}.png')
         shutil.copyfile(self.out / 'observation.json', self.out / f'{label}.json')
 
-    def key(self, name, seconds=.2):
+    def frame_evidence(self, label):
+        if not desktop.same_process(self.window):
+            raise RuntimeError('unexpected_exit')
+        self.number += 1
+        path = self.out / 'latest.png'
+        metrics = desktop.capture(self.window, path, activate=self.ui_state != 'capture_hold')
+        shutil.copyfile(path, self.out / f'{label}.png')
+        record = dict(time=stamp(), label=label, backend='script', metrics=metrics,
+                      process=dict(self.window))
+        dump(self.out / f'{label}.json', record)
+        self.event('frame_capture', label=label, metrics=metrics)
+        return metrics
+
+    def record_script_bridge_endpoint(self):
+        if self.debugger is not None and not self.script_bridge_endpoint_recorded:
+            endpoint = witcher_debug.listener_snapshot(self.debugger.port)
+            game_pid = self.window.get('pid') if self.window else None
+            endpoint.update(time=stamp(), game_pid=game_pid,
+                            debugger_cli_sha256=self.cfg.get('debugger_cli_sha256'),
+                            game_pid_matches_listener=any(
+                                listener['pid'] == game_pid for listener in endpoint['listeners'])
+                            if game_pid is not None else None)
+            dump(self.out / 'script-bridge-endpoint.json', endpoint)
+            event_data = dict(endpoint)
+            event_data.pop('time', None)
+            self.event('script_bridge_endpoint', **event_data)
+            self.script_bridge_endpoint_recorded = True
+            if endpoint['game_pid_matches_listener'] is not True:
+                raise RuntimeError('script_bridge_listener_not_owned_by_game')
+
+    def bridge_call(self, function, *arguments):
+        self.record_script_bridge_endpoint()
+        request_id = uuid.uuid4().hex
+        self.last_script_bridge_request = dict(function=function, request_id=request_id)
+        output = self.debugger.exec_bridge(function, *arguments, request_id)
+        invocation = self.debugger.last_invocation
+        if invocation is not None:
+            self.event('script_bridge_cli_result', function=function, request_id=request_id,
+                       executable_sha256=self.cfg.get('debugger_cli_sha256'), **invocation)
+        marker = 'NRNX|' + request_id + '|'
+        matches = re.findall(re.escape(marker) + r'([^\r\n]+)', output)
+        if len(matches) != 1:
+            raise RuntimeError('script_bridge_receipt_missing:' + function)
+        result = matches[0].strip().split('|')
+        self.event('script_bridge_receipt', function=function, request_id=request_id, result=result)
+        return result
+
+    def script_log_confirms_bridge_receipt(self, function, request_id, result):
+        if function != 'NRNX_TestBridgeExit' or self.script_log_path is None:
+            return False
+        receipt = 'NRNX|' + request_id + '|' + '|'.join(result)
         try:
-            desktop.key(self.window, name, seconds)
+            with self.script_log_path.open('r', encoding='utf-8', errors='replace') as stream:
+                return any(receipt in line for line in stream)
+        except OSError:
+            return False
+
+    def begin_script_log_capture(self):
+        if self.control_backend != 'script':
+            return
+        log_root = Path(self.cfg.get('profile') or Path(self.cfg['executable']).parent)
+        self.script_log_path = log_root / 'scriptslog.txt'
+        self.script_log_baseline = script_log_identity(self.script_log_path)
+        dump(self.out / 'script-log-start.json', dict(
+            time=stamp(), log_name=self.script_log_path.name, identity=self.script_log_baseline))
+
+    def finish_script_log_capture(self):
+        if self.script_log_baseline is None:
+            return
+        current = script_log_identity(self.script_log_path)
+        baseline = self.script_log_baseline
+        diagnostic = dict(time=stamp(), log_name=self.script_log_path.name,
+                          baseline=baseline, current=current)
+        capture_from = None
+        if current.get('exists') is None or baseline.get('exists') is None:
+            diagnostic['change'] = 'unreadable'
+        elif not baseline['exists'] and not current['exists']:
+            diagnostic['change'] = 'absent'
+        elif not current['exists']:
+            diagnostic['change'] = 'missing_after_start'
+        elif not baseline['exists']:
+            diagnostic['change'] = 'created'
+            capture_from = 0
+        elif (current.get('sha256') == baseline.get('sha256')
+              and current.get('size') == baseline.get('size')):
+            diagnostic['change'] = 'unchanged'
+        elif (current['size'] >= baseline['size'] and
+              script_log_prefix_sha256(self.script_log_path, baseline['size']) == baseline['sha256']):
+            diagnostic['change'] = 'appended'
+            capture_from = baseline['size']
+        else:
+            diagnostic['change'] = 'rewritten'
+            capture_from = 0
+        if capture_from is not None:
+            destination = self.out / 'scriptslog-delta.txt'
+            try:
+                with self.script_log_path.open('rb') as source:
+                    source.seek(capture_from)
+                    with destination.open('wb') as target:
+                        shutil.copyfileobj(source, target)
+                diagnostic['captured_bytes'] = destination.stat().st_size
+                diagnostic['captured_sha256'] = sha(destination)
+                diagnostic['capture_file'] = destination.name
+            except OSError as error:
+                diagnostic['capture_error'] = repr(error)
+        dump(self.out / 'script-log-diagnostic.json', diagnostic)
+
+    def key(self, name, seconds=.2, *, script_startup=False):
+        if self.control_backend == 'script' and not script_startup:
+            raise RuntimeError('script_backend_disallows_keyboard_input')
+        try:
+            desktop.key(self.window, name, seconds, activate=self.ui_state != 'capture_hold')
         except Exception:
             self.automation_input_blocked = True
             raise
         self.event('key', key=name, seconds=seconds, state=self.ui_state)
 
     def main_menu(self, timeout=None):
+        if self.control_backend == 'script':
+            self.wait_main_menu_ocr(timeout, script_startup=True)
+            self.status['script_mod_reload'] = 'not_requested_predeployed_mod'
+            self.event('script_mod_reload', result='not_requested',
+                       basis='temporary_mod_deployed_before_game_start')
+            deadline = time.monotonic() + (timeout or self.cfg['startup_timeout'])
+            while time.monotonic() < deadline:
+                try:
+                    result = self.bridge_call('NRNX_TestBridgeReady')
+                    if result == ['ready', '1']:
+                        self.ui_state = 'main_menu'
+                        self.status['startup'] = 'script_start_screen_confirmed'
+                        self.status['script_bridge'] = 'ready_receipt_confirmed'
+                        dump(self.out / 'game-start-state.json', dict(
+                            time=stamp(), state='start_screen_ready', backend='script'))
+                        return result
+                    if result != ['ready', '0']:
+                        raise RuntimeError('script_bridge_unexpected_ready_state:' + repr(result))
+                except (OSError, TimeoutError, witcher_debug.ProtocolError) as error:
+                    self.event('script_bridge_transport_failure',
+                               function='NRNX_TestBridgeReady', error=repr(error))
+                    raise RuntimeError('script_bridge_ready_transport_failure') from error
+                time.sleep(1)
+            raise TimeoutError('script_start_screen_timeout')
+        return self.wait_main_menu_ocr(timeout)
+
+    def wait_main_menu_ocr(self, timeout=None, *, script_startup=False):
         deadline = time.monotonic() + (timeout or self.cfg['startup_timeout'])
         last_skip = 0
         while time.monotonic() < deadline:
-            obs = self.observe('startup')
+            if self.control_backend == 'script':
+                if not desktop.same_process(self.window):
+                    raise RuntimeError('unexpected_exit')
+                if not self.refresh_startup_window():
+                    time.sleep(.25)
+                    continue
+            obs = self.observe('startup', script_startup=script_startup)
             text = compact(obs['text'])
+            normalized_text = text.casefold()
+            if 'unexpected' in normalized_text and 'token_' in normalized_text:
+                self.event('script_compilation_error', ocr_text=text)
+                raise RuntimeError('script_compilation_error')
             if '读取游戏' in text and '退出游戏' in text and '新游戏' in text:
                 self.ui_state = 'main_menu'
-                self.status['startup'] = 'main_menu_confirmed'
+                self.status['startup'] = ('ocr_title_confirmed_for_script_bridge' if script_startup
+                                          else 'main_menu_confirmed')
                 self.evidence('main-menu')
                 return obs
             if '跳过' in text and time.monotonic() - last_skip > 3:
-                self.key('SPACE')
+                if script_startup:
+                    self.activate()
+                self.key('SPACE', script_startup=script_startup)
                 last_skip = time.monotonic()
             time.sleep(1)
         raise TimeoutError('main_menu_timeout')
@@ -331,6 +595,33 @@ class Session:
         raise RuntimeError('menu_focus_did_not_move')
 
     def request_exit(self):
+        if self.control_backend == 'script':
+            if not desktop.same_process(self.window):
+                raise RuntimeError('unexpected_exit_before_script_exit')
+            try:
+                result = self.bridge_call('NRNX_TestBridgeExit')
+            except Exception as error:
+                if desktop.same_process(self.window):
+                    raise RuntimeError('script_exit_result_unknown_game_still_alive') from error
+                request = self.last_script_bridge_request or {}
+                if (request.get('function') != 'NRNX_TestBridgeExit'
+                        or not self.script_log_confirms_bridge_receipt(
+                            'NRNX_TestBridgeExit', request.get('request_id', ''), ['exit', 'requested'])):
+                    self.status['safe_exit'] = 'unexpected_exit_before_script_exit_confirmation'
+                    raise RuntimeError('script_exit_result_unknown_game_exited_without_receipt') from error
+                self.exit_requested = True
+                self.ui_state = 'exited'
+                self.event('exit_requested', method='game_script_api_log_receipt_response_lost',
+                           request_id=request['request_id'], error=repr(error))
+                self.wait_exit()
+                return
+            if result != ['exit', 'requested']:
+                raise RuntimeError('script_exit_not_acknowledged:' + repr(result))
+            self.ui_state = 'exit_requested'
+            self.exit_requested = True
+            self.event('exit_requested', method='game_script_api')
+            self.wait_exit()
+            return
         paused = self.ui_state == 'pause_menu'
         self.select_menu('退出游戏', PAUSE_MENU if paused else MAIN_MENU)
         if paused:
@@ -351,7 +642,9 @@ class Session:
         if desktop.same_process(self.window):
             raise TimeoutError('menu_exit_timeout')
         self.ui_state = 'exited'
-        self.status['safe_exit'] = 'menu_exit_pending_log_and_crash_check'
+        self.status['safe_exit'] = ('script_exit_requested_process_exit_confirmed'
+                                    if self.control_backend == 'script'
+                                    else 'menu_exit_pending_log_and_crash_check')
 
     def menu(self):
         if self.cfg.get('manual_ime_session'):
@@ -403,6 +696,8 @@ class Session:
         raise TimeoutError(f'{label}: expected text {pattern!r} not found')
 
     def click_text(self, obs, text):
+        if self.control_backend == 'script':
+            raise RuntimeError('script_backend_disallows_mouse_input')
         candidates = [line for line in obs['lines'] if text in re.sub(r'\s+', '', line['text'])]
         if len(candidates) != 1:
             raise RuntimeError(f'OCR target must be unique: {text}, matches={len(candidates)}')
@@ -410,7 +705,7 @@ class Session:
         x = (min(w['x'] for w in words) + max(w['x']+w['width'] for w in words))/2/obs['scale']
         y = (min(w['y'] for w in words) + max(w['y']+w['height'] for w in words))/2/obs['scale']
         try:
-            desktop.click(self.window, x, y)
+            desktop.click(self.window, x, y, activate=self.ui_state != 'capture_hold')
         except Exception:
             self.automation_input_blocked = True
             raise
@@ -418,7 +713,16 @@ class Session:
 
     def launch(self):
         dump(self.out / 'early-modules.json', crash_evidence.modules(None, desktop.modules))
-        subprocess.Popen([self.cfg['steam']] + self.cfg['launch_args'], creationflags=0x08000000)
+        arguments = list(self.cfg['launch_args'])
+        if self.control_backend == 'script':
+            for flag in ('-net', '-debugscripts'):
+                if flag not in arguments:
+                    arguments.append(flag)
+        command = [self.cfg['steam']] + arguments
+        dump(self.out / 'game-launch.json', dict(time=stamp(), backend=self.control_backend,
+                                                 command=command, steam_arguments=arguments))
+        self.begin_script_log_capture()
+        subprocess.Popen(command, creationflags=0x08000000)
         deadline = time.monotonic() + self.cfg['startup_timeout']
         while time.monotonic() < deadline:
             found = desktop.windows(self.cfg['executable'])
@@ -426,6 +730,10 @@ class Session:
                 raise RuntimeError('Multiple target windows; refusing input')
             if found:
                 self.window = found[0]
+                for process in process_inventory(self.cfg['executable']):
+                    if process.get('ProcessId') == self.window['pid']:
+                        self.window['command_line'] = process.get('CommandLine')
+                        break
                 dump(self.out / 'owned-process.json', self.window)
                 dump(self.out / 'early-modules.json', crash_evidence.modules(self.window, desktop.modules, self.cfg.get('required_module')))
                 self.status['startup'] = 'process_and_dx12_path_confirmed'
@@ -441,6 +749,7 @@ class Session:
                     metrics = desktop.process_metrics(pid)
                     if metrics:
                         self.window = dict(pid=pid, created=metrics['created'], path=candidates[0]['ExecutablePath'], hwnd=0)
+                        self.window['command_line'] = candidates[0].get('CommandLine')
                         dump(self.out / 'owned-process.json', self.window)
                         dump(self.out / 'early-modules.json', crash_evidence.modules(self.window, desktop.modules, self.cfg.get('required_module')))
             time.sleep(1)
@@ -459,6 +768,35 @@ class Session:
             request = json.loads(command.read_text(encoding='utf-8-sig'))
             command.unlink()
             action = request['action']
+            if self.control_backend == 'script':
+                if action == 'exit':
+                    return
+                if action == 'menu_exit':
+                    self.request_exit()
+                    return
+                if action == 'load_save':
+                    if self.ui_state != 'main_menu':
+                        raise ValueError('Script calibration load requires the confirmed start screen')
+                    self.check_mod()
+                    self.load_save()
+                    self.wait_scene()
+                    self.status['save_load'] = 'script_exact_save_loaded_gameplay_ready'
+                elif action == 'state':
+                    result = self.bridge_call('NRNX_TestBridgeState')
+                    dump(self.out / 'calibration-state.json', dict(time=stamp(), result=result))
+                elif action == 'exec':
+                    function = request.get('function', '')
+                    if not isinstance(function, str) or not function.startswith('NRNX_'):
+                        raise ValueError('Script calibration may call only NRNX_ bridge functions')
+                    arguments = request.get('arguments', [])
+                    if not isinstance(arguments, list) or any(not isinstance(item, str) for item in arguments):
+                        raise ValueError('Script calibration arguments must be a list of strings')
+                    result = self.bridge_call(function, *arguments)
+                    dump(self.out / 'calibration-command-result.json', dict(
+                        time=stamp(), function=function, result=result))
+                else:
+                    raise ValueError('Unknown script calibration action')
+                continue
             if action == 'exit':
                 return
             if action == 'menu_exit':
@@ -494,18 +832,20 @@ class Session:
     def smoke(self):
         self.main_menu()
         self.check_mod()
-        self.select_menu('读取游戏', MAIN_MENU)
-        self.key('ENTER')
-        self.ui_state = 'load_menu'
         self.load_save()
-        if self.ui_state != 'scene':
-            self.ui_state = 'loading'
         self.wait_scene()
-        self.status['save_load'] = 'unique_save_selected_load_menu_exited'
-        self.status['visual_quality'] = 'not_tested_screenshots_only'
-        self.evidence('scene-loaded')
+        if self.control_backend == 'desktop':
+            self.status['save_load'] = 'unique_save_selected_load_menu_exited'
+            self.status['visual_quality'] = 'not_tested_screenshots_only'
+            self.evidence('scene-loaded')
+        else:
+            self.status['visual_quality'] = 'not_tested_no_visual_capture_requested'
         self.scene_health()
         self.capture_hold()
+        if self.control_backend == 'script':
+            self.status['functionality'] = 'script_bridge_save_load_and_exit_confirmed_mod_features_not_tested'
+            self.request_exit()
+            return
         self.key('ESC')
         self.ui_state = 'pause_menu'
         self.select_menu('继续', PAUSE_MENU)
@@ -533,7 +873,8 @@ class Session:
             except Exception as error:
                 self.status['capture_hold'] = 'automatic_foreground_activation_failed'
                 dump(self.out / 'capture-failed.json', dict(time=stamp(), phase='capture_ready',
-                    stage='automatic_foreground_activation', error=repr(error), no_game_input_sent=True))
+                    stage='automatic_foreground_activation', error=repr(error),
+                    diagnostics=getattr(error, 'diagnostics', None), no_game_input_sent=True))
                 raise
             ready.update(automatic_foreground=True, foreground=foreground)
         dump(self.out / 'capture-ready.json', ready)
@@ -581,6 +922,30 @@ class Session:
             time.sleep(min(1, remaining))
 
     def load_save(self):
+        if self.control_backend == 'script':
+            path = Path(self.cfg['profile']) / self.cfg['save_dir'] / self.cfg['save']
+            if sha(path) != self.cfg['save_sha256']:
+                raise RuntimeError('target_save_changed_before_script_load')
+            game_filename = Path(self.cfg['save']).stem.lower()
+            deadline = time.monotonic() + self.cfg.get('load_timeout', 120)
+            while True:
+                result = self.bridge_call('NRNX_TestBridgeLoadSave', game_filename)
+                if result != ['load', 'pending', 'saves_not_initialized']:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('script_save_list_initialization_timeout')
+                self.event('script_save_list_wait', state='saves_not_initialized')
+                time.sleep(min(1, remaining))
+            if len(result) != 3 or result[:2] != ['load', 'requested'] or result[2] != game_filename:
+                raise RuntimeError('script_save_load_not_acknowledged:' + repr(result))
+            self.ui_state = 'loading'
+            self.status['save_load'] = 'script_requested_exact_save'
+            dump(self.out / 'save-selection.json', dict(
+                time=stamp(), filename=self.cfg['save'], game_filename=game_filename,
+                sha256=self.cfg['save_sha256'],
+                basis='disk save hash plus canonical game ListSavedGames filename match and LoadGameInit receipt'))
+            return
         expected = datetime.fromisoformat(self.cfg['save_modified']).replace(microsecond=0).isoformat()
         deadline = time.monotonic() + 60
         seen = set()
@@ -635,6 +1000,44 @@ class Session:
         raise TimeoutError('save_selection_timeout')
 
     def wait_scene(self, timeout=None):
+        if self.control_backend == 'script':
+            if self.ui_state != 'loading':
+                raise RuntimeError('script_gameplay_wait_requires_requested_save')
+            deadline = time.monotonic() + (timeout or self.cfg['load_timeout'])
+            ready_count = 0
+            last_error = None
+            while time.monotonic() < deadline:
+                try:
+                    result = self.bridge_call('NRNX_TestBridgeState')
+                    last_error = None
+                except (OSError, TimeoutError, witcher_debug.ProtocolError) as error:
+                    message = repr(error)
+                    if message != last_error:
+                        self.event('script_load_state_wait', error=message)
+                        last_error = message
+                    ready_count = 0
+                    time.sleep(1)
+                    continue
+                if result == ['state', 'gameplay_ready']:
+                    ready_count += 1
+                    if ready_count >= 2:
+                        self.ui_state = 'scene'
+                        self.status['save_load'] = 'script_exact_save_loaded_gameplay_ready'
+                        self.event('gameplay_transition_confirmed', from_state='loading',
+                                   basis='non_error_load_progress_and_player_present_twice')
+                        dump(self.out / 'load-state.json', dict(time=stamp(), result=result,
+                            stable_observations=ready_count, filename=self.cfg['save'],
+                            save_sha256=self.cfg['save_sha256']))
+                        self.frame_evidence('scene-loaded')
+                        return result
+                elif result == ['state', 'missing_content'] or result == ['state', 'error']:
+                    raise RuntimeError('script_game_load_failed:' + result[1])
+                elif result not in (['state', 'loading'], ['state', 'waiting']):
+                    raise RuntimeError('script_game_state_unrecognized:' + repr(result))
+                else:
+                    ready_count = 0
+                time.sleep(1)
+            raise TimeoutError('script_gameplay_load_timeout')
         loading = self.ui_state == 'loading'
         if not loading and self.ui_state != 'scene':
             raise RuntimeError('scene_transition_requires_loading_or_scene_state')
@@ -659,6 +1062,25 @@ class Session:
         raise TimeoutError('scene_load_timeout' if loading else 'scene_resume_timeout')
 
     def scene_health(self):
+        if self.control_backend == 'script':
+            samples = []
+            deadline = time.monotonic() + self.cfg.get('scene_seconds', 8)
+            while time.monotonic() < deadline:
+                result = self.bridge_call('NRNX_TestBridgeState')
+                if result in (['state', 'missing_content'], ['state', 'error']):
+                    raise RuntimeError('script_gameplay_state_lost:' + result[1])
+                if result != ['state', 'gameplay_ready']:
+                    raise RuntimeError('script_gameplay_state_unconfirmed:' + repr(result))
+                metrics = desktop.process_metrics(self.window['pid'])
+                hung = bool(desktop.window_alive(self.window) and desktop.u.IsHungAppWindow(self.window['hwnd']))
+                sample = dict(time=stamp(), state='gameplay_ready', process=metrics, hung=hung)
+                samples.append(sample)
+                dump(self.out / 'scene-health.json', samples)
+                if metrics is None or hung:
+                    raise RuntimeError('scene_unresponsive')
+                time.sleep(1)
+            self.status['stability'] = 'script_gameplay_state_and_process_responsive'
+            return
         samples, last, black_since = [], None, None
         deadline = time.monotonic() + self.cfg.get('scene_seconds', 8)
         while time.monotonic() < deadline:
@@ -715,6 +1137,9 @@ class Session:
             self.status['safe_exit'] = 'unexpected_exit'
             raise RuntimeError('Game exited without a recorded menu exit request')
         try:
+            if self.control_backend == 'script':
+                self.request_exit()
+                return
             if self.ui_state == 'scene':
                 self.key('ESC')
                 self.ui_state = 'pause_menu'
@@ -824,6 +1249,13 @@ def worker(out):
             session.shutdown()
         except Exception as error:
             session.status.update(result='failed', exit_error=str(error))
+        finally:
+            if session.debugger is not None:
+                session.debugger.close()
+        try:
+            session.finish_script_log_capture()
+        except Exception as error:
+            session.status.update(result='failed', script_log_diagnostic_error=repr(error))
         try:
             freeze_logs(cfg, out / 'logs')
             crashes = collect_crashes(session.crashes_before, out)
@@ -936,6 +1368,9 @@ def finish_artifacts(out, final, guard_ok):
     """Release navigation captures and verified save copies after their consumers finish."""
     retained = list(out.glob('hdr-*.png')) + list(out.glob('addon-menu-*.png'))
     retained += [out / 'crash-evidence', out / 'hang-evidence', out / 'hang-evidence-manual', out / 'model-pair']
+    retained += [out / name for name in (
+        'script-bridge-endpoint.json', 'script-bridge-state.json', 'script-log-start.json',
+        'script-log-diagnostic.json', 'scriptslog-delta.txt') if (out / name).exists()]
     if final['result'] == 'failed':
         retained.append(out / 'latest.png')
     disposables = [path for path in out.glob('*.png') if path not in retained]
@@ -971,9 +1406,14 @@ def run_attempt(cfg, out):
     source = out / 'source'
     source.mkdir()
     sources = []
-    for name in ('runner.py', 'desktop.py', 'guard.py', 'normal_process.py', 'crash_evidence.py', 'hang_evidence.py'):
+    for name in ('runner.py', 'desktop.py', 'guard.py', 'normal_process.py', 'crash_evidence.py', 'hang_evidence.py',
+                 'temporary_mod.py', 'witcher_debug.py'):
         shutil.copyfile(HERE / name, source / name)
         sources.append(dict(name=name, sha256=sha(source / name)))
+    bridge_source = HERE / 'mods' / 'modNRNexusTestBridge'
+    shutil.copytree(bridge_source, source / 'mods' / bridge_source.name)
+    for bridge_file in sorted((source / 'mods' / bridge_source.name).rglob('*.ws')):
+        sources.append(dict(name=str(bridge_file.relative_to(source)), sha256=sha(bridge_file)))
     shutil.copyfile(Path(output_lifecycle.__file__), source / 'output_lifecycle.py')
     sources.append(dict(name='output_lifecycle.py', sha256=sha(source / 'output_lifecycle.py')))
     dump(out / 'source-manifest.json', dict(files=sources, target_sha256=sha(out / 'target.json'),
@@ -984,11 +1424,21 @@ def run_attempt(cfg, out):
     protected += list(profile.glob('*.settings*'))
     protected += list(Path(cfg['executable']).parent.glob('*.ini'))
     child, capture_child, capture_log, owned, problem, guard_ok = None, None, None, None, None, False
+    mod_lease = None
+    mod_installed_by_runner = False
     capture_started = False
     hang_capture_reason = None
     crashes_before = crash_reports()
     final = dict(result='failed', started=stamp())
     try:
+        mod_lease, mod_files = stage_script_mod(
+            cfg, source / 'mods' / 'modNRNexusTestBridge')
+        if mod_lease is not None:
+            mod_installed_by_runner = mod_lease.owned
+            protected.extend(mod_files)
+            dump(out / 'temporary-mod.json', dict(time=stamp(), name='modNRNexusTestBridge',
+                installed_by_runner=mod_lease.owned,
+                files=[dict(path=str(path), sha256=sha(path)) for path in mod_files]))
         with ProtectedFiles(protected, out / 'protected') as guard:
             dump(out / 'protected-files.json', guard.manifest)
             freeze_logs(cfg, out / 'logs-before')
@@ -1169,6 +1619,15 @@ def run_attempt(cfg, out):
         problem = problem or str(error)
         final.update(parent_error=str(error), parent_traceback=traceback.format_exc())
     finally:
+        if mod_lease is not None:
+            try:
+                mod_lease.cleanup()
+                dump(out / 'temporary-mod-restored.json', dict(time=stamp(), restored=True,
+                    installed_by_runner=mod_installed_by_runner))
+            except Exception as error:
+                problem = problem or 'temporary_mod_restore_failed'
+                final['temporary_mod_restore_error'] = repr(error)
+                dump(out / 'temporary-mod-restore-error.json', dict(time=stamp(), error=repr(error)))
         if (out / 'result.json').exists():
             try:
                 data = json.loads((out / 'result.json').read_text(encoding='utf-8'))
@@ -1271,7 +1730,8 @@ def main():
     parser.add_argument('--save')
     parser.add_argument('--preflight', action='store_true')
     parser.add_argument('--addon-absent-control', action='store_true')
-    parser.add_argument('--retries', type=int, choices=range(3), default=2)
+    parser.add_argument('--retries', type=int, choices=range(3), default=0,
+                        help='Retries after a safely recovered failure (default: 0)')
     parser.add_argument('--worker', type=Path)
     args = parser.parse_args()
     filesystem_context = normal_process.require_normal_context()
@@ -1281,6 +1741,10 @@ def main():
         parser.error(str(error))
     if args.worker:
         return worker(args.worker)
+    try:
+        validate_scenario_save(args.scenario, args.save)
+    except ValueError as error:
+        parser.error(str(error))
     if args.manual_ime_session and (args.scenario != 'menu' or not args.capture_hold_seconds or args.retries != 0):
         parser.error('--manual-ime-session requires menu, nonzero capture hold and --retries 0')
     if args.capture_script and (not args.capture_hold_seconds or args.manual_ime_session):
@@ -1288,7 +1752,9 @@ def main():
     script = capture_script_path(args.capture_script) if args.capture_script else None
     output_root = local_output_root(args.output_root)
     output_lifecycle.maintain_workspace(ROOT)
-    cfg = resolve_target(args.game, args.platform, args.save, args.addon_absent_control, args.target)
+    control_backend = 'desktop' if args.manual_ime_session else 'script'
+    cfg = resolve_target(args.game, args.platform, args.save, args.addon_absent_control,
+                         args.target, control_backend=control_backend)
     cfg['scenario'] = args.scenario
     cfg['capture_hold_seconds'] = args.capture_hold_seconds
     cfg['manual_ime_session'] = args.manual_ime_session
@@ -1299,20 +1765,11 @@ def main():
         raise RuntimeError('A game session already exists; refusing to adopt or stop it')
     if process_inventory(Path(cfg['executable']).parent / 'crashreporter/CrashReporter.exe'):
         raise RuntimeError('An existing crash reporter blocks launch; preserve and dismiss it first')
-    ocr_output = output_root / 'ocr-tool'
-    build = subprocess.run(['pwsh.exe', '-NoProfile', '-File', str(HERE / 'build-ocr.ps1'),
-                            '-OutputDirectory', str(ocr_output)], capture_output=True, text=True, timeout=60, check=True)
-    cfg['ocr_executable'] = build.stdout.strip()
-    fixture = ocr_output / 'selftest.png'
-    img = Image.new('RGB', (600, 100), 'white')
-    ImageDraw.Draw(img).text((15, 15), 'Load Game 123', fill='black', font=ImageFont.truetype(str(Path(os.environ['WINDIR']) / 'Fonts/arial.ttf'), 40))
-    img.save(fixture)
-    check = subprocess.run([cfg['ocr_executable'], str(fixture)], capture_output=True, encoding='utf-8', timeout=25, check=True)
-    if '123' not in json.loads(check.stdout)['text']:
-        raise RuntimeError('OCR self-test did not recognize the fixture')
     if args.preflight:
+        cfg['ocr_executable'] = None
         print(json.dumps(cfg, ensure_ascii=False, indent=2))
         return 0
+    cfg['ocr_executable'] = None if args.manual_ime_session else prepare_ocr(cfg, output_root)
     out = output_root / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + os.urandom(3).hex())
     try:
         return run_trials(cfg, out, args.retries)

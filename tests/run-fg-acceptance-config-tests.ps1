@@ -118,12 +118,14 @@ foreach ($probe in @(@(1000,'',$true), @(1000,'GRect',$false))) {
 }
 $controlMaskGuard = $ast.Find({param($node)
     $node -is [Management.Automation.Language.IfStatementAst] -and
-    $node.Extent.Text.StartsWith('if ($ControlMaskCase -and')
+    $node.Extent.Text.StartsWith('if ($ControlMaskCase -and') -and
+    $node.Extent.Text.Contains("-notin @('DepthFar','DepthFarOff')")
 }, $true)
 if ($null -eq $controlMaskGuard) { throw 'Missing protected ControlMask entry guard' }
 $validateControlMask = [scriptblock]::Create(@'
 param($RestoreInstallation, $InstallOnly, $SrOnly, $NrRuntimePath, $NrPreset, $NrPasses, $NrHookPoint)
 $ControlMaskCase = 'T0'
+$Save = 'ManualSave_outdoor.sav'
 '@ + "`n" + $controlMaskGuard.Extent.Text)
 & $validateControlMask $true $false $true 'synthetic-runtime.dll' 2 1 0
 foreach ($invalid in @(
@@ -138,27 +140,38 @@ foreach ($invalid in @(
     try { & $validateControlMask @invalid } catch { $rejected = $true }
     if (-not $rejected) { throw 'Unprotected ControlMask entry accepted' }
 }
+$upscaledDepthFar = Get-ControlMaskSettings 'DepthFar' 0 $true
+$upscaledDepthFarOff = Get-ControlMaskSettings 'DepthFarOff' 0 $true
+if ($upscaledDepthFar.NRHookPoint -ne 0 -or $upscaledDepthFar.NRControlMaskUseCoreContext -ne 1 -or
+    $upscaledDepthFarOff.NRHookPoint -ne 0 -or $upscaledDepthFarOff.NRControlMaskUseCoreContext -ne 1) {
+    throw 'Upscaled depth-far case did not preserve the requested Core Context route'
+}
 $depthFarGuard = $ast.Find({param($node)
     $node -is [Management.Automation.Language.IfStatementAst] -and
     $node.Extent.Text.StartsWith('if ($ControlMaskCase -in @(''DepthFar''')
 }, $true)
-if ($null -eq $depthFarGuard) { throw 'Missing protected depth-far FG entry guard' }
+if ($null -eq $depthFarGuard) { throw 'Missing protected depth-far entry guard' }
 $validateDepthFar = [scriptblock]::Create(@'
-param($RestoreInstallation, $InstallOnly, $SrOnly, $NrRuntimePath, $NrPreset, $NrPasses, $NrHookPoint)
+param($RestoreInstallation, $InstallOnly, $SrOnly, $NrRuntimePath, $NrPreset, $NrPasses, $NrHookPoint, $ControlMaskUseCoreContext)
 $ControlMaskCase = 'DepthFar'
+$Save = 'ManualSave_outdoor.sav'
 '@ + [Environment]::NewLine + $depthFarGuard.Extent.Text)
-& $validateDepthFar $true $false $false 'runtime.dll' 2 1 2
+& $validateDepthFar $true $false $false 'runtime.dll' 2 1 2 $false
+& $validateDepthFar $true $false $true 'runtime.dll' 2 1 0 $true
 foreach ($invalid in @(
-    @($false,$false,$false,'runtime.dll',2,1,2),
-    @($true,$true,$false,'runtime.dll',2,1,2),
-    @($true,$false,$true,'runtime.dll',2,1,2),
-    @($true,$false,$false,'',2,1,2),
-    @($true,$false,$false,'runtime.dll',0,1,2),
-    @($true,$false,$false,'runtime.dll',2,2,2),
-    @($true,$false,$false,'runtime.dll',2,1,0))) {
+    @($false,$false,$false,'runtime.dll',2,1,2,$false),
+    @($true,$true,$false,'runtime.dll',2,1,2,$false),
+    @($true,$false,$true,'runtime.dll',2,1,2,$false),
+    @($true,$false,$false,'',2,1,2,$false),
+    @($true,$false,$false,'runtime.dll',0,1,2,$false),
+    @($true,$false,$false,'runtime.dll',2,2,2,$false),
+    @($true,$false,$false,'runtime.dll',2,1,0,$false),
+    @($true,$false,$false,'runtime.dll',2,1,2,$true),
+    @($true,$false,$true,'runtime.dll',2,1,0,$false),
+    @($true,$false,$false,'runtime.dll',2,1,0,$true))) {
     $rejected = $false
     try { & $validateDepthFar @invalid } catch { $rejected = $true }
-    if (-not $rejected) { throw 'Unprotected depth-far FG entry accepted' }
+    if (-not $rejected) { throw 'Unsupported or unprotected depth-far route accepted' }
 }
 $captureFixture = Join-Path (Split-Path $PSScriptRoot -Parent) ('tmp/controlmask-capture-config-' + [guid]::NewGuid().ToString('N'))
 $captureSource = Join-Path $captureFixture 'source'

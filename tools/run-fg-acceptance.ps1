@@ -2,8 +2,9 @@
 param(
     [Parameter(Mandatory)][string]$CandidateManifest,
     [Parameter(Mandatory)][string]$GameBinaryDirectory,
-    [Parameter(Mandatory)][string]$Python,
+    [string]$Python,
     [string]$TargetPath = (Join-Path (Split-Path $PSScriptRoot -Parent) '.local/game-test/witcher3-steam.json'),
+    [string]$Save,
     [string]$OutputRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) 'artifacts/game-tests'),
     [ValidateSet('smoke','menu')][string]$Scenario = 'smoke',
     [ValidateRange(0,900)][int]$CaptureHoldSeconds = 90,
@@ -33,6 +34,8 @@ param(
     [switch]$ControlMaskUseCoreContext,
     [ValidateRange(-1,1)][int]$ControlMaskAutoMask = -1,
     [ValidateRange(-1,3)][int]$ControlMaskBlendMode = -1,
+    [double]$ControlMaskDepthNear = -1,
+    [double]$ControlMaskDepthFar = -1,
     [ValidateRange(0,4096)][int]$ControlMaskGpuSamples = 0,
     [ValidateRange(1,300)][int]$ControlMaskGpuSeconds = 120,
     [ValidateRange(0,60)][int]$ControlMaskGpuWarmupSeconds = 6,
@@ -45,6 +48,8 @@ $ErrorActionPreference = 'Stop'
 if ($ModelDiagnosticCapture -and ($InstallOnly -or -not $RestoreInstallation)) {
     throw '-ModelDiagnosticCapture requires a restored test session, not InstallOnly.'
 }
+. (Join-Path $PSScriptRoot 'game-test/resolve-python.ps1')
+$taskRepository = Split-Path $PSScriptRoot -Parent
 if ($CaptureScript) {
     if ($CaptureHoldSeconds -eq 0 -or $ManualImeSession -or $InstallOnly) { throw '-CaptureScript requires an automatic capture hold, not ManualImeSession or InstallOnly.' }
     $taskCapturePath = [IO.Path]::GetFullPath($CaptureScript)
@@ -59,6 +64,21 @@ if ($CaptureScript) {
 if (($PSBoundParameters.ContainsKey('ControlMaskAutoMask') -or $PSBoundParameters.ContainsKey('ControlMaskBlendMode')) -and -not $ControlMaskCase) {
     throw 'ControlMask parameter overrides require an explicit protected -ControlMaskCase.'
 }
+$taskHasMaskNear = $PSBoundParameters.ContainsKey('ControlMaskDepthNear')
+$taskHasMaskFar = $PSBoundParameters.ContainsKey('ControlMaskDepthFar')
+if ($taskHasMaskNear -ne $taskHasMaskFar) {
+    throw 'ControlMask depth threshold overrides require both -ControlMaskDepthNear and -ControlMaskDepthFar.'
+}
+if ($taskHasMaskNear) {
+    if ($ControlMaskCase -notin @('DepthFar','DepthFarOff')) {
+        throw 'ControlMask depth threshold overrides require a protected DepthFar case.'
+    }
+    if ([double]::IsNaN($ControlMaskDepthNear) -or [double]::IsInfinity($ControlMaskDepthNear) -or
+        [double]::IsNaN($ControlMaskDepthFar) -or [double]::IsInfinity($ControlMaskDepthFar) -or
+        $ControlMaskDepthNear -lt 0 -or $ControlMaskDepthNear -ge $ControlMaskDepthFar -or $ControlMaskDepthFar -gt 1) {
+        throw 'ControlMask depth thresholds must satisfy 0 <= Near < Far <= 1.'
+    }
+}
 if ($ControlMaskUseCoreContext -and -not $ControlMaskCase) {
     throw '-ControlMaskUseCoreContext requires an explicit protected -ControlMaskCase.'
 }
@@ -69,9 +89,17 @@ if ($ControlMaskGpuSamples -gt 0 -and $ControlMaskGpuWarmupSeconds -ge $ControlM
     throw 'ControlMask GPU warmup must be shorter than the bounded sampling window.'
 }
 if ($ControlMaskCase -in @('DepthFar','DepthFarOff') -and
-    (-not $RestoreInstallation -or $InstallOnly -or $SrOnly -or -not $NrRuntimePath -or
-        $NrPreset -notin @(1,2) -or $NrPasses -ne 1 -or $NrHookPoint -ne 2)) {
-    throw 'Depth-far FG requires -RestoreInstallation, exact -NrRuntimePath, model A/B, one pass and Present hook point 2.'
+    (-not $RestoreInstallation -or $InstallOnly -or -not $NrRuntimePath -or
+        $NrPreset -notin @(1,2) -or $NrPasses -ne 1 -or
+        -not ((($NrHookPoint -eq 2) -and -not $SrOnly -and -not $ControlMaskUseCoreContext) -or
+            (($NrHookPoint -eq 0) -and $SrOnly -and $ControlMaskUseCoreContext)))) {
+    throw 'Depth-far requires a restored one-pass A/B case using either Present hook or Upscaled with Core Context.'
+}
+if ($ControlMaskCase -and [string]::IsNullOrWhiteSpace($Save)) {
+    throw 'ControlMask game cases require an explicit -Save for this launch.'
+}
+if ($ControlMaskCase -and ([IO.Path]::GetFileName($Save) -cne $Save -or -not $Save.EndsWith('.sav', [StringComparison]::Ordinal))) {
+    throw '-Save for a ControlMask game case must be a .sav filename within the configured save directory.'
 }
 if ($ControlMaskCase -and $ControlMaskCase -notin @('DepthFar','DepthFarOff') -and
     (-not $RestoreInstallation -or $InstallOnly -or -not $SrOnly -or
@@ -79,8 +107,10 @@ if ($ControlMaskCase -and $ControlMaskCase -notin @('DepthFar','DepthFarOff') -a
     throw 'ControlMask requires -RestoreInstallation, -SrOnly, exact -NrRuntimePath, explicit model A/B and single-pass Upscaled.'
 }
 if ($ControlMaskUseCoreContext -and
-    ($ControlMaskCase -in @('DepthFar','DepthFarOff') -or -not $SrOnly -or
-        -not $RestoreInstallation -or $InstallOnly -or $NrHookPoint -gt 0)) {
+    (($ControlMaskCase -in @('DepthFar','DepthFarOff') -and
+        (-not $SrOnly -or -not $RestoreInstallation -or $InstallOnly -or $NrHookPoint -ne 0)) -or
+        ($ControlMaskCase -notin @('DepthFar','DepthFarOff') -and
+            (-not $SrOnly -or -not $RestoreInstallation -or $InstallOnly -or $NrHookPoint -gt 0)))) {
     throw '-ControlMaskUseCoreContext requires a restored, SR-only, single-pass Upscaled ControlMask case.'
 }
 if ($ManualImeSession -and ($Scenario -ne 'menu' -or $CaptureHoldSeconds -eq 0 -or $InstallOnly -or -not $RestoreInstallation)) {
@@ -97,6 +127,9 @@ if (($TelemetrySeconds -ge 0 -or $SrOnly -or $NrRuntimePath -or $NrPreset -ge 0 
         $EnableStreamlineFallback -or $NrHookPoint -ge 0 -or $NrPass2Stage -ge 0 -or $NrPass3Stage -ge 0 -or $NrPass4Stage -ge 0) -and
     (-not $RestoreInstallation -or $InstallOnly)) {
     throw 'Model tests require a protected session and -RestoreInstallation; -InstallOnly is not supported.'
+}
+if ($Scenario -eq 'smoke' -and -not $InstallOnly -and [string]::IsNullOrWhiteSpace($Save)) {
+    throw 'Smoke game tests require an explicit -Save before installation.'
 }
 function Get-FgAcceptanceRuntimePlan {
     param([string]$RuntimePath, [string]$InstalledPath)
@@ -179,7 +212,9 @@ function Remove-FgAcceptanceBinaryBackups {
     $result.status = if ($result.deleted_files -eq $binaries.Count) { 'cleaned' } else { 'incomplete' }
     return $result
 }
-function Get-ControlMaskSettings([ValidateSet('T0','T1','T2','T3','T4','T5','T6','GRect','BRect','DepthFar','DepthFarOff')][string]$Case) {
+function Get-ControlMaskSettings(
+    [ValidateSet('T0','T1','T2','T3','T4','T5','T6','GRect','BRect','DepthFar','DepthFarOff')][string]$Case,
+    [int]$HookPoint = 2, [bool]$UseCoreContext = $false) {
     $settings = @{
         NRHookPoint=0; NRPasses=1; NRFollowInputRes=0; NRResolutionScale=1; NRScreenshotSource=2
         NRAutoMask=0; NRControlMaskEnabled=[int]($Case -ne 'T0')
@@ -198,17 +233,17 @@ function Get-ControlMaskSettings([ValidateSet('T0','T1','T2','T3','T4','T5','T6'
         GRect { $settings.NRControlMaskMode = 3 }
         BRect { $settings.NRControlMaskMode = 4 }
         DepthFar {
-            $settings.NRHookPoint = 2
+            $settings.NRHookPoint = $HookPoint
             $settings.NRControlMaskMode = 5
-            $settings.NRControlMaskUseCoreContext = 0
+            $settings.NRControlMaskUseCoreContext = [int]$UseCoreContext
             $settings.NRControlMaskDepthNear = '0.7'
             $settings.NRControlMaskDepthFar = '0.9'
         }
         DepthFarOff {
-            $settings.NRHookPoint = 2
+            $settings.NRHookPoint = $HookPoint
             $settings.NRControlMaskEnabled = 0
             $settings.NRControlMaskMode = 5
-            $settings.NRControlMaskUseCoreContext = 0
+            $settings.NRControlMaskUseCoreContext = [int]$UseCoreContext
             $settings.NRControlMaskDepthNear = '0.7'
             $settings.NRControlMaskDepthFar = '0.9'
         }
@@ -320,7 +355,8 @@ $OutputRoot = [IO.Path]::GetFullPath($OutputRoot)
 if (-not (@('tmp','artifacts') | Where-Object { $OutputRoot.StartsWith((Join-Path $taskRoot $_) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) })) {
     throw 'Acceptance output must remain below repository tmp/ or artifacts/.'
 }
-if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) { throw 'Provide -Python containing Pillow.' }
+$Python = Resolve-NrNexusPython -RequestedPath $Python -RepositoryRoot $taskRepository
+$PSBoundParameters['Python'] = $Python
 . (Join-Path $PSScriptRoot 'game-test/normal-context.ps1')
 $taskContextExitCode = Invoke-NormalGameTestContext -EntryScript $PSCommandPath -Parameters $PSBoundParameters -Python $Python
 if ($null -ne $taskContextExitCode) { exit $taskContextExitCode }
@@ -380,7 +416,7 @@ $taskRunning = @(Get-Process -Name witcher3,CrashReporter -ErrorAction SilentlyC
 if ($taskRunning.Count) { throw 'Game or crash reporter is already running; installation was not changed' }
 $taskRun = Join-Path $OutputRoot ('acceptance-' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'))
 . (Join-Path $PSScriptRoot '../tests/test-support.ps1')
-Invoke-TestWorkspaceMaintenance
+# Keep acceptance cleanup scoped to this output; run-tests owns workspace-wide sweeps.
 $taskRun = Initialize-TestOutput $taskRun
 $taskOutputState = $global:NexusTestOutputs[$taskRun]
 # This protection survives wrapper failure and orphan/budget maintenance.
@@ -401,6 +437,7 @@ foreach ($taskFile in $taskBackupFiles) {
 }
 $taskReceipt = [ordered]@{
     started_utc=[DateTimeOffset]::UtcNow.ToString('o'); manifest=$taskManifestPath
+    selected_save=$Save
     candidate_sha256=$taskCandidate.sha256; original_files=$taskOriginal
     installation_verified=$false; runtime_verified=$false; restored=$false
     test_exit_code=$null; visual_quality='not_tested'; performance_target_fps=$taskPerformanceTarget
@@ -413,6 +450,8 @@ $taskReceipt = [ordered]@{
     requested_control_mask_use_core_context=[bool]$ControlMaskUseCoreContext
     requested_control_mask_auto_mask=$ControlMaskAutoMask
     requested_control_mask_blend_mode=$ControlMaskBlendMode
+    requested_control_mask_depth_near=$(if ($taskHasMaskNear) { $ControlMaskDepthNear } else { $null })
+    requested_control_mask_depth_far=$(if ($taskHasMaskFar) { $ControlMaskDepthFar } else { $null })
     control_mask_gpu_capture=@{target_valid_samples=$ControlMaskGpuSamples; seconds=$ControlMaskGpuSeconds; warmup_seconds=$ControlMaskGpuWarmupSeconds}
     temporary_game_sdr=[bool]$SdrGameOutput
     start_nr_disabled=[bool]$StartNrDisabled
@@ -515,12 +554,16 @@ try {
     if ($NrPass3Stage -ge 0) { $taskModelSettings.NRPass3Stage = $NrPass3Stage }
     if ($NrPass4Stage -ge 0) { $taskModelSettings.NRPass4Stage = $NrPass4Stage }
     if ($ControlMaskCase) {
-        foreach ($taskSetting in (Get-ControlMaskSettings $ControlMaskCase).GetEnumerator()) {
+        foreach ($taskSetting in (Get-ControlMaskSettings $ControlMaskCase $NrHookPoint ([bool]$ControlMaskUseCoreContext)).GetEnumerator()) {
             $taskModelSettings[$taskSetting.Key] = $taskSetting.Value
         }
         if ($ControlMaskUseCoreContext) { $taskModelSettings.NRControlMaskUseCoreContext = 1 }
         if ($ControlMaskAutoMask -ge 0) { $taskModelSettings.NRAutoMask = $ControlMaskAutoMask }
         if ($ControlMaskBlendMode -ge 0) { $taskModelSettings.NRControlMaskBlendMode = $ControlMaskBlendMode }
+        if ($taskHasMaskNear) {
+            $taskModelSettings.NRControlMaskDepthNear = $ControlMaskDepthNear.ToString('R', [Globalization.CultureInfo]::InvariantCulture)
+            $taskModelSettings.NRControlMaskDepthFar = $ControlMaskDepthFar.ToString('R', [Globalization.CultureInfo]::InvariantCulture)
+        }
         $taskModelSettings.NRControlMaskGpuCaptureSamples = $ControlMaskGpuSamples
         $taskModelSettings.NRControlMaskGpuCaptureSeconds = $ControlMaskGpuSeconds
         $taskModelSettings.NRControlMaskGpuCaptureWarmupSeconds = $ControlMaskGpuWarmupSeconds
@@ -603,7 +646,7 @@ try {
     if ($InstallOnly) {
         $taskReceipt.test_exit_code = 0
     } else {
-        & (Join-Path $PSScriptRoot 'run-game-test.ps1') -Python $Python -TargetPath $TargetPath -OutputRoot $OutputRoot -Scenario $Scenario -CaptureHoldSeconds $CaptureHoldSeconds -CaptureScript $CaptureScript -Retries 0 -AddonAbsentControl:$AddonAbsentControl -ManualImeSession:$ManualImeSession
+        & (Join-Path $PSScriptRoot 'run-game-test.ps1') -Python $Python -TargetPath $TargetPath -OutputRoot $OutputRoot -Scenario $Scenario -Save $Save -CaptureHoldSeconds $CaptureHoldSeconds -CaptureScript $CaptureScript -Retries 0 -AddonAbsentControl:$AddonAbsentControl -ManualImeSession:$ManualImeSession
         $taskReceipt.test_exit_code = $LASTEXITCODE
     }
 } finally {
@@ -674,6 +717,5 @@ if ($taskReceipt.test_exit_code -eq 0 -and ($taskReceipt.restored -or $taskRecei
         Write-Warning "Acceptance backup cleanup stopped: $($_.Exception.Message)"
     }
     Complete-TestOutput -Directory $taskRun -Outcome $taskOutcome
-    Invoke-TestWorkspaceMaintenance
 }
 if ($taskReceipt.test_exit_code -ne 0) { exit 1 }

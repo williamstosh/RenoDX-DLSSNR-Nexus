@@ -322,12 +322,17 @@ class DesktopTests(unittest.TestCase):
         self.u.SetForegroundWindow.assert_called_once()
 
     def test_foreground_permission_is_reported_without_masking_denial(self):
-        self.u.AllowSetForegroundWindow.return_value = True
-        self.assertEqual(desktop.grant_foreground_permission(77), dict(granted=True, error=None))
-        self.u.AllowSetForegroundWindow.assert_called_once_with(77)
-        self.u.AllowSetForegroundWindow.return_value = False
-        with mock.patch.object(C, 'get_last_error', return_value=5):
-            self.assertEqual(desktop.grant_foreground_permission(88), dict(granted=False, error=5))
+        self.u.GetForegroundWindow.return_value = 456
+        with mock.patch.object(desktop.os, 'getpid', return_value=7):
+            expected = dict(granted=True, error=None, caller_pid=7, foreground_hwnd=456,
+                foreground_pid=42, foreground_thread=7, requested_pid=77)
+            self.u.AllowSetForegroundWindow.return_value = True
+            self.assertEqual(desktop.grant_foreground_permission(77), expected)
+            self.u.AllowSetForegroundWindow.assert_called_once_with(77)
+            self.u.AllowSetForegroundWindow.return_value = False
+            with mock.patch.object(C, 'get_last_error', return_value=5):
+                expected.update(granted=False, error=5, requested_pid=88)
+                self.assertEqual(desktop.grant_foreground_permission(88), expected)
 
     def test_automatic_activation_restores_minimized_target_and_detaches_threads(self):
         self.u.GetForegroundWindow.side_effect = [999, 123, 123]
@@ -361,6 +366,15 @@ class DesktopTests(unittest.TestCase):
                 mock.patch.object(desktop, 'window_alive', return_value=False):
             with self.assertRaisesRegex(desktop.ForegroundActivationDenied, 'identity'):
                 desktop.key(self.window, 'SPACE')
+        self.u.SendInput.assert_not_called()
+
+    def test_capture_hold_key_refuses_lost_focus_without_reactivating(self):
+        self.u.GetForegroundWindow.return_value = 456
+        with mock.patch.object(desktop, 'window_alive', return_value=True), mock.patch.object(
+                desktop, 'ensure_foreground') as activate:
+            with self.assertRaisesRegex(RuntimeError, 'not foreground'):
+                desktop.key(self.window, 'F6', activate=False)
+        activate.assert_not_called()
         self.u.SendInput.assert_not_called()
 
     def test_terminate_waits_on_same_verified_handle(self):

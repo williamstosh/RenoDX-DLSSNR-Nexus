@@ -14,6 +14,7 @@
 /bin/
 /.vs/
 /.cache/
+/.playwright-cli/
 /.env
 /.env.*
 !.env.example

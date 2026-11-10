@@ -35,7 +35,7 @@ class MonitorTests(unittest.TestCase):
         (profile / "saves/manual.sav").write_bytes(b"original save")
         install = self.root / "install"
         install.mkdir()
-        self.cfg = dict(profile=str(profile), save_dir="saves",
+        self.cfg = dict(profile=str(profile), save_dir="saves", install=str(install),
                         executable=str(install / "fake-game.exe"),
                         logs=[], scenario="menu", run_timeout=5)
         self.locked = False

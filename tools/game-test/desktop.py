@@ -1,6 +1,7 @@
 """Small Windows desktop adapter. No injection, hooks, or game-memory reads."""
 import ctypes as C
 from ctypes import wintypes as W
+import os
 import time
 from pathlib import Path
 from PIL import ImageGrab, ImageStat
@@ -42,7 +43,9 @@ k.TerminateProcess.argtypes = [W.HANDLE, W.UINT]
 QUERY_SYNC = 0x1000 | 0x100000
 
 class ForegroundActivationDenied(RuntimeError):
-    pass
+    def __init__(self, message, diagnostics=None):
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 def _running(handle):
     status = k.WaitForSingleObject(handle, 0)
@@ -208,36 +211,74 @@ def windows(exe=None):
 
 def activate(window):
     deadline = time.monotonic() + 8
+    attempts = 0
+    first_attempt = last_attempt = None
     while time.monotonic() < deadline:
         if not window_alive(window):
             raise RuntimeError('Target window disappeared or process identity changed')
         foreground = u.GetForegroundWindow()
         if foreground == window['hwnd']:
-            return
-        thread = u.GetWindowThreadProcessId(foreground, None)
+            return dict(result='already_foreground', foreground_hwnd=int(foreground))
+        foreground_pid = W.DWORD()
+        thread = u.GetWindowThreadProcessId(foreground, C.byref(foreground_pid)) if foreground else 0
         current = k.GetCurrentThreadId()
-        attached = bool(thread and thread != current and u.AttachThreadInput(current, thread, True))
+        attach_error = None
+        attached = False
+        if thread and thread != current:
+            C.set_last_error(0)
+            attached = bool(u.AttachThreadInput(current, thread, True))
+            if not attached:
+                attach_error = C.get_last_error()
         try:
-            if u.IsIconic(window['hwnd']):
+            minimized = bool(u.IsIconic(window['hwnd']))
+            if minimized:
                 u.ShowWindow(window['hwnd'], 9)
-            u.BringWindowToTop(window['hwnd'])
-            u.SetForegroundWindow(window['hwnd'])
+            C.set_last_error(0)
+            brought_to_top = bool(u.BringWindowToTop(window['hwnd']))
+            bring_error = None if brought_to_top else C.get_last_error()
+            C.set_last_error(0)
+            set_foreground = bool(u.SetForegroundWindow(window['hwnd']))
+            set_foreground_error = None if set_foreground else C.get_last_error()
         finally:
+            detach_result = None
             if attached:
-                u.AttachThreadInput(current, thread, False)
-        if u.GetForegroundWindow() == window['hwnd'] and window_alive(window):
-            return
+                C.set_last_error(0)
+                detach_result = bool(u.AttachThreadInput(current, thread, False))
+        after = u.GetForegroundWindow()
+        after_pid = W.DWORD()
+        after_thread = u.GetWindowThreadProcessId(after, C.byref(after_pid)) if after else 0
+        attempts += 1
+        diagnostic = dict(attempt=attempts, caller_pid=os.getpid(), caller_thread=current,
+            foreground_before=dict(hwnd=int(foreground or 0), pid=foreground_pid.value, thread=thread),
+            foreground_after=dict(hwnd=int(after or 0), pid=after_pid.value, thread=after_thread),
+            target=dict(hwnd=window['hwnd'], pid=window['pid'], visible=bool(u.IsWindowVisible(window['hwnd'])),
+                        minimized=minimized),
+            attach_thread_input=attached, attach_error=attach_error,
+            bring_to_top=brought_to_top, bring_error=bring_error,
+            set_foreground=set_foreground, set_foreground_error=set_foreground_error,
+            detach_thread_input=detach_result)
+        first_attempt = first_attempt or diagnostic
+        last_attempt = diagnostic
+        if after == window['hwnd'] and window_alive(window):
+            return dict(result='activated', **diagnostic)
         time.sleep(min(.05, max(0, deadline - time.monotonic())))
-    raise ForegroundActivationDenied('Target cannot acquire foreground; no input sent')
+    diagnostics = dict(attempts=attempts, first_attempt=first_attempt, last_attempt=last_attempt)
+    raise ForegroundActivationDenied('Target cannot acquire foreground; no input sent', diagnostics)
 
 def ensure_foreground(window):
     """Acquire and verify the exact target window without a human handoff."""
     started = time.monotonic()
-    activate(window)
+    activation = activate(window)
     if not window_alive(window) or u.GetForegroundWindow() != window['hwnd']:
         raise ForegroundActivationDenied('Target lost foreground or identity after activation; no input sent')
     return dict(hwnd=window['hwnd'], pid=window['pid'], created=window['created'],
-                elapsed_ms=round((time.monotonic() - started) * 1000, 3))
+                elapsed_ms=round((time.monotonic() - started) * 1000, 3), activation=activation)
+
+def require_foreground(window, action):
+    if not window_alive(window):
+        raise RuntimeError(f'Target identity changed; no {action} performed')
+    if u.GetForegroundWindow() != window['hwnd']:
+        raise RuntimeError(f'Target is not foreground; no {action} performed')
 
 def grant_foreground_permission(pid):
     """Ask Windows to let this test worker activate its owned game window."""
@@ -245,10 +286,18 @@ def grant_foreground_permission(pid):
         raise ValueError('Invalid foreground permission process id')
     C.set_last_error(0)
     granted = bool(u.AllowSetForegroundWindow(pid))
-    return dict(granted=granted, error=None if granted else C.get_last_error())
+    foreground = u.GetForegroundWindow()
+    foreground_pid = W.DWORD()
+    foreground_thread = u.GetWindowThreadProcessId(foreground, C.byref(foreground_pid)) if foreground else 0
+    return dict(granted=granted, error=None if granted else C.get_last_error(), caller_pid=os.getpid(),
+        foreground_hwnd=int(foreground or 0), foreground_pid=foreground_pid.value,
+        foreground_thread=foreground_thread, requested_pid=pid)
 
-def capture(window, destination):
-    ensure_foreground(window)
+def capture(window, destination, *, activate=True):
+    if activate:
+        ensure_foreground(window)
+    else:
+        require_foreground(window, 'capture')
     rect, point = W.RECT(), W.POINT()
     if not u.GetClientRect(window['hwnd'], C.byref(rect)) or not u.ClientToScreen(window['hwnd'], C.byref(point)):
         raise C.WinError(C.get_last_error())
@@ -277,8 +326,11 @@ u.SendInput.argtypes = [W.UINT, C.POINTER(INPUT), C.c_int]
 u.SendInput.restype = W.UINT
 KEYS = dict(ENTER=0x1C, ESC=0x01, SPACE=0x39, UP=0x48, DOWN=0x50, LEFT=0x4B, RIGHT=0x4D, HOME=0x47, SHIFT=0x2A, W=0x11, A=0x1E, S=0x1F, D=0x20, E=0x12)
 
-def key(window, name, seconds=.2):
-    ensure_foreground(window)
+def key(window, name, seconds=.2, *, activate=True):
+    if activate:
+        ensure_foreground(window)
+    else:
+        require_foreground(window, 'key input')
     if name not in KEYS or not 0 < seconds <= 2:
         raise ValueError('Unsupported key or hold duration')
     scan = KEYS[name]
@@ -307,9 +359,12 @@ def move_camera(window, dx, dy):
         raise RuntimeError('Camera movement failed')
 
 
-def park_cursor(window):
+def park_cursor(window, *, activate=True):
     """Keep the rendered menu cursor outside the text without clicking."""
-    ensure_foreground(window)
+    if activate:
+        ensure_foreground(window)
+    else:
+        require_foreground(window, 'cursor movement')
     rect = W.RECT()
     if not u.GetClientRect(window['hwnd'], C.byref(rect)):
         raise C.WinError(C.get_last_error())
@@ -333,8 +388,11 @@ def park_cursor(window):
     time.sleep(.12)
 
 
-def click(window, x, y):
-    ensure_foreground(window)
+def click(window, x, y, *, activate=True):
+    if activate:
+        ensure_foreground(window)
+    else:
+        require_foreground(window, 'mouse input')
     rect, p = W.RECT(), W.POINT()
     u.GetClientRect(window['hwnd'], C.byref(rect))
     u.ClientToScreen(window['hwnd'], C.byref(p))
@@ -344,6 +402,8 @@ def click(window, x, y):
         raise C.WinError(C.get_last_error())
     down, up = INPUT(type=0, mi=MOUSEINPUT(0, 0, 0, 2, 0, 0)), INPUT(type=0, mi=MOUSEINPUT(0, 0, 0, 4, 0, 0))
     try:
+        if not activate:
+            require_foreground(window, 'mouse input')
         if u.SendInput(1, C.byref(down), C.sizeof(INPUT)) != 1:
             raise RuntimeError('Mouse down failed')
         # Frame-polled overlays can miss a down/up pair delivered between frames.

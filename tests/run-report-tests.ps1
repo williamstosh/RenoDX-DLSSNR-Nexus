@@ -12,6 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'test-support.ps1')
+. (Join-Path $PSScriptRoot '../tools/game-test/resolve-python.ps1')
 $SourceRoot = [IO.Path]::GetFullPath($SourceRoot)
 $HostRoot = [IO.Path]::GetFullPath($HostRoot)
 $ShaderIncludeDirectory = [IO.Path]::GetFullPath($ShaderIncludeDirectory)
@@ -60,11 +61,9 @@ foreach ($path in $snapshot.Keys) {
 }
 if ($BuildOnly) { Write-Host "Report test executables built: $OutputDirectory"; return }
 if (-not $PythonExecutable) {
-    $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
-    if (-not $pythonCommand -or $pythonCommand.Source -match '[\\/]WindowsApps[\\/]') {
-        throw 'A working Python interpreter is required. Supply -PythonExecutable with its executable path (WindowsApps aliases are not supported).'
-    }
-    $PythonExecutable = $pythonCommand.Source
+    $PythonExecutable = Resolve-NrNexusPython -RepositoryRoot (Split-Path $PSScriptRoot -Parent) -RequiredImports @()
+} elseif (-not (Test-NrNexusPython $PythonExecutable @())) {
+    throw "Python interpreter is missing or not runnable: $PythonExecutable"
 }
 Invoke-TestProcess "$OutputDirectory/report_issue_tests/report_issue_tests.exe" $OutputDirectory 'issue'
 $privacyData = New-Item -ItemType Directory -Path "$OutputDirectory/privacy-data"

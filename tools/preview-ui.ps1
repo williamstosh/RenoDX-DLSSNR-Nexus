@@ -105,16 +105,8 @@ function Remove-OwnedPreview {
 try {
     if ($Documentation -ne 'None' -and $Scenario.Count) { throw 'Documentation requires the complete bilingual scene set; omit -Scenario.' }
     if ($DocumentationImage.Count -and $Documentation -ne 'Update') { throw '-DocumentationImage requires -Documentation Update.' }
-    if (-not $PythonExecutable) {
-        $PythonExecutable = $env:NR_NEXUS_PYTHON
-    }
-    if (-not $PythonExecutable) {
-        $python = Get-Command python.exe -CommandType Application -ErrorAction SilentlyContinue
-        if ($python -and $python.Source -notmatch 'WindowsApps') { $PythonExecutable = $python.Source }
-        else { throw 'Pass -PythonExecutable with a Python containing NumPy and Pillow.' }
-    }
-    & $PythonExecutable -B -c 'import numpy, PIL'
-    if ($LASTEXITCODE -ne 0) { throw 'Python requires NumPy and Pillow.' }
+    . (Join-Path $PSScriptRoot 'game-test/resolve-python.ps1')
+    $PythonExecutable = Resolve-NrNexusPython -RequestedPath $PythonExecutable -RepositoryRoot $repositoryRoot -RequiredImports @('numpy','PIL')
     $source = Get-PreviewSourceState
     $source['selection'] = @($Scenario)
     $env:NR_NEXUS_UI_SCENARIOS = $Scenario -join ','

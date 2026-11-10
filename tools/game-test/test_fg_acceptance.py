@@ -12,6 +12,16 @@ import fg_acceptance
 
 
 class ModelInstallationTests(unittest.TestCase):
+    def test_smoke_requires_explicit_save_before_inspecting_installation(self):
+        script = fg_acceptance.ROOT / 'tools' / 'run-fg-acceptance.ps1'
+        result = subprocess.run(['pwsh.exe', '-NoProfile', '-File', str(script),
+            '-CandidateManifest', 'unused-synthetic-candidate',
+            '-GameBinaryDirectory', 'unused-synthetic-game'],
+            capture_output=True, text=True, encoding='utf-8', timeout=20)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Smoke game tests require an explicit -Save before installation',
+                      result.stdout + result.stderr)
+
     def test_control_mask_overrides_reject_before_installation(self):
         script = fg_acceptance.ROOT / 'tools' / 'run-fg-acceptance.ps1'
         cases = []
@@ -20,17 +30,25 @@ class ModelInstallationTests(unittest.TestCase):
                 cases.append(([option, str(value)], 'require an explicit protected -ControlMaskCase'))
             for value in (-2, maximum + 1, 'invalid'):
                 cases.append(([option, str(value), '-ControlMaskCase', 'T1'], option[1:]))
-        protected = ['-ControlMaskCase', 'BRect', '-ControlMaskAutoMask', '1',
-                     '-ControlMaskBlendMode', '3']
+        cases.extend([
+            (['-ControlMaskDepthNear', '0.1'], 'require both -ControlMaskDepthNear and -ControlMaskDepthFar'),
+            (['-ControlMaskDepthNear', '0.0', '-ControlMaskDepthFar', '0.01'], 'require a protected DepthFar case'),
+            (['-ControlMaskCase', 'BRect', '-Save', 'ManualSave_outdoor.sav',
+              '-ControlMaskDepthNear', '0.0', '-ControlMaskDepthFar', '0.01'], 'require a protected DepthFar case'),
+            (['-ControlMaskCase', 'DepthFar', '-ControlMaskDepthNear', '0.1',
+              '-ControlMaskDepthFar', '0.1'], 'must satisfy 0 <= Near < Far <= 1'),
+        ])
+        protected = ['-ControlMaskCase', 'BRect', '-Save', 'ManualSave_outdoor.sav',
+                     '-ControlMaskAutoMask', '1', '-ControlMaskBlendMode', '3']
         for options in ([], ['-RestoreInstallation'], ['-RestoreInstallation', '-SrOnly'],
                         ['-RestoreInstallation', '-SrOnly', '-NrRuntimePath', 'missing-runtime'],
                         ['-RestoreInstallation', '-SrOnly', '-NrRuntimePath', 'missing-runtime',
                          '-NrPreset', '2', '-InstallOnly']):
             cases.append((protected + options, 'ControlMask requires -RestoreInstallation'))
-        cases.append(([], 'Provide -Python containing Pillow'))
+        cases.append(([], 'Smoke game tests require an explicit -Save before installation'))
         cases.append((protected + ['-RestoreInstallation', '-SrOnly', '-NrRuntimePath',
                                   'missing-runtime', '-NrPreset', '2'],
-                      'Provide -Python containing Pillow'))
+                      'Python interpreter is missing, not runnable, or lacks required modules'))
         with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
             root = Path(directory)
             output = root / 'output'
@@ -60,7 +78,7 @@ $function = $ast.Find({param($node)
 . ([scriptblock]::Create($function.Extent.Text))
 $mapping = $ast.Find({param($node)
     $node -is [System.Management.Automation.Language.IfStatementAst] -and
-    $node.Extent.Text.Contains('foreach ($taskSetting in (Get-ControlMaskSettings $ControlMaskCase)')
+    $node.Extent.Text.Contains('Get-ControlMaskSettings $ControlMaskCase $NrHookPoint ([bool]$ControlMaskUseCoreContext)')
 }, $true)
 $receipt = $ast.Find({param($node)
     $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
@@ -68,10 +86,13 @@ $receipt = $ast.Find({param($node)
 }, $true)
 $defaults = @{}
 foreach ($parameter in $ast.ParamBlock.Parameters) {
-    if ($parameter.Name.VariablePath.UserPath -in @('ControlMaskAutoMask','ControlMaskBlendMode')) {
+    if ($parameter.Name.VariablePath.UserPath -in @('ControlMaskAutoMask','ControlMaskBlendMode','ControlMaskDepthNear','ControlMaskDepthFar')) {
         $defaults[$parameter.Name.VariablePath.UserPath] = $parameter.DefaultValue.SafeGetValue()
     }
 }
+$ControlMaskDepthNear = -1; $ControlMaskDepthFar = -1
+$taskHasMaskNear = $false; $taskHasMaskFar = $false
+$NrHookPoint = 2; $ControlMaskUseCoreContext = $false
 $rows = @(foreach ($ControlMaskCase in @('T0','T1','T2','T3','T4','T5','T6','GRect','BRect','DepthFar','DepthFarOff')) {
     foreach ($ControlMaskAutoMask in -1,0,1) {
         foreach ($ControlMaskBlendMode in -1,0,1,2,3) {
@@ -84,7 +105,21 @@ $rows = @(foreach ($ControlMaskCase in @('T0','T1','T2','T3','T4','T5','T6','GRe
         }
     }
 })
-@{defaults=$defaults; rows=$rows} | ConvertTo-Json -Depth 6 -Compress
+$ControlMaskCase = 'DepthFarOff'
+$ControlMaskDepthNear = 0.0; $ControlMaskDepthFar = 0.01
+$taskHasMaskNear = $true; $taskHasMaskFar = $true
+$taskModelSettings = @{}
+. ([scriptblock]::Create($mapping.Extent.Text))
+. ([scriptblock]::Create($receipt.Extent.Text))
+$custom = @{settings=$taskModelSettings; receipt_near=$taskReceipt.requested_control_mask_depth_near
+            receipt_far=$taskReceipt.requested_control_mask_depth_far}
+$NrHookPoint = 0; $ControlMaskUseCoreContext = $true
+$taskModelSettings = @{}
+. ([scriptblock]::Create($mapping.Extent.Text))
+. ([scriptblock]::Create($receipt.Extent.Text))
+$upscaled = @{settings=$taskModelSettings
+             receipt_use_core_context=$taskReceipt.requested_control_mask_use_core_context}
+@{defaults=$defaults; rows=$rows; custom=$custom; upscaled=$upscaled} | ConvertTo-Json -Depth 6 -Compress
 '''
         with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
             driver = Path(directory) / 'mapping.ps1'
@@ -93,7 +128,8 @@ $rows = @(foreach ($ControlMaskCase in @('T0','T1','T2','T3','T4','T5','T6','GRe
                                     capture_output=True, text=True, encoding='utf-8', timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual(payload['defaults'], dict(ControlMaskAutoMask=-1, ControlMaskBlendMode=-1))
+        self.assertEqual(payload['defaults'], dict(ControlMaskAutoMask=-1, ControlMaskBlendMode=-1,
+            ControlMaskDepthNear=-1, ControlMaskDepthFar=-1))
         rows = payload['rows']
         self.assertEqual(len(rows), 165)
         defaults = {row['case']: row['settings'] for row in rows
@@ -114,18 +150,25 @@ $rows = @(foreach ($ControlMaskCase in @('T0','T1','T2','T3','T4','T5','T6','GRe
                 self.assertEqual(row['settings'], expected)
                 self.assertEqual(row['receipt_auto'], row['auto'])
                 self.assertEqual(row['receipt_blend'], row['blend'])
+        self.assertEqual(payload['custom']['settings']['NRControlMaskDepthNear'], '0')
+        self.assertEqual(payload['custom']['settings']['NRControlMaskDepthFar'], '0.01')
+        self.assertEqual(payload['custom']['receipt_near'], 0)
+        self.assertEqual(payload['custom']['receipt_far'], 0.01)
+        self.assertEqual(payload['upscaled']['settings']['NRHookPoint'], 0)
+        self.assertEqual(payload['upscaled']['settings']['NRControlMaskUseCoreContext'], 1)
+        self.assertTrue(payload['upscaled']['receipt_use_core_context'])
         self.assertIn('-Parameters $PSBoundParameters', script.read_text(encoding='utf-8'))
 
     def test_depth_far_fg_requires_exact_protected_route_before_installation(self):
         script = fg_acceptance.ROOT / 'tools' / 'run-fg-acceptance.ps1'
         cases = [
-            ([], 'Depth-far FG requires -RestoreInstallation'),
-            (['-RestoreInstallation'], 'Depth-far FG requires -RestoreInstallation'),
-            (['-RestoreInstallation', '-SrOnly'], 'Depth-far FG requires -RestoreInstallation'),
-            (['-RestoreInstallation', '-NrRuntimePath', 'runtime.dll'], 'Depth-far FG requires -RestoreInstallation'),
-            (['-RestoreInstallation', '-NrRuntimePath', 'runtime.dll', '-NrPreset', '2'], 'Depth-far FG requires -RestoreInstallation'),
-            (['-RestoreInstallation', '-NrRuntimePath', 'runtime.dll', '-NrPreset', '2', '-NrPasses', '1'], 'Depth-far FG requires -RestoreInstallation'),
-            (['-RestoreInstallation', '-NrRuntimePath', 'runtime.dll', '-NrPreset', '2', '-NrPasses', '1', '-NrHookPoint', '2', '-InstallOnly'], 'Depth-far FG requires -RestoreInstallation'),
+            ([], 'Depth-far requires a restored one-pass A/B case'),
+            (['-RestoreInstallation'], 'Depth-far requires a restored one-pass A/B case'),
+            (['-RestoreInstallation', '-SrOnly'], 'Depth-far requires a restored one-pass A/B case'),
+            (['-RestoreInstallation', '-NrRuntimePath', 'runtime.dll'], 'Depth-far requires a restored one-pass A/B case'),
+            (['-RestoreInstallation', '-NrRuntimePath', 'runtime.dll', '-NrPreset', '2'], 'Depth-far requires a restored one-pass A/B case'),
+            (['-RestoreInstallation', '-NrRuntimePath', 'runtime.dll', '-NrPreset', '2', '-NrPasses', '1'], 'Depth-far requires a restored one-pass A/B case'),
+            (['-RestoreInstallation', '-NrRuntimePath', 'runtime.dll', '-NrPreset', '2', '-NrPasses', '1', '-NrHookPoint', '2', '-InstallOnly'], 'Depth-far requires a restored one-pass A/B case'),
         ]
         with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
             root = Path(directory)
@@ -133,7 +176,7 @@ $rows = @(foreach ($ControlMaskCase in @('T0','T1','T2','T3','T4','T5','T6','GRe
                     '-CandidateManifest', str(root / 'missing-manifest'),
                     '-GameBinaryDirectory', str(root / 'missing-game'),
                     '-Python', str(root / 'missing-python'), '-OutputRoot', str(root / 'output'),
-                    '-ControlMaskCase', 'DepthFar']
+                    '-ControlMaskCase', 'DepthFar', '-Save', 'ManualSave_outdoor.sav']
             for overrides, message in cases:
                 with self.subTest(overrides=overrides):
                     result = subprocess.run(base + overrides, capture_output=True, text=True,
@@ -141,6 +184,21 @@ $rows = @(foreach ($ControlMaskCase in @('T0','T1','T2','T3','T4','T5','T6','GRe
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(message, result.stderr)
                     self.assertFalse((root / 'output').exists())
+
+    def test_control_mask_powershell_requires_explicit_save_before_installation(self):
+        script = fg_acceptance.ROOT / 'tools' / 'run-fg-acceptance.ps1'
+        with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
+            root = Path(directory)
+            arguments = ['pwsh.exe', '-NoProfile', '-File', str(script),
+                '-CandidateManifest', str(root / 'missing-manifest'),
+                '-GameBinaryDirectory', str(root / 'missing-game'),
+                '-Python', str(root / 'missing-python'), '-OutputRoot', str(root / 'output'),
+                '-ControlMaskCase', 'DepthFar', '-RestoreInstallation',
+                '-NrRuntimePath', 'runtime.dll', '-NrPreset', '2', '-NrPasses', '1', '-NrHookPoint', '2']
+            result = subprocess.run(arguments, capture_output=True, text=True, encoding='utf-8', timeout=15)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('explicit -Save', result.stderr)
+            self.assertFalse((root / 'output').exists())
 
     def test_depth_far_cli_requires_restore_runtime_present_and_single_pass(self):
         for suffix in (
@@ -158,11 +216,56 @@ $rows = @(foreach ($ControlMaskCase in @('T0','T1','T2','T3','T4','T5','T6','GRe
                         fg_acceptance.main()
             self.assertEqual(error.exception.code, 2)
 
+    def test_depth_far_route_accepts_present_or_upscaled_core_context(self):
+        self.assertTrue(fg_acceptance.supported_control_mask_route(2, False, 0))
+        self.assertTrue(fg_acceptance.supported_control_mask_route(0, True, None))
+        self.assertFalse(fg_acceptance.supported_control_mask_route(2, True, 0))
+        self.assertFalse(fg_acceptance.supported_control_mask_route(2, False, 1))
+        self.assertFalse(fg_acceptance.supported_control_mask_route(0, False, 0))
+
+    def test_depth_far_cli_validates_threshold_pair_before_output(self):
+        cases = [
+            (['--control-mask-depth-near', '0.01'], 'require both --control-mask-depth-near and --control-mask-depth-far'),
+            (['--control-mask-depth-near', '0.0', '--control-mask-depth-far', '0.01'],
+             'require --control-mask-case depth-far or depth-far-off'),
+            (['--control-mask-case', 'depth-far-off', '--save', 'ManualSave_outdoor.sav',
+              '--control-mask-depth-near', '0.1', '--control-mask-depth-far', '0.1'],
+             'depth thresholds must satisfy 0 <= near < far <= 1'),
+            (['--control-mask-case', 'depth-far-off', '--save', 'ManualSave_outdoor.sav',
+              '--control-mask-depth-near', 'nan', '--control-mask-depth-far', '1'],
+             'depth thresholds must satisfy 0 <= near < far <= 1'),
+        ]
+        with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
+            root = Path(directory)
+            for suffix, message in cases:
+                arguments = ['fg_acceptance.py', '--candidate-manifest', 'candidate.json',
+                    '--game-binary-directory', 'game', '--output-root', str(root / 'output'), *suffix]
+                with self.subTest(suffix=suffix):
+                    with mock.patch.object(fg_acceptance.sys, 'argv', arguments):
+                        with self.assertRaises(SystemExit) as error:
+                            fg_acceptance.main()
+                    self.assertEqual(error.exception.code, 2)
+                    self.assertFalse((root / 'output').exists())
+
+    def test_control_mask_cli_requires_explicit_save_before_creating_output(self):
+        with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
+            root = Path(directory)
+            arguments = ['fg_acceptance.py', '--candidate-manifest', 'candidate.json',
+                '--game-binary-directory', 'game', '--output-root', str(root / 'output'),
+                '--restore-installation', '--xefg-ui-composition', '0', '--nr-passes', '1',
+                '--control-mask-case', 'depth-far', '--nr-runtime-path', 'runtime.dll']
+            with mock.patch.object(fg_acceptance.sys, 'argv', arguments):
+                with self.assertRaises(SystemExit) as error:
+                    fg_acceptance.main()
+            self.assertEqual(error.exception.code, 2)
+            self.assertFalse((root / 'output').exists())
+
     def test_core_context_requires_protected_control_mask_case(self):
         script = fg_acceptance.ROOT / 'tools' / 'run-fg-acceptance.ps1'
         base = ['pwsh.exe', '-NoProfile', '-File', str(script),
                 '-CandidateManifest', 'missing-test-manifest', '-GameBinaryDirectory', 'missing-test-game',
-                '-Python', 'missing-test-python', '-ControlMaskUseCoreContext']
+                '-Python', 'missing-test-python', '-ControlMaskUseCoreContext',
+                '-Save', 'ManualSave_outdoor.sav']
         for overrides, message in (([], 'requires an explicit protected -ControlMaskCase'),
                 (['-ControlMaskCase', 'T0'], 'ControlMask requires -RestoreInstallation'),
                 (['-ControlMaskCase', 'T0', '-RestoreInstallation', '-SrOnly',
@@ -170,7 +273,7 @@ $rows = @(foreach ($ControlMaskCase in @('T0','T1','T2','T3','T4','T5','T6','GRe
                  'ControlMask requires -RestoreInstallation'),
                 (['-ControlMaskCase', 'DepthFarOff', '-RestoreInstallation',
                   '-NrRuntimePath', 'runtime', '-NrPreset', '1', '-NrPasses', '1', '-NrHookPoint', '2'],
-                 'requires a restored, SR-only, single-pass Upscaled ControlMask case')):
+                 'Depth-far requires a restored one-pass A/B case')):
             with self.subTest(overrides=overrides):
                 result = subprocess.run(base + overrides, capture_output=True, text=True,
                                         encoding='utf-8', timeout=15)
@@ -226,6 +329,66 @@ class FgIntervalTests(unittest.TestCase):
         self.assertEqual(parsed['nr_service'], dict(frames=120, process=120, evals=240,
             hudless=0, backbuffer=120, two_color=0, composed=0))
         self.assertEqual(parsed['nr_service']['evals'], 240)
+
+
+class CaptureScriptVerificationTests(unittest.TestCase):
+    def test_restoration_accepts_verified_removal_of_runner_owned_script_mod(self):
+        with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
+            root = Path(directory)
+            run = root / 'run'
+            (run / 'protected').mkdir(parents=True)
+            game_file = root / 'game/Mods/modNRNexusTestBridge/content/scripts/local/NRNXTestBridge.ws'
+            backup = run / 'protected/000001.bin'
+            backup.write_bytes(b'runner-owned script mod')
+            digest = hashlib.sha256(backup.read_bytes()).hexdigest()
+            fg_acceptance.dump(run / 'protected-files.json', [dict(
+                path=str(game_file), backup_path=str(backup), sha256=digest)])
+            fg_acceptance.dump(run / 'temporary-mod.json', dict(installed_by_runner=True, files=[dict(
+                path=str(game_file), sha256=digest)]))
+            fg_acceptance.dump(run / 'temporary-mod-restored.json', dict(
+                restored=True, installed_by_runner=True))
+            receipt = dict(restored=True, original_files=[], isolated_addons=[])
+            result = dict(guard='verified_original_hashes_and_released')
+
+            self.assertEqual(len(fg_acceptance.verify_restoration(run, receipt, result)), 1)
+            fg_acceptance.dump(run / 'temporary-mod-restored.json', dict(
+                restored=False, installed_by_runner=True))
+            with self.assertRaisesRegex(RuntimeError, 'cleanup was not verified'):
+                fg_acceptance.verify_restoration(run, receipt, result)
+
+    def make_run(self, root):
+        run = root / 'run'
+        run.mkdir()
+        receipt = dict(candidate_sha256='candidate-hash')
+        sequence = dict(candidate_sha256='CANDIDATE-HASH', save_sha256='save-hash', transitions=[
+            dict(from_state='off', state='on'), dict(from_state='on', state='off')])
+        fg_acceptance.dump(run / 'live-control-mask-sequence.json', sequence)
+        fg_acceptance.dump(run / 'save-selection.json', dict(sha256='save-hash'))
+        events = [
+            dict(time='2026-11-10T01:00:01+00:00', kind='live_control_mask_scene_capture',
+                 name='mask-off-before.png'),
+            dict(time='2026-11-10T01:00:02+00:00', kind='live_control_mask_scene_capture',
+                 name='mask-on.png'),
+            dict(time='2026-11-10T01:00:03+00:00', kind='live_control_mask_scene_capture',
+                 name='mask-off-after.png'),
+        ]
+        (run / 'events.jsonl').write_text('\n'.join(json.dumps(event) for event in events), encoding='utf-8')
+        return run, receipt
+
+    def test_live_control_mask_capture_events_define_bound_acceptance_window(self):
+        with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
+            run, receipt = self.make_run(Path(directory))
+            events = fg_acceptance.capture_events_for_verification(run, receipt)
+        self.assertEqual([event['name'] for event in events],
+            ['mask-off-before.png', 'mask-on.png', 'mask-off-after.png'])
+        self.assertTrue(all(event['action'] == 'capture' for event in events))
+
+    def test_live_control_mask_capture_rejects_candidate_mismatch(self):
+        with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
+            run, receipt = self.make_run(Path(directory))
+            receipt['candidate_sha256'] = 'other-candidate'
+            with self.assertRaisesRegex(RuntimeError, 'candidate identity mismatch'):
+                fg_acceptance.capture_events_for_verification(run, receipt)
 
 
 def setUpModule():
@@ -389,9 +552,11 @@ class CaptureTests(unittest.TestCase):
                 monitorFriendlyDeviceName='fixture monitor', highDynamicRangeUserEnabled=True)])))
             arguments = ['fg_acceptance.py', '--candidate-manifest', str(manifest),
                 '--game-binary-directory', str(game), '--target', str(target),
+                '--save', 'ManualSave_outdoor.sav',
                 '--output-root', str(root / 'output'), '--hdr-tool', str(tool), '--restore-installation',
-                '--nr-hook-point', '2', '--nr-passes', '1', '--telemetry-seconds', '2',
+                '--nr-hook-point', '0', '--nr-passes', '1', '--telemetry-seconds', '2',
                 '--control-mask-case', 'depth-far-off', '--nr-runtime-path', str(runtime),
+                '--control-mask-use-core-context',
                 '--capture-script', str(capture_script),
                 '--start-nr-disabled',
                 '--enable-streamline-fallback', '--xefg-ui-composition', '0']
@@ -410,7 +575,7 @@ class CaptureTests(unittest.TestCase):
             printed.assert_any_call('CAPTURE_STARTED=' + str(run), flush=True)
             command = launch.call_args.args[0]
             self.assertIn('-RestoreInstallation', command)
-            self.assertEqual(command[command.index('-NrHookPoint') + 1], '2')
+            self.assertEqual(command[command.index('-NrHookPoint') + 1], '0')
             self.assertEqual(command[command.index('-NrPasses') + 1], '1')
             self.assertEqual(command[command.index('-TelemetrySeconds') + 1], '2')
             self.assertIn('-ControlMaskCase', command)
@@ -418,10 +583,12 @@ class CaptureTests(unittest.TestCase):
             self.assertIn('-CaptureScript', command)
             self.assertEqual(command[command.index('-CaptureScript') + 1], str(capture_script.resolve()))
             self.assertIn('-StartNrDisabled', command)
-            self.assertNotIn('-ControlMaskUseCoreContext', command)
+            self.assertIn('-ControlMaskUseCoreContext', command)
+            self.assertIn('-SrOnly', command)
             self.assertIn('-EnableStreamlineFallback', command)
             self.assertEqual(command[command.index('-XeFGUiComposition') + 1], '0')
             self.assertEqual(command[command.index('-TargetPath') + 1], str(target.resolve()))
+            self.assertEqual(command[command.index('-Save') + 1], 'ManualSave_outdoor.sav')
             self.assertEqual(command[command.index('-OutputRoot') + 1], str((root / 'output').resolve()))
             self.assertEqual(command[command.index('-Python') + 1], str(Path(fg_acceptance.sys.executable).resolve()))
 
@@ -463,8 +630,7 @@ class CaptureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
             run = Path(directory)
             window = self.write_capture_ready(run)
-            receipt = dict(hwnd=456, pid=123, created=1, elapsed_ms=12)
-            with mock.patch.object(fg_acceptance.desktop, 'ensure_foreground', return_value=receipt) as activate, \
+            with mock.patch.object(fg_acceptance.desktop, 'ensure_foreground') as activate, \
                     mock.patch.object(fg_acceptance.desktop, 'modules', return_value=[]), \
                     mock.patch.object(fg_acceptance.desktop, 'same_process', return_value=True), \
                     mock.patch.object(fg_acceptance.desktop.u, 'GetForegroundWindow', return_value=456), \
@@ -474,12 +640,11 @@ class CaptureTests(unittest.TestCase):
                 fg_acceptance.capture(run, nr_off_control=True)
             key.assert_not_called()
             capture.assert_called_once()
-            self.assertTrue(all(call == mock.call(window) for call in activate.call_args_list))
-            self.assertGreaterEqual(activate.call_count, 1)
+            activate.assert_not_called()
+            self.assertEqual(capture.call_args.kwargs, {'activate': False})
             events = json.loads((run / 'nr-toggle-captures.json').read_text())
             self.assertEqual(events[0]['action'], 'automatic_foreground_confirmed')
-            for field, value in receipt.items():
-                self.assertEqual(events[0][field], value)
+            self.assertEqual(events[0]['activation'], 'runner_capture_ready')
             self.assertFalse(list(run.glob('computer-use-*.json')))
             self.assertEqual(json.loads((run / 'capture-complete.json').read_text()),
                 dict(pid=123, completed=True))
@@ -499,20 +664,20 @@ class CaptureTests(unittest.TestCase):
             activate.assert_not_called()
             self.assertFalse((run / 'capture-complete.json').exists())
 
-    def test_automatic_activation_failure_sends_no_input_and_keeps_worker_gated(self):
+    def test_capture_ready_focus_loss_sends_no_input_and_keeps_worker_gated(self):
         with tempfile.TemporaryDirectory(dir=fg_acceptance.ROOT / 'tmp') as directory:
             run = Path(directory)
-            window = self.write_capture_ready(run)
+            self.write_capture_ready(run)
             with mock.patch.object(fg_acceptance.desktop, 'same_process', return_value=True), \
-                    mock.patch.object(fg_acceptance.desktop, 'ensure_foreground',
-                                      side_effect=RuntimeError('automatic activation failed')) as activate, \
+                    mock.patch.object(fg_acceptance.desktop.u, 'GetForegroundWindow', return_value=999), \
+                    mock.patch.object(fg_acceptance.desktop, 'ensure_foreground') as activate, \
                     mock.patch.object(fg_acceptance.desktop, 'capture') as capture, \
                     mock.patch.object(fg_acceptance.desktop, 'key') as key, \
                     mock.patch('builtins.print'):
-                with self.assertRaisesRegex(RuntimeError, 'automatic activation failed'):
+                with self.assertRaisesRegex(RuntimeError, 'lost foreground'):
                     fg_acceptance.capture(run, nr_off_control=True)
             capture.assert_not_called()
-            activate.assert_called_once_with(window)
+            activate.assert_not_called()
             key.assert_not_called()
             self.assertFalse((run / 'capture-complete.json').exists())
             failure = json.loads((run / 'capture-failed.json').read_text())

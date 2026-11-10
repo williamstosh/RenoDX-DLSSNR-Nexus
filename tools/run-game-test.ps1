@@ -9,7 +9,7 @@ param(
     [string]$OutputRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) 'artifacts/game-tests'),
     [int]$CaptureHoldSeconds = 0,
     [string]$CaptureScript,
-    [ValidateRange(0,2)][int]$Retries = 2,
+    [ValidateRange(0,2)][int]$Retries = 0,
     [switch]$Preflight,
     [switch]$ManualImeSession,
     [switch]$AddonAbsentControl
@@ -35,8 +35,11 @@ if ($CaptureScript) {
     $CaptureScript = $taskCapturePath
     $PSBoundParameters['CaptureScript'] = $taskCapturePath
 }
-if (-not $Python -or -not (Test-Path -LiteralPath $Python -PathType Leaf)) { throw 'Provide -Python with a Python 3 interpreter containing Pillow.' }
 . (Join-Path $PSScriptRoot 'game-test/normal-context.ps1')
+$taskRepository = Split-Path $PSScriptRoot -Parent
+. (Join-Path $PSScriptRoot 'game-test/resolve-python.ps1')
+$Python = Resolve-NrNexusPython -RequestedPath $Python -RepositoryRoot $taskRepository
+$PSBoundParameters['Python'] = $Python
 $taskContextExitCode = Invoke-NormalGameTestContext -EntryScript $PSCommandPath -Parameters $PSBoundParameters -Python $Python
 if ($null -ne $taskContextExitCode) { exit $taskContextExitCode }
 $taskArguments = @('-B', (Join-Path $PSScriptRoot 'game-test/runner.py'), '--game', $Game, '--platform', $Platform,
