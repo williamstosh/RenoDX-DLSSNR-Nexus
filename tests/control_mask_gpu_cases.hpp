@@ -999,6 +999,11 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   mature();
   Check(!saw_mask && mask_dispatches == enabled_dispatches,
         "switching off clears binding and stops mask dispatches");
+  const auto off_workset = addon::worksets.at({owner, output.Get(), false}).id;
+  for (uint32_t frame = 0; frame < 3; ++frame) {
+    Check(record() == 1 && addon::worksets.at({owner, output.Get(), false}).id == off_workset,
+          "unmasked frames reuse their workset after switching off ControlMask");
+  }
   addon::control_mask_enabled = true;
   addon::direct_runtime_requirements.file_version = "310.9.16.1";
   mature();

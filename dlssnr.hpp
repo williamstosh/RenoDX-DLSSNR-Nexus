@@ -4694,13 +4694,15 @@ inline bool ControlMaskSubmissionsUnproven() {
 inline std::atomic_bool queue_tracking_active = false;
 
 inline void TrackWorksetRecording(
-    ID3D12GraphicsCommandList* command_list, const FinalResources& res) {
+    ID3D12GraphicsCommandList* command_list, const FinalResources& res,
+    bool track_control_mask_history = false) {
   for (const void* object : CollectWorksetGpuObjects(res)) {
     submission::TrackUse(command_list, object);
   }
   for (const FinalResources* current = &res; current != nullptr; current = current->resolution_tail) {
     current->tracked_recording = queue_tracking_active.load(std::memory_order_relaxed);
-    if (control_mask_enabled.load(std::memory_order_relaxed) || current->control_mask_recording != nullptr) {
+    if (track_control_mask_history || control_mask_enabled.load(std::memory_order_relaxed)
+        || current->control_mask_recording != nullptr) {
       current->recording = submission::ObserveRecording(command_list);
     }
   }
@@ -10886,7 +10888,9 @@ inline bool ProcessInline(
   }
   stage_stats.width = width;
   stage_stats.height = height;
-  if (control_mask_eligible || feature.control_mask_recording != nullptr) {
+  const bool track_control_mask_history = control_mask_eligible
+      || feature.control_mask_recording != nullptr || feature.control_mask_stream != nullptr;
+  if (track_control_mask_history) {
     const auto current_recording = submission::RecordingIdentity(command_list);
     const auto reusable = [&](const std::vector<const void*>& objects,
                               const std::shared_ptr<submission::RecordingStatus>& previous) {
@@ -11292,9 +11296,11 @@ inline bool ProcessInline(
   // Exact submission-use proof (issue 01): this evaluate's recordings on the
   // game's list can reference the workset's GPU objects.
   if (setup_ok) {
-    TrackWorksetRecording(command_list, *workset);
-    if (control_mask_eligible) {
-      workset->control_mask_recording = submission::ObserveRecording(command_list);
+    // Disabling the mask changes the workset, but the new unmasked work still
+    // uses the guarded NR History until its recording is submitted or discarded.
+    TrackWorksetRecording(command_list, *workset, track_control_mask_history);
+    if (track_control_mask_history) {
+      workset->control_mask_recording = workset->recording;
       feature.control_mask_recording = workset->control_mask_recording;
     }
   }
@@ -13008,7 +13014,9 @@ inline bool ProcessInlinePreSR(
   }
   stage_stats.width = width;
   stage_stats.height = height;
-  if (control_mask_eligible || feature.control_mask_recording != nullptr) {
+  const bool track_control_mask_history = control_mask_eligible
+      || feature.control_mask_recording != nullptr || feature.control_mask_stream != nullptr;
+  if (track_control_mask_history) {
     const auto current_recording = submission::RecordingIdentity(command_list);
     const auto reusable = [&](const std::vector<const void*>& objects,
                               const std::shared_ptr<submission::RecordingStatus>& previous) {
@@ -13340,9 +13348,9 @@ inline bool ProcessInlinePreSR(
     res.pre_sr_source = color;
   }
   // Exact submission-use proof (issue 01) - see the post-SR path.
-  TrackWorksetRecording(command_list, res);
-  if (control_mask_eligible) {
-    workset->control_mask_recording = submission::ObserveRecording(command_list);
+  TrackWorksetRecording(command_list, res, track_control_mask_history);
+  if (track_control_mask_history) {
+    workset->control_mask_recording = workset->recording;
     feature.control_mask_recording = workset->control_mask_recording;
   }
   // Stage A: hand the raw exposure evidence to the workset so the present-
