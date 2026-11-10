@@ -2250,8 +2250,8 @@ inline constexpr uint32_t kControlMaskBlueRect = 4;
 inline constexpr uint32_t kControlMaskDepthFar = 5;
 inline std::atomic_bool control_mask_enabled = false;
 inline std::atomic_bool control_mask_use_core_context = false;
-// Valid only in the after-path of a successful, classified host SR evaluate.
-// The exact device face matters: NGX records in the world of the host list.
+// Valid only after a successful, observed host SR evaluate, for either NR backend.
+// The exact device face also admits ordered Upscaled History recording.
 inline thread_local ID3D12Device* successful_sr_device = nullptr;
 struct SuccessfulSrCoreScope {
   ID3D12Device* previous = successful_sr_device;
@@ -10955,8 +10955,7 @@ inline bool ProcessInline(
     };
     bool ready = queue_tracking_active.load(std::memory_order_relaxed)
         && SUCCEEDED(device->GetDeviceRemovedReason());
-    const bool ordered_source = (control_mask_use_core_context.load(std::memory_order_relaxed)
-        && successful_sr_device == device)
+    const bool ordered_source = successful_sr_device == device
         || present != nullptr || (D3D11OnlySession() && Dx11NativeRoute());
     const bool rebuild_ordered_history = feature.control_mask_stream != nullptr
         && control_mask_execution::GetStatus(feature.control_mask_stream).history_invalidated;
@@ -17459,8 +17458,7 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureSlot(
     return result;
   }
   const SuccessfulSrCoreScope core_scope(
-      control_mask_use_core_context.load() && CreatedSrHandle(handle) && !EvaluationStagePlan(handle).mixed
-          ? command_list : nullptr);
+      CreatedSrHandle(handle) ? command_list : nullptr);
   ObservePresentDlssEvaluate(parameters);
   ngx_dlss_evaluate_seen.store(true, std::memory_order_relaxed);
   // Both insertion modes: the pre-SR block above skipped its pass silently.
@@ -17672,8 +17670,7 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureCSlot(
     return result;
   }
   const SuccessfulSrCoreScope core_scope(
-      control_mask_use_core_context.load() && CreatedSrHandle(handle) && !EvaluationStagePlan(handle).mixed
-          ? command_list : nullptr);
+      CreatedSrHandle(handle) ? command_list : nullptr);
   ObservePresentDlssEvaluate(parameters);
   ngx_dlss_evaluate_seen.store(true, std::memory_order_relaxed);
   if (NrYieldsToForeign()) {

@@ -524,10 +524,100 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
     }
     Check(false, "ControlMask production path matures within bounded attempts");
   };
+  for (const bool seed_mask : {false, true}) {
+    if (!safety) break;
+    Check(!addon::control_mask_use_core_context.load() && !addon::direct_api.borrowed_core_context,
+          "stage-switch regression uses the owned backend with the legacy P0 flag off");
+    const auto saved_export = addon::ngx_slot_real[0].evaluate;
+    addon::ngx_slot_real[0].evaluate = reinterpret_cast<void*>(SourceEvaluate);
+    addon::hook_point = addon::kHookRender;
+    addon::control_mask_enabled = seed_mask;
+    addon::configuration_generation.fetch_add(1);
+    bool render_ready = false;
+    for (uint32_t attempt = 0; attempt < addon::kContractDebounceFrames + 32; ++attempt) {
+      const auto before = model_calls;
+      addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), owner, &parameters, nullptr);
+      gpu.Submit();
+      addon::DrainRetiredResources(true);
+      if (model_calls == before + 1) {
+        render_ready = true;
+        break;
+      }
+    }
+    Check(render_ready && (addon::features.at(owner).control_mask_stream != nullptr) == seed_mask,
+          "Render seeds ordered History only when a mask was actually requested");
+    addon::hook_point = addon::kHookUpscaled;
+    addon::control_mask_enabled = false;
+    addon::configuration_generation.fetch_add(1);
+    const auto saved_observer = model_parameter_observer;
+    uint32_t credential_evaluations = 0;
+    model_parameter_observer = [&](const NVSDK_NGX_Handle*, const NVSDK_NGX_Parameter* block) {
+      Check(!seed_mask || addon::successful_sr_device == gpu.device.Get(),
+            "owned NR receives the current successful host SR device through the real wrapper");
+      Check(addon::GetD3D12Resource(block, "DLSSNR.ControlMask") == nullptr,
+            "every unmasked stack pass has a null ControlMask binding");
+      ++credential_evaluations;
+    };
+    const auto dispatch_before = mask_dispatches;
+    for (uint32_t passes : {1u, 2u}) {
+      addon::stack_passes = passes;
+      addon::configuration_generation.fetch_add(1);
+      uint32_t stable_frames = 0;
+      uint64_t stable_workset = 0;
+      for (uint32_t attempt = 0; attempt < addon::kContractDebounceFrames + 32; ++attempt) {
+        const auto before = model_calls;
+        const auto result = addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), owner, &parameters, nullptr);
+        Check(NVSDK_NGX_SUCCEED(result) && addon::successful_sr_device == nullptr,
+              "owned wrapper preserves host SR success and ends its device credential");
+        gpu.Submit();
+        addon::DrainRetiredResources(true);
+        if (model_calls != before + passes) continue;
+        const auto& workset = addon::worksets.at({owner, output.Get(), false});
+        if (stable_frames == 0) stable_workset = workset.id;
+        Check(workset.id == stable_workset && workset.control_mask == nullptr
+                  && (addon::features.at(owner).control_mask_stream != nullptr) == seed_mask
+                  && mask_dispatches == dispatch_before,
+              "mask-off Upscaled retains ordered History and reuses its unmasked workset");
+        if (++stable_frames == 3) break;
+      }
+      std::cout << "CASE owned-mask-off Render->Upscaled seed_mask=" << seed_mask << " passes=" << passes
+                << " completed_frames=" << stable_frames << " evidence=MOCK+GPU" << std::endl;
+      Check(stable_frames == 3,
+            "owned mask-off Upscaled resumes one/two-pass NR after Render without reuse_not_ready starvation");
+    }
+    Check(credential_evaluations >= 9, "both owned stack sizes evaluate with wrapper-granted credentials");
+    const auto before_negative = model_calls;
+    fail_source_evaluate = true;
+    const auto failed_sr = addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), owner, &parameters, nullptr);
+    fail_source_evaluate = false;
+    Check(NVSDK_NGX_FAILED(failed_sr) && model_calls == before_negative
+              && addon::successful_sr_device == nullptr,
+          "failed host SR cannot grant an owned Upscaled credential or Evaluate NR");
+    if (seed_mask) {
+      addon::created_feature_ids.erase(owner);
+      const auto unknown_sr = addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), owner, &parameters, nullptr);
+      Check(NVSDK_NGX_SUCCEED(unknown_sr) && model_calls == before_negative
+                && addon::successful_sr_device == nullptr,
+            "successful guessed SR without observed Create cannot reuse an existing owned stream");
+      addon::created_feature_ids[owner] = addon::kFeatureDlss;
+    }
+    gpu.Submit();
+    addon::DrainRetiredResources(true);
+    model_parameter_observer = saved_observer;
+    addon::ngx_slot_real[0].evaluate = saved_export;
+    addon::stack_passes = 1;
+    addon::ForgetSourceHandleLocked(owner);
+    addon::DrainRetiredResources(true);
+    addon::RegisterCreatedFeatureLocked(owner, addon::kFeatureDlss, &parameters);
+    addon::configuration_generation.fetch_add(1);
+  }
+  const auto default_off_dispatches = mask_dispatches;
+  const auto default_off_reuse = addon::control_mask_reuse_stats;
   addon::control_mask_enabled = false;
   mature();
-  Check(mask_dispatches == 0, "default-off ProcessInline records zero ControlMask dispatches");
-  Check(addon::control_mask_reuse_stats.checks == 0 && addon::control_mask_reuse_stats.admitted == 0,
+  Check(mask_dispatches == default_off_dispatches, "default-off ProcessInline records zero ControlMask dispatches");
+  Check(addon::control_mask_reuse_stats.checks == default_off_reuse.checks
+            && addon::control_mask_reuse_stats.admitted == default_off_reuse.admitted,
         "default-off without old mask objects contributes no reuse checks or admissions");
   Check(addon::worksets.at({owner, output.Get(), false}).control_mask == nullptr,
         "default-off production path allocates no mask");
@@ -859,6 +949,11 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
     addon::stack_passes.store(saved_stack_passes);
     addon::pass_stage[0].store(saved_second_stage);
     addon::configuration_generation.fetch_add(1);
+    // The following cases call ProcessInline directly, outside a host SR callback.
+    // End the wrapper fixture's ordered History before starting those cases.
+    addon::ForgetSourceHandleLocked(owner);
+    addon::DrainRetiredResources(true);
+    addon::RegisterCreatedFeatureLocked(owner, addon::kFeatureDlss, &parameters);
     mature();
   }
   addon::ngx_slot_real[0].evaluate = previous_evaluate;
