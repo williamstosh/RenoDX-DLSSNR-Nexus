@@ -9,6 +9,12 @@
     "url": "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602/dxc_2026_02_20.zip",
     "sha256": "A1E89031421CF3C1FCA6627766AB3020CA4F962AC7E2CAA7FAB2B33A8436151E"
   },
+  "vulkan_headers": {
+    "version": "1.4.321",
+    "commit": "2cd90f9d20df57eac214c148f3aed885372ddcfe",
+    "url": "https://codeload.github.com/KhronosGroup/Vulkan-Headers/zip/2cd90f9d20df57eac214c148f3aed885372ddcfe",
+    "sha256": "004547A27896A80EEF9D9A172E0A99F528FCEE4301C899097143A1A14E9A77FD"
+  },
   "slang": {
     "version": "2026.14.1",
     "url": "https://github.com/shader-slang/slang/releases/download/v2026.14.1/slang-2026.14.1-windows-x86_64.zip",

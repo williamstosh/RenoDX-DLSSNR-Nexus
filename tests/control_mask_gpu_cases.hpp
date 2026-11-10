@@ -2019,6 +2019,7 @@ int RunSafety(bool hardware, bool safety = true) {
   }
 }
 
+#if defined(NR_NEXUS_TEST_NATIVE_NGX)
 inline addon::DirectEvaluateFn native_runtime_evaluate = nullptr;
 inline std::vector<ID3D12Resource*> native_runtime_masks;
 inline std::vector<NVSDK_NGX_Result> native_runtime_results;
@@ -2695,6 +2696,8 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
     return 1;
   }
 }
+
+#endif  // NR_NEXUS_TEST_NATIVE_NGX
 
 int Run() { return RunSafety(false, false); }
 }  // namespace control_mask_gpu_cases

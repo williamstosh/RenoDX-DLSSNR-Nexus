@@ -738,6 +738,7 @@ int RunNativeRequiredMenuTest() {
 #include "control_mask_capture_cases.hpp"
 
 int main(int argc, char** argv) {
+#if defined(NR_NEXUS_TEST_NATIVE_NGX)
   if (argc == 3 && std::strcmp(argv[1], "--control-mask-native-ngx-cost") == 0) {
     return control_mask_gpu_cases::RunNativeNgx(
         argv[2], false, renodx::addons::dlss5::internal::kControlMaskDepthFar, true);
@@ -755,6 +756,13 @@ int main(int argc, char** argv) {
   if (argc == 3 && std::strcmp(argv[1], "--control-mask-native-ngx-fg") == 0) {
     return RunPresentGuideModelsTest(true, argv[2]);
   }
+#else
+  if (argc >= 2 && std::strncmp(argv[1], "--control-mask-native-ngx", 25) == 0) {
+    std::cerr << "FAIL native NGX support was not compiled; rebuild with "
+                 "tools/run-tests.ps1 -NativeNgxSdkLibraryDirectory containing nvsdk_ngx_s.lib\n";
+    return 1;
+  }
+#endif
   if (argc == 2 && std::strcmp(argv[1], "--vulkan-recorded-use-contract") == 0) {
     try {
       constexpr uint64_t use_id = 0xFFFFFFFFFFFFFFF0ull;
@@ -3868,6 +3876,7 @@ int RunPresentGuideModelsTest(bool native_ngx, const char* project_id_path) {
     native::transfer_strength.store(1.f);
     native::color_strength.store(1.f);
     if (native_ngx) {
+#if defined(NR_NEXUS_TEST_NATIVE_NGX)
       native::PrimeNgxLoaderSymbols(gpu.device.Get());
       std::ifstream project_id_file(project_id_path);
       std::string project_id;
@@ -3896,6 +3905,9 @@ int RunPresentGuideModelsTest(bool native_ngx, const char* project_id_path) {
         native_runtime_evaluate = native::core_evaluate_feature;
         native::core_evaluate_feature = ObserveNativeRuntimeEvaluation;
       }
+#else
+      throw std::runtime_error("native NGX support was not compiled; provide -NativeNgxSdkLibraryDirectory");
+#endif
     } else {
       native::direct_api.module = GetModuleHandleW(nullptr);
       native::direct_api.create = CreateModel;

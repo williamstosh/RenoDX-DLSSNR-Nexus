@@ -124,7 +124,7 @@ A/B 示例需要 310.9.16.0，其他兼容运行时也可使用同模型两层�
 3. 比如比较 **第 1 层 100% → 第 2 层 67%** 与两层 100%，保持其余模型、外观和结果相同。
 4. 查看尺寸区的预计／实际尺寸及诊断 GPU 开销，检查边缘、细节和移动画面。
 
-“继承基础”取画质页／第 1 层，**不是上一层比例**。“跟随输入”使用可用引导尺寸，缺少引导时用保存比例；上采样全链共享。**v0.2.2** 中，要在 Present + FG 使用两层 67%，将基础比例设为 67%，第 2 层设为继承基础。若旧设置的第 2 层固定为 100%，选择基础比例或两层后，在确认框中点击“让其他层继承基础分辨率”，即可统一应用；取消不会更改设置，撤销／重做作用于整次操作。也可先手动将第 2 层设为继承基础，再更改基础比例；独立比例的保存值会保留。
+“继承基础”取画质页／第 1 层，**不是上一层比例**。“跟随输入”使用可用引导尺寸，缺少引导时用保存比例；上采样全链共享。要在 Present + FG 使用两层 67%，将基础比例设为 67%，第 2 层设为继承基础。若旧设置的第 2 层固定为 100%，选择基础比例或两层后，在确认框中点击“让其他层继承基础分辨率”，即可统一应用；取消不会更改设置，撤销／重做作用于整次操作。也可先手动将第 2 层设为继承基础，再更改基础比例；独立比例的保存值会保留。
 
 DX11／DX12 支持跨 Render／Upscaled 阶段独立尺寸，以及同一 Render 或 Upscaled 阶段的两层不同尺寸。普通 Present 两层实际尺寸相同时（例如均固定为 50%）可配合 FG；尺寸不同时需插件明确确认 FG 已关闭，未知或开启时会拒绝。同阶段三层以上要求实际工作尺寸一致。Pre-FG 两层不同尺寸与 Vulkan 独立尺寸**暂不支持**，详见[兼容性表](#zh-paths)。
 
@@ -232,11 +232,12 @@ F6 立即提示开关操作，随后状态更新为正在检查、正常运行�
 
 运行时未识别时模型选择不可用。不兼容的已保存 B 会回退 A 并保留选择。旧预设 3 仅作“自定义”兼容项，在双模型运行时解析为 A。
 
+<a id="zh-region-mask"></a>
 #### 区域遮罩（ControlMask）
 
-区域遮罩可以分别调节 NR 的应用量、色调和结构，也可以让 NR 在远处逐渐减弱，保留原画面。它与用于识别人物的“角色遮罩”分别设置。开发版入口在**画质 → 外观与结果 → 模型风格 → 区域遮罩**；叠层页的每一层也都有同一组设置，位于模型外观之后、结果调整之前。开关作用于全部层，Pass 1 与画质页共用设置，后续层可继承或独立调整。开关和参数即时生效，无需重启游戏；关闭遮罩后仍继续运行 NR。需要兼容的 NR 运行时和处理路径。
+区域遮罩可以分别调节 NR 的应用量、色调和结构，也可以让 NR 在远处逐渐减弱，保留原画面。它与用于识别人物的“角色遮罩”分别设置。入口在**画质 → 外观与结果 → 模型风格 → 区域遮罩**；叠层页的每一层也都有同一组设置，位于模型外观之后、结果调整之前。开关作用于全部层，Pass 1 与画质页共用设置，后续层可继承或独立调整。开关和参数即时生效，无需重启游戏；关闭遮罩后仍继续运行 NR。需要兼容的 NR 运行时和处理路径。
 
-当前开发版会忽略旧诊断配置 `NRControlMaskUseCoreContext=1`，并修复已有处理历史在切回 Upscaled 或逐层处理时阻止 NR 继续运行的问题。无需手动删除此键；更新插件并重启游戏后生效。
+当前版本会忽略旧诊断配置 `NRControlMaskUseCoreContext=1`，并修复已有处理历史在切回 Upscaled 或逐层处理时阻止 NR 继续运行的问题。无需手动删除此键；更新插件并重启游戏后生效。
 
 | 控件 | 默认／选项 | 用途 |
 | --- | --- | --- |
@@ -650,7 +651,7 @@ Run a pass at a smaller size and reconstruct to output to trade detail against c
 3. Compare **Pass 1 100% → Pass 2 67%** with both at 100%, holding models, looks and results constant.
 4. Read estimated/actual size and diagnostic GPU cost; inspect edges, detail and motion.
 
-Inherit base uses Quality/Pass 1, **not the previous pass's scale**. Follow input uses available guides, falling back to saved scale without them. Upsampling is shared. In **v0.2.2**, for two Present + FG passes at 67%, set the base scale to 67% and Pass 2 to inherit the base. If an older setup has Pass 2 fixed at 100%, after choosing the base scale or two passes, click **Let other passes inherit base resolution** in the confirmation dialog to apply the changes together. Cancel leaves settings unchanged; Undo/Redo reverses or reapplies the whole action. Alternatively, first set Pass 2 to inherit the base and then change the base scale; the saved independent scale is retained.
+Inherit base uses Quality/Pass 1, **not the previous pass's scale**. Follow input uses available guides, falling back to saved scale without them. Upsampling is shared. For two Present + FG passes at 67%, set the base scale to 67% and Pass 2 to inherit the base. If an older setup has Pass 2 fixed at 100%, after choosing the base scale or two passes, click **Let other passes inherit base resolution** in the confirmation dialog to apply the changes together. Cancel leaves settings unchanged; Undo/Redo reverses or reapplies the whole action. Alternatively, first set Pass 2 to inherit the base and then change the base scale; the saved independent scale is retained.
 
 DX11/DX12 support separate sizes across Render/Upscaled and two different-sized passes within Render or Upscaled. Ordinary Present pairs with matching actual sizes (for example, both fixed at 50%) can be used with FG; different sizes require an explicit confirmed FG Off declaration, and unknown or enabled FG is rejected. Three or more in one stage require equal actual sizes. Pre-FG pairs with different sizes and Vulkan independent sizes are **not supported yet**; see [compatibility](#en-paths).
 
@@ -758,11 +759,12 @@ The tables list individual setting defaults. Initial Balanced setup overrides mo
 
 Selection is unavailable before runtime identification. Incompatible saved B falls back to A while retaining the choice. Legacy preset 3 is a Custom compatibility entry and resolves to A on the dual-model runtime.
 
+<a id="en-region-mask"></a>
 #### Region mask
 
-Region mask lets you tune NR intensity, tone and structure separately, or gradually reduce NR in the distance to keep the original picture there. It is separate from Character mask, which identifies people. In development builds, find it at **Quality → Appearance & result → Model styling → Region mask**. Every pass on Multi-Pass has the same controls, after model appearance and before result adjustment. The switch applies to all passes; Pass 1 shares Quality's settings, while later passes can inherit or use independent values. Changes apply live without restarting the game; NR keeps running when the mask is off. A compatible NR runtime and processing path are required.
+Region mask lets you tune NR intensity, tone and structure separately, or gradually reduce NR in the distance to keep the original picture there. It is separate from Character mask, which identifies people. Find it at **Quality → Appearance & result → Model styling → Region mask**. Every pass on Multi-Pass has the same controls, after model appearance and before result adjustment. The switch applies to all passes; Pass 1 shares Quality's settings, while later passes can inherit or use independent values. Changes apply live without restarting the game; NR keeps running when the mask is off. A compatible NR runtime and processing path are required.
 
-Current development builds ignore the old diagnostic setting `NRControlMaskUseCoreContext=1` and fix existing processing history blocking NR when switching back to Upscaled or using stages per pass. There is no need to delete the key; update the addon and restart the game.
+Current builds ignore the old diagnostic setting `NRControlMaskUseCoreContext=1` and fix existing processing history blocking NR when switching back to Upscaled or using stages per pass. There is no need to delete the key; update the addon and restart the game.
 
 | Control | Default / options | What it does |
 | --- | --- | --- |

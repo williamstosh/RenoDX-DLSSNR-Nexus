@@ -23,6 +23,7 @@ param(
     [switch]$SoftwareOnly
 )
 $previousRetention = $env:NR_NEXUS_TEST_RETENTION
+$testWorkspaceStarted = $false
 try {
 $RetentionMode = @('Standard','Full','Acceptance') | Where-Object { $_ -ieq $RetentionMode } | Select-Object -First 1
 $env:NR_NEXUS_TEST_RETENTION = $RetentionMode
@@ -31,14 +32,12 @@ Set-StrictMode -Version Latest
 $repositoryRoot = Split-Path $PSScriptRoot -Parent
 $testRoot = Join-Path $repositoryRoot 'tests'
 . (Join-Path $testRoot 'test-support.ps1')
-Invoke-TestWorkspaceMaintenance
 $SourceRoot = [IO.Path]::GetFullPath($SourceRoot)
 if ($SourceRoot.TrimEnd('\','/') -ne $repositoryRoot.TrimEnd('\','/') -and $UiPreview -in @('Quick','Full')) {
     throw 'Explicit UI preview requires this checkout as SourceRoot; run the preview entry in the target checkout.'
 }
 $HostRoot = [IO.Path]::GetFullPath($HostRoot)
 $ShaderIncludeDirectory = [IO.Path]::GetFullPath($ShaderIncludeDirectory)
-$OutputDirectory = Initialize-TestOutput $OutputDirectory
 $sources = [ordered]@{
     report='report_flow_tests'; ui='ui_layout_tests'
     presets='preset_store_tests'
@@ -60,14 +59,14 @@ if ($BuildOnly -and @($Suite | Where-Object { $_ -in @('config','constants','lif
     throw '-BuildOnly requires explicitly selecting native/policy/scope/fg-xefg/fg-native/bridge-motion suites.'
 }
 if ($NativeCase.Count -and $Suite -notcontains 'fg-native') { throw '-NativeCase requires -Suite fg-native (or all).' }
-if ($Suite -contains 'fg-native') {
+$usesNativeNgx = @($NativeCase | Where-Object { $_ -in @('control-mask-native-ngx','control-mask-native-ngx-toggle','control-mask-native-ngx-toggle-rgb','control-mask-native-ngx-cost','control-mask-native-ngx-fg') }).Count -gt 0
+if ($Suite -contains 'fg-native' -and ($usesNativeNgx -or $NativeNgxSdkLibraryDirectory)) {
     if (-not $NativeNgxSdkLibraryDirectory -or
         -not (Test-Path -LiteralPath (Join-Path $NativeNgxSdkLibraryDirectory 'nvsdk_ngx_s.lib') -PathType Leaf)) {
-        throw '-Suite fg-native requires -NativeNgxSdkLibraryDirectory containing nvsdk_ngx_s.lib.'
+        throw 'Native NGX support requires -NativeNgxSdkLibraryDirectory containing nvsdk_ngx_s.lib; omit it for WARP+MOCK cases.'
     }
     $NativeNgxSdkLibraryDirectory = (Resolve-Path -LiteralPath $NativeNgxSdkLibraryDirectory).Path
 }
-$usesNativeNgx = @($NativeCase | Where-Object { $_ -in @('control-mask-native-ngx','control-mask-native-ngx-toggle','control-mask-native-ngx-toggle-rgb','control-mask-native-ngx-cost','control-mask-native-ngx-fg') }).Count -gt 0
 if ($usesNativeNgx) {
     if (-not $NativeNgxProjectIdPath -or -not (Test-Path -LiteralPath $NativeNgxProjectIdPath -PathType Leaf)) {
         throw 'native NGX ControlMask cases require -NativeNgxProjectIdPath to an existing ProjectID file.'
@@ -80,11 +79,17 @@ if ($usesNativeNgx) {
 }
 if ($BridgeCase -and $Suite -notcontains 'bridge-motion') { throw '-BridgeCase requires -Suite bridge-motion (or all).' }
 if ($Suite -contains 'vulkan-control-mask') {
+    if (-not $PSBoundParameters.ContainsKey('VulkanIncludeDirectory') -and -not $env:VULKAN_SDK) {
+        $VulkanIncludeDirectory = & (Join-Path $PSScriptRoot 'setup-vulkan-headers.ps1')
+    }
     if (-not $VulkanIncludeDirectory -or -not (Test-Path -LiteralPath (Join-Path $VulkanIncludeDirectory 'vulkan/vulkan.h'))) {
         throw '-Suite vulkan-control-mask requires -VulkanIncludeDirectory or VULKAN_SDK.'
     }
     $VulkanIncludeDirectory = [IO.Path]::GetFullPath($VulkanIncludeDirectory)
 }
+$testWorkspaceStarted = $true
+Invoke-TestWorkspaceMaintenance
+$OutputDirectory = Initialize-TestOutput $OutputDirectory
 if (-not $DetoursLibrary) { $DetoursLibrary = Join-Path $HostRoot 'external/Detours/lib.X64/detours.lib' }
 $parameters = @{ SourceRoot=$SourceRoot; HostRoot=$HostRoot; ShaderIncludeDirectory=$ShaderIncludeDirectory
     BuildProject=$BuildProject; VcVars64=$VcVars64 }
@@ -141,7 +146,8 @@ foreach ($item in $Suite) {
             "/I$HostRoot/external/json/include", "/I$HostRoot/external/frozen/include", "/I$HostRoot/external/gtl/include")
         if ($item -eq 'vulkan-control-mask') { $arguments += "/I$VulkanIncludeDirectory" }
         $link += @('user32.lib','gdi32.lib','ole32.lib','psapi.lib')
-        if ($item -eq 'fg-native') {
+        if ($item -eq 'fg-native' -and $NativeNgxSdkLibraryDirectory) {
+            $arguments += '/DNR_NEXUS_TEST_NATIVE_NGX'
             $link += (Join-Path $NativeNgxSdkLibraryDirectory 'nvsdk_ngx_s.lib')
         }
         if ($item -eq 'bridge-motion') { $link += 'd3dcompiler.lib' }
@@ -232,5 +238,5 @@ if ($Suite -contains 'ui' -and -not $BuildOnly -and $UiPreview -ne 'None') {
     throw
 } finally {
     $env:NR_NEXUS_TEST_RETENTION = $previousRetention
-    Invoke-TestWorkspaceMaintenance
+    if ($testWorkspaceStarted) { Invoke-TestWorkspaceMaintenance }
 }

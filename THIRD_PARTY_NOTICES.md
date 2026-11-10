@@ -173,6 +173,18 @@ repository does not. Before distributing one, check the exact versions' licenses
 and include the required copyright, license, and NOTICE files in the package.
 The root MIT license does not relicense NVIDIA SDKs, runtime DLLs, or models.
 
+## Vulkan software-test headers
+
+`tools/setup-vulkan-headers.ps1` downloads the unmodified
+[Khronos Vulkan-Headers v1.4.321](https://github.com/KhronosGroup/Vulkan-Headers/tree/v1.4.321)
+archive pinned by commit and SHA-256 in `host/tools.lock.json`.
+The headers are used by the offline Vulkan tests and remain in the local tool
+directory with their original copyright and license files. They are not vendored
+or included in add-on packages. The upstream
+[license summary](https://github.com/KhronosGroup/Vulkan-Headers/blob/v1.4.321/LICENSE.md)
+identifies Apache-2.0 and MIT; MIT-licensed files also offer Apache-2.0 except
+for `parse_dependency.py`, which is MIT only.
+
 ## Binary package notices
 
 The Windows x64 add-on incorporates Microsoft Detours and uses code from the
