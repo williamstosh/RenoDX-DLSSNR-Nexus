@@ -20,8 +20,14 @@
 #undef main
 
 static std::vector<std::pair<int, std::string>> captured_logs;
+static bool suppress_control_mask_cost_logs = false;
+static uint64_t suppressed_control_mask_cost_logs = 0;
 
 extern "C" __declspec(dllexport) void ReShadeLogMessage(void*, int level, const char* message) {
+  if (suppress_control_mask_cost_logs) {
+    ++suppressed_control_mask_cost_logs;
+    return;
+  }
   if (std::strstr(message, "DLSS5 FG interval ") != nullptr) {
     interval_diagnostic = message;
   }
@@ -732,6 +738,10 @@ int RunNativeRequiredMenuTest() {
 #include "control_mask_capture_cases.hpp"
 
 int main(int argc, char** argv) {
+  if (argc == 3 && std::strcmp(argv[1], "--control-mask-native-ngx-cost") == 0) {
+    return control_mask_gpu_cases::RunNativeNgx(
+        argv[2], false, renodx::addons::dlss5::internal::kControlMaskDepthFar, true);
+  }
   if (argc == 3 && std::strcmp(argv[1], "--control-mask-native-ngx") == 0) {
     return control_mask_gpu_cases::RunNativeNgx(argv[2]);
   }

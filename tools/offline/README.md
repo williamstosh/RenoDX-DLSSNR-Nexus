@@ -184,6 +184,31 @@ data-range 必须按实际数据口径指定（例如 RGBA8 为 255）。相同�
 identical=true，避免不可移植的 JSON Infinity。比较工具只测给定数组，不推定来源或
 自动认定两个序列具有相同 History。
 
+## ControlMask 原生成本
+
+`fg-native` 的 `control-mask-native-ngx-cost` 用例在固定 4K 合成输入上计量
+生产 Upscaled 单 Pass，通过已初始化的公开 NGX Core 执行真实 NR。使用现有
+ProjectID、SDK 静态库和 310.9.16.0 Runtime，沿用统一测试入口的参数：
+
+~~~powershell
+$env:NR_NEXUS_TEST_CONTROL_MASK_COST_MODE = 'depthfar'
+pwsh -File tools/run-tests.ps1 -Suite fg-native -NativeCase control-mask-native-ngx-cost `
+    -NativeNgxProjectIdPath $projectIdPath -NativeNgxSdkLibraryDirectory $sdkLibraryDirectory `
+    -NativeNgxRuntimePath $runtimePath -UiPreview None -OutputDirectory tmp/offline/depthfar-cost
+Remove-Item Env:NR_NEXUS_TEST_CONTROL_MASK_COST_MODE
+~~~
+
+模式可选 `off`、`rgb`、`depthfar`，默认 `depthfar`。对照按
+`off → rgb → off → depthfar → off` 分别启动独立进程、使用新输出目录，
+保持相同输入、模型请求和预热。每进程固定请求模型 B，先执行相同的创建／Reset 前缀，
+再预热 16 帧、计量 64 帧；每帧恢复固定 Color／Output，提交并等待 Fence 完成。
+输出 `controlmask-cost.json` 保存逐样本 GPU ticks、实际队列频率和提交完成值，
+分列整个 wrapper、Core Evaluate 和遮罩 Dispatch。Dispatch 不包含前后绑定和 Barrier，
+关闭组该字段为 null。原始 ticks 用于重算分布及核对前后基线漂移。
+
+宿主 SR 为 MOCK，NR Evaluate 与 GPU 完成为 NATIVE_NGX／NATIVE_GPU。
+合成输入的串行提交耗时用于离线对照；游戏帧时、FG、画质和长时稳定性各自验收。
+
 ## 自动回归与证据保存
 
 ~~~powershell

@@ -7,6 +7,7 @@
 #include <cstring>
 #include <DirectXPackedVector.h>
 #include <fstream>
+#include <nlohmann/json.hpp>
 #include <vector>
 
 namespace control_mask_gpu_cases {
@@ -16,6 +17,10 @@ using DispatchFn = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, UINT, UI
 inline DispatchFn real_dispatch = nullptr;
 inline uint32_t mask_dispatches = 0;
 inline ID3D12PipelineState* observed_pipeline = nullptr;
+inline d3d12_test::TimestampQueries* native_cost_queries = nullptr;
+inline ID3D12GraphicsCommandList* native_cost_list = nullptr;
+inline UINT native_cost_interval = 0;
+inline uint32_t native_cost_dispatches = 0;
 using PipelineFn = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, ID3D12PipelineState*);
 inline PipelineFn real_pipeline = nullptr;
 using AllocateFn = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*, const D3D12_HEAP_PROPERTIES*,
@@ -370,6 +375,17 @@ void STDMETHODCALLTYPE ObservePipeline(ID3D12GraphicsCommandList* list, ID3D12Pi
 }
 
 void STDMETHODCALLTYPE ObserveDispatch(ID3D12GraphicsCommandList* list, UINT x, UINT y, UINT z) {
+  if (native_cost_queries != nullptr && list == native_cost_list
+      && observed_pipeline == addon::codec_pipeline.control_mask) {
+    ++native_cost_dispatches;
+    if (native_cost_dispatches == 1) {
+      native_cost_queries->Begin(list, native_cost_interval + 2);
+      real_dispatch(list, x, y, z);
+      list->EndQuery(native_cost_queries->heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                     2 * (native_cost_interval + 2) + 1);
+      return;
+    }
+  }
   if (model_gpu != nullptr && list == model_gpu->list.Get()
       && addon::codec_pipeline.control_mask != nullptr
       && observed_pipeline == addon::codec_pipeline.control_mask) {
@@ -1911,6 +1927,8 @@ int RunSafety(bool hardware, bool safety = true) {
 inline addon::DirectEvaluateFn native_runtime_evaluate = nullptr;
 inline std::vector<ID3D12Resource*> native_runtime_masks;
 inline std::vector<NVSDK_NGX_Result> native_runtime_results;
+inline std::vector<int> native_runtime_resets;
+inline bool native_cost_observe = false;
 
 void NVSDK_CONV NativeNgxSdkLog(
     const char*, NVSDK_NGX_Logging_Level, NVSDK_NGX_Feature) {}
@@ -1921,19 +1939,44 @@ NVSDK_NGX_Result NVSDK_CONV ObserveNativeRuntimeEvaluate(
     const NVSDK_NGX_Parameter* parameters,
     PFN_NVSDK_NGX_ProgressCallback progress) {
   native_runtime_masks.push_back(addon::GetD3D12Resource(parameters, "DLSSNR.ControlMask"));
+  if (native_cost_observe) {
+    native_runtime_resets.push_back(addon::GetInt(parameters, "DLSSNR.Reset", -1));
+  }
+  const bool timed = native_cost_queries != nullptr && command_list == native_cost_list;
+  if (timed && native_runtime_masks.size() == 1) {
+    native_cost_queries->Begin(command_list, native_cost_interval + 1);
+  }
   const NVSDK_NGX_Result result = native_runtime_evaluate(command_list, handle, parameters, progress);
+  if (timed && native_runtime_masks.size() == 1) {
+    command_list->EndQuery(native_cost_queries->heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                           2 * (native_cost_interval + 1) + 1);
+  }
   native_runtime_results.push_back(result);
   return result;
 }
 
 int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
-                 uint32_t mask_mode = addon::kControlMaskDepthFar) {
+                 uint32_t mask_mode = addon::kControlMaskDepthFar, bool cost = false) {
   try {
+    const bool single_stage = hot_toggle || cost;
+    const char* cost_mode_environment = std::getenv("NR_NEXUS_TEST_CONTROL_MASK_COST_MODE");
+    const std::string cost_mode = (cost_mode_environment != nullptr ? cost_mode_environment : "depthfar");
+    if (cost) {
+      Check(cost_mode == "off" || cost_mode == "rgb" || cost_mode == "depthfar",
+            "cost mode must be off, rgb or depthfar");
+      mask_mode = (cost_mode == "rgb" ? addon::kControlMaskRgb : addon::kControlMaskDepthFar);
+      addon::cost_meter_enabled = false;
+      addon::gpu_timers_enabled = false;
+      native_cost_observe = true;
+      native_runtime_masks.reserve(2);
+      native_runtime_results.reserve(2);
+      native_runtime_resets.reserve(2);
+    }
     reshade::internal::get_reshade_module_handle(GetModuleHandleW(nullptr));
     addon::addon_module = GetModuleHandleW(nullptr);
     Gpu gpu(true);
-    constexpr UINT width = 960;
-    constexpr UINT height = 540;
+    const UINT width = (cost ? 3840 : 960);
+    const UINT height = (cost ? 2160 : 540);
     Check(addon::InstallQueueCompletionHooks(gpu.queue.Get()), "native ControlMask queue completion hooks");
     Check(addon::InstallCommandListStateHooks(gpu.list.Get()), "native ControlMask command-list hooks");
     Check(addon::EnsureControlMaskPipeline(gpu.device.Get()), "native ControlMask production pipeline");
@@ -1999,7 +2042,7 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
     gpu.Submit();
 
     addon::PrimeNgxLoaderSymbols(gpu.device.Get());
-    if (std::getenv("NR_NEXUS_TEST_DIRECT_INIT_ONLY") != nullptr) {
+    if (!cost && std::getenv("NR_NEXUS_TEST_DIRECT_INIT_ONLY") != nullptr) {
       std::scoped_lock runtime_lock(addon::runtime_mutex);
       const bool initialized = addon::EnsureDirectRuntime(gpu.list.Get());
       std::cout << "DIRECT_INIT_ONLY initialized=" << initialized << " result=0x"
@@ -2035,8 +2078,8 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
           "production loader observes the SDK-initialized public NGX Core");
     {
       std::scoped_lock runtime_lock(addon::runtime_mutex);
-      addon::control_mask_use_core_context = hot_toggle;
-      addon::SuccessfulSrCoreScope host_sr(hot_toggle ? gpu.list.Get() : nullptr);
+      addon::control_mask_use_core_context = single_stage;
+      addon::SuccessfulSrCoreScope host_sr(single_stage ? gpu.list.Get() : nullptr);
       Check(addon::EnsureDirectRuntime(gpu.list.Get()),
             "production direct Runtime initializes with the public Core loaded");
       Check(addon::parameter_runtime_via_core.load()
@@ -2047,8 +2090,8 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
     }
     addon::enabled = true;
     addon::hooks_enabled = true;
-    addon::hook_point = (hot_toggle ? addon::kHookUpscaled : addon::kHookRender);
-    addon::stack_passes = (hot_toggle ? 1 : 2);
+    addon::hook_point = (single_stage ? addon::kHookUpscaled : addon::kHookRender);
+    addon::stack_passes = (single_stage ? 1 : 2);
     addon::pass_stage[0] = 2u;
     addon::configuration_generation.fetch_add(1);
     addon::nr_follow_input_res = false;
@@ -2057,15 +2100,22 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
     addon::transfer_strength = 1.f;
     addon::color_strength = 1.f;
     addon::intensity = 1.f;
-    addon::preset = (hot_toggle ? 2u : 1u);
+    addon::preset = (single_stage ? 2u : 1u);
     addon::codec_mode = 0u;
-    const bool mask_enabled = hot_toggle || std::getenv("NR_NEXUS_TEST_CONTROL_MASK_OFF") == nullptr;
+    const bool mask_enabled = (cost ? cost_mode != "off"
+                                    : hot_toggle || std::getenv("NR_NEXUS_TEST_CONTROL_MASK_OFF") == nullptr);
     const char* mask_mode_name = (mask_mode == addon::kControlMaskRgb ? "rgb" : "depthfar");
     addon::control_mask_enabled = mask_enabled;
     addon::control_mask_mode = mask_mode;
     addon::control_mask_depth_near = 0.7f;
     addon::control_mask_depth_far = 0.9f;
     addon::control_mask_blend_mode = 0u;
+    if (cost) {
+      addon::use_auto_mask = false;
+      addon::control_mask_red = 1.f;
+      addon::control_mask_green = 1.f;
+      addon::control_mask_blue = 1.f;
+    }
 
     renodx::addons::dlss5::bridge::OwnedParameters parameters;
     parameters.Set(NVSDK_NGX_Parameter_Color, color.Get());
@@ -2092,11 +2142,43 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
     parameters.Set(NVSDK_NGX_Parameter_MV_Scale_Y, 1.f);
     const auto* owner = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xC04A7});
     addon::RegisterCreatedFeatureLocked(owner, addon::kFeatureDlss, &parameters);
+    const auto restore_cost_inputs = [&] {
+      // The mock host does no GPU work. Restore both inputs explicitly because
+      // Upscaled NR consumes and replaces Output; Color alone is not sufficient.
+      gpu.Transition(color.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                     D3D12_RESOURCE_STATE_COPY_DEST);
+      gpu.Transition(output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                     D3D12_RESOURCE_STATE_COPY_DEST);
+      const D3D12_TEXTURE_COPY_LOCATION source{
+          .pResource = color_transfer.upload.Get(),
+          .Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+          .PlacedFootprint = color_transfer.footprint};
+      const D3D12_TEXTURE_COPY_LOCATION color_destination{
+          .pResource = color.Get(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+      const D3D12_TEXTURE_COPY_LOCATION output_destination{
+          .pResource = output.Get(), .Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+      gpu.Retain(color_transfer.upload.Get());
+      gpu.list->CopyTextureRegion(&color_destination, 0, 0, 0, &source, nullptr);
+      gpu.list->CopyTextureRegion(&output_destination, 0, 0, 0, &source, nullptr);
+      gpu.Transition(color.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+      gpu.Transition(output.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    };
+    nlohmann::json cost_report;
+    nlohmann::json cost_prefix = nlohmann::json::array();
+    constexpr uint32_t cost_prefix_frames = addon::kContractDebounceFrames + 8;
     bool production_chain_completed = false;
-    for (uint32_t attempt = 0; attempt < addon::kContractDebounceFrames + 32; ++attempt) {
+    const uint32_t prefix_limit = (cost ? cost_prefix_frames : addon::kContractDebounceFrames + 32);
+    for (uint32_t attempt = 0; attempt < prefix_limit; ++attempt) {
       native_runtime_masks.clear();
       native_runtime_results.clear();
+      native_runtime_resets.clear();
       gpu.list->ClearState(nullptr);
+      if (cost) {
+        restore_cost_inputs();
+        parameters.Set(NVSDK_NGX_Parameter_Reset, (attempt == 0 ? 1 : 0));
+      }
       addon::ngx_slot_real[0].evaluate = reinterpret_cast<void*>(SuccessfulHostEvaluate);
       const NVSDK_NGX_Result result = addon::HookedEvaluateFeatureSlot<0>(
           gpu.list.Get(), owner, &parameters, nullptr);
@@ -2104,18 +2186,25 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
       Check(NVSDK_NGX_SUCCEED(result), "mock host SR succeeds around production Render and Upscaled hooks");
       gpu.Submit();
       addon::DrainRetiredResources(true);
-      const size_t expected_evaluates = (hot_toggle ? 1u : 2u);
+      if (cost) {
+        cost_prefix.push_back({{"frame", attempt}, {"host_result", static_cast<uint32_t>(result)},
+            {"evaluate_count", native_runtime_results.size()}, {"results", native_runtime_results},
+            {"resets", native_runtime_resets}, {"fence", gpu.serial},
+            {"fence_completed", gpu.fence->GetCompletedValue()}});
+      }
+      const size_t expected_evaluates = (single_stage ? 1u : 2u);
       if (native_runtime_masks.size() != expected_evaluates
           || native_runtime_results.size() != expected_evaluates) continue;
 
       auto& feature = addon::features.at(owner);
-      if (hot_toggle) {
+      if (single_stage) {
         Check(feature.slots[0].via_core && addon::direct_api.borrowed_core_context,
               "hot-toggle fixture uses the successful host SR Core path");
         Check(native_runtime_results[0] == NVSDK_NGX_Result_Success
                   && native_runtime_masks[0] == addon::worksets.at({owner, output.Get(), false}).control_mask,
               "initial borrowed Core frame binds and evaluates its production mask");
         production_chain_completed = true;
+        if (cost) continue;
         break;
       }
       Check(feature.render_session != nullptr
@@ -2145,6 +2234,172 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
     }
     Check(production_chain_completed,
           "real Runtime completes both production Render and Upscaled stages within the debounce window");
+    if (cost) {
+      constexpr uint32_t warmup_frames = 16;
+      constexpr uint32_t sample_frames = 64;
+      constexpr uint32_t total_frames = warmup_frames + sample_frames;
+      auto queries = d3d12_test::CreateTimestampQueries(gpu, total_frames * 3);
+      struct CostFrame {
+        uint32_t host_result = 0;
+        uint32_t evaluate_result = 0;
+        size_t evaluate_count = 0;
+        int reset = -1;
+        uint32_t dispatch_count = 0;
+        uint64_t fence = 0;
+        uint64_t completed_fence = 0;
+        uint64_t workset_id = 0;
+        uint64_t allocated_bytes = 0;
+        bool mask_bound = false;
+        bool bindings_cleared = false;
+        HRESULT device_status = E_FAIL;
+      };
+      std::array<CostFrame, total_frames> frames{};
+      const auto& initial_workset = addon::worksets.at({owner, output.Get(), false});
+      const uint64_t stable_workset = initial_workset.id;
+      const uint64_t stable_bytes = initial_workset.allocated_bytes;
+      auto* const stable_mask = initial_workset.control_mask;
+      auto* const stable_history = addon::features.at(owner).slots[0].handle;
+      Check((stable_mask != nullptr) == mask_enabled, "cost prefix establishes the requested initial mask state");
+      model_gpu = &gpu;
+      observed_pipeline = nullptr;
+      real_dispatch = reinterpret_cast<DispatchFn>((*reinterpret_cast<void***>(gpu.list.Get()))[14]);
+      real_pipeline = reinterpret_cast<PipelineFn>((*reinterpret_cast<void***>(gpu.list.Get()))[25]);
+      Check(DetourTransactionBegin() == NO_ERROR && DetourUpdateThread(GetCurrentThread()) == NO_ERROR
+                && DetourAttach(reinterpret_cast<PVOID*>(&real_pipeline), reinterpret_cast<PVOID>(ObservePipeline)) == NO_ERROR
+                && DetourAttach(reinterpret_cast<PVOID*>(&real_dispatch), reinterpret_cast<PVOID>(ObserveDispatch)) == NO_ERROR
+                && DetourTransactionCommit() == NO_ERROR,
+            "cost installs existing production PSO/Dispatch observers");
+      const auto remove_cost_hooks = [&] {
+        native_cost_queries = nullptr;
+        native_cost_list = nullptr;
+        native_cost_observe = false;
+        suppress_control_mask_cost_logs = false;
+        model_gpu = nullptr;
+        return DetourTransactionBegin() == NO_ERROR && DetourUpdateThread(GetCurrentThread()) == NO_ERROR
+            && DetourDetach(reinterpret_cast<PVOID*>(&real_dispatch), reinterpret_cast<PVOID>(ObserveDispatch)) == NO_ERROR
+            && DetourDetach(reinterpret_cast<PVOID*>(&real_pipeline), reinterpret_cast<PVOID>(ObservePipeline)) == NO_ERROR
+            && DetourTransactionCommit() == NO_ERROR;
+      };
+      suppressed_control_mask_cost_logs = 0;
+      suppress_control_mask_cost_logs = true;
+      try {
+        for (uint32_t frame = 0; frame < total_frames; ++frame) {
+          native_runtime_masks.clear();
+          native_runtime_results.clear();
+          native_runtime_resets.clear();
+          native_cost_dispatches = 0;
+          observed_pipeline = nullptr;
+          gpu.list->ClearState(nullptr);
+          restore_cost_inputs();
+          parameters.Set(NVSDK_NGX_Parameter_Reset, 0);
+          native_cost_interval = frame * 3;
+          native_cost_list = gpu.list.Get();
+          native_cost_queries = &queries;
+          queries.Begin(gpu.list.Get(), native_cost_interval);
+          addon::ngx_slot_real[0].evaluate = reinterpret_cast<void*>(SuccessfulHostEvaluate);
+          const auto result = addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), owner, &parameters, nullptr);
+          addon::ngx_slot_real[0].evaluate = nullptr;
+          gpu.list->EndQuery(queries.heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 2 * native_cost_interval + 1);
+          native_cost_queries = nullptr;
+          Check(native_runtime_results.size() == 1 && native_runtime_resets.size() == 1
+                    && native_cost_dispatches == (mask_enabled ? 1u : 0u),
+                "cost frame records exactly one Core Evaluate and the expected production mask Dispatch");
+          // All nested EndQuery markers precede any Resolve. Off has no Dispatch
+          // query: do not read or resolve unwritten slots or invent an empty cost.
+          gpu.Retain(queries.readback.Get());
+          gpu.list->ResolveQueryData(queries.heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+              2 * native_cost_interval, (mask_enabled ? 6u : 4u), queries.readback.Get(),
+              2ull * native_cost_interval * sizeof(uint64_t));
+          gpu.Submit();
+          addon::DrainRetiredResources(true);
+          const auto& workset = addon::worksets.at({owner, output.Get(), false});
+          const auto& slot = addon::features.at(owner).slots[0];
+          frames[frame] = {.host_result = static_cast<uint32_t>(result),
+              .evaluate_result = static_cast<uint32_t>(native_runtime_results[0]),
+              .evaluate_count = native_runtime_results.size(), .reset = native_runtime_resets[0],
+              .dispatch_count = native_cost_dispatches, .fence = gpu.serial,
+              .completed_fence = gpu.fence->GetCompletedValue(), .workset_id = workset.id,
+              .allocated_bytes = workset.allocated_bytes, .mask_bound = native_runtime_masks[0] != nullptr,
+              .bindings_cleared = !slot.control_mask_bound,
+              .device_status = gpu.device->GetDeviceRemovedReason()};
+          Check(NVSDK_NGX_SUCCEED(result) && NVSDK_NGX_SUCCEED(native_runtime_results[0])
+                    && native_runtime_masks[0] == stable_mask && workset.control_mask == stable_mask
+                    && workset.id == stable_workset && workset.allocated_bytes == stable_bytes
+                    && slot.handle == stable_history && slot.via_core && !slot.control_mask_bound
+                    && frames[frame].reset == 0 && frames[frame].completed_fence >= gpu.serial
+                    && frames[frame].completed_fence != UINT64_MAX && SUCCEEDED(frames[frame].device_status),
+                "cost frame preserves binding, History, workset and healthy GPU completion");
+        }
+      } catch (...) {
+        if (!remove_cost_hooks()) {
+          std::cerr << "FAIL ControlMask cost observer cleanup\n";
+        }
+        throw;
+      }
+      Check(remove_cost_hooks(), "cost removes its PSO/Dispatch observers");
+      ComPtr<IDXGIAdapter1> adapter;
+      const LUID adapter_luid = gpu.device->GetAdapterLuid();
+      Check(SUCCEEDED(gpu.factory->EnumAdapterByLuid(adapter_luid, IID_PPV_ARGS(&adapter))), "cost adapter identity");
+      DXGI_ADAPTER_DESC1 adapter_desc{};
+      Check(SUCCEEDED(adapter->GetDesc1(&adapter_desc)), "cost adapter description");
+      char adapter_name[512]{};
+      Check(WideCharToMultiByte(CP_UTF8, 0, adapter_desc.Description, -1,
+                adapter_name, sizeof(adapter_name), nullptr, nullptr) > 0, "cost adapter UTF-8 name");
+      LARGE_INTEGER driver_version{};
+      const HRESULT driver_status = adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &driver_version);
+      cost_report = {{"schema", "nr-nexus-controlmask-cost-v1"}, {"evidence", "NATIVE_GPU+NATIVE_NGX"},
+          {"host_sr", "MOCK no GPU work"}, {"backend", "borrowed-Core"}, {"stage", "Upscaled"},
+          {"preset_request", "B"}, {"internal_model", "unknown"}, {"mode", cost_mode},
+          {"environment", {{"NR_NEXUS_TEST_CONTROL_MASK_COST_MODE", cost_mode},
+              {"mode_defaulted", cost_mode_environment == nullptr}}},
+          {"width", width}, {"height", height}, {"color_output_format", "RGBA16F"},
+          {"depth_format", "R32_FLOAT"}, {"motion_format", "RG16F zero"},
+          {"mask_enabled", mask_enabled}, {"mask_rgb", {1.f, 1.f, 1.f}},
+          {"depth_near", 0.7f}, {"depth_far", 0.9f}, {"auto_mask", false}, {"blend_mode", 0},
+          {"intensity", 1.f}, {"codec_mode", 0}, {"passes", 1},
+          {"warmup_frames", warmup_frames}, {"sample_frames", sample_frames},
+          {"prefix_frames", cost_prefix_frames}, {"prefix", std::move(cost_prefix)},
+          {"runtime_file_version", addon::NgxLoaderView().nr_requirements.file_version},
+          {"gpu", {{"name", adapter_name}, {"vendor_id", adapter_desc.VendorId},
+              {"device_id", adapter_desc.DeviceId}, {"driver_status", driver_status},
+              {"driver_version_raw", driver_version.QuadPart}}},
+          {"timestamp_frequency_hz", queries.frequency_hz},
+          {"cost_meter_enabled", false}, {"gpu_timers_enabled", false},
+          {"suppressed_log_calls", suppressed_control_mask_cost_logs},
+          {"input_schedule", "fixed upload restores Color and Output before wrapper; fixed Depth and zero Motion"},
+          {"reset_schedule", "host Reset=1 only at prefix frame 0, then 0; observed Core resets recorded"},
+          {"synchronization", "one list submission per frame, Fence complete before allocator/query reuse"},
+          {"timing_scope", {{"wrapper", "entire HookedEvaluateFeatureSlot including mock host SR"},
+              {"core", "real Core Feature 18 Evaluate only"},
+              {"dispatch", "production ControlMask PSO Dispatch only; excludes bindings and barriers; off is null"}}},
+          {"frames", nlohmann::json::array()}};
+      const auto timestamp_json = [](const d3d12_test::TimestampSample& sample) {
+        return nlohmann::json{{"begin_tick", sample.begin_tick}, {"end_tick", sample.end_tick},
+            {"ticks", sample.ticks}, {"gpu_ms", sample.gpu_ms}};
+      };
+      for (uint32_t frame = 0; frame < total_frames; ++frame) {
+        const auto wrapper = queries.Read(frame * 3);
+        const auto core = queries.Read(frame * 3 + 1);
+        Check(wrapper.begin_tick <= core.begin_tick && core.end_tick <= wrapper.end_tick,
+              "cost Core timestamps are nested inside wrapper");
+        nlohmann::json dispatch = nullptr;
+        if (mask_enabled) {
+          const auto sample = queries.Read(frame * 3 + 2);
+          Check(wrapper.begin_tick <= sample.begin_tick && sample.end_tick <= core.begin_tick,
+                "cost production mask Dispatch precedes the real Core Evaluate");
+          dispatch = timestamp_json(sample);
+        }
+        const auto& sample = frames[frame];
+        cost_report["frames"].push_back({{"frame", frame}, {"warmup", frame < warmup_frames},
+            {"wrapper", timestamp_json(wrapper)}, {"core", timestamp_json(core)}, {"dispatch", std::move(dispatch)},
+            {"host_result", sample.host_result}, {"evaluate_result", sample.evaluate_result},
+            {"evaluate_count", sample.evaluate_count}, {"reset", sample.reset},
+            {"dispatch_count", sample.dispatch_count}, {"fence", sample.fence},
+            {"completed_fence", sample.completed_fence}, {"workset_id", sample.workset_id},
+            {"allocated_bytes", sample.allocated_bytes}, {"mask_bound", sample.mask_bound},
+            {"bindings_cleared", sample.bindings_cleared}, {"device_status", sample.device_status}});
+      }
+    }
     if (hot_toggle) {
       ComPtr<ID3D12CommandAllocator> probe_allocator;
       ComPtr<ID3D12GraphicsCommandList> probe_list;
@@ -2304,9 +2559,10 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
                         static_cast<std::streamsize>(output_bytes.size()));
       Check(output_file.good(), "production output bytes are saved");
     }
-    std::cout << "PASS ControlMask production chain stages=" << (hot_toggle ? "Upscaled" : "Render+Upscaled")
-              << " evidence=NATIVE_GPU+NATIVE_NGX host_sr=MOCK frames=" << (hot_toggle ? 52 : 1)
-              << " size=960x540 mask="
+    std::cout << "PASS ControlMask production chain stages=" << (single_stage ? "Upscaled" : "Render+Upscaled")
+              << " evidence=NATIVE_GPU+NATIVE_NGX host_sr=MOCK frames="
+              << (cost ? 80 : (hot_toggle ? 52 : 1))
+              << " size=" << width << 'x' << height << " mask="
               << (mask_enabled ? mask_mode_name : "off")
               << " output_readback=rgba16f raw="
               << (keep_raw_output ? "retained" : "discarded") << "\n";
@@ -2325,6 +2581,18 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
         addon::direct_device->Release();
         addon::direct_device = nullptr;
       }
+    }
+    if (cost) {
+      cost_report["output_readback"] = {{"count", 1}, {"after_measurement", true},
+          {"bytes", output_bytes.size()}, {"raw_retained", keep_raw_output}};
+      cost_report["production_teardown_completed"] = true;
+      std::ofstream cost_file("controlmask-cost.json", std::ios::binary | std::ios::trunc);
+      Check(cost_file.is_open(), "cost JSON opens");
+      cost_file << cost_report.dump(2) << '\n';
+      cost_file.close();
+      Check(!cost_file.fail(), "cost JSON is saved");
+      std::cout << "PASS ControlMask cost mode=" << cost_mode
+                << " warmup=16 samples=64 output=controlmask-cost.json\n";
     }
     return 0;
   } catch (const std::exception& error) {
