@@ -91,6 +91,15 @@ XeFG 和 FSR FG；保持 HDR／分辨率。退出后完整恢复，日志须另�
 
 runner 与 wrapper 复用公共测试产物生命周期。结果写出后自动删除导航／OCR 截图；失败保留关键样本，恢复核验后释放存档副本，配置副本保留供验收使用。Full／Acceptance 与 Standard 同样收尾；显式 `NR_NEXUS_TEST_KEEP_RAW=1` 才保留完整数据。tmp/ 与 artifacts/ 共享默认 10 GiB 软预算（`NR_NEXUS_TEST_BUDGET_BYTES`），预算只用于额外收缩，设为 0 不影响正常收尾。活动任务、恢复材料及明确保留的证据不受预算删除。
 
+看门狗发现持续窗口无响应或整轮超时时，会先结束采集器及 worker，在游戏恢复前用独立进程保存 `hang-evidence/game.dmp` 和结果清单。转储通过 Windows DbgHelp 捕获线程栈、线程信息及模块，不包含完整进程内存；工具核对所属 PID、创建时间和路径，默认限时20秒。证据仅留本地，失败或超时仍继续原有受保护恢复，结果不会因此转为通过。
+
+画面停止但窗口仍响应时，窗口无响应检查可能不触发。可在本次受保护会话仍存活时，从另一个终端保存一次转储；`$runDirectory` 必须指向本次 runner 输出，输出目录必须尚不存在。此命令不操作游戏输入、不结束游戏，也不释放原 runner 的保护：
+
+```powershell
+& $pythonPath -B ./tools/game-test/hang_evidence.py `
+    --process "$runDirectory/owned-process.json" --output "$runDirectory/hang-evidence-manual"
+```
+
 连续录制自动核验各原帧哈希，生成不超过 1280×720 的 WebP 回看预览并核验解码帧数／时间间隔；保留预览、摘要、录制记录及首尾原图，自动释放其余原帧。转换失败则保留整段原帧及错误记录。预览只用于采样回看；原分辨率画质分析或完整原帧专项须在启动前显式 KEEP_RAW。
 
 已授权的历史游戏产物清理可运行 `python tools/game-test/cleanup_artifacts.py --root artifacts`，只接入有完整 guard／恢复／退出证据的旧运行；游戏或 CrashReporter 仍在运行时拒绝执行。

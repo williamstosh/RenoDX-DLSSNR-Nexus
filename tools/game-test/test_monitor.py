@@ -102,6 +102,8 @@ class MonitorTests(unittest.TestCase):
         self.runner.collect_crashes = mock.Mock(return_value=[])
         self.runner.freeze_logs = mock.Mock(side_effect=self.freeze_logs)
         self.stack.enter_context(mock.patch.object(self.runner.crash_evidence, 'collect', return_value=[]))
+        self.hang_capture = self.stack.enter_context(mock.patch.object(
+            self.runner.hang_evidence, 'capture', return_value=dict(status='captured')))
         ticks = iter(range(1000))
         self.runner.time = types.SimpleNamespace(
             monotonic=lambda: next(ticks), sleep=mock.Mock())
@@ -127,6 +129,9 @@ class MonitorTests(unittest.TestCase):
             save, config = self.out / 'protected/save.bin', self.out / 'protected/config.bin'
             save.write_bytes(b'save copy')
             config.write_bytes(b'config copy')
+            evidence = self.out / 'hang-evidence/game.dmp'
+            evidence.parent.mkdir()
+            evidence.write_bytes(b'synthetic dump')
             self.runner.dump(self.out / 'protected-files.json', [
                 dict(path='original.sav', backup_path=str(save)),
                 dict(path='ReShade.ini', backup_path=str(config))])
@@ -134,7 +139,7 @@ class MonitorTests(unittest.TestCase):
             self.assertFalse((self.out / 'ocr.png').exists())
             self.assertFalse((self.out / 'menu.png').exists())
             self.assertFalse(save.exists())
-            for path in (config, self.out / 'latest.png', self.out / 'hdr-nr-on.png'):
+            for path in (config, self.out / 'latest.png', self.out / 'hdr-nr-on.png', evidence):
                 self.assertTrue(path.exists(), path)
 
     def test_motion_cleanup_without_budget_keeps_verified_preview_or_originals(self):
@@ -262,6 +267,7 @@ class MonitorTests(unittest.TestCase):
         self.assertIn("monitor metrics unavailable", final["parent_error"])
         self.assertIn(("stop_worker", True), self.events)
         self.assert_recovered_under_guard()
+        self.hang_capture.assert_not_called()
 
     def test_worker_without_result_is_failed_with_final_receipts(self):
         self.worker_result = None
@@ -283,6 +289,49 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(final["parent_problem"], "run_timeout")
         self.assertIn(("stop_worker", True), self.events)
         self.assert_recovered_under_guard()
+
+    def test_watchdog_captures_live_process_after_worker_stops_before_recovery(self):
+        self.publish_owned = True
+        self.child.returncode = None
+
+        def capture(owner, destination):
+            self.assertEqual(owner, self.owner)
+            self.assertEqual(destination, self.out / 'hang-evidence')
+            self.events.append(('hang_capture', self.locked, self.alive, self.child.returncode))
+            return dict(status='captured')
+
+        self.hang_capture.side_effect = capture
+        final = self.run_and_read()
+        self.assertEqual(final['hang_evidence'], dict(reason='run_timeout', status='captured'))
+        self.assertIn(('hang_capture', True, True, -1), self.events)
+        self.assertLess(self.events.index(('hang_capture', True, True, -1)),
+                        self.events.index(('stop_owned', True)))
+
+    def test_persistent_unresponsive_requests_one_dump(self):
+        self.publish_owned = True
+        self.child.returncode = None
+        self.cfg['run_timeout'] = 500
+        self.desktop.u.IsHungAppWindow.return_value = True
+        final = self.run_and_read()
+        self.assertEqual(final['parent_problem'], 'persistent_unresponsive')
+        self.assertEqual(final['hang_evidence']['reason'], 'persistent_unresponsive')
+        self.hang_capture.assert_called_once_with(self.owner, self.out / 'hang-evidence')
+        self.assert_recovered_under_guard()
+
+    def test_hang_capture_failure_keeps_original_watchdog_failure_and_recovers(self):
+        self.publish_owned = True
+        self.child.returncode = None
+        self.hang_capture.side_effect = OSError('synthetic dump failure')
+        final = self.run_and_read()
+        self.assertEqual(final['parent_problem'], 'run_timeout')
+        self.assertEqual(final['hang_evidence']['status'], 'failed')
+        self.assertIn('synthetic dump failure', final['hang_evidence']['error'])
+        self.assert_recovered_under_guard()
+
+    def test_normal_exit_does_not_request_dump(self):
+        final = self.run_and_read()
+        self.assertEqual(final['result'], 'passed')
+        self.hang_capture.assert_not_called()
 
     def test_failed_worker_result_survives_zero_exit_code(self):
         self.worker_result = dict(result="failed", error="main_menu_timeout", startup="not_tested")

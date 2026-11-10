@@ -21,6 +21,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageStat
 import desktop
 import normal_process
 import crash_evidence
+import hang_evidence
 try:
     import output_lifecycle
 except ModuleNotFoundError:
@@ -934,7 +935,7 @@ def summarize_motion(recording):
 def finish_artifacts(out, final, guard_ok):
     """Release navigation captures and verified save copies after their consumers finish."""
     retained = list(out.glob('hdr-*.png')) + list(out.glob('addon-menu-*.png'))
-    retained += [out / 'crash-evidence', out / 'model-pair']
+    retained += [out / 'crash-evidence', out / 'hang-evidence', out / 'hang-evidence-manual', out / 'model-pair']
     if final['result'] == 'failed':
         retained.append(out / 'latest.png')
     disposables = [path for path in out.glob('*.png') if path not in retained]
@@ -970,7 +971,7 @@ def run_attempt(cfg, out):
     source = out / 'source'
     source.mkdir()
     sources = []
-    for name in ('runner.py', 'desktop.py', 'guard.py', 'normal_process.py', 'crash_evidence.py'):
+    for name in ('runner.py', 'desktop.py', 'guard.py', 'normal_process.py', 'crash_evidence.py', 'hang_evidence.py'):
         shutil.copyfile(HERE / name, source / name)
         sources.append(dict(name=name, sha256=sha(source / name)))
     shutil.copyfile(Path(output_lifecycle.__file__), source / 'output_lifecycle.py')
@@ -984,6 +985,7 @@ def run_attempt(cfg, out):
     protected += list(Path(cfg['executable']).parent.glob('*.ini'))
     child, capture_child, capture_log, owned, problem, guard_ok = None, None, None, None, None, False
     capture_started = False
+    hang_capture_reason = None
     crashes_before = crash_reports()
     final = dict(result='failed', started=stamp())
     try:
@@ -1046,6 +1048,7 @@ def run_attempt(cfg, out):
                         if time.monotonic() - started > cfg['run_timeout']:
                             problem = 'run_timeout'
                         if problem:
+                            hang_capture_reason = problem
                             freeze_logs(cfg, out / 'watchdog-logs')
                             dump(out / 'watchdog.json', dict(time=stamp(), reason=problem))
                             break
@@ -1140,6 +1143,13 @@ def run_attempt(cfg, out):
                     ownership = out / 'owned-process.json'
                     if ownership.exists():
                         owned = json.loads(ownership.read_text(encoding='utf-8'))
+                    if hang_capture_reason and owned:
+                        try:
+                            final['hang_evidence'] = dict(reason=hang_capture_reason,
+                                **hang_evidence.capture(owned, out / 'hang-evidence'))
+                        except Exception as error:
+                            final['hang_evidence'] = dict(reason=hang_capture_reason,
+                                status='failed', error=str(error))
                     for action in (
                         lambda: dump(out / 'recovery-modules.json', crash_evidence.modules(owned, lambda p: desktop.modules(p), cfg.get('required_module'))),
                         lambda: freeze_logs(cfg, out / 'pre-restore-logs'),
