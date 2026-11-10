@@ -738,6 +738,10 @@ int main(int argc, char** argv) {
   if (argc == 3 && std::strcmp(argv[1], "--control-mask-native-ngx-toggle") == 0) {
     return control_mask_gpu_cases::RunNativeNgx(argv[2], true);
   }
+  if (argc == 3 && std::strcmp(argv[1], "--control-mask-native-ngx-toggle-rgb") == 0) {
+    return control_mask_gpu_cases::RunNativeNgx(
+        argv[2], true, renodx::addons::dlss5::internal::kControlMaskRgb);
+  }
   if (argc == 3 && std::strcmp(argv[1], "--control-mask-native-ngx-fg") == 0) {
     return RunPresentGuideModelsTest(true, argv[2]);
   }

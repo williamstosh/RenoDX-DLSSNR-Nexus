@@ -1926,7 +1926,8 @@ NVSDK_NGX_Result NVSDK_CONV ObserveNativeRuntimeEvaluate(
   return result;
 }
 
-int RunNativeNgx(const char* project_id_path, bool hot_toggle = false) {
+int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
+                 uint32_t mask_mode = addon::kControlMaskDepthFar) {
   try {
     reshade::internal::get_reshade_module_handle(GetModuleHandleW(nullptr));
     addon::addon_module = GetModuleHandleW(nullptr);
@@ -2059,8 +2060,9 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false) {
     addon::preset = (hot_toggle ? 2u : 1u);
     addon::codec_mode = 0u;
     const bool mask_enabled = hot_toggle || std::getenv("NR_NEXUS_TEST_CONTROL_MASK_OFF") == nullptr;
+    const char* mask_mode_name = (mask_mode == addon::kControlMaskRgb ? "rgb" : "depthfar");
     addon::control_mask_enabled = mask_enabled;
-    addon::control_mask_mode = addon::kControlMaskDepthFar;
+    addon::control_mask_mode = mask_mode;
     addon::control_mask_depth_near = 0.7f;
     addon::control_mask_depth_far = 0.9f;
     addon::control_mask_blend_mode = 0u;
@@ -2257,7 +2259,8 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false) {
       }
       std::cout << "PASS ControlMask hot-toggle evidence=NATIVE_GPU+NATIVE_NGX host_sr=MOCK"
                    " backend=borrowed-Core model_request=B pending_OFF_ON=ordered_native_evaluations"
-                   " transitions=16 completed_frames=48 size=960x540\n";
+                   " transitions=16 completed_frames=48 size=960x540 mask_mode_request="
+                << mask_mode_name << '\n';
     }
     const D3D12_RESOURCE_DESC final_output_desc = output->GetDesc();
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT output_footprint{};
@@ -2304,7 +2307,8 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false) {
     std::cout << "PASS ControlMask production chain stages=" << (hot_toggle ? "Upscaled" : "Render+Upscaled")
               << " evidence=NATIVE_GPU+NATIVE_NGX host_sr=MOCK frames=" << (hot_toggle ? 52 : 1)
               << " size=960x540 mask="
-              << (mask_enabled ? "depthfar" : "off") << " output_readback=rgba16f raw="
+              << (mask_enabled ? mask_mode_name : "off")
+              << " output_readback=rgba16f raw="
               << (keep_raw_output ? "retained" : "discarded") << "\n";
 
     {
