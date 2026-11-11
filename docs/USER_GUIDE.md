@@ -305,7 +305,7 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 
 自动功能在 NR 降尺寸确实有助于接近目标时保留较低档，收益不明确时恢复较高画质；持续达到目标后会缓慢尝试恢复细节。界面显示估算输出 FPS、来源、当前比例或暂停原因，FG 状态区分观测、请求、声明、动态及上限。估算在插件内完成，无需额外安装或运行帧率程序；限帧或其他负载可能使目标无法达到，自动功能不会改变游戏、FG 或限帧设置。
 
-首版面向原生 DX12 的单个处理阶段，包括兼容的 XeFG／原生 FG 同尺寸链。跨阶段链、FG 异尺寸、DX11 Bridge 和 Vulkan 继续使用手动分辨率；缺少可靠帧率来源时暂停自动并保留合法尺寸。更改设置或 GPU A/B 对比期间暂停自动。动态画质、限帧场景的估算误差与游戏内切换流畅度仍待实机确认。
+首版面向原生 DX12 的单个处理阶段，包括兼容的 XeFG／原生 FG 同尺寸链。跨阶段链、FG 异尺寸、DX11 Bridge 和 Vulkan 继续使用手动分辨率；缺少可靠帧率来源时暂停自动并保留合法尺寸。动态 FG 还需匹配的游戏帧计数；信息不足时暂停试探并等待采样，估算输出帧率仍可显示。更改设置或 GPU A/B 对比期间暂停自动。动态画质、限帧场景的估算误差与游戏内切换流畅度仍待实机确认。
 
 自动调节使用少量预备档位。首次开启或模型、游戏尺寸变化后需要重新准备，期间可能短暂停顿；显存或工作集容量不足时暂停自动。完成准备后再切入就绪档位。
 
@@ -848,7 +848,7 @@ Scale applies to width and height; 50% is about one quarter of the pixels. Rende
 
 Automatic sizing keeps a lower level when reducing NR resolution helps approach the target and restores higher quality when the benefit is unclear. After holding the target, it slowly tries to recover detail. The controls show estimated output FPS, its source, the current scale or a pause reason; FG status distinguishes observed, requested, declared, dynamic and maximum multipliers. Estimation runs inside the add-on, with no extra FPS program to install or run. Frame caps and other workloads can prevent reaching the target; game, FG and frame-cap settings are left to you.
 
-The first implementation targets one processing stage on native DX12, including compatible same-size XeFG / native FG chains. Cross-stage chains, FG chains with different sizes, DX11 Bridge and Vulkan retain manual resolution. Automatic sizing pauses without a reliable output-rate source and keeps a legal size. Editing settings and GPU A/B comparisons pause it. Dynamic quality, estimation error with frame caps and in-game switching smoothness still require game validation.
+The first implementation targets one processing stage on native DX12, including compatible same-size XeFG / native FG chains. Cross-stage chains, FG chains with different sizes, DX11 Bridge and Vulkan retain manual resolution. Automatic sizing pauses without a reliable output-rate source and keeps a legal size. Dynamic FG also needs matching game-frame counts; while those are unavailable, it pauses quality trials and collects samples, and estimated output FPS can still be shown. Editing settings and GPU A/B comparisons pause it. Dynamic quality, estimation error with frame caps and in-game switching smoothness still require game validation.
 
 Automatic sizing uses a few prepared levels. Initial activation and model or game-size changes require preparation, which can cause a brief pause. Insufficient video memory or workset capacity pauses automatic sizing. Only ready levels are selected after preparation.
 

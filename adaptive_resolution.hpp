@@ -60,6 +60,7 @@ struct Output {
   int64_t begin_ns = 0, end_ns = 0;
   double fps = 0., mad = 0.;
   double observed_multiplier = 0.;
+  bool multiplier_variable = false;
 };
 struct Ladder {
   std::array<Sizes, MAX_LEVELS> sizes{};
@@ -113,6 +114,7 @@ struct Session {
   Settings settings;
   Ladder ladder;
   uint64_t identity = 0, output_source = 0, output_generation = 0, output_configuration = 0;
+  uint64_t configuration_epoch = 0;
   uint64_t last_output_serial = 0, last_sequence = 0, gpu_context = 0;
   size_t level = 0, previous_level = 0;
   int64_t applied_ns = 0, stable_after_ns = 0, last_switch_ns = 0, at_target_since_ns = 0;
@@ -272,6 +274,13 @@ struct Session {
     status.output_fps = (output.available ? output.fps : 0.);
     if (!output.available) {
       status.reason = Reason::OUTPUT_UNAVAILABLE;
+      return;
+    }
+    if (output.multiplier_variable && (!std::isfinite(output.observed_multiplier) || output.observed_multiplier <= 0.)) {
+      if (trial) Request(previous_level, now_ns);
+      trial = false;
+      ResetMeasurements();
+      status.reason = Reason::COLLECTING;
       return;
     }
     if (applied_ns == 0 || now_ns < stable_after_ns) {

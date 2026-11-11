@@ -699,6 +699,70 @@ int Run(bool hardware) {
         Check(native::features.at(stream.roles[role].Handle()).slots[0].handle == models[role][0],
             "automatic Off reuses the upper Feature without Create");
       }
+      {
+        auto alpha = texture(DXGI_FORMAT_R8_UNORM);
+        gpu.Write(alpha.Get(), 0);
+        gpu.Transition(alpha.Get(), D3D12_RESOURCE_STATE_COMMON, NATIVE_INPUT_STATE);
+        submit();
+        parameters.Set(NVSDK_NGX_DLSSG_Parameter_UIAlpha, alpha.Get());
+        native::native_fg_ui_recomposition[handle] = true;
+        native::nr_adaptive_enabled.store(true);
+        ++native::configuration_generation;
+        for (uint32_t frame = 0; frame < 12; ++frame) {
+          record();
+          submit();
+        }
+        auto& composed_stream = native::fg_service::streams.at({true, reinterpret_cast<uintptr_t>(&owner)});
+        auto hud_cache = native::features.at(composed_stream.roles[1].Handle()).adaptive_cache;
+        Check(composed_stream.adaptive_model_roles == 2 && hud_cache != nullptr,
+            "exact-alpha composition freezes HUDLess as its only evaluated model role");
+        native::PollAdaptiveCache(hud_cache.get());
+        Check(hud_cache->tiers[0].ready && hud_cache->tiers[1].ready,
+            "the actual single model role has both complete ready tiers");
+        composed_stream.adaptive_session->Request(1, native::SteadyNowNs());
+        Check(record(), "exact-alpha composition can activate its lower ready tier without a Backbuffer model cache");
+        const auto composed_frame = composed_stream.adaptive_frame.application_frame;
+        Check(pair::evaluations.size() == 1 && hud_cache->active == 1,
+            "lower exact-alpha output evaluates only HUDLess at the selected tier");
+        bool timed_hudless = false;
+        for (const auto& segment : addon::gpu_timers::internal::segments) {
+          if (segment.adaptive.session == composed_stream.adaptive_session
+              && segment.adaptive.application_frame == composed_frame) {
+            timed_hudless = true;
+            Check(segment.adaptive.role == 2 && segment.adaptive.required_roles == 2,
+                "exact-alpha timing requires the actual complete HUDLess model set");
+          }
+        }
+        Check(timed_hudless, "exact-alpha model recording carries its raw timing identity");
+        submit();
+        const bool previous_unavailable = native::present_prefg_compose.unavailable;
+        native::present_prefg_compose.unavailable = true;
+        Check(!record(), "a newly unavailable lower-tier composition cannot expose a partial SDK color pair");
+        Check(consumed.Pixels() == original_frame.Pixels(), "failed lower composition preserves the entire original Backbuffer");
+        submit();
+        for (uint32_t frame = 0; frame < 12; ++frame) {
+          record();
+          submit();
+        }
+        Check(composed_stream.adaptive_session->level == 0,
+            "actual model-role changes invalidate the previous cost comparison and restore the upper tier");
+        composed_stream.adaptive_session->Request(1, native::SteadyNowNs());
+        Check(record(), "a fresh dual-role trial can activate after both fallback caches mature");
+        submit();
+        auto bb_cache = native::features.at(composed_stream.roles[0].Handle()).adaptive_cache;
+        Check(composed_stream.adaptive_model_roles == 3 && bb_cache != nullptr
+            && bb_cache->active == hud_cache->active && bb_cache->active == 1,
+            "composition failure recovers only after both fallback model roles are complete at one tier");
+        Check(pair::evaluations.size() == 2 && pair::evaluations[0].input.width == pair::evaluations[1].input.width,
+            "fallback records two matching model colors");
+        native::present_prefg_compose.unavailable = previous_unavailable;
+        native::nr_adaptive_enabled.store(false);
+        parameters.Set(NVSDK_NGX_DLSSG_Parameter_UIAlpha, static_cast<ID3D12Resource*>(nullptr));
+        native::native_fg_ui_recomposition[handle] = false;
+        record();
+        submit();
+        std::cout << "PASS automatic exact-alpha one-role ready, complete raw timing and protected dual fallback\n";
+      }
       parameters.Set(NVSDK_NGX_DLSSG_Parameter_HUDLess, static_cast<ID3D12Resource*>(nullptr));
       adaptive_dual_probe = false;
       native::stack_passes.store(previous_passes);
@@ -919,6 +983,161 @@ int Run(bool hardware) {
     }
     native::OnNativePresentStreamRetired(&owner);
     native::DrainRetiredResources(true);
+    {
+      native::stack_passes.store(1);
+      native::nr_resolution_scale.store(1.f);
+      native::nr_adaptive_enabled.store(true);
+      native::nr_adaptive_min_scale.store(.67f);
+      native::codec_mode.store(0);
+      native::direct_api.evaluate = EvaluateAdaptive;
+      ++native::configuration_generation;
+      auto source_a = texture(DXGI_FORMAT_R8G8B8A8_UNORM);
+      auto source_b = texture(DXGI_FORMAT_R8G8B8A8_UNORM);
+      for (auto* source : {source_a.Get(), source_b.Get()}) {
+        gpu.Write(source, 64);
+        gpu.Transition(source, D3D12_RESOURCE_STATE_COMMON, NATIVE_INPUT_STATE);
+      }
+      submit();
+      native::FeatureState contract;
+      contract.input_width = contract.input_height = 16;
+      contract.has_motion_scale_x = contract.has_motion_scale_y = true;
+      contract.motion_scale_x = contract.motion_scale_y = 1.f;
+      uint64_t ordinary_frame = 10000;
+      const auto ordinary_record = [&](native::PresentStream* source, ID3D12Resource* image,
+                                       const ID3D12Resource* workset_key) {
+        const addon::EvaluateChainScope chain;
+        native::FillPresentBlock(source, image, motion.Get(), depth.Get(), contract, 16, 16, 1.f, 0);
+        native::PresentTarget target;
+        target.domain = addon::present_restore_scope::Domain::FINAL_PRESENT;
+        target.workset_key = workset_key;
+        target.output_state = NATIVE_INPUT_STATE;
+        target.guide_serial = ++ordinary_frame;
+        target.diagnostic.bypass_host_look = true;
+        pair::evaluations.clear();
+        return native::ProcessInline(gpu.list.Get(), source->Handle(), &source->parameters, nullptr, &target);
+      };
+      int ordinary_identity = 0;
+      auto& ordinary = native::present_streams[&ordinary_identity];
+      const auto* ordinary_handle = ordinary.Handle();
+      const auto* ordinary_key = reinterpret_cast<const ID3D12Resource*>(&ordinary);
+      for (uint32_t frame = 0; frame < 12; ++frame) {
+        ordinary_record(&ordinary, source_a.Get(), ordinary_key);
+        submit();
+      }
+      auto first_cache = native::features.at(ordinary_handle).adaptive_cache;
+      Check(first_cache != nullptr && first_cache->count == 3, "ordinary Present prepares a complete three-tier cache");
+      native::PollAdaptiveCache(first_cache.get());
+      Check(first_cache->tiers[2].ready, "ordinary Present lower tier has healthy first-evaluate GPU proof");
+      native::features.at(ordinary_handle).adaptive_session->Request(2, native::SteadyNowNs());
+      Check(ordinary_record(&ordinary, source_a.Get(), ordinary_key), "ordinary Present activates its original lower tier");
+      submit();
+      const auto creates_before_drag = native::nr_features_created;
+      native::nr_adaptive_editing.store(true);
+      for (const float minimum : {.6f, .5f}) {
+        native::kSetAdaptiveMinScale.Store(minimum);
+        ordinary_record(&ordinary, source_a.Get(), ordinary_key);
+        submit();
+        Check(native::features.at(ordinary_handle).adaptive_cache == first_cache
+            && native::nr_features_created == creates_before_drag,
+            "minimum-slider ticks retain the applied ladder and do not cold-rebuild while editing");
+      }
+      native::nr_adaptive_editing.store(false);
+      for (uint32_t frame = 0; frame < 12; ++frame) {
+        ordinary_record(&ordinary, source_a.Get(), ordinary_key);
+        submit();
+      }
+      auto revised_cache = native::features.at(ordinary_handle).adaptive_cache;
+      Check(revised_cache != first_cache && revised_cache->ladder.sizes[2][0].width == 8,
+          "changing the relative minimum replaces incompatible cached ladder tuples");
+      native::PollAdaptiveCache(revised_cache.get());
+      Check(revised_cache->tiers[2].ready, "new minimum is not ready until its own first-evaluate completion");
+      const auto creates_before_new_tier = native::nr_features_created;
+      native::features.at(ordinary_handle).adaptive_session->Request(2, native::SteadyNowNs());
+      Check(ordinary_record(&ordinary, source_a.Get(), ordinary_key), "new lower tuple activates from its own ready cache");
+      submit();
+      Check(native::nr_features_created == creates_before_new_tier && pair::evaluations.size() == 1
+          && pair::evaluations[0].input.width == 8,
+          "a revised lower tuple activates without a hidden cold Create");
+      const auto* upper_model = revised_cache->tiers[0].state.slots[0].handle;
+      native::kSetAdaptiveTargetFps.Store(90.f);
+      ordinary_record(&ordinary, source_a.Get(), ordinary_key);
+      submit();
+      Check(native::features.at(ordinary_handle).adaptive_cache == revised_cache
+          && native::nr_features_created == creates_before_new_tier,
+          "target FPS changes retain physically compatible prepared tiers");
+      native::kSetAdaptiveEnabled.Store(false);
+      Check(ordinary_record(&ordinary, source_a.Get(), ordinary_key), "ordinary Present Off restores its ready upper tier");
+      submit();
+      Check(native::features.at(ordinary_handle).slots[0].handle == upper_model
+          && native::nr_features_created == creates_before_new_tier,
+          "Off keeps the original upper Feature without Create after a minimum edit");
+      native::kSetAdaptiveEnabled.Store(true);
+      for (uint32_t frame = 0; frame < 12; ++frame) {
+        ordinary_record(&ordinary, source_a.Get(), ordinary_key);
+        submit();
+      }
+      auto retiring_cache = native::features.at(ordinary_handle).adaptive_cache;
+      Check(retiring_cache != nullptr && retiring_cache->tiers[2].ready, "all ordinary Present tiers are resident before source retirement");
+      std::array<const NVSDK_NGX_Handle*, 3> retiring_models{};
+      std::array<size_t, 3> release_counts{};
+      for (size_t tier = 0; tier < retiring_models.size(); ++tier) {
+        retiring_models[tier] = (tier == retiring_cache->active ? native::features.at(ordinary_handle).slots[0].handle
+            : retiring_cache->tiers[tier].state.slots[0].handle);
+        release_counts[tier] = std::count(model_released_handles.begin(), model_released_handles.end(), retiring_models[tier]);
+      }
+      Check(ordinary_record(&ordinary, source_a.Get(), ordinary_key), "source retirement retains an actual unsubmitted recording");
+      native::RetirePresentStream(&ordinary_identity);
+      Check(!native::features.contains(ordinary_handle) && std::none_of(native::worksets.begin(), native::worksets.end(),
+          [&](const auto& workset) { return workset.first.handle == ordinary_handle; }),
+          "ordinary Present source retirement removes every cached tier and workset key");
+      Check(std::count(model_released_handles.begin(), model_released_handles.end(), retiring_models[0]) == release_counts[0],
+          "unsubmitted active tier is retained behind its actual recording proof");
+      submit();
+      for (size_t tier = 0; tier < retiring_models.size(); ++tier) {
+        Check(std::count(model_released_handles.begin(), model_released_handles.end(), retiring_models[tier]) == release_counts[tier] + 1,
+            "source retirement releases every prepared Feature exactly once after healthy GPU completion");
+      }
+      int rotating_identity = 0;
+      auto& rotating = native::present_streams[&rotating_identity];
+      const auto* rotating_handle = rotating.Handle();
+      native::nr_adaptive_min_scale.store(.67f);
+      for (uint32_t frame = 0; frame < 12; ++frame) {
+        ordinary_record(&rotating, source_a.Get(), source_a.Get());
+        submit();
+      }
+      for (uint32_t frame = 0; frame < 24; ++frame) {
+        auto* image = (frame % 2 == 0 ? source_b.Get() : source_a.Get());
+        ordinary_record(&rotating, image, image);
+        submit();
+      }
+      auto rotation_cache = native::features.at(rotating_handle).adaptive_cache;
+      Check(rotation_cache != nullptr && rotation_cache->count == 2 && rotation_cache->output_count == 2,
+          "discovered A/B outputs stabilize at two outputs times two prepared tiers");
+      native::PollAdaptiveCache(rotation_cache.get());
+      for (size_t tier = 0; tier < 2; ++tier) {
+        Check(rotation_cache->tiers[tier].ready && rotation_cache->tiers[tier].output_completions.size() == 2,
+            "every prepared tier requires both discovered output completions");
+      }
+      const auto stable_creates = native::nr_features_created;
+      const auto stable_worksets = native::worksets_created;
+      for (uint32_t frame = 0; frame < 8; ++frame) {
+        native::features.at(rotating_handle).adaptive_session->Request(frame % 2, native::SteadyNowNs());
+        auto* image = (frame % 2 == 0 ? source_a.Get() : source_b.Get());
+        ordinary_record(&rotating, image, image);
+        submit();
+      }
+      Check(native::features.at(rotating_handle).adaptive_cache == rotation_cache
+          && native::nr_features_created == stable_creates && native::worksets_created == stable_worksets,
+          "stable A/B rotation and ready-tier switches do not repeatedly rebuild caches or output worksets");
+      native::RetirePresentStream(&rotating_identity);
+      submit();
+      Check(std::none_of(native::worksets.begin(), native::worksets.end(),
+          [&](const auto& workset) { return workset.first.handle == rotating_handle; }),
+          "multi-output source retirement removes all output times tier entries");
+      native::nr_adaptive_enabled.store(false);
+      native::direct_api.evaluate = pair::Evaluate;
+      std::cout << "PASS automatic ordinary Present retirement, minimum edit, target/Off reuse and stable A/B output discovery\n";
+    }
     check_debug();
     const auto memory = addon::telemetry::QueryVideoMemory(gpu.device.Get());
     std::cout << "PASS native-prefg-resolution hardware=" << hardware << " steady_pairs_observed=" << successful

@@ -702,7 +702,9 @@ inline void RetirePresentStream(const void* swapchain) {
   for (const bool neutral : {false, true}) {
     owner_resident_nr_handles.erase(stream.Handle(neutral));
     if (const auto feature = features.find(stream.Handle(neutral)); feature != features.end()) {
+      ReleaseAdaptiveCache(&feature->second, true);
       ReleaseAllNrSlots(feature->second, true);
+      ReleaseCom(feature->second.norm.commit);
       features.erase(feature);
     }
     RetireWorkset({stream.Handle(neutral), reinterpret_cast<const ID3D12Resource*>(&stream)});

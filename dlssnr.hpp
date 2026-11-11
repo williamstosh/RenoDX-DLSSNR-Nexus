@@ -445,6 +445,8 @@ struct AdaptiveFeatureCache;
 struct FeatureState {
   std::shared_ptr<AdaptiveFeatureCache> adaptive_cache;
   std::shared_ptr<adaptive_resolution::Session> adaptive_session;
+  std::shared_ptr<std::unordered_set<const ID3D12Resource*>> adaptive_outputs;
+  uint64_t adaptive_output_geometry = 0;
   // Outlives workset eviction: discarded commands also invalidate NGX History.
   std::shared_ptr<submission::RecordingStatus> control_mask_recording;
   std::shared_ptr<control_mask_execution::Stream> control_mask_stream;
@@ -10197,7 +10199,7 @@ inline adaptive_resolution::Frame FreezeAdaptiveFrame(
     const stage_plan::Group& group, uint32_t reference_width, uint32_t reference_height,
     uint32_t guide_width, uint32_t guide_height, uint64_t source_identity,
     bool supported, uint64_t application_frame = 0, uint32_t required_roles = 1, bool fg_owned = false,
-    uint32_t source_outputs = 1) {
+    uint32_t source_outputs = 1, uint32_t observed_model_roles = 0) {
   if (!nr_adaptive_enabled.load() && *owner == nullptr) return {};
   if (*owner == nullptr) *owner = std::make_shared<adaptive_resolution::Session>();
   adaptive_resolution::Sizes upper{}, floor{};
@@ -10215,6 +10217,11 @@ inline adaptive_resolution::Frame FreezeAdaptiveFrame(
   if (gpu_timers::comparison_settings != nullptr) gpu_timers::comparison_settings(&configuration);
   auto layout = configuration;
   if (adaptive_configuration_settings != nullptr) adaptive_configuration_settings(&layout);
+  const bool frozen = nr_adaptive_editing.load() || gpu_timers::ComparisonActive();
+  const bool hold_adaptive_settings = frozen && (*owner)->identity != 0;
+  const uint64_t configuration_epoch = (hold_adaptive_settings ? (*owner)->configuration_epoch : configuration.config_epoch);
+  const float target_fps = (hold_adaptive_settings ? (*owner)->settings.target_fps : nr_adaptive_target_fps.load());
+  const float minimum_scale = (hold_adaptive_settings ? (*owner)->settings.minimum_scale : nr_adaptive_min_scale.load());
   uint64_t layout_identity = source_identity;
   for (const uint64_t value : {layout.configuration_generation,
            layout.settings_hash, layout.resolution_hash, static_cast<uint64_t>(reference_width),
@@ -10230,12 +10237,13 @@ inline adaptive_resolution::Frame FreezeAdaptiveFrame(
     layout_identity ^= size.height;
     layout_identity *= 1099511628211ull;
   }
-  for (const uint64_t value : {configuration.configuration_generation, configuration.config_epoch,
-           configuration.settings_epoch, configuration.settings_hash, configuration.resolution_hash,
+  for (const uint64_t value : {configuration.configuration_generation, configuration_epoch,
+           configuration.settings_epoch, layout.settings_hash, configuration.resolution_hash,
            static_cast<uint64_t>(reference_width), static_cast<uint64_t>(reference_height),
            static_cast<uint64_t>(guide_width), static_cast<uint64_t>(guide_height),
            static_cast<uint64_t>(group.stage), static_cast<uint64_t>(group.begin),
-           static_cast<uint64_t>(group.count), static_cast<uint64_t>(required_roles)}) {
+           static_cast<uint64_t>(group.count), static_cast<uint64_t>(required_roles),
+           static_cast<uint64_t>(observed_model_roles)}) {
     source_identity ^= value;
     source_identity *= 1099511628211ull;
   }
@@ -10266,15 +10274,29 @@ inline adaptive_resolution::Frame FreezeAdaptiveFrame(
   const uint32_t levels = std::min(3u, max_worksets.load() / outputs);
   const bool eligible = supported && plan.valid && !plan.mixed && plan.group_count == 1 && levels >= 2;
   const bool same_source = (*owner)->identity == source_identity;
-  (*owner)->Prepare({.enabled = nr_adaptive_enabled.load(), .target_fps = nr_adaptive_target_fps.load(),
-                       .minimum_scale = nr_adaptive_min_scale.load(), .prepared_levels = levels},
+  (*owner)->Prepare({.enabled = nr_adaptive_enabled.load(), .target_fps = target_fps,
+                       .minimum_scale = minimum_scale, .prepared_levels = levels},
       upper, floor, source_identity,
       {.available = output.available, .source = static_cast<uint64_t>(output.source),
        .generation = output.source_generation, .configuration = output.configuration_generation,
        .serial = output.window_serial, .begin_ns = output.window_begin_ns, .end_ns = output.window_end_ns,
-       .fps = output.fps, .mad = output.fps_mad, .observed_multiplier = output.observed_multiplier},
-      now_ns, eligible, nr_adaptive_editing.load() || gpu_timers::ComparisonActive());
+       .fps = output.fps, .mad = output.fps_mad, .observed_multiplier = output.observed_multiplier,
+       .multiplier_variable = output.multiplier_variable},
+      now_ns, eligible, frozen);
   auto& session = **owner;
+  session.configuration_epoch = configuration_epoch;
+  layout_identity ^= session.ladder.count;
+  layout_identity *= 1099511628211ull;
+  layout_identity ^= source_outputs;
+  layout_identity *= 1099511628211ull;
+  for (size_t level = 0; level < session.ladder.count; ++level) {
+    for (const auto& size : session.ladder.sizes[level]) {
+      layout_identity ^= size.width;
+      layout_identity *= 1099511628211ull;
+      layout_identity ^= size.height;
+      layout_identity *= 1099511628211ull;
+    }
+  }
   if (supported && levels < 2 && nr_adaptive_enabled.load()) session.status.reason = adaptive_resolution::Reason::BUDGET;
   const bool measure = now_ns >= session.next_measure_ns;
   if (measure) session.next_measure_ns = now_ns + adaptive_resolution::SAMPLE_INTERVAL_NS;
@@ -10301,10 +10323,23 @@ inline void PollAdaptiveCache(AdaptiveFeatureCache* cache) {
   }
 }
 
-inline uint32_t AdaptiveOutputCount(const NVSDK_NGX_Handle* owner, const ID3D12Resource* current, bool pre_sr) {
-  std::unordered_set<const ID3D12Resource*> outputs{current};
+inline uint32_t AdaptiveOutputCount(FeatureState* feature, const NVSDK_NGX_Handle* owner,
+    const ID3D12Resource* current, bool pre_sr, uint32_t width, uint32_t height, DXGI_FORMAT format) {
+  if (!nr_adaptive_enabled.load() && feature->adaptive_outputs == nullptr) return 1;
+  if (feature->adaptive_outputs == nullptr) {
+    feature->adaptive_outputs = std::make_shared<std::unordered_set<const ID3D12Resource*>>();
+  }
+  const uint64_t geometry = ((static_cast<uint64_t>(width) << 32) | height)
+      ^ (static_cast<uint64_t>(format) * 1099511628211ull) ^ static_cast<uint64_t>(pre_sr);
+  auto& outputs = *feature->adaptive_outputs;
+  if (feature->adaptive_output_geometry != geometry) {
+    outputs.clear();
+    feature->adaptive_output_geometry = geometry;
+  }
+  outputs.insert(current);
   for (const auto& [key, resources] : worksets) {
-    if (key.handle == owner && key.pre_sr == pre_sr) outputs.insert(key.resource);
+    if (key.handle == owner && key.pre_sr == pre_sr && resources.width == width && resources.height == height
+        && resources.format == format) outputs.insert(key.resource);
   }
   return static_cast<uint32_t>(outputs.size());
 }
@@ -10313,12 +10348,16 @@ inline void ActivateAdaptiveTier(FeatureState* feature, size_t slot, bool reset_
   const auto cache = feature->adaptive_cache;
   if (cache == nullptr || cache->active == slot) return;
   const auto session = feature->adaptive_session;
+  const auto outputs = feature->adaptive_outputs;
+  const auto output_geometry = feature->adaptive_output_geometry;
   feature->adaptive_cache.reset();
   std::swap(*feature, cache->tiers[cache->active].state);
   std::swap(*feature, cache->tiers[slot].state);
   cache->active = slot;
   feature->adaptive_cache = cache;
   feature->adaptive_session = session;
+  feature->adaptive_outputs = outputs;
+  feature->adaptive_output_geometry = output_geometry;
   if (reset_history) {
     for (auto& model : feature->slots) {
       model.pending_reset = true;
@@ -11479,7 +11518,8 @@ inline bool RecordInline(
           !D3D11OnlySession() && (present == nullptr
               || (!present->d3d11_bridge && present->domain == present_restore_scope::Domain::FINAL_PRESENT
                   && present->stage_execution_plan == nullptr && !present->native_prefg_resolution_pair)),
-          0, 1, false, AdaptiveOutputCount(handle, present != nullptr ? present->workset_key : output, false)));
+          0, 1, false, AdaptiveOutputCount(&feature, handle, present != nullptr ? present->workset_key : output,
+              false, width, height, output_desc.Format)));
   SelectAdaptiveTier(&feature, handle, &adaptive, present != nullptr && present->adaptive_frame != nullptr,
       present != nullptr ? present->workset_key : output);
   if (adaptive_recording != nullptr) {
@@ -13861,7 +13901,7 @@ inline bool RecordInlinePreSR(
       : FreezeAdaptiveFrame(&feature.adaptive_session, plan, group, width, height,
       current.input_width, current.input_height,
       reinterpret_cast<uintptr_t>(handle) ^ reinterpret_cast<uintptr_t>(device) ^ feature.source_generation,
-      !D3D11OnlySession(), 0, 1, false, AdaptiveOutputCount(handle, color, true)));
+      !D3D11OnlySession(), 0, 1, false, AdaptiveOutputCount(&feature, handle, color, true, width, height, color_desc.Format)));
   SelectAdaptiveTier(&feature, handle, &adaptive, false, color);
   if (adaptive_recording != nullptr) {
     adaptive_recording->feature = &feature;

@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 
 namespace renodx::addons::dlss5::output_framerate {
@@ -57,6 +58,7 @@ struct Snapshot {
   uint32_t maximum_multiplier = 0;
   uint32_t declared_multiplier = 0;
   bool fg_off = false;
+  bool multiplier_variable = false;
 };
 
 inline int64_t NowNs() {
@@ -69,7 +71,16 @@ inline int64_t NowNs() {
 struct Stream {
   static constexpr int64_t BIN_NS = 500'000'000;
   static constexpr int64_t STALE_NS = 1'000'000'000;
-  struct Bin { int64_t begin_ns = 0; int64_t end_ns = 0; double frames = 0; uint64_t applications = 0; };
+  static constexpr int64_t NATIVE_STATE_STALE_NS = 2'000'000'000;
+  static constexpr int64_t MaxAgeNs(Source source) {
+    return (source == Source::NATIVE_STATE ? NATIVE_STATE_STALE_NS : STALE_NS);
+  }
+  struct Bin {
+    int64_t begin_ns = 0, end_ns = 0;
+    double frames = 0;
+    uint64_t applications = 0;
+    bool applications_known = true;
+  };
   Snapshot snapshot;
   std::array<Bin, 4> bins{};
   Bin pending;
@@ -86,6 +97,7 @@ struct Stream {
     snapshot.observed_multiplier = 0;
     snapshot.requested_multiplier = snapshot.maximum_multiplier = snapshot.declared_multiplier = 0;
     snapshot.dynamic = snapshot.fg_off = false;
+    snapshot.multiplier_variable = false;
     ++snapshot.source_generation;
     bins = {};
     pending = {};
@@ -95,7 +107,8 @@ struct Stream {
 
   void Observe(Source source, uint64_t next_identity, uint64_t configuration,
                int64_t now_ns, double frames, uint32_t requested = 0,
-               uint32_t = 0, bool dynamic = false, uint32_t maximum = 0, bool fg_off = false) {
+               uint32_t = 0, bool dynamic = false, uint32_t maximum = 0, bool fg_off = false,
+               std::optional<uint64_t> applications = std::nullopt) {
     if (snapshot.source != source || identity != next_identity
         || snapshot.configuration_generation != configuration
         || snapshot.requested_multiplier != requested || snapshot.dynamic != dynamic
@@ -113,7 +126,7 @@ struct Stream {
       Reset(Reason::kFAILED);
       return;
     }
-    if (previous_ns != 0 && (now_ns <= previous_ns || now_ns - previous_ns > STALE_NS)) {
+    if (previous_ns != 0 && (now_ns <= previous_ns || now_ns - previous_ns > MaxAgeNs(source))) {
       Reset(Reason::kSTALE);
     }
     if (previous_ns == 0) {
@@ -122,7 +135,13 @@ struct Stream {
     }
     previous_ns = pending.end_ns = now_ns;
     pending.frames += frames;
-    ++pending.applications;
+    if (source == Source::XEFG_STATUS) {
+      ++pending.applications;
+    } else if (source == Source::NATIVE_STATE && applications.has_value()) {
+      pending.applications += *applications;
+    } else {
+      pending.applications_known = false;
+    }
     if (pending.end_ns - pending.begin_ns < BIN_NS) return;
     bins[next] = pending;
     next = (next + 1) % bins.size();
@@ -131,12 +150,14 @@ struct Stream {
     if (count != bins.size()) return;
     double total_frames = 0;
     uint64_t total_applications = 0;
+    bool applications_known = true;
     int64_t total_ns = 0;
     std::array<double, 4> rates{};
     for (size_t index = 0; index < bins.size(); ++index) {
       const auto& bin = bins[index];
       total_frames += bin.frames;
       total_applications += bin.applications;
+      applications_known &= bin.applications_known;
       total_ns += bin.end_ns - bin.begin_ns;
       rates[index] = bin.frames * 1e9 / static_cast<double>(bin.end_ns - bin.begin_ns);
     }
@@ -150,14 +171,15 @@ struct Stream {
     snapshot.window_end_ns = now_ns;
     snapshot.fps = total_frames * 1e9 / static_cast<double>(total_ns);
     snapshot.fps_mad = (rates[1] + rates[2]) * 0.5;
-    snapshot.observed_multiplier = (source == Source::XEFG_STATUS && total_applications != 0
+    snapshot.observed_multiplier = ((source == Source::XEFG_STATUS || source == Source::NATIVE_STATE)
+        && applications_known && total_applications != 0
         ? total_frames / static_cast<double>(total_applications) : 0);
     ++snapshot.window_serial;
   }
 
   Snapshot Read(int64_t now_ns) const {
     auto result = snapshot;
-    if (previous_ns != 0 && (now_ns < previous_ns || now_ns - previous_ns > STALE_NS)) {
+    if (previous_ns != 0 && (now_ns < previous_ns || now_ns - previous_ns > MaxAgeNs(snapshot.source))) {
       result.available = false;
       result.reason = Reason::kSTALE;
       result.requested_multiplier = 0;
@@ -185,6 +207,10 @@ struct State {
   bool native_evaluation_success = false;
   uint32_t native_declared_multiplier = 0;
   int64_t native_state_ns = 0;
+  uint64_t native_application_identity = 0;
+  uint64_t native_applications = 0, native_state_applications = 0;
+  int64_t native_application_ns = 0;
+  bool native_state_application_coverage = false;
   int64_t xefg_ns = 0;
   uint64_t present_identity = 0;
   int64_t present_ns = 0;
@@ -196,6 +222,7 @@ inline Snapshot Read(int64_t now_ns) {
   std::shared_lock lock(internal::state.mutex);
   auto snapshot = internal::state.stream.Read(now_ns);
   const auto& state = internal::state;
+  snapshot.multiplier_variable = snapshot.source == Source::NATIVE_STATE && state.native_mode != 1;
   if (state.native_evaluation_success && now_ns >= state.native_evaluation_ns
       && now_ns - state.native_evaluation_ns <= Stream::STALE_NS
       && snapshot.source != Source::XEFG_STATUS) {
@@ -216,6 +243,9 @@ inline void ReleaseNative() {
   state.native_evaluation_success = false;
   state.native_evaluation_ns = state.native_state_ns = 0;
   state.native_declared_multiplier = 0;
+  state.native_application_identity = state.native_applications = state.native_state_applications = 0;
+  state.native_application_ns = 0;
+  state.native_state_application_coverage = false;
   ++state.native_configuration;
   if (state.stream.snapshot.source != Source::XEFG_STATUS) state.stream.Reset();
 }
@@ -237,6 +267,9 @@ inline void ObserveNativeOptions(uint64_t viewport, uint64_t version, uint32_t m
     state.stream.snapshot.source = Source::NONE;
     state.stream.identity = 0;
     state.native_state_ns = 0;
+    state.native_application_identity = state.native_applications = state.native_state_applications = 0;
+    state.native_application_ns = 0;
+    state.native_state_application_coverage = false;
   }
   state.native_options_known = version >= 1;
   state.native_viewport = viewport;
@@ -266,18 +299,45 @@ inline void ObserveNativeState(uint64_t viewport, bool success, uint32_t frames,
   if (!success || viewport != state.native_viewport) {
     state.stream.Reset(success ? Reason::kAMBIGUOUS : Reason::kFAILED);
     state.native_state_ns = 0;
+    state.native_state_application_coverage = false;
     return;
   }
+  const bool application_coverage = state.native_application_identity != 0
+      && now_ns >= state.native_application_ns
+      && now_ns - state.native_application_ns <= Stream::STALE_NS;
+  std::optional<uint64_t> applications;
+  if (state.native_state_ns != 0 && state.native_state_application_coverage && application_coverage) {
+    applications = state.native_applications - state.native_state_applications;
+  }
   state.native_state_ns = now_ns;
+  state.native_state_applications = state.native_applications;
+  state.native_state_application_coverage = application_coverage;
   state.stream.Observe(Source::NATIVE_STATE, viewport, state.native_configuration,
-      now_ns, frames, state.native_multiplier, 0, state.native_dynamic);
+      now_ns, frames, state.native_multiplier, 0, state.native_dynamic, 0, false, applications);
 }
 
 inline void ObserveNativePresent(uint64_t identity, bool success, int64_t now_ns) {
   std::unique_lock lock(internal::state.mutex);
   auto& state = internal::state;
   if (!state.native_enabled || !state.native_options_known) return;
-  if (state.native_state_ns != 0 && now_ns - state.native_state_ns <= Stream::STALE_NS) return;
+  if (!success || identity == 0 || now_ns <= 0
+      || (state.native_application_ns != 0 && now_ns <= state.native_application_ns)) {
+    state.stream.Reset(Reason::kFAILED);
+    state.native_state_ns = 0;
+    state.native_state_application_coverage = false;
+    return;
+  }
+  if (state.native_application_identity != 0 && state.native_application_identity != identity) {
+    state.stream.Reset(Reason::kAMBIGUOUS);
+    state.native_state_ns = 0;
+    state.native_applications = state.native_state_applications = 0;
+    state.native_state_application_coverage = false;
+  }
+  state.native_application_identity = identity;
+  ++state.native_applications;
+  state.native_application_ns = now_ns;
+  if (state.native_state_ns != 0 && now_ns >= state.native_state_ns
+      && now_ns - state.native_state_ns <= Stream::MaxAgeNs(Source::NATIVE_STATE)) return;
   if (!success || state.native_mode != 1 || state.native_multiplier < 2
       || !state.native_evaluation_success || state.native_evaluation_ns == 0
       || now_ns - state.native_evaluation_ns > Stream::STALE_NS
