@@ -149,7 +149,7 @@ try {
         'nr-model-default', 'nr-model-explicit', 'nr-model-invalid', 'nr-model-legacy',
         'nr-stage-default', 'nr-stage-explicit', 'nr-stage-invalid',
         'pass-result-default', 'pass-result-custom', 'pass-result-invalid', 'control-mask-depth', 'presets',
-        'nr-resolution-default', 'nr-resolution-explicit', 'nr-resolution-invalid', 'native-prefg-resolution-config', 'profiles', 'capability-ui',
+        'nr-resolution-default', 'nr-resolution-explicit', 'nr-resolution-invalid', 'nr-resolution-adaptive', 'native-prefg-resolution-config', 'profiles', 'capability-ui',
         'legacy-core-upscaled', 'legacy-core-render', 'legacy-core-present')
     if ($Case.Count) {
         foreach ($requested in $Case) {

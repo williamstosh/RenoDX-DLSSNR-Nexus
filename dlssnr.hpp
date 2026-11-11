@@ -6,6 +6,8 @@
 #pragma once
 
 #include "brand.h"
+#include "adaptive_resolution.hpp"
+#include "output_framerate.hpp"
 
 #include "version.h"
 
@@ -434,9 +436,15 @@ struct NrPassResolutionContract {
   bool working_resolution_committed = false;
   uint32_t resolution_commit_source = 0;
   uint64_t resolution_commit_epoch = 0;
+  uint64_t adaptive_resolution_generation = 0;
 };
 
+// A source owns cached FeatureStates, whose active member retains the cache.
+// This recursive ownership type requires an incomplete shared_ptr target.
+struct AdaptiveFeatureCache;
 struct FeatureState {
+  std::shared_ptr<AdaptiveFeatureCache> adaptive_cache;
+  std::shared_ptr<adaptive_resolution::Session> adaptive_session;
   // Outlives workset eviction: discarded commands also invalidate NGX History.
   std::shared_ptr<submission::RecordingStatus> control_mask_recording;
   std::shared_ptr<control_mask_execution::Stream> control_mask_stream;
@@ -539,8 +547,32 @@ struct FeatureState {
   bool working_resolution_committed = false;
   uint32_t resolution_commit_source = 0;
   uint64_t resolution_commit_epoch = 0;
+  uint64_t adaptive_resolution_generation = 0;
   NrPassResolutionContract second_resolution;
   NrFeatureSlot slots[kMaxNrPasses];
+};
+
+struct AdaptiveFeatureCache {
+  struct Tier {
+    FeatureState state;
+    std::shared_ptr<submission::RecordingStatus> completion;
+    std::unordered_map<uintptr_t, std::shared_ptr<submission::RecordingStatus>> output_completions;
+    bool ready = false;
+    double preparation_cpu_ms = 0.;
+  };
+  std::array<Tier, 3> tiers;
+  const NVSDK_NGX_Handle* owner = nullptr;
+  uint64_t identity = 0;
+  uint64_t pending_identity = 0;
+  uint32_t pending_frames = 0;
+  adaptive_resolution::Sizes upper;
+  adaptive_resolution::Ladder ladder;
+  size_t count = 0, active = 0;
+  uint32_t output_count = 1;
+  int64_t last_used_ns = 0;
+  bool failed = false;
+  bool budget_blocked = false;
+  uint64_t measured_allocation_increment = 0;
 };
 
 struct StreamlineResourceRef {
@@ -1001,6 +1033,7 @@ struct EvaluationContract {
 // (hdr_mode, units); and its absolute units have a fixed divisor from the
 // display's SDR white (codec::PresentDivisor; 0 keeps FrameCodecDivisor).
 struct PresentTarget {
+  const adaptive_resolution::Frame* adaptive_frame = nullptr;
   // Borrowed only during a B1 tail recording; other Present routes use
   // their existing single-stage plan.
   const stage_plan::Plan* stage_execution_plan = nullptr;
@@ -1094,15 +1127,18 @@ struct WorksetKey {
   const NVSDK_NGX_Handle* handle = nullptr;
   const ID3D12Resource* resource = nullptr;
   bool pre_sr = false;
+  uint32_t adaptive_slot = 0;
   bool operator==(const WorksetKey& other) const {
-    return handle == other.handle && resource == other.resource && pre_sr == other.pre_sr;
+    return handle == other.handle && resource == other.resource && pre_sr == other.pre_sr
+        && adaptive_slot == other.adaptive_slot;
   }
 };
 
 struct WorksetKeyHash {
   size_t operator()(const WorksetKey& key) const {
     return std::hash<const void*>()(key.handle)
-        ^ (std::hash<const void*>()(key.resource) << 1) ^ (static_cast<size_t>(key.pre_sr) << 2);
+        ^ (std::hash<const void*>()(key.resource) << 1) ^ (static_cast<size_t>(key.pre_sr) << 2)
+        ^ (static_cast<size_t>(key.adaptive_slot) << 3);
   }
 };
 
@@ -2538,6 +2574,34 @@ inline std::atomic_bool chained_temporal_history = defaults::kChainedHistory;
 // avoids the low-res Color contract the signed runtime rejects outright.
 inline std::atomic_bool nr_follow_input_res = defaults::kFollowInputRes;
 inline std::atomic<float> nr_resolution_scale = defaults::kResolutionScale;
+inline std::atomic_bool nr_adaptive_enabled{false};
+inline std::atomic<float> nr_adaptive_target_fps{60.f};
+inline std::atomic<float> nr_adaptive_min_scale{0.67f};
+inline std::atomic_bool nr_adaptive_editing{false};
+inline void (*adaptive_configuration_settings)(gpu_comparison::Identity*) = nullptr;
+// Evaluation hooks and FG recording own runtime_mutex throughout this scope.
+inline const adaptive_resolution::Frame* active_adaptive_frame = nullptr;
+inline const adaptive_resolution::Frame* preparing_adaptive_frame = nullptr;
+struct AdaptiveFrameScope {
+  const adaptive_resolution::Frame* previous = active_adaptive_frame;
+  explicit AdaptiveFrameScope(const adaptive_resolution::Frame* frame) { active_adaptive_frame = frame; }
+  ~AdaptiveFrameScope() { active_adaptive_frame = previous; }
+};
+struct AdaptiveStatusState {
+  std::shared_mutex mutex;
+  adaptive_resolution::Status status;
+};
+inline AdaptiveStatusState adaptive_status;
+
+inline void PublishAdaptiveStatus(const adaptive_resolution::Status& status) {
+  std::unique_lock lock(adaptive_status.mutex);
+  adaptive_status.status = status;
+}
+
+inline adaptive_resolution::Status CopyAdaptiveStatus() {
+  std::shared_lock lock(adaptive_status.mutex);
+  return adaptive_status.status;
+}
 // Pass 1 retains the global controls. Later passes inherit unless opted out.
 inline std::atomic_uint32_t pass_resolution_mode[kMaxNrPasses - 1] = {0u, 0u, 0u};
 inline std::atomic<float> pass_resolution_scale[kMaxNrPasses - 1] = {1.f, 1.f, 1.f};
@@ -3239,14 +3303,17 @@ inline uint64_t cost_seen_total_us = 0;
 // off or unavailable; it issues no GPU queries and publishes no durations.
 inline bool BeginChainTimers(ID3D12GraphicsCommandList* command_list, ID3D12Device* device,
                              const char* path, uint32_t width, uint32_t height, const stage_plan::Group& group) {
+  if (preparing_adaptive_frame != nullptr) return false;
   const bool profiling = gpu_timers_enabled.load(std::memory_order_relaxed);
   const int64_t now_ns = SteadyNowNs();
   const uint32_t stage = (std::strcmp(path, "preSR") == 0 ? 0u
                           : (std::strcmp(path, "present") == 0 ? 2u : 1u));
   const bool sample_due = now_ns >= stage_cost_sample_due_ns[stage];
-  if (!profiling && !sample_due) return false;
+  const bool adaptive_measure = active_adaptive_frame != nullptr && active_adaptive_frame->enabled
+      && active_adaptive_frame->measure;
+  if (!profiling && !sample_due && !adaptive_measure) return false;
   const bool measure = profiling || (!cost_meter_unavailable
-      && (cost_meter_enabled.load(std::memory_order_relaxed) || gpu_timers::ComparisonActive()));
+      && (cost_meter_enabled.load(std::memory_order_relaxed) || gpu_timers::ComparisonActive() || adaptive_measure));
   if (sample_due) {
     cost_sample_due_ns = now_ns + kCostSampleNs;
     stage_cost_sample_due_ns[stage] = cost_sample_due_ns;
@@ -3255,6 +3322,9 @@ inline bool BeginChainTimers(ID3D12GraphicsCommandList* command_list, ID3D12Devi
     // Cadence and comparison use the same clock sample; setup jitter must not
     // reject a normally scheduled sample as slightly earlier than 250 ms.
     gpu_timers::internal::segments[gpu_timers::internal::current.idx].comparison.recorded_ns = now_ns;
+    if (active_adaptive_frame != nullptr && active_adaptive_frame->enabled && measure) {
+      gpu_timers::internal::segments[gpu_timers::internal::current.idx].adaptive = *active_adaptive_frame;
+    }
     return true;
   }
   if (measure && !profiling && !cost_meter_unavailable && gpu_timers::internal::heap == nullptr) {
@@ -4871,8 +4941,61 @@ inline int64_t workset_idle_exempt_ns = 0;
 // Registration and removal follow the owner's lifetime under runtime_mutex.
 inline std::unordered_set<const NVSDK_NGX_Handle*> owner_resident_nr_handles;
 inline void ReleaseAllNrSlots(FeatureState& state, bool retire);
-inline void RetireSupersededWorksets(int64_t now_ns) {
+inline void ReleaseAdaptiveStandby(AdaptiveFeatureCache* cache, bool retire) {
+  for (auto& tier : cache->tiers) {
+    ReleaseAllNrSlots(tier.state, retire);
+    ReleaseCom(tier.state.norm.commit);
+    tier.ready = false;
+    tier.completion.reset();
+    tier.output_completions.clear();
+  }
   for (auto it = worksets.begin(); it != worksets.end();) {
+    if (it->first.handle != cache->owner || it->first.adaptive_slot == cache->active) {
+      ++it;
+      continue;
+    }
+    if (retire) RetireWorksetResources(std::move(it->second));
+    else ReleaseFinalResources(it->second);
+    it = worksets.erase(it);
+  }
+}
+
+inline void ReleaseAdaptiveCache(FeatureState* state, bool retire) {
+  auto cache = std::exchange(state->adaptive_cache, nullptr);
+  if (cache == nullptr) return;
+  ReleaseAdaptiveStandby(cache.get(), retire);
+  ReleaseAllNrSlots(*state, retire);
+  ReleaseCom(state->norm.commit);
+  for (auto it = worksets.begin(); it != worksets.end();) {
+    if (it->first.handle != cache->owner) {
+      ++it;
+      continue;
+    }
+    if (retire) {
+      RetireWorksetResources(std::move(it->second));
+    } else {
+      ReleaseFinalResources(it->second);
+    }
+    it = worksets.erase(it);
+  }
+}
+
+inline void RetireSupersededWorksets(int64_t now_ns) {
+  for (auto& [handle, feature] : features) {
+    if (feature.adaptive_cache == nullptr
+        || now_ns - feature.adaptive_cache->last_used_ns < kWorksetIdleRetireNs) continue;
+    const bool another_stream_active = std::any_of(worksets.begin(), worksets.end(), [&](const auto& workset) {
+      return workset.first.handle != handle && now_ns - workset.second.last_used_ns < 1'000'000'000;
+    });
+    if (another_stream_active) ReleaseAdaptiveCache(&feature, true);
+  }
+  for (auto it = worksets.begin(); it != worksets.end();) {
+    const auto adaptive_owner = features.find(it->first.handle);
+    if (adaptive_owner != features.end() && adaptive_owner->second.adaptive_cache != nullptr
+        && now_ns - adaptive_owner->second.adaptive_cache->last_used_ns < kWorksetIdleRetireNs) {
+      ++it;
+      continue;
+    }
     if (it->first.handle == workset_idle_exempt_handle
         && now_ns - workset_idle_exempt_ns < 1'000'000'000) {
       ++it;
@@ -4945,6 +5068,11 @@ inline void ReleaseAllWorksets() {
 inline void RefreshActiveFeatureCount() {
   uint32_t count = 0;
   for (const auto& [_, state] : features) {
+    if (state.adaptive_cache != nullptr) {
+      for (const auto& tier : state.adaptive_cache->tiers) {
+        for (const auto& slot : tier.state.slots) count += slot.handle != nullptr;
+      }
+    }
     for (const auto& slot : state.slots) {
       if (slot.handle != nullptr) ++count;
     }
@@ -5040,6 +5168,7 @@ inline void ReleaseAllNrSlots(FeatureState& state, bool retire = false) {
 }
 
 inline void ReleaseFeatureState(FeatureState& state) {
+  ReleaseAdaptiveCache(&state, false);
   if (state.render_session) {
     ReleaseFeatureState(*state.render_session);
     state.render_session.reset();
@@ -6493,7 +6622,8 @@ inline FinalResources* EnsureWorkset(
         "ControlMask disabled for this evaluate: RGBA8 typed UAV is unavailable");
     return nullptr;
   }
-  const WorksetKey workset_key{owner, key, create_pre_sr_color};
+  const WorksetKey workset_key{owner, key, create_pre_sr_color,
+      (active_adaptive_frame != nullptr ? active_adaptive_frame->slot : 0u)};
   NormStream* norm_stream = nullptr;
   if (const auto stream = features.find(owner); stage_resources == nullptr && stream != features.end()) {
     FeatureState* state = &stream->second;
@@ -6576,10 +6706,14 @@ inline FinalResources* EnsureWorkset(
     // using - was dead in the whole harness.  `worksets[... evicted=N]` is what
     // the `workset_churn` lane asserts is non-zero.
     while (worksets.size() >= max_worksets.load()) {
-      auto lru = worksets.begin();
+      if (active_adaptive_frame != nullptr && active_adaptive_frame->enabled) return nullptr;
+      auto lru = worksets.end();
       auto recyclable = worksets.end();
       for (auto it = worksets.begin(); it != worksets.end(); ++it) {
-        if (it->second.last_used_generation < lru->second.last_used_generation) {
+        const auto cached_owner = features.find(it->first.handle);
+        if (cached_owner != features.end() && cached_owner->second.adaptive_cache != nullptr
+            && SteadyNowNs() - cached_owner->second.adaptive_cache->last_used_ns < kWorksetIdleRetireNs) continue;
+        if (lru == worksets.end() || it->second.last_used_generation < lru->second.last_used_generation) {
           lru = it;
         }
         if (it->first.handle == owner
@@ -6603,6 +6737,7 @@ inline FinalResources* EnsureWorkset(
       // two outputs per present, and those must never share scratch.  When the
       // tracker cannot prove the workset idle, the eviction below runs exactly
       // as before.
+      if (lru == worksets.end()) return nullptr;
       if (recyclable != worksets.end()) {
         auto node = worksets.extract(recyclable);
         node.key() = workset_key;
@@ -8479,7 +8614,8 @@ inline bool DispatchControlMask(
     FinalResources& resources, ID3D12Resource* depth,
     const D3D12_RESOURCE_DESC& depth_desc, const EvaluationContract& frame,
     uint32_t width, uint32_t height, const ControlMaskParameters& parameters,
-    bool depth_has_provenance = true, bool motion_has_provenance = true) {
+    bool depth_has_provenance = true, bool motion_has_provenance = true,
+    uint32_t motion_reference_width = 0, uint32_t motion_reference_height = 0) {
   const bool depth_usable = parameters.mode == kControlMaskDepthFar
       && depth != nullptr && depth_has_provenance
       && depth_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D
@@ -8510,9 +8646,11 @@ inline bool DispatchControlMask(
   // The contract's resolved scale preserves flipped axes. MVJittered inputs
   // retain the game's jitter; this rule does not separate camera/object motion.
   const float motion_scale_x = frame.motion_scale_x * motion_scale_x_multiplier.load()
-      * static_cast<float>(width) / static_cast<float>(std::max(frame.motion_width, 1u));
+      * static_cast<float>(motion_reference_width != 0 ? motion_reference_width : width)
+      / static_cast<float>(std::max(frame.motion_width, 1u));
   const float motion_scale_y = frame.motion_scale_y * motion_scale_y_multiplier.load()
-      * static_cast<float>(height) / static_cast<float>(std::max(frame.motion_height, 1u));
+      * static_cast<float>(motion_reference_height != 0 ? motion_reference_height : height)
+      / static_cast<float>(std::max(frame.motion_height, 1u));
   const bool motion_usable = parameters.motion_enabled && frame.motion != nullptr
       && motion_has_provenance && motion_format != DXGI_FORMAT_UNKNOWN
       && motion_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D
@@ -9918,6 +10056,11 @@ inline void ObserveNrEvaluation(stage_plan::Stage stage, const NVSDK_NGX_Handle*
     NVSDK_NGX_Result result, const stage_plan::Plan& plan, const PresentTarget* present = nullptr,
     bool api_returned = true) {
   auto& stats = stage_telemetry[static_cast<size_t>(stage)];
+  if (active_adaptive_frame != nullptr && active_adaptive_frame->enabled
+      && active_adaptive_frame->session != nullptr && (!api_returned || !NVSDK_NGX_SUCCEED(result))) {
+    active_adaptive_frame->session->Fail(active_adaptive_frame->generation);
+    PublishAdaptiveStatus(active_adaptive_frame->session->status);
+  }
   if (slot.model_reset || !api_returned || !NVSDK_NGX_SUCCEED(result)) {
     comparison_stable_after_ns[static_cast<size_t>(stage)] = SteadyNowNs() + gpu_comparison::STABILITY_NS;
     ++comparison_stable_epochs[static_cast<size_t>(stage)];
@@ -10049,6 +10192,347 @@ inline void ResolveCreateFlags(
 // guide (render) resolution, or a 33-100% fraction of the reference
 // resolution (the DLSS output for the after path, the NGX color for pre-SR;
 // 1.0 = native).  Shared by both insertion points.
+inline adaptive_resolution::Frame FreezeAdaptiveFrame(
+    std::shared_ptr<adaptive_resolution::Session>* owner, const stage_plan::Plan& plan,
+    const stage_plan::Group& group, uint32_t reference_width, uint32_t reference_height,
+    uint32_t guide_width, uint32_t guide_height, uint64_t source_identity,
+    bool supported, uint64_t application_frame = 0, uint32_t required_roles = 1, bool fg_owned = false,
+    uint32_t source_outputs = 1) {
+  if (!nr_adaptive_enabled.load() && *owner == nullptr) return {};
+  if (*owner == nullptr) *owner = std::make_shared<adaptive_resolution::Session>();
+  adaptive_resolution::Sizes upper{}, floor{};
+  for (uint32_t pass = group.begin; pass < group.begin + group.count; ++pass) {
+    const auto settings = EffectivePassResolution(pass);
+    const auto size = capability::ResolveWorkingSize({.follow_input = settings.follow_input, .scale = settings.scale},
+        {.reference_width = reference_width, .reference_height = reference_height,
+         .guide_width = guide_width, .guide_height = guide_height});
+    upper[pass] = {.width = size.width, .height = size.height};
+    floor[pass] = {.width = std::max(1u, static_cast<uint32_t>(std::llround(reference_width * 0.33))),
+                  .height = std::max(1u, static_cast<uint32_t>(std::llround(reference_height * 0.33)))};
+    if (fg_owned && upper[pass] != upper[group.begin]) supported = false;
+  }
+  gpu_comparison::Identity configuration;
+  if (gpu_timers::comparison_settings != nullptr) gpu_timers::comparison_settings(&configuration);
+  auto layout = configuration;
+  if (adaptive_configuration_settings != nullptr) adaptive_configuration_settings(&layout);
+  uint64_t layout_identity = source_identity;
+  for (const uint64_t value : {layout.configuration_generation,
+           layout.settings_hash, layout.resolution_hash, static_cast<uint64_t>(reference_width),
+           static_cast<uint64_t>(reference_height), static_cast<uint64_t>(group.stage),
+           static_cast<uint64_t>(group.begin), static_cast<uint64_t>(group.count),
+           static_cast<uint64_t>(required_roles)}) {
+    layout_identity ^= value;
+    layout_identity *= 1099511628211ull;
+  }
+  for (const auto& size : upper) {
+    layout_identity ^= size.width;
+    layout_identity *= 1099511628211ull;
+    layout_identity ^= size.height;
+    layout_identity *= 1099511628211ull;
+  }
+  for (const uint64_t value : {configuration.configuration_generation, configuration.config_epoch,
+           configuration.settings_epoch, configuration.settings_hash, configuration.resolution_hash,
+           static_cast<uint64_t>(reference_width), static_cast<uint64_t>(reference_height),
+           static_cast<uint64_t>(guide_width), static_cast<uint64_t>(guide_height),
+           static_cast<uint64_t>(group.stage), static_cast<uint64_t>(group.begin),
+           static_cast<uint64_t>(group.count), static_cast<uint64_t>(required_roles)}) {
+    source_identity ^= value;
+    source_identity *= 1099511628211ull;
+  }
+  const int64_t now_ns = SteadyNowNs();
+  const auto output = output_framerate::Read(now_ns);
+  capability::Input baseline;
+  baseline.api = capability::Api::DX12;
+  baseline.backend = capability::Backend::NATIVE;
+  baseline.runtime = capability::Runtime::AVAILABLE;
+  baseline.fg = (native_fg_public_off.load() ? capability::Fg::OFF : capability::Fg::UNKNOWN);
+  baseline.fg_owns_input = fg_owned || native_fg_owns.load();
+  baseline.xefg_enabled = fg::xefg::Enabled();
+  baseline.auto_fg_fallback = auto_fg_fallback_active.load();
+  baseline.plan = plan;
+  const auto main = EffectivePassResolution(0);
+  baseline.main_resolution = {.follow_input = main.follow_input, .scale = main.scale};
+  for (uint32_t pass = 1; pass < kMaxNrPasses; ++pass) {
+    const auto settings = EffectivePassResolution(pass);
+    baseline.resolutions[pass - 1] = {.mode = (settings.follow_input ? 1u : 2u), .scale = settings.scale};
+  }
+  for (const auto& planned_group : plan.groups) {
+    baseline.geometry[static_cast<size_t>(planned_group.stage)] = {
+        .reference_width = reference_width, .reference_height = reference_height,
+        .guide_width = guide_width, .guide_height = guide_height};
+  }
+  supported &= capability::Query(baseline).CanSubmit();
+  const uint32_t outputs = (required_roles == 3 ? 2u : 1u) * source_outputs;
+  const uint32_t levels = std::min(3u, max_worksets.load() / outputs);
+  const bool eligible = supported && plan.valid && !plan.mixed && plan.group_count == 1 && levels >= 2;
+  const bool same_source = (*owner)->identity == source_identity;
+  (*owner)->Prepare({.enabled = nr_adaptive_enabled.load(), .target_fps = nr_adaptive_target_fps.load(),
+                       .minimum_scale = nr_adaptive_min_scale.load(), .prepared_levels = levels},
+      upper, floor, source_identity,
+      {.available = output.available, .source = static_cast<uint64_t>(output.source),
+       .generation = output.source_generation, .configuration = output.configuration_generation,
+       .serial = output.window_serial, .begin_ns = output.window_begin_ns, .end_ns = output.window_end_ns,
+       .fps = output.fps, .mad = output.fps_mad, .observed_multiplier = output.observed_multiplier},
+      now_ns, eligible, nr_adaptive_editing.load() || gpu_timers::ComparisonActive());
+  auto& session = **owner;
+  if (supported && levels < 2 && nr_adaptive_enabled.load()) session.status.reason = adaptive_resolution::Reason::BUDGET;
+  const bool measure = now_ns >= session.next_measure_ns;
+  if (measure) session.next_measure_ns = now_ns + adaptive_resolution::SAMPLE_INTERVAL_NS;
+  PublishAdaptiveStatus(session.status);
+  return {.session = *owner, .sizes = session.status.requested, .upper = upper,
+          .generation = session.status.generation,
+          .application_frame = (application_frame != 0 ? application_frame : static_cast<uint64_t>(now_ns)),
+          .layout_identity = layout_identity,
+          .required_roles = required_roles, .output_count = source_outputs,
+          .enabled = eligible && nr_adaptive_enabled.load(), .measure = measure, .immediate = same_source};
+}
+
+inline void PollAdaptiveCache(AdaptiveFeatureCache* cache) {
+  std::lock_guard lock(submission::tracker_mutex);
+  for (size_t index = 0; index < cache->count; ++index) {
+    auto& tier = cache->tiers[index];
+    if (tier.ready) continue;
+    bool ready = tier.output_completions.size() >= cache->output_count;
+    for (const auto& [output, completion] : tier.output_completions) {
+      ready &= completion->closed.load() && completion->submitted.load() && completion->completed_healthy;
+      if (completion->closed.load() && !completion->submitted.load()) cache->failed = true;
+    }
+    tier.ready = ready;
+  }
+}
+
+inline uint32_t AdaptiveOutputCount(const NVSDK_NGX_Handle* owner, const ID3D12Resource* current, bool pre_sr) {
+  std::unordered_set<const ID3D12Resource*> outputs{current};
+  for (const auto& [key, resources] : worksets) {
+    if (key.handle == owner && key.pre_sr == pre_sr) outputs.insert(key.resource);
+  }
+  return static_cast<uint32_t>(outputs.size());
+}
+
+inline void ActivateAdaptiveTier(FeatureState* feature, size_t slot, bool reset_history = true) {
+  const auto cache = feature->adaptive_cache;
+  if (cache == nullptr || cache->active == slot) return;
+  const auto session = feature->adaptive_session;
+  feature->adaptive_cache.reset();
+  std::swap(*feature, cache->tiers[cache->active].state);
+  std::swap(*feature, cache->tiers[slot].state);
+  cache->active = slot;
+  feature->adaptive_cache = cache;
+  feature->adaptive_session = session;
+  if (reset_history) {
+    for (auto& model : feature->slots) {
+      model.pending_reset = true;
+      model.pending_reset_reasons |= kResetDimensions;
+    }
+  }
+}
+
+inline void SelectAdaptiveTier(FeatureState* feature, const NVSDK_NGX_Handle* handle,
+                               adaptive_resolution::Frame* frame, bool frozen_slot,
+                               const ID3D12Resource* output) {
+  frame->output_identity = reinterpret_cast<uintptr_t>(output);
+  if (frame->preparing) return;
+  if (!nr_adaptive_enabled.load() && feature->adaptive_cache != nullptr
+      && feature->adaptive_cache->identity == frame->layout_identity
+      && feature->adaptive_cache->tiers[0].ready) {
+    const auto cache = feature->adaptive_cache;
+    ActivateAdaptiveTier(feature, 0);
+    ReleaseAdaptiveStandby(cache.get(), true);
+    feature->adaptive_cache.reset();
+    frame->slot = 0;
+    return;
+  }
+  if (feature->adaptive_cache != nullptr
+      && frame->enabled && feature->adaptive_cache->identity != frame->layout_identity
+      && feature->adaptive_cache->upper != frame->upper
+      && feature->resolution_commit_epoch == EffectivePassResolution(0).commit_epoch
+      && feature->working_resolution_committed) {
+    auto& cache = *feature->adaptive_cache;
+    cache.pending_frames = (cache.pending_identity == frame->layout_identity ? cache.pending_frames + 1 : 1);
+    cache.pending_identity = frame->layout_identity;
+    if (cache.pending_frames < kContractDebounceFrames) {
+      frame->sizes = cache.ladder.sizes[cache.active];
+      frame->upper = cache.upper;
+      frame->slot = static_cast<uint32_t>(cache.active);
+      frame->immediate = false;
+      cache.last_used_ns = SteadyNowNs();
+      return;
+    }
+    frame->session->Request(0, SteadyNowNs());
+    frame->generation = frame->session->status.generation;
+    frame->immediate = true;
+  }
+  if (feature->adaptive_cache != nullptr
+      && (!frame->enabled || feature->adaptive_cache->identity != frame->layout_identity)) {
+    ReleaseAdaptiveCache(feature, true);
+  }
+  if (!frame->enabled || frame->session == nullptr) return;
+  const auto session = frame->session;
+  if (feature->adaptive_cache == nullptr) {
+    feature->adaptive_cache = std::make_shared<AdaptiveFeatureCache>();
+    auto& cache = *feature->adaptive_cache;
+    cache.owner = handle;
+    cache.identity = frame->layout_identity;
+    cache.upper = frame->upper;
+    cache.ladder = session->ladder;
+    cache.count = session->ladder.count;
+    cache.output_count = frame->output_count;
+    for (size_t slot = 1; slot < cache.count; ++slot) {
+      auto& state = cache.tiers[slot].state;
+      state = *feature;
+      state.adaptive_cache.reset();
+      state.render_session.reset();
+      state.slots[0] = state.slots[1] = state.slots[2] = state.slots[3] = {};
+      state.norm = {};
+      state.second_resolution = {};
+      state.control_mask_recording.reset();
+      state.control_mask_stream.reset();
+      state.last_workset_key = nullptr;
+      state.working_resolution_committed = false;
+      state.adaptive_resolution_generation = 0;
+    }
+  }
+  auto& cache = *feature->adaptive_cache;
+  cache.last_used_ns = SteadyNowNs();
+  PollAdaptiveCache(&cache);
+  if (cache.failed) session->Fail(frame->generation);
+  size_t slot = (frozen_slot ? frame->slot : session->level);
+  if (cache.failed || cache.budget_blocked || session->failed) slot = cache.active;
+  if (slot >= cache.count || (slot != cache.active && !cache.tiers[slot].ready)) slot = cache.active;
+  ActivateAdaptiveTier(feature, slot);
+  frame->slot = static_cast<uint32_t>(slot);
+  frame->sizes = session->ladder.sizes[slot];
+  session->status.ready_levels = 0;
+  session->status.prepared_levels = static_cast<uint32_t>(cache.count);
+  for (const auto& tier : cache.tiers) session->status.ready_levels += tier.ready;
+  if (cache.budget_blocked) {
+    session->status.reason = adaptive_resolution::Reason::BUDGET;
+  } else if (slot != session->level && !session->failed) {
+    session->status.reason = adaptive_resolution::Reason::PREPARING;
+  }
+  PublishAdaptiveStatus(session->status);
+}
+
+template <typename Record>
+inline void PrepareAdaptiveTier(FeatureState* feature, const adaptive_resolution::Frame& frame,
+                                ID3D12GraphicsCommandList* list, bool complete, const Record& record) {
+  const auto cache = feature->adaptive_cache;
+  if (!frame.enabled || frame.preparing || cache == nullptr || cache->failed || cache->budget_blocked
+      || frame.session->failed || nr_adaptive_editing.load() || gpu_timers::ComparisonActive()) return;
+  if (complete && !cache->tiers[cache->active].output_completions.contains(frame.output_identity)) {
+    auto& tier = cache->tiers[cache->active];
+    tier.completion = submission::ObserveRecording(list);
+    tier.output_completions.emplace(frame.output_identity, tier.completion);
+  }
+  size_t pending_capacity = worksets.size();
+  for (const auto& [owner, state] : features) {
+    if (state.adaptive_cache == nullptr) continue;
+    const size_t resident = std::count_if(worksets.begin(), worksets.end(), [&](const auto& workset) {
+      return workset.first.handle == owner;
+    });
+    const size_t required = state.adaptive_cache->count * state.adaptive_cache->output_count;
+    if (resident < required) pending_capacity += required - resident;
+  }
+  if (pending_capacity > max_worksets.load()) {
+    cache->budget_blocked = true;
+    frame.session->status.reason = adaptive_resolution::Reason::BUDGET;
+    PublishAdaptiveStatus(frame.session->status);
+    return;
+  }
+  PollAdaptiveCache(cache.get());
+  size_t slot = cache->count;
+  for (size_t index = 0; index < cache->count; ++index) {
+    const auto& tier = cache->tiers[index];
+    for (const auto& [output, completion] : tier.output_completions) {
+      if (!completion->closed.load() || !completion->submitted.load()) return;
+    }
+    if (index != cache->active && !tier.output_completions.contains(frame.output_identity)
+        && slot == cache->count) slot = index;
+  }
+  if (slot == cache->count) return;
+  const auto memory_before = telemetry::QueryVideoMemory(direct_device);
+  uint64_t scratch_bytes = 0;
+  for (const auto& [key, resources] : worksets) {
+    if (key.handle == cache->owner) scratch_bytes = std::max(scratch_bytes, resources.allocated_bytes);
+  }
+  const uint64_t required_headroom = std::max<uint64_t>(128ull << 20,
+      scratch_bytes + cache->measured_allocation_increment);
+  if (!memory_before.valid || memory_before.local_budget <= memory_before.local_usage
+      || memory_before.local_budget - memory_before.local_usage < required_headroom + memory_before.local_budget / 20) {
+    cache->budget_blocked = true;
+    frame.session->status.reason = adaptive_resolution::Reason::BUDGET;
+    PublishAdaptiveStatus(frame.session->status);
+    return;
+  }
+  const size_t previous_slot = cache->active;
+  auto preparation = frame;
+  preparation.slot = static_cast<uint32_t>(slot);
+  preparation.sizes = frame.session->ladder.sizes[slot];
+  preparation.preparing = true;
+  preparation.session.reset();
+  const auto previous_frame = preparing_adaptive_frame;
+  const auto previous_chain = evaluate_chain;
+  const auto stable_after = comparison_stable_after_ns;
+  const auto stable_epochs = comparison_stable_epochs;
+  const auto observed = stage_telemetry;
+  const int64_t started_ns = SteadyNowNs();
+  ActivateAdaptiveTier(feature, slot, false);
+  preparing_adaptive_frame = &preparation;
+  bool prepared = false;
+  bool succeeded = false;
+  try {
+    succeeded = record(&prepared);
+  } catch (...) {
+    preparing_adaptive_frame = previous_frame;
+    ActivateAdaptiveTier(feature, previous_slot, false);
+    evaluate_chain = previous_chain;
+    comparison_stable_after_ns = stable_after;
+    comparison_stable_epochs = stable_epochs;
+    stage_telemetry = observed;
+    cache->failed = true;
+    frame.session->Fail(frame.generation);
+    throw;
+  }
+  const double elapsed_ms = static_cast<double>(SteadyNowNs() - started_ns) / 1'000'000.;
+  const auto memory_after = telemetry::QueryVideoMemory(direct_device);
+  if (memory_after.valid) {
+    const uint64_t increment = (memory_after.local_usage > memory_before.local_usage
+        ? memory_after.local_usage - memory_before.local_usage : 0);
+    cache->measured_allocation_increment = std::max(cache->measured_allocation_increment, increment);
+    frame.session->status.preparation_vram_delta_bytes += increment;
+    frame.session->status.peak_process_vram_bytes = std::max(frame.session->status.peak_process_vram_bytes,
+        memory_after.local_usage);
+    cache->budget_blocked |= memory_after.local_usage >= memory_after.local_budget - memory_after.local_budget / 20;
+  } else {
+    cache->budget_blocked = true;
+  }
+  cache->tiers[slot].preparation_cpu_ms += elapsed_ms;
+  frame.session->status.preparation_cpu_ms += elapsed_ms;
+  if (succeeded && prepared) {
+    submission::TrackUse(list, &cache->tiers[slot]);
+    cache->tiers[slot].completion = submission::ObserveRecording(list);
+    cache->tiers[slot].output_completions.emplace(frame.output_identity, cache->tiers[slot].completion);
+  }
+  preparing_adaptive_frame = previous_frame;
+  ActivateAdaptiveTier(feature, previous_slot, false);
+  evaluate_chain = previous_chain;
+  comparison_stable_after_ns = stable_after;
+  comparison_stable_epochs = stable_epochs;
+  stage_telemetry = observed;
+  if (cache->budget_blocked) ReleaseAdaptiveStandby(cache.get(), true);
+  if (!succeeded) {
+    cache->failed = true;
+    frame.session->Fail(frame.generation);
+  }
+  std::ostringstream message;
+  message << "NR adaptive preparation: slot=" << slot << " cpu_ms=" << elapsed_ms
+          << " complete_model_chain=" << prepared << " awaiting_GPU=" << (succeeded && prepared)
+          << " process_vram_before=" << memory_before.local_usage << " process_vram_after=" << memory_after.local_usage
+          << " process_vram_budget=" << memory_after.local_budget << " budget_blocked=" << cache->budget_blocked;
+  Log(reshade::log::level::debug, message.str());
+  PublishAdaptiveStatus(frame.session->status);
+}
+
 inline void ComputeNrWorkingResolution(
     uint32_t reference_width,
     uint32_t reference_height,
@@ -10063,6 +10547,11 @@ inline void ComputeNrWorkingResolution(
        .guide_width = guide_width, .guide_height = guide_height});
   nr_width = size.width;
   nr_height = size.height;
+  if (active_adaptive_frame != nullptr && active_adaptive_frame->enabled
+      && active_adaptive_frame->sizes[pass].width != 0) {
+    nr_width = active_adaptive_frame->sizes[pass].width;
+    nr_height = active_adaptive_frame->sizes[pass].height;
+  }
 }
 
 // One workset owns the proxy/NN surfaces for every pass in a stage group.
@@ -10122,7 +10611,10 @@ inline bool CommitNrResolution(
     uint32_t pass = 0) {
   const auto settings = EffectivePassResolution(pass);
   const bool explicit_commit = feature.resolution_commit_source != settings.commit_source
-      || feature.resolution_commit_epoch != settings.commit_epoch;
+      || feature.resolution_commit_epoch != settings.commit_epoch
+      || (active_adaptive_frame != nullptr && active_adaptive_frame->immediate && active_adaptive_frame->generation != 0
+          && feature.adaptive_resolution_generation != active_adaptive_frame->generation);
+  if (active_adaptive_frame != nullptr) feature.adaptive_resolution_generation = active_adaptive_frame->generation;
   feature.resolution_commit_source = settings.commit_source;
   feature.resolution_commit_epoch = settings.commit_epoch;
   if (feature.output_width == 0) return false;
@@ -10598,6 +11090,13 @@ struct NrRecording {
   uint32_t model_pass_mask = 0;
 };
 
+struct AdaptiveRecording {
+  FeatureState* feature = nullptr;
+  adaptive_resolution::Frame frame;
+  ID3D12Resource* source_color = nullptr;
+  bool complete = false;
+};
+
 inline bool PresentResolutionPairAllowed(const PresentTarget& present) {
   return present.independent_resolution_pair
       && (!present.d3d11_bridge || Dx11NativeRoute())
@@ -10619,7 +11118,7 @@ inline bool NativePreFgResolutionPairAllowed(const PresentTarget& present) {
       && hook_point.load(std::memory_order_relaxed) == kHookPresent;
 }
 
-inline bool ProcessInline(
+inline bool RecordInline(
     ID3D12GraphicsCommandList* command_list,
     const NVSDK_NGX_Handle* handle,
     const NVSDK_NGX_Parameter* game_parameters,
@@ -10627,7 +11126,8 @@ inline bool ProcessInline(
     // The Present hook point's frame (present_path.hpp); null everywhere else.
     const PresentTarget* present = nullptr,
     NrRecording* recording = nullptr,
-    bool prepare_models_only = false) {
+    bool prepare_models_only = false,
+    AdaptiveRecording* adaptive_recording = nullptr) {
   if (recording != nullptr) *recording = {};
   std::optional<PresentTarget> present_snapshot;
   if (present != nullptr) {
@@ -10718,7 +11218,7 @@ inline bool ProcessInline(
   // the same output in one present; mirrored duplicates and NGX/SL mirror
   // pairs are declined (see OutputPassAllowed).  The pass is recorded on
   // success, at the bottom of this function.
-  if (!prepare_models_only && !AdmitOutputPass(output, handle)) return false;
+  if (preparing_adaptive_frame == nullptr && !prepare_models_only && !AdmitOutputPass(output, handle)) return false;
 
   const D3D12_RESOURCE_DESC output_desc = output->GetDesc();
   const D3D12_RESOURCE_DESC motion_desc = motion->GetDesc();
@@ -10794,7 +11294,7 @@ inline bool ProcessInline(
   const uint8_t hdr_mode = present != nullptr
                                ? present->hdr_mode
                                : FrameHdrMode(output_format, feature.create_flags);
-  if (present == nullptr || !present->game_frame_observed) {
+  if (preparing_adaptive_frame == nullptr && (present == nullptr || !present->game_frame_observed)) {
     ObserveGameFrame(current);
   }
   // KCD2 (and most titles) send the full DLSS subrect/size contract only at
@@ -10971,6 +11471,22 @@ inline bool ProcessInline(
   // reference here is the DLSS output resolution.  The NR feature always
   // runs 1:1 at this working resolution and the decode stage upscales,
   // which sidesteps the low-res Color contract the signed runtime rejects.
+  auto adaptive = (preparing_adaptive_frame != nullptr ? *preparing_adaptive_frame
+      : present != nullptr && present->adaptive_frame != nullptr ? *present->adaptive_frame
+      : FreezeAdaptiveFrame(&feature.adaptive_session, plan, group, width, height,
+          current.input_width, current.input_height,
+          reinterpret_cast<uintptr_t>(handle) ^ reinterpret_cast<uintptr_t>(device) ^ feature.source_generation,
+          !D3D11OnlySession() && (present == nullptr
+              || (!present->d3d11_bridge && present->domain == present_restore_scope::Domain::FINAL_PRESENT
+                  && present->stage_execution_plan == nullptr && !present->native_prefg_resolution_pair)),
+          0, 1, false, AdaptiveOutputCount(handle, present != nullptr ? present->workset_key : output, false)));
+  SelectAdaptiveTier(&feature, handle, &adaptive, present != nullptr && present->adaptive_frame != nullptr,
+      present != nullptr ? present->workset_key : output);
+  if (adaptive_recording != nullptr) {
+    adaptive_recording->feature = &feature;
+    adaptive_recording->frame = adaptive;
+  }
+  const AdaptiveFrameScope adaptive_scope(&adaptive);
   uint32_t nr_input_width = width;
   uint32_t nr_input_height = height;
   const bool independent_pair = capability::SupportsIndependentSizes(group.stage, group.count,
@@ -11168,6 +11684,14 @@ inline bool ProcessInline(
   }
   stage_stats.work_width = nr_input_width;
   stage_stats.work_height = nr_input_height;
+  if (adaptive.session != nullptr) {
+    adaptive_resolution::Sizes actual;
+    for (uint32_t pass = 0; pass < requested_stack; ++pass) {
+      actual[group.begin + pass] = {.width = pass_widths[pass], .height = pass_heights[pass]};
+    }
+    adaptive.session->Applied(adaptive.generation, actual, SteadyNowNs());
+    PublishAdaptiveStatus(adaptive.session->status);
+  }
   LogNrWorkingResolutionReduced(width, height, nr_input_width, nr_input_height);
   // The runtime maps motion vectors from the provided MVec grid to its own
   // working grid, so preserve the game's MVecScale when changing NR resolution.
@@ -12079,7 +12603,9 @@ inline bool ProcessInline(
       pass_control_mask_eligible = DispatchControlMask(
           device, command_list, res, frame.depth, depth_desc, frame,
           nr_input_width, nr_input_height, mask_parameters,
-          control_mask_guides_have_provenance, control_mask_guides_have_provenance);
+          control_mask_guides_have_provenance, control_mask_guides_have_provenance,
+          adaptive.enabled ? adaptive.upper[group.begin + pass].width : 0u,
+          adaptive.enabled ? adaptive.upper[group.begin + pass].height : 0u);
     }
     SetEvaluationParameters(
         feature,
@@ -12330,7 +12856,7 @@ inline bool ProcessInline(
   // the game output still holds the game's own DLSS result, which is the
   // correct flicker-free behavior for this frame.  A failed pass also keeps
   // the write-back off - the failure path below retains the game output.
-  if (executed >= 0 && !NVSDK_NGX_FAILED(stack_failure)) {
+  if (executed >= 0 && !NVSDK_NGX_FAILED(stack_failure) && !adaptive.preparing) {
     if (executed + 1 == static_cast<int32_t>(requested_stack) && last_model_pass >= 0) {
       const auto& model_resources = (last_model_pass == 1 && second_workset != nullptr ? *second_workset : res);
       const uint64_t previous_capture_serial = (last_model_used_control_mask
@@ -12793,7 +13319,7 @@ inline bool ProcessInline(
   // must not re-enter), but only a frame NR actually ran on counts as a
   // successful NR evaluation - a fresh-slot maturation frame passes the game
   // image through untouched.
-  RecordOutputPass(output, handle);
+  if (!adaptive.preparing) RecordOutputPass(output, handle);
   stage_scope.complete = executed + 1 == static_cast<int32_t>(requested_stack);
   if (executed < 0) {
     // Fresh-slot maturation: NR did not run, the image passed through.
@@ -12840,7 +13366,33 @@ inline bool ProcessInline(
     PublishPresentRestoreOwner(present_restore_scope::Domain::UPSCALED_FALLBACK,
         present_restore_scope::Reason::INACTIVE_DOMAIN, true, 0, 0, "upscaled_nr_recorded");
   }
+  if (adaptive_recording != nullptr) adaptive_recording->complete = stage_scope.complete;
   return true;
+}
+
+inline bool ProcessInline(ID3D12GraphicsCommandList* command_list, const NVSDK_NGX_Handle* handle,
+                          const NVSDK_NGX_Parameter* game_parameters, bool* command_list_touched = nullptr,
+                          const PresentTarget* present = nullptr, NrRecording* recording = nullptr,
+                          bool prepare_models_only = false) {
+  AdaptiveRecording adaptive;
+  const bool result = RecordInline(command_list, handle, game_parameters, command_list_touched, present,
+      recording, prepare_models_only, &adaptive);
+  if (result && adaptive.feature != nullptr && !prepare_models_only && adaptive.complete) {
+    PrepareAdaptiveTier(adaptive.feature, adaptive.frame, command_list, true, [&](bool* complete) {
+      NrRecording prepared;
+      bool touched = false;
+      const bool accepted = RecordInline(command_list, handle, game_parameters, &touched, present, &prepared);
+      if (command_list_touched != nullptr) *command_list_touched |= touched;
+      uint32_t expected = 0;
+      for (uint32_t pass = 0; pass < kMaxNrPasses; ++pass) {
+        if (adaptive.frame.sizes[pass].width != 0) expected |= 1u << pass;
+      }
+      *complete = prepared.group_complete && prepared.model_evaluate_mask == expected
+          && prepared.model_pass_mask == expected;
+      return accepted;
+    });
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -12902,7 +13454,7 @@ inline void RestorePreSrColor(
   swap.color = nullptr;
 }
 
-inline bool ProcessInlinePreSR(
+inline bool RecordInlinePreSR(
     ID3D12GraphicsCommandList* command_list,
     const NVSDK_NGX_Handle* handle,
     const NVSDK_NGX_Parameter* game_parameters,
@@ -12911,7 +13463,8 @@ inline bool ProcessInlinePreSR(
     // wrapper's restore envelope must apply even on failure exits after
     // recording started - the bool return alone conflates "injected" with
     // "declined before recording").
-    bool* commands_recorded = nullptr) {
+    bool* commands_recorded = nullptr,
+    AdaptiveRecording* adaptive_recording = nullptr) {
   if (!enabled.load() || command_list == nullptr
       || handle == nullptr || game_parameters == nullptr
       || !IsSupportedInjectionCommandList(command_list)) {
@@ -12922,7 +13475,7 @@ inline bool ProcessInlinePreSR(
   const auto group = plan.At(stage_plan::Stage::RENDER);
   if (group.count == 0) return false;
   const uint32_t admission_stage = (plan.mixed ? 1u : 0u);
-  if (evaluate_chain.depth != 0 && evaluate_chain.render_attempted) {
+  if (preparing_adaptive_frame == nullptr && evaluate_chain.depth != 0 && evaluate_chain.render_attempted) {
     CountNrDecline(NrDeclineReason::kNestedMirror);
     return false;
   }
@@ -12954,7 +13507,7 @@ inline bool ProcessInlinePreSR(
   // One NR pass per color surface per present per source handle
   // (mirrors the after path's admission; pre-SR never mixes with the
   // Streamline synthetic path, so the mirror rule reduces to same-handle).
-  if (!AdmitOutputPass(color, handle, admission_stage)) return false;
+  if (preparing_adaptive_frame == nullptr && !AdmitOutputPass(color, handle, admission_stage)) return false;
 
   const D3D12_RESOURCE_DESC color_desc = color->GetDesc();
   const D3D12_RESOURCE_DESC motion_desc = motion->GetDesc();
@@ -13081,7 +13634,7 @@ inline bool ProcessInlinePreSR(
   FeatureState& feature = (plan.mixed ? *entry->second.render_session : entry->second);
   feature.pass_offset = group.begin;
   FeatureState current = DeriveFeatureState(game_parameters);
-  ObserveGameFrame(current);
+  if (preparing_adaptive_frame == nullptr) ObserveGameFrame(current);
   if (current.input_width == 0) {
     current.input_width = feature.create_input_width != 0
         ? feature.create_input_width
@@ -13304,6 +13857,18 @@ inline bool ProcessInlinePreSR(
   // feature below the render resolution against the game's full-res
   // depth/motion guides with the game's MVecScale unchanged: the same
   // guide/color arrangement, and the same F8 rule, as the after path.
+  auto adaptive = (preparing_adaptive_frame != nullptr ? *preparing_adaptive_frame
+      : FreezeAdaptiveFrame(&feature.adaptive_session, plan, group, width, height,
+      current.input_width, current.input_height,
+      reinterpret_cast<uintptr_t>(handle) ^ reinterpret_cast<uintptr_t>(device) ^ feature.source_generation,
+      !D3D11OnlySession(), 0, 1, false, AdaptiveOutputCount(handle, color, true)));
+  SelectAdaptiveTier(&feature, handle, &adaptive, false, color);
+  if (adaptive_recording != nullptr) {
+    adaptive_recording->feature = &feature;
+    adaptive_recording->frame = adaptive;
+    adaptive_recording->source_color = color;
+  }
+  const AdaptiveFrameScope adaptive_scope(&adaptive);
   uint32_t nr_input_width = width;
   uint32_t nr_input_height = height;
   const bool independent_pair = capability::SupportsIndependentSizes(group.stage, group.count, false);
@@ -13351,6 +13916,14 @@ inline bool ProcessInlinePreSR(
   }
   stage_stats.work_width = nr_input_width;
   stage_stats.work_height = nr_input_height;
+  if (adaptive.session != nullptr) {
+    adaptive_resolution::Sizes actual;
+    for (uint32_t pass = 0; pass < requested_stack; ++pass) {
+      actual[group.begin + pass] = {.width = pass_widths[pass], .height = pass_heights[pass]};
+    }
+    adaptive.session->Applied(adaptive.generation, actual, SteadyNowNs());
+    PublishAdaptiveStatus(adaptive.session->status);
+  }
   LogNrWorkingResolutionReduced(width, height, nr_input_width, nr_input_height);
   // The runtime maps motion vectors from the provided MVec grid to its own
   // working grid, so preserve the game's MVecScale when changing NR resolution.
@@ -13545,7 +14118,7 @@ inline bool ProcessInlinePreSR(
     CountNrDecline(NrDeclineReason::kZeroStrengthPassthrough);
     evaluate_chain.render_complete = true;
     stage_scope.complete = true;
-    RecordOutputPass(color, handle, admission_stage);
+    if (!adaptive.preparing) RecordOutputPass(color, handle, admission_stage);
     device->Release();
     return false;
   }
@@ -13948,7 +14521,9 @@ inline bool ProcessInlinePreSR(
     if (pass_control_mask_eligible) {
       pass_control_mask_eligible = DispatchControlMask(
           device, command_list, res, frame.depth, depth_desc, frame,
-          nr_input_width, nr_input_height, mask_parameters);
+          nr_input_width, nr_input_height, mask_parameters, true, true,
+          adaptive.enabled ? adaptive.upper[group.begin + pass].width : 0u,
+          adaptive.enabled ? adaptive.upper[group.begin + pass].height : 0u);
     }
     SetEvaluationParameters(
         feature,
@@ -14155,7 +14730,7 @@ inline bool ProcessInlinePreSR(
     // mirrored second evaluate of the same handle in this present cannot
     // evaluate the freshly created slot on the same command list.
     CountNrDecline(NrDeclineReason::kSlotWarmupMaturation);
-    RecordOutputPass(color, handle, admission_stage);
+    if (!adaptive.preparing) RecordOutputPass(color, handle, admission_stage);
     Transition(
         command_list,
         res.proxy,
@@ -14357,7 +14932,7 @@ inline bool ProcessInlinePreSR(
       res.pre_sr_color);
   evaluate_chain.render_complete = executed + 1 == static_cast<int32_t>(requested_stack);
   stage_scope.complete = evaluate_chain.render_complete;
-  RecordOutputPass(color, handle, admission_stage);
+  if (!adaptive.preparing) RecordOutputPass(color, handle, admission_stage);
   if (!model_evaluated) {
     ++bypassed_evaluations;
     CountNrDecline(NrDeclineReason::kSlotWarmupMaturation);
@@ -14388,7 +14963,30 @@ inline bool ProcessInlinePreSR(
     gpu_timers::End(command_list);
   }
   device->Release();
+  if (adaptive_recording != nullptr) adaptive_recording->complete = stage_scope.complete;
   return true;
+}
+
+inline bool ProcessInlinePreSR(ID3D12GraphicsCommandList* command_list, const NVSDK_NGX_Handle* handle,
+    const NVSDK_NGX_Parameter* game_parameters, PreSrSwap& swap, bool* commands_recorded = nullptr) {
+  AdaptiveRecording adaptive;
+  const bool result = RecordInlinePreSR(command_list, handle, game_parameters, swap, commands_recorded, &adaptive);
+  if (result && adaptive.feature != nullptr && adaptive.complete) {
+    PrepareAdaptiveTier(adaptive.feature, adaptive.frame, command_list, true, [&](bool* complete) {
+    ID3D12Resource* resources[bridge::kResourceKeyCount] = {
+        adaptive.source_color, GetD3D12Resource(game_parameters, NVSDK_NGX_Parameter_Output),
+        GetD3D12Resource(game_parameters, NVSDK_NGX_Parameter_MotionVectors),
+        GetD3D12Resource(game_parameters, NVSDK_NGX_Parameter_Depth),
+        GetD3D12Resource(game_parameters, NVSDK_NGX_Parameter_ExposureTexture)};
+    bridge::ParameterView parameters(game_parameters, resources);
+    PreSrSwap preparation;
+    AdaptiveRecording prepared;
+    const bool accepted = RecordInlinePreSR(command_list, handle, &parameters, preparation, nullptr, &prepared);
+    *complete = accepted && prepared.complete && preparation.result != nullptr;
+    return accepted;
+    });
+  }
+  return result;
 }
 
 // Streamline's public API normally delegates DLSS/DLSSD to NGX.  A few
@@ -14991,6 +15589,7 @@ inline bool ForgetSourceHandleLocked(const NVSDK_NGX_Handle* handle) {
   }
   const auto entry = features.find(handle);
   if (entry != features.end()) {
+    ReleaseAdaptiveCache(&entry->second, true);
     if (entry->second.source_generation != 0) {
       for (auto& stats : stage_telemetry) {
         if (stats.last_evaluate.source_generation == entry->second.source_generation) {
@@ -17410,12 +18009,13 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureSlot(
   ID3D12Resource* prefg_hudless = nullptr;
   bool prefg_backbuffer_replaced = false;
   bool prefg_owner = false;
+  bool frame_generation = false;
   if (!nested_in_c_wrapper && !InsideDirectCall()) {
     RuntimeLock lock(runtime_mutex);
     // NRPresentPreFg (present_path.hpp): a DLSS-G evaluate gets NR on its
     // input frame here, recorded into its list before DLSS-G reads it, and
     // a HUD-less stand-in in its block for the duration of real().
-    const bool frame_generation =
+    frame_generation =
         handle != nullptr && FrameGenerationEvaluate(handle, parameters);
     if (frame_generation) {
       mixed_present_fg_seen.store(true);
@@ -17487,6 +18087,12 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureSlot(
   }();
   state_envelope.StopCapture();
   RestorePreSrColor(parameters, pre_sr);
+  if (frame_generation) {
+    uint32_t count = 0;
+    const bool declared = GetUIntIfPresent(parameters, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount, &count);
+    output_framerate::ObserveNativeEvaluation(declared && count < 16 ? count + 1 : 0,
+        NVSDK_NGX_SUCCEED(result), SteadyNowNs());
+  }
   // A nested delegate must not invalidate the cache before the wrapper
   // that replaced FG inputs has restored the original parameter bindings.
   if (prefg_owner || !evaluate_chain.prefg_ran) {
@@ -17652,11 +18258,12 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureCSlot(
   ID3D12Resource* prefg_hudless = nullptr;
   bool prefg_backbuffer_replaced = false;
   bool prefg_owner = false;
+  bool frame_generation = false;
   if (!InsideDirectCall()) {
     RuntimeLock lock(runtime_mutex);
     // NRPresentPreFg: NR on DLSS-G's input before DLSS-G reads it (see the
     // C++ wrapper).
-    const bool frame_generation =
+    frame_generation =
         handle != nullptr && FrameGenerationEvaluate(handle, parameters);
     if (frame_generation) {
       mixed_present_fg_seen.store(true);
@@ -17714,6 +18321,12 @@ inline NVSDK_NGX_Result NVSDK_CONV HookedEvaluateFeatureCSlot(
   inside_game_evaluate_wrapper = false;
   state_envelope.StopCapture();
   RestorePreSrColor(parameters, pre_sr);
+  if (frame_generation) {
+    uint32_t count = 0;
+    const bool declared = GetUIntIfPresent(parameters, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount, &count);
+    output_framerate::ObserveNativeEvaluation(declared && count < 16 ? count + 1 : 0,
+        NVSDK_NGX_SUCCEED(result), SteadyNowNs());
+  }
   if (prefg_owner || !evaluate_chain.prefg_ran) {
     RestoreNativePreFg(command_list, parameters, prefg_hudless, NVSDK_NGX_SUCCEED(result), handle,
                        prefg_backbuffer_replaced);
@@ -20721,6 +21334,7 @@ inline bool OnReshadeOpenOverlay(reshade::api::effect_runtime* /*runtime*/,
     monitor_history_epoch.fetch_add(1);
   }
   if (!open) {
+    nr_adaptive_editing.store(false, std::memory_order_relaxed);
     uint32_t monitor_capture = 5;
     hotkey_capture_target.compare_exchange_strong(monitor_capture, 0);
   }
@@ -22673,6 +23287,7 @@ inline void RecreateFeaturesLocked() {
   if (direct_api.module == nullptr) direct_load_state = DirectLoadState::Unknown;
   direct_runtime_failed = false;
   for (auto& [_, feature] : features) {
+    ReleaseAdaptiveCache(&feature, true);
     if (feature.render_session) {
       ReleaseAllNrSlots(*feature.render_session, true);
       ReleaseCom(feature.render_session->norm.commit);
@@ -22969,6 +23584,12 @@ inline constexpr Setting kSetFollowInputRes{
 inline constexpr Setting kSetResolutionScale{
     "NRResolutionScale", &nr_resolution_scale, defaults::kResolutionScale,
     SettingEffect::kNone};
+inline constexpr Setting kSetAdaptiveEnabled{
+    "NRAdaptiveEnabled", &nr_adaptive_enabled, false, SettingEffect::kNone};
+inline constexpr Setting kSetAdaptiveTargetFps{
+    "NRAdaptiveTargetFPS", &nr_adaptive_target_fps, 60.f, SettingEffect::kNone};
+inline constexpr Setting kSetAdaptiveMinScale{
+    "NRAdaptiveMinScale", &nr_adaptive_min_scale, 0.67f, SettingEffect::kNone};
 inline constexpr Setting kSetPassResolutionMode[] = {
     {"NRPass2ResolutionMode", &pass_resolution_mode[0], 0u, SettingEffect::kNone},
     {"NRPass3ResolutionMode", &pass_resolution_mode[1], 0u, SettingEffect::kNone},
@@ -23465,7 +24086,8 @@ inline constexpr const Setting* kHookPointSettings[] = {
     &kSetPresentWhite, &kSetPresentUiCorrection, &kSetPresentFrames, &kSetPresentFgSource,
     &kSetPresentSdrRestorePolicy, &kSetPresentBlockHudless};
 inline constexpr const Setting* kPerformanceSettings[] = {
-    &kSetFollowInputRes, &kSetResolutionScale, &kSetLookUpsample};
+    &kSetFollowInputRes, &kSetResolutionScale, &kSetLookUpsample,
+    &kSetAdaptiveEnabled, &kSetAdaptiveTargetFps, &kSetAdaptiveMinScale};
 inline constexpr const Setting* kStackingSettings[] = {
     &kSetPassResolutionMode[0], &kSetPassResolutionMode[1], &kSetPassResolutionMode[2],
     &kSetPassResolutionScale[0], &kSetPassResolutionScale[1], &kSetPassResolutionScale[2],
@@ -23932,6 +24554,7 @@ inline void SettleSlider(bool now) {
     ApplySettingEffect(slider_pending->effect);
     slider_pending = nullptr;
   }
+  nr_adaptive_editing.store(slider_pending != nullptr, std::memory_order_relaxed);
 }
 
 // The controls over a Setting, one per kind: the classic layout's ImGui
@@ -24974,6 +25597,50 @@ inline void DrawResolutionControls(const ui::PanelText& text) {
     if (following) {
       ui::ItemTooltip("%s", text.Tr(ui::text::kResolutionSavedScale));
     }
+  }
+  ToggleSetting(text, kSetAdaptiveEnabled, "Adaptive resolution",
+      "Adjust NR working resolution toward your target output FPS, including generated frames. Manual resolutions are the upper limits. No extra program is required.");
+  if (nr_adaptive_enabled.load()) {
+    ImGui::Indent();
+    SliderSetting(text, kSetAdaptiveTargetFps, "Target output FPS", 20.f, 360.f, "%.0f FPS",
+        "The target includes generated frames. If lowering NR brings no FPS benefit, the previous quality is restored.");
+    float minimum = nr_adaptive_min_scale.load() * 100.f;
+    if (text.modern) {
+      ui::RowLabel("Minimum relative scale",
+          "Minimum width and height relative to each pass's manual upper limit. Existing stage limits still apply.");
+    }
+    bool changed = false;
+    if (text.modern) {
+      changed = ui::Slider("##adaptive_minimum", &minimum, 33.f, 100.f, "%.0f%%", nullptr);
+    } else {
+      changed = ImGui::SliderFloat(ui::ControlLabel("Minimum relative scale").c_str(), &minimum, 33.f, 100.f, "%.0f%%");
+    }
+    if (changed) {
+      if (slider_pending != &kSetAdaptiveMinScale) SettleSlider(true);
+      kSetAdaptiveMinScale.Store(minimum / 100.f);
+      slider_pending = &kSetAdaptiveMinScale;
+    }
+    SettleSlider(false);
+    if (text.modern && kSetAdaptiveMinScale.Modified()
+        && ui::ResetButton("adaptive_minimum_reset", "67%")) {
+      kSetAdaptiveMinScale.Commit(.67f);
+    }
+    const auto automatic = CopyAdaptiveStatus();
+    const auto output_rate = output_framerate::Read(SteadyNowNs());
+    ImGui::TextWrapped("%s", text.Tr(adaptive_resolution::ReasonText(
+        automatic.reason == adaptive_resolution::Reason::DISABLED
+            ? adaptive_resolution::Reason::COLLECTING : automatic.reason)));
+    if (output_rate.available) {
+      ImGui::Text(text.Tr("Estimated output FPS: %.1f"), output_rate.fps);
+      ImGui::TextWrapped("%s", text.Tr(output_framerate::SourceText(output_rate.source)));
+    } else {
+      ImGui::TextWrapped("%s", text.Tr(output_framerate::ReasonText(output_rate.reason)));
+    }
+    if (automatic.applied[0].width != 0 && automatic.upper[0].width != 0) {
+      ImGui::Text(text.Tr("Automatic scale: %.0f%%"),
+          100. * automatic.applied[0].width / automatic.upper[0].width);
+    }
+    ImGui::Unindent();
   }
   // Beside the resolution since rc5, independent of Adjust NR's look: it is how
   // a reduced working resolution's edit reaches the output.
@@ -27535,6 +28202,7 @@ inline void OnOverlay(reshade::api::effect_runtime* runtime) {
     ImGui::EndChild();
   }
   SettleSlider(false);
+  nr_adaptive_editing.store(slider_pending != nullptr || ImGui::IsAnyItemActive(), std::memory_order_relaxed);
   profile_ui::Tick();
   if (!ui_capture_dir.empty()) {
     ui_panel_draws.fetch_add(1, std::memory_order_relaxed);
@@ -28099,6 +28767,9 @@ inline void LoadConfiguration() {
   }
   bool saved_follow_input = defaults::kFollowInputRes;
   float saved_res_scale = defaults::kResolutionScale;
+  bool saved_adaptive_enabled = false;
+  float saved_adaptive_target_fps = 60.f;
+  float saved_adaptive_min_scale = 0.67f;
   bool saved_gpu_timers = defaults::kGpuTimers;
   bool saved_crash_dump = defaults::kCrashDump;
   bool saved_cost_meter = defaults::kCostMeter;
@@ -28407,6 +29078,9 @@ inline void LoadConfiguration() {
       nullptr, kConfigSection, "NRFollowInputRes", saved_follow_input);
   reshade::get_config_value(
       nullptr, kConfigSection, "NRResolutionScale", saved_res_scale);
+  reshade::get_config_value(nullptr, kConfigSection, "NRAdaptiveEnabled", saved_adaptive_enabled);
+  reshade::get_config_value(nullptr, kConfigSection, "NRAdaptiveTargetFPS", saved_adaptive_target_fps);
+  reshade::get_config_value(nullptr, kConfigSection, "NRAdaptiveMinScale", saved_adaptive_min_scale);
   reshade::get_config_value(
       nullptr, kConfigSection, "NRGpuTimers", saved_gpu_timers);
   reshade::get_config_value(nullptr, kConfigSection, "NRCrashDump", saved_crash_dump);
@@ -28888,6 +29562,11 @@ inline void LoadConfiguration() {
   nr_resolution_scale = SanitizeFloatKey(
       saved_res_scale, defaults::kResolutionScale, 0.33f, 1.f,
       "NRResolutionScale");
+  nr_adaptive_enabled = saved_adaptive_enabled;
+  nr_adaptive_target_fps = SanitizeFloatKey(saved_adaptive_target_fps, 60.f, 20.f, 360.f,
+      "NRAdaptiveTargetFPS");
+  nr_adaptive_min_scale = SanitizeFloatKey(saved_adaptive_min_scale, 0.67f, 0.33f, 1.f,
+      "NRAdaptiveMinScale");
   gpu_timers_enabled = saved_gpu_timers;
   lastgasp::dumps_on = saved_crash_dump;
   cost_meter_enabled = saved_cost_meter;
@@ -29828,6 +30507,7 @@ inline void Use(DWORD reason, HMODULE module, LPVOID reserved) {
       lastgasp::Mark("attach:begin");
       internal::LoadConfiguration();
       gpu_timers::comparison_settings = internal::comparison_ui::CaptureSettings;
+      internal::adaptive_configuration_settings = internal::comparison_ui::CaptureAdaptiveSettings;
       debug::Mark("attach:config-loaded");
       internal::Log(
           reshade::log::level::info,

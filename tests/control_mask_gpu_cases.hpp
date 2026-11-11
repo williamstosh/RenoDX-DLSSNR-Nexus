@@ -2,6 +2,7 @@
 
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -9,7 +10,11 @@
 #include <psapi.h>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <set>
+#include <thread>
 #include <vector>
+
+#include <utils/hash.hpp>
 
 namespace control_mask_gpu_cases {
 namespace addon = renodx::addons::dlss5::internal;
@@ -2149,6 +2154,60 @@ int RunSafety(bool hardware, bool safety = true) {
         std::cout << "MOTION_MASK case=" << test.name << " size=5x1 motion_base=3,1 grid="
                   << frame.motion_width << 'x' << frame.motion_height << " rgba8=PASS\n";
       }
+      // Keep the same guide vectors and manual upper bound while only the
+      // automatic NR working size changes. Both axes retain reference pixels.
+      for (const bool vertical : {false, true}) {
+        addon::EvaluationContract frame{};
+        frame.input_width = frame.motion_width = 10;
+        frame.input_height = frame.motion_height = 2;
+        frame.motion = vectors.Get();
+        frame.motion_x = 3;
+        frame.motion_y = 1;
+        frame.motion_scale_x = 1.f;
+        frame.motion_scale_y = -1.f;
+        std::array<float, 14 * 4 * 2> vector_data{};
+        constexpr std::array<float, 5> speeds{0.f, 16.f, 9.f, 2.f, 0.f};
+        for (uint32_t y = 0; y < 2; ++y) {
+          for (uint32_t x = 0; x < 10; ++x) {
+            const size_t index = (static_cast<size_t>(y + 1) * 14 + x + 3) * 2;
+            vector_data[index + (vertical ? 1 : 0)] = speeds[x / 2];
+          }
+        }
+        auto transfer = gpu.CreateTextureTransfer(vectors.Get());
+        gpu.Transition(vectors.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+        gpu.UploadTexture(vectors.Get(), transfer, reinterpret_cast<const uint8_t*>(vector_data.data()),
+            sizeof(vector_data), 14 * 2 * sizeof(float));
+        gpu.Transition(vectors.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        constexpr std::array<int, 5> expected_red{204, 0, 102, 204, 204};
+        for (const uint32_t current_width : {10u, 5u}) {
+          const uint32_t current_height = current_width / 5;
+          workset = addon::EnsureWorkset(gpu.device.Get(), motion_owner, texture.Get(),
+              current_width, current_height, 10, 2, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 1, 0, false,
+              nullptr, nullptr, true);
+          Check(workset != nullptr && workset->control_mask != nullptr, "automatic motion reference mask allocation");
+          const addon::ControlMaskParameters settings{addon::kControlMaskRgb, 2,
+              {0.8f, 0.5f, 0.25f}, 0.25f, 0.75f, true, 2.f, 16.f};
+          Check(addon::DispatchControlMask(gpu.device.Get(), gpu.list.Get(), *workset, nullptr,
+                    depth_desc, frame, current_width, current_height, settings, false, true, 10, 2),
+                "automatic mask uses the fixed manual upper-bound motion reference");
+          gpu.Transition(workset->control_mask, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+              D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+          workset->control_mask_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+          const auto bytes = ReadPixels(gpu, workset->control_mask);
+          for (uint32_t y = 0; y < current_height; ++y) {
+            for (uint32_t x = 0; x < current_width; ++x) {
+              const size_t pixel = (static_cast<size_t>(y) * current_width + x) * 4;
+              Check(std::abs(static_cast<int>(bytes[pixel]) - expected_red[x * 5 / current_width]) <= 1
+                        && std::abs(static_cast<int>(bytes[pixel + 1]) - 128) <= 1
+                        && bytes[pixel + 2] == 64 && bytes[pixel + 3] == 255,
+                    "automatic resize preserves reference-pixel attenuation and G/B/alpha");
+            }
+          }
+          std::cout << "MOTION_MASK auto_reference=10x2 current=" << current_width << 'x' << current_height
+                    << " axis=" << (vertical ? "y" : "x") << " rgba8=PASS adapter="
+                    << (hardware ? "NATIVE_GPU" : "WARP") << " nr=MOCK\n";
+        }
+      }
       addon::motion_scale_x_multiplier = saved_multiplier_x;
       addon::motion_scale_y_multiplier = saved_multiplier_y;
       addon::RetireWorkset(motion_key);
@@ -2257,12 +2316,42 @@ inline const d3d12_test::TextureTransfer* native_motion_sr_readback = nullptr;
 inline const d3d12_test::TextureTransfer* native_motion_proxy_readback = nullptr;
 inline const d3d12_test::TextureTransfer* native_motion_neural_readback = nullptr;
 inline uint32_t native_motion_sr_calls = 0;
+inline addon::DirectCreateFn native_resize_create = nullptr;
+inline addon::DirectReleaseFn native_resize_release = nullptr;
+inline double native_resize_create_ms = 0;
+inline double native_resize_release_ms = 0;
+inline double native_resize_host_ms = 0;
+inline double native_resize_evaluate_ms = 0;
+inline uint32_t native_resize_creates = 0;
+inline uint32_t native_resize_releases = 0;
+inline bool native_resize_ready = false;
+inline std::vector<uintptr_t> native_resize_models;
+
+NVSDK_NGX_Result NVSDK_CONV ObserveNativeResizeCreate(
+    ID3D12GraphicsCommandList* list, NVSDK_NGX_Feature feature,
+    const NVSDK_NGX_Parameter* parameters, NVSDK_NGX_Handle** handle) {
+  const auto start = std::chrono::steady_clock::now();
+  const auto result = native_resize_create(list, feature, parameters, handle);
+  native_resize_create_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  ++native_resize_creates;
+  return result;
+}
+
+NVSDK_NGX_Result NVSDK_CONV ObserveNativeResizeRelease(NVSDK_NGX_Handle* handle) {
+  const auto start = std::chrono::steady_clock::now();
+  const auto result = native_resize_release(handle);
+  native_resize_release_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  ++native_resize_releases;
+  return result;
+}
 
 NVSDK_NGX_Result NVSDK_CONV ObserveNativeHostEvaluate(
     ID3D12GraphicsCommandList* command_list, const NVSDK_NGX_Handle* handle,
     const NVSDK_NGX_Parameter* parameters, PFN_NVSDK_NGX_ProgressCallback progress) {
   ++native_motion_sr_calls;
+  const auto start = std::chrono::steady_clock::now();
   const auto result = NVSDK_NGX_D3D12_EvaluateFeature(command_list, handle, parameters, progress);
+  native_resize_host_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
   if (NVSDK_NGX_SUCCEED(result) && native_motion_sr_readback != nullptr) {
     auto* output = addon::GetD3D12Resource(parameters, NVSDK_NGX_Parameter_Output);
     native_motion_gpu->Transition(output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -2291,28 +2380,42 @@ NVSDK_NGX_Result NVSDK_CONV ObserveNativeRuntimeEvaluate(
     native_motion_gpu->Transition(proxy, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
   }
   const bool timed = native_cost_queries != nullptr && command_list == native_cost_list;
-  if (timed && native_runtime_masks.size() == 1) {
-    native_cost_queries->Begin(command_list, native_cost_interval + 1);
+  const bool timed_evaluate = timed && (native_runtime_masks.size() == 1
+      || (native_resize_ready && native_runtime_masks.size() == 2));
+  const UINT evaluate_interval = native_cost_interval + static_cast<UINT>(native_runtime_masks.size());
+  if (timed_evaluate) {
+    native_cost_queries->Begin(command_list, evaluate_interval);
   }
+  const auto start = std::chrono::steady_clock::now();
   const NVSDK_NGX_Result result = native_runtime_evaluate(command_list, handle, parameters, progress);
+  native_resize_evaluate_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
   if (NVSDK_NGX_SUCCEED(result) && native_motion_neural_readback != nullptr) {
     auto* neural = addon::GetD3D12Resource(parameters, "DLSSNR.Output");
     native_motion_gpu->Transition(neural, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
     native_motion_gpu->RecordTextureReadback(neural, *native_motion_neural_readback);
     native_motion_gpu->Transition(neural, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   }
-  if (timed && native_runtime_masks.size() == 1) {
+  if (timed_evaluate) {
     command_list->EndQuery(native_cost_queries->heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
-                           2 * (native_cost_interval + 1) + 1);
+                           2 * evaluate_interval + 1);
   }
+  if (native_resize_ready) native_resize_models.push_back(reinterpret_cast<uintptr_t>(handle));
   native_runtime_results.push_back(result);
   return result;
 }
 
 int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
                  uint32_t mask_mode = addon::kControlMaskDepthFar, bool cost = false,
-                 bool motion_test = false) {
+                 bool motion_test = false, bool resize_test = false) {
   try {
+    // Resize reuses public SDK initialization and the real SR owner, without
+    // running the independent paired ControlMask motion experiment.
+    motion_test = motion_test || resize_test;
+    if (resize_test) {
+      // This headless fixture has no Present stream. Disable the production
+      // game-exit heuristic so its normal submission-proven retirement runs.
+      addon::shutdown_quiesce_enabled = false;
+    }
     const bool single_stage = hot_toggle || cost || motion_test;
     const char* cost_mode_environment = std::getenv("NR_NEXUS_TEST_CONTROL_MASK_COST_MODE");
     const std::string cost_mode = (cost_mode_environment != nullptr ? cost_mode_environment : "depthfar");
@@ -2330,10 +2433,10 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
     reshade::internal::get_reshade_module_handle(GetModuleHandleW(nullptr));
     addon::addon_module = GetModuleHandleW(nullptr);
     Gpu gpu(true);
-    const UINT width = (cost ? 3840 : 960);
-    const UINT height = (cost ? 2160 : 540);
-    const UINT render_width = (motion_test ? 640 : width);
-    const UINT render_height = (motion_test ? 360 : height);
+    const UINT width = (cost ? 3840 : (resize_test ? 1920 : 960));
+    const UINT height = (cost ? 2160 : (resize_test ? 1080 : 540));
+    const UINT render_width = (motion_test ? (resize_test ? 1280 : 640) : width);
+    const UINT render_height = (motion_test ? (resize_test ? 720 : 360) : height);
     Check(addon::InstallQueueCompletionHooks(gpu.queue.Get()), "native ControlMask queue completion hooks");
     Check(addon::InstallCommandListStateHooks(gpu.list.Get()), "native ControlMask command-list hooks");
     Check(addon::EnsureControlMaskPipeline(gpu.device.Get()), "native ControlMask production pipeline");
@@ -2664,7 +2767,316 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
     Check(production_chain_completed,
           "real Runtime completes the requested production stages within the debounce window");
     nlohmann::json motion_report;
-    if (motion_test) {
+    nlohmann::json resize_report;
+    if (resize_test) {
+      const auto* ready_environment = std::getenv("NR_NEXUS_TEST_RESIZE_READY");
+      native_resize_ready = ready_environment == nullptr || std::strcmp(ready_environment, "0") != 0;
+      const UINT intervals_per_frame = (native_resize_ready ? 3u : 2u);
+      auto queries = d3d12_test::CreateTimestampQueries(gpu, 180 * intervals_per_frame);
+      ComPtr<IDXGIAdapter3> adapter;
+      Check(SUCCEEDED(gpu.factory->EnumAdapterByLuid(gpu.device->GetAdapterLuid(), IID_PPV_ARGS(&adapter))),
+            "resize memory adapter");
+      DXGI_ADAPTER_DESC adapter_desc{};
+      Check(SUCCEEDED(adapter->GetDesc(&adapter_desc)), "resize adapter identity");
+      LARGE_INTEGER driver_version{};
+      const auto driver_status = adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &driver_version);
+      native_resize_create = addon::core_create_feature;
+      native_resize_release = addon::core_release_feature;
+      addon::core_create_feature = ObserveNativeResizeCreate;
+      addon::core_release_feature = ObserveNativeResizeRelease;
+      auto& report = resize_report;
+      report = {{"schema", "nr-nexus-native-resize-v1"}, {"evidence", "NATIVE_GPU+NATIVE_NGX"},
+          {"backend", "production owned NR; public SDK ProjectID preinitialization"},
+          {"host_sr", "NATIVE_NGX fixed 1280x720 to 1920x1080"}, {"stage", "Upscaled"},
+          {"passes", 1}, {"colors", 1}, {"mfg", false}, {"requested_model", "B"}, {"internal_model", "unknown"},
+          {"format", "RGBA16F"}, {"depth", "R32F fixed gradient"}, {"motion", "RG16F zero"},
+          {"runtime", addon::direct_runtime_requirements.file_version}, {"nr_sha256", addon::direct_runtime_sha256},
+          {"driver_x100", addon::direct_runtime_requirements.driver_x100},
+          {"driver_version_raw", driver_version.QuadPart}, {"driver_status", driver_status},
+          {"vendor_id", adapter_desc.VendorId}, {"device_id", adapter_desc.DeviceId},
+          {"timestamp_frequency_hz", queries.frequency_hz},
+          {"input_hash_algorithm", "CRC32 of uploaded tightly packed bytes"},
+          {"input_color_crc32", renodx::utils::hash::ComputeCRC32(reinterpret_cast<const uint8_t*>(color_data.data()), color_data.size() * sizeof(uint16_t))},
+          {"input_depth_crc32", renodx::utils::hash::ComputeCRC32(reinterpret_cast<const uint8_t*>(depth_data.data()), depth_data.size() * sizeof(float))},
+          {"input_motion_crc32", renodx::utils::hash::ComputeCRC32(reinterpret_cast<const uint8_t*>(motion_data.data()), motion_data.size() * sizeof(uint16_t))},
+          {"mode", (native_resize_ready ? "ready-cache" : "cold")},
+          {"selection", "MOCK direct Session::Request; output FPS source unavailable, no FPS accuracy claim"},
+          {"timing_scope", "CPU resource/wrapper residual includes resource preparation, binding, dispatch recording, logging and retirement outside SDK calls; GPU wrapper includes real SR and NR"},
+          {"synchronization", "one submitted list, fence completed before reuse; 60Hz paced starts; raw actual start intervals"},
+          {"frames", nlohmann::json::array()}};
+      report["loaded_ngx_modules"] = nlohmann::json::array();
+      std::array<HMODULE, 1024> modules{};
+      DWORD module_bytes = 0;
+      Check(EnumProcessModules(GetCurrentProcess(), modules.data(), sizeof(modules), &module_bytes)
+                && module_bytes <= sizeof(modules), "resize enumerate actual loaded modules");
+      for (size_t index = 0; index < module_bytes / sizeof(HMODULE); ++index) {
+        std::array<wchar_t, 32768> path{};
+        const auto length = GetModuleFileNameW(modules[index], path.data(), static_cast<DWORD>(path.size()));
+        const std::filesystem::path module_path(std::wstring(path.data(), length));
+        const auto filename = module_path.filename().string();
+        if (filename.find("nvngx") != std::string::npos) {
+          report["loaded_ngx_modules"].push_back(module_path.string());
+        }
+      }
+      const auto origin = std::chrono::steady_clock::now();
+      auto previous = origin;
+      auto deadline = origin;
+      std::array<uintptr_t, 3> stable_models{}, stable_proxies{};
+      std::array<uint64_t, 3> stable_worksets{};
+      bool recorded_ready = false;
+      if (native_resize_ready) {
+        renodx::addons::dlss5::gpu_timers::comparison_settings = addon::comparison_ui::CaptureSettings;
+        addon::adaptive_configuration_settings = addon::comparison_ui::CaptureAdaptiveSettings;
+        addon::kSetAdaptiveEnabled.Store(1.f);
+      }
+      for (uint32_t frame = 0; frame < 180; ++frame) {
+        const uint32_t phase = frame / 60;
+        const bool changed = frame == 60 || frame == 120;
+        if (native_resize_ready && frame == 150) addon::kSetAdaptiveTargetFps.Store(120.f);
+        if (changed) {
+          if (native_resize_ready) {
+            auto& feature = addon::features.at(owner);
+            Check(recorded_ready && feature.adaptive_session != nullptr && feature.adaptive_cache != nullptr,
+                  "all real NR tiers are ready before the mock selection changes");
+            feature.adaptive_session->Request((phase == 1 ? feature.adaptive_cache->count - 1 : 0), addon::SteadyNowNs());
+          } else {
+            addon::nr_resolution_scale = (phase == 1 ? 2.f / 3.f : 1.f);
+            ++addon::nr_resolution_commit_epochs[0];
+          }
+        }
+        native_runtime_masks.clear();
+        native_runtime_results.clear();
+        native_runtime_resets.clear();
+        native_resize_models.clear();
+        native_resize_create_ms = native_resize_release_ms = native_resize_host_ms = native_resize_evaluate_ms = 0;
+        native_resize_creates = native_resize_releases = 0;
+        gpu.list->ClearState(nullptr);
+        parameters.Set(NVSDK_NGX_Parameter_Reset, 0);
+        native_cost_interval = frame * intervals_per_frame;
+        native_cost_list = gpu.list.Get();
+        native_cost_queries = &queries;
+        queries.Begin(gpu.list.Get(), native_cost_interval);
+        const auto start = std::chrono::steady_clock::now();
+        addon::ngx_slot_real[0].evaluate = reinterpret_cast<void*>(ObserveNativeHostEvaluate);
+        const auto result = addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), owner, &parameters, nullptr);
+        addon::ngx_slot_real[0].evaluate = nullptr;
+        const auto recorded = std::chrono::steady_clock::now();
+        const double wrapper_ms = std::chrono::duration<double, std::milli>(recorded - start).count();
+        gpu.list->EndQuery(queries.heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 2 * native_cost_interval + 1);
+        native_cost_queries = nullptr;
+        const bool evaluated = !native_runtime_results.empty();
+        Check(NVSDK_NGX_SUCCEED(result) && native_runtime_results.size() <= (native_resize_ready ? 2u : 1u)
+                  && std::all_of(native_runtime_results.begin(), native_runtime_results.end(),
+                      [](const auto value) { return NVSDK_NGX_SUCCEED(value); }), "resize wrapper and all real NR evaluates succeed");
+        gpu.Retain(queries.readback.Get());
+        gpu.list->ResolveQueryData(queries.heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+            2 * native_cost_interval, 2u * (1u + static_cast<UINT>(native_runtime_results.size())),
+            queries.readback.Get(), 2ull * native_cost_interval * sizeof(uint64_t));
+        nlohmann::json tiers_before = nlohmann::json::array();
+        if (native_resize_ready) {
+          const auto cache = addon::features.at(owner).adaptive_cache;
+          Check(cache != nullptr && !cache->failed && !cache->budget_blocked, "real NR preparation cache remains healthy");
+          for (size_t slot = 0; slot < cache->count; ++slot) {
+            const auto& tier = cache->tiers[slot];
+            if (tier.completion != nullptr && !tier.completion->submitted.load()) {
+              Check(!tier.ready, "recorded but unsubmitted real NR preparation is never ready");
+            }
+            tiers_before.push_back({{"slot", slot}, {"ready", tier.ready},
+                {"has_receipt", tier.completion != nullptr},
+                {"submitted", tier.completion != nullptr && tier.completion->submitted.load()},
+                {"closed", tier.completion != nullptr && tier.completion->closed.load()}});
+          }
+        }
+        const size_t retired_nr_before = addon::retired_nr_features.size();
+        const size_t retired_worksets_before = addon::retired_final_resources.size();
+        DXGI_QUERY_VIDEO_MEMORY_INFO memory_before{};
+        Check(SUCCEEDED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memory_before)), "resize memory before submit");
+        const auto submitted = std::chrono::steady_clock::now();
+        gpu.Submit();
+        const auto completed = std::chrono::steady_clock::now();
+        addon::DrainRetiredResources(true);
+        const auto retired = std::chrono::steady_clock::now();
+        DXGI_QUERY_VIDEO_MEMORY_INFO memory_after{};
+        Check(SUCCEEDED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memory_after)), "resize memory after retirement");
+        const auto wrapper_gpu = queries.Read(native_cost_interval);
+        const auto nr_gpu = (evaluated ? queries.Read(native_cost_interval + 1) : d3d12_test::TimestampSample{});
+        const auto cache = addon::features.at(owner).adaptive_cache;
+        if (native_resize_ready) addon::PollAdaptiveCache(cache.get());
+        const auto active = (native_resize_ready ? static_cast<uint32_t>(cache->active) : 0u);
+        const auto& workset = addon::worksets.at({owner, output.Get(), false, active});
+        nlohmann::json tier_states = nlohmann::json::array();
+        nlohmann::json evaluations = nlohmann::json::array();
+        if (native_resize_ready) {
+          bool all_ready = true;
+          std::set<uintptr_t> models, proxies;
+          std::set<uint64_t> workset_ids;
+          for (size_t slot = 0; slot < cache->count; ++slot) {
+            const auto& tier = cache->tiers[slot];
+            all_ready &= tier.ready;
+            const auto& state = (slot == cache->active ? addon::features.at(owner) : tier.state);
+            const auto found = addon::worksets.find({owner, output.Get(), false, static_cast<uint32_t>(slot)});
+            const auto model = reinterpret_cast<uintptr_t>(state.slots[0].handle);
+            const auto proxy = (found != addon::worksets.end() ? reinterpret_cast<uintptr_t>(found->second.proxy) : 0);
+            const auto workset_id = (found != addon::worksets.end() ? found->second.id : 0);
+            if (tier.ready) {
+              Check(tier.completion != nullptr && tier.completion->closed.load()
+                        && tier.completion->submitted.load() && tier.completion->completed_healthy,
+                    "real NR ready tier requires complete healthy GPU submission proof");
+              Check(model != 0 && proxy != 0 && workset_id != 0 && models.insert(model).second
+                        && proxies.insert(proxy).second && workset_ids.insert(workset_id).second,
+                    "ready NR tiers own distinct Feature handles, worksets and color proxies");
+            }
+            if (recorded_ready) {
+              Check(stable_models[slot] == model && stable_proxies[slot] == proxy && stable_worksets[slot] == workset_id,
+                    "ready switching preserves every tier Feature, workset and resource identity");
+            } else {
+              stable_models[slot] = model;
+              stable_proxies[slot] = proxy;
+              stable_worksets[slot] = workset_id;
+            }
+            tier_states.push_back({{"slot", slot}, {"active", slot == cache->active}, {"ready", tier.ready},
+                {"model", model}, {"proxy", proxy}, {"workset_id", workset_id},
+                {"preparation_cpu_ms", tier.preparation_cpu_ms},
+                {"receipt_closed", tier.completion != nullptr && tier.completion->closed.load()},
+                {"receipt_submitted", tier.completion != nullptr && tier.completion->submitted.load()},
+                {"receipt_completed_healthy", tier.completion != nullptr && tier.completion->completed_healthy}});
+          }
+          if (all_ready) {
+            if (!recorded_ready) report["all_ready_frame"] = frame;
+            recorded_ready = true;
+          }
+          if (changed) {
+            Check(cache->active == (phase == 1 ? cache->count - 1 : 0) && native_resize_creates == 0
+                      && native_resize_releases == 0 && native_runtime_results.size() == 1
+                      && native_runtime_resets.size() == 1 && native_runtime_resets[0] == 1
+                      && addon::retired_nr_features.empty() && addon::retired_final_resources.empty(),
+                  "ready selection switches immediately with reset, one real NR Evaluate and no Create/release/retirement");
+          }
+          if (frame == 150) {
+            Check(native_resize_creates == 0 && native_resize_releases == 0 && recorded_ready,
+                  "real Setting target-FPS edit preserves prepared GPU tiers without Create or release");
+          }
+          for (size_t index = 0; index < native_runtime_results.size(); ++index) {
+            const auto sample = queries.Read(native_cost_interval + 1 + static_cast<UINT>(index));
+            evaluations.push_back({{"model", native_resize_models[index]}, {"result", static_cast<uint32_t>(native_runtime_results[index])},
+                {"reset", native_runtime_resets[index]}, {"gpu_ms", sample.gpu_ms},
+                {"begin_tick", sample.begin_tick}, {"end_tick", sample.end_tick}});
+          }
+        }
+        Check(gpu.fence->GetCompletedValue() >= gpu.serial && gpu.fence->GetCompletedValue() != UINT64_MAX
+                  && SUCCEEDED(gpu.device->GetDeviceRemovedReason()), "resize GPU fence completes on healthy device");
+        report["frames"].push_back({{"frame", frame}, {"phase", phase}, {"switch_id", (changed ? phase : 0)},
+            {"request_scale", (native_resize_ready
+                ? addon::features.at(owner).adaptive_session->ladder.coefficients[active] : (phase == 1 ? 2.f / 3.f : 1.f))},
+            {"nr_width", workset.input_width}, {"nr_height", workset.input_height}, {"workset_id", workset.id},
+            {"workset_bytes", workset.allocated_bytes}, {"cpu_create_count", native_resize_creates},
+            {"cpu_create_ms", native_resize_create_ms}, {"cpu_release_count", native_resize_releases},
+            {"cpu_release_ms", native_resize_release_ms}, {"cpu_host_sr_ms", native_resize_host_ms},
+            {"cpu_nr_evaluate_ms", native_resize_evaluate_ms}, {"cpu_wrapper_ms", wrapper_ms},
+            {"cpu_resource_wrapper_residual_ms", wrapper_ms - native_resize_create_ms - native_resize_host_ms - native_resize_evaluate_ms},
+            {"start_ms", std::chrono::duration<double, std::milli>(start - origin).count()},
+            {"raw_start_interval_ms", std::chrono::duration<double, std::milli>(start - previous).count()},
+            {"nr_evaluated", evaluated}, {"gpu_wrapper_ms", wrapper_gpu.gpu_ms},
+            {"gpu_nr_ms", (evaluated ? nlohmann::json(nr_gpu.gpu_ms) : nlohmann::json(nullptr))},
+            {"gpu_wrapper_begin_tick", wrapper_gpu.begin_tick}, {"gpu_wrapper_end_tick", wrapper_gpu.end_tick},
+            {"gpu_nr_begin_tick", nr_gpu.begin_tick}, {"gpu_nr_end_tick", nr_gpu.end_tick},
+            {"cpu_submit_wait_ms", std::chrono::duration<double, std::milli>(completed - submitted).count()},
+            {"cpu_retirement_ms", std::chrono::duration<double, std::milli>(retired - completed).count()},
+            {"completion_from_start_ms", std::chrono::duration<double, std::milli>(completed - start).count()},
+            {"retired_nr_before_submit", retired_nr_before}, {"retired_worksets_before_submit", retired_worksets_before},
+            {"retired_nr_after_drain", addon::retired_nr_features.size()},
+            {"retired_worksets_after_drain", addon::retired_final_resources.size()},
+            {"local_memory_before_submit", memory_before.CurrentUsage}, {"local_memory_after_drain", memory_after.CurrentUsage},
+            {"local_budget", memory_after.Budget}, {"host_result", static_cast<uint32_t>(result)},
+            {"nr_result", (evaluated ? nlohmann::json(static_cast<uint32_t>(native_runtime_results[0])) : nlohmann::json(nullptr))},
+            {"fence", gpu.serial}, {"completed_fence", gpu.fence->GetCompletedValue()}});
+        report["frames"].back()["active_slot"] = active;
+        report["frames"].back()["tiers_before_submit"] = std::move(tiers_before);
+        report["frames"].back()["tiers"] = std::move(tier_states);
+        report["frames"].back()["nr_evaluations"] = std::move(evaluations);
+        if (native_resize_ready) {
+          report["frames"].back()["configuration_epoch"] = addon::present_restore_configuration.epoch;
+          report["frames"].back()["cache_layout_identity"] = cache->identity;
+          report["frames"].back()["session_identity"] = addon::features.at(owner).adaptive_session->identity;
+          report["frames"].back()["target_fps_setting"] = addon::nr_adaptive_target_fps.load();
+        }
+        if (changed || native_resize_creates != 0) {
+          std::cout << "RESIZE switch=" << phase << " create_ms=" << native_resize_create_ms
+                    << " wrapper_ms=" << wrapper_ms << " first_nr_gpu_ms=" << nr_gpu.gpu_ms
+                    << " completion_ms=" << std::chrono::duration<double, std::milli>(completed - start).count() << std::endl;
+        }
+        previous = start;
+        deadline = std::max(deadline + std::chrono::microseconds(16667), std::chrono::steady_clock::now());
+        std::this_thread::sleep_until(deadline);
+      }
+      if (native_resize_ready) {
+        Check(recorded_ready && addon::nr_resolution_scale.load() == 1.f,
+              "real ready-cache roundtrip preserves the manual upper resolution");
+        auto& before_off = addon::features.at(owner);
+        before_off.adaptive_session->Request(before_off.adaptive_cache->count - 1, addon::SteadyNowNs());
+        report["setting_transactions"] = nlohmann::json::array();
+        const auto evaluate_transaction = [&](const char* name, bool disabled) {
+          if (disabled) addon::kSetAdaptiveEnabled.Store(0.f);
+          native_runtime_masks.clear();
+          native_runtime_results.clear();
+          native_runtime_resets.clear();
+          native_resize_models.clear();
+          native_resize_create_ms = native_resize_release_ms = native_resize_host_ms = native_resize_evaluate_ms = 0;
+          native_resize_creates = native_resize_releases = 0;
+          gpu.list->ClearState(nullptr);
+          const auto start = std::chrono::steady_clock::now();
+          addon::ngx_slot_real[0].evaluate = reinterpret_cast<void*>(ObserveNativeHostEvaluate);
+          const auto result = addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), owner, &parameters, nullptr);
+          addon::ngx_slot_real[0].evaluate = nullptr;
+          const auto recorded = std::chrono::steady_clock::now();
+          gpu.Submit();
+          addon::DrainRetiredResources(true);
+          auto& feature = addon::features.at(owner);
+          const size_t slot = (feature.adaptive_cache != nullptr ? feature.adaptive_cache->active : 0);
+          const auto& workset = addon::worksets.at({owner, output.Get(), false, static_cast<uint32_t>(slot)});
+          std::cout << "RESIZE setting=" << name << " creates=" << native_resize_creates
+                    << " releases=" << native_resize_releases << " active=" << slot
+                    << " wrapper_ms=" << std::chrono::duration<double, std::milli>(recorded - start).count() << std::endl;
+          Check(NVSDK_NGX_SUCCEED(result) && native_runtime_results.size() == 1
+                    && NVSDK_NGX_SUCCEED(native_runtime_results[0]) && native_resize_creates == 0
+                    && reinterpret_cast<uintptr_t>(feature.slots[0].handle) == stable_models[slot]
+                    && workset.id == stable_worksets[slot]
+                    && gpu.fence->GetCompletedValue() >= gpu.serial
+                    && gpu.fence->GetCompletedValue() != UINT64_MAX && SUCCEEDED(gpu.device->GetDeviceRemovedReason()),
+                "real setting transaction uses the existing correct Feature/workset and completes on the GPU without Create");
+          if (disabled) {
+            Check(feature.adaptive_cache == nullptr && slot == 0 && workset.input_width == width
+                      && workset.input_height == height && addon::retired_nr_features.empty()
+                      && addon::retired_final_resources.empty(),
+                  "turning adaptive Off restores the prepared manual upper tier and retires all standby tiers");
+          } else {
+            Check(feature.adaptive_cache != nullptr && slot == feature.adaptive_cache->count - 1,
+                  "Off restoration starts from a real ready low tier");
+          }
+          report["setting_transactions"].push_back({{"name", name}, {"disabled", disabled},
+              {"active_slot", slot}, {"nr_width", workset.input_width}, {"nr_height", workset.input_height},
+              {"create_count", native_resize_creates}, {"release_count", native_resize_releases},
+              {"wrapper_ms", std::chrono::duration<double, std::milli>(recorded - start).count()},
+              {"model", reinterpret_cast<uintptr_t>(feature.slots[0].handle)}, {"workset_id", workset.id},
+              {"host_result", static_cast<uint32_t>(result)}, {"nr_result", static_cast<uint32_t>(native_runtime_results[0])},
+              {"fence", gpu.serial}, {"completed_fence", gpu.fence->GetCompletedValue()}});
+        };
+        evaluate_transaction("ready-low-before-off", false);
+        evaluate_transaction("adaptive-off-real-setting", true);
+      }
+      addon::core_create_feature = native_resize_create;
+      addon::core_release_feature = native_resize_release;
+      native_cost_list = nullptr;
+      Check(addon::get_module_filename_iat == nullptr && addon::original_get_module_filename == nullptr,
+            "resize uses no snippet caller identity bridge");
+      report["identity_bridge_installed"] = false;
+      std::ofstream file("adaptive-native-resize.json", std::ios::binary | std::ios::trunc);
+      file << report.dump(2) << '\n';
+      file.close();
+      Check(!file.fail(), "resize evidence JSON saved");
+      native_resize_ready = false;
+    }
+    if (motion_test && !resize_test) {
       constexpr std::array<float, 8> speeds{0.f, 0.f, 2.f, 8.f, 16.f, 0.f, 0.f, 0.f};
       std::array<std::vector<uint8_t>, speeds.size()> reference;
       std::array<std::vector<uint8_t>, speeds.size()> reference_sr;
@@ -3197,8 +3609,8 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
     }
     std::cout << "PASS ControlMask production chain stages=" << (single_stage ? "Upscaled" : "Render+Upscaled")
               << " evidence=NATIVE_GPU+NATIVE_NGX host_sr=" << (motion_test ? "NATIVE_NGX" : "MOCK") << " frames="
-              << (cost ? 80 : (motion_test ? 16 : (hot_toggle ? 52 : 1)))
-              << (motion_test ? " frame_scope=paired_only" : "")
+              << (resize_test ? 180 : (cost ? 80 : (motion_test ? 16 : (hot_toggle ? 52 : 1))))
+              << (resize_test ? " frame_scope=high-low-high" : (motion_test ? " frame_scope=paired_only" : ""))
               << " size=" << width << 'x' << height << " mask="
               << (mask_enabled ? mask_mode_name : "off")
               << " output_readback=rgba16f raw="
@@ -3241,15 +3653,29 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
       Check(NVSDK_NGX_SUCCEED(NVSDK_NGX_D3D12_DestroyParameters(sr_parameters)), "release real SR parameters");
       Check(NVSDK_NGX_SUCCEED(NVSDK_NGX_D3D12_Shutdown1(gpu.device.Get())), "public SDK device shutdown");
       native_motion_gpu = nullptr;
-      motion_report["teardown"] = {{"sr_continues_without_nr", true}, {"sr_release", true},
+      if (resize_test) {
+        Check(std::none_of(addon::worksets.begin(), addon::worksets.end(),
+                  [owner](const auto& entry) { return entry.first.handle == owner; })
+                  && addon::retired_nr_features.empty() && addon::retired_final_resources.empty(),
+              "ready-cache source release and completed teardown retain no owner worksets or retired NR resources");
+        resize_report["teardown"] = {{"sr_continues_without_nr", true}, {"source_release", true},
+            {"sdk_shutdown", true}, {"identity_bridge_installed", false}, {"retirement_drained", true}};
+        std::ofstream file("adaptive-native-resize.json", std::ios::binary | std::ios::trunc);
+        file << resize_report.dump(2) << '\n';
+        file.close();
+        Check(!file.fail(), "completed ready-cache teardown evidence JSON saved");
+        std::cout << "PASS resize real SR disable/resume, source Release and public SDK shutdown; identity_bridge=unused\n";
+      } else {
+        motion_report["teardown"] = {{"sr_continues_without_nr", true}, {"sr_release", true},
           {"sdk_shutdown", true}, {"identity_bridge_installed", false}, {"disabled_host_sr_evaluates", native_motion_sr_calls}};
-      motion_report["total_host_sr_evaluates"] = prefix_host_evaluates + 16 + native_motion_sr_calls;
-      motion_report["total_nr_evaluates"] = prefix_nr_evaluates + 16;
-      std::ofstream motion_file("controlmask-motion.json", std::ios::binary | std::ios::trunc);
-      motion_file << motion_report.dump(2) << '\n';
-      motion_file.close();
-      Check(!motion_file.fail(), "completed motion chain evidence JSON is saved");
-      std::cout << "PASS real SR disable/resume, source Release and public SDK shutdown; identity_bridge=unused\n";
+        motion_report["total_host_sr_evaluates"] = prefix_host_evaluates + 16 + native_motion_sr_calls;
+        motion_report["total_nr_evaluates"] = prefix_nr_evaluates + 16;
+        std::ofstream motion_file("controlmask-motion.json", std::ios::binary | std::ios::trunc);
+        motion_file << motion_report.dump(2) << '\n';
+        motion_file.close();
+        Check(!motion_file.fail(), "completed motion chain evidence JSON is saved");
+        std::cout << "PASS real SR disable/resume, source Release and public SDK shutdown; identity_bridge=unused\n";
+      }
     }
     if (cost) {
       cost_report["output_readback"] = {{"count", 1}, {"after_measurement", true},

@@ -29,6 +29,7 @@
 
 #include "detour_guard.hpp"
 #include "fg_frame.hpp"
+#include "output_framerate.hpp"
 #include "submission_tracker.hpp"
 
 namespace renodx::addons::dlss5::fg::xefg {
@@ -191,6 +192,9 @@ struct Context {
   bool fresh_id = false;
   bool last_id_known = false;
   bool enabled = false;
+  uint32_t requested_interpolated = 0;
+  bool requested_interpolated_known = false;
+  uint64_t framerate_configuration = 0;
   bool omit_optional_hudless = false;
   bool ui_composition = false;
   // Lifetime budgets: at most 3 tagged frame samples + 8 contract changes per
@@ -354,6 +358,7 @@ inline std::shared_ptr<Frame> GetFrame(Context* context, uint32_t id) {
 }
 
 inline void ReleaseFrames(Context* context) {
+  output_framerate::Invalidate();
   for (const auto& [id, frame] : context->frames) {
     for (const auto& resource : frame->resources) {
       if (resource.copy != nullptr) resource.copy->unproven = true;
@@ -456,6 +461,7 @@ inline void Initialize(void* handle, ID3D12CommandQueue* queue, const abi::Init*
   auto context = std::make_shared<Context>();
   context->queue = queue;
   context->init = *parameters;
+  output_framerate::ObserveXeFGMetadata(reinterpret_cast<uintptr_t>(context.get()), parameters->max_interpolated + 1);
   context->omit_optional_hudless = block_optional_hudless.load(std::memory_order_acquire)
       && parameters->ui_mode == kUiModeAuto;
   if (sdk_module != nullptr) {
@@ -497,11 +503,15 @@ struct PresentFrame {
   bool continuing_submission = false;
   uint64_t service_stats_serial = 0;
   Result service_result = Result::NOT_SERVED;
+  bool repeated = false;
 };
 
 inline PresentFrame BeginPresent(IDXGISwapChain* swapchain, UINT flags) {
   PresentFrame present;
-  if ((flags & DXGI_PRESENT_TEST) != 0 || proxy_depth != 0) return present;
+  if ((flags & DXGI_PRESENT_TEST) != 0 || proxy_depth != 0) {
+    if ((flags & DXGI_PRESENT_TEST) != 0) output_framerate::Invalidate(output_framerate::Reason::kTEST_PRESENT);
+    return present;
+  }
   const bool service_requested = Requested();
   const auto identity = Identity(swapchain);
   bool repeated = false;
@@ -514,6 +524,7 @@ inline PresentFrame BeginPresent(IDXGISwapChain* swapchain, UINT flags) {
       present.service_owned = service_requested && context->enabled;
       const bool has_present_id = context->fresh_id;
       repeated = has_present_id && context->last_id_known && context->last_id == context->present_id;
+      present.repeated = repeated;
       if (has_present_id) {
         ++context->interval_tagged_presents;
         if (!repeated) {
@@ -630,7 +641,7 @@ inline PresentFrame BeginPresent(IDXGISwapChain* swapchain, UINT flags) {
   return present;
 }
 
-inline void EndPresent(PresentFrame* present) {
+inline void EndPresent(PresentFrame* present, HRESULT present_result = E_FAIL) {
   if (present->context == nullptr) return;
   uint64_t value = 0;
   bool needs_consumer_fence = false;
@@ -644,7 +655,7 @@ inline void EndPresent(PresentFrame* present) {
   const bool signaled = !needs_consumer_fence
       || SUCCEEDED(present->context->queue->Signal(present->context->fence.Get(), value));
   abi::PresentStatus status{};
-  const bool has_status = present->context->get_status != nullptr
+  const bool has_status = present_result == S_OK && present->context->get_status != nullptr
       && present->context->get_status(reinterpret_cast<void*>(present->input.context), &status) == 0;
   std::unique_lock lock(state.mutex);
   if (present->frame != nullptr) {
@@ -660,6 +671,13 @@ inline void EndPresent(PresentFrame* present) {
     }
   }
   auto& context = *present->context;
+  output_framerate::ObserveXeFG(reinterpret_cast<uintptr_t>(present->context.get()),
+      (context.epoch << 32) ^ context.framerate_configuration,
+      output_framerate::NowNs(), present_result == S_OK, has_status && status.frame_gen_result >= 0,
+      present->repeated, status.frames_presented,
+      (context.requested_interpolated_known ? context.requested_interpolated + 1 : 0),
+      (has_status ? status.frames_presented : 0), context.init.max_interpolated + 1,
+      has_status && status.enabled == 0);
   ++context.interval_presents;
   context.interval_submitted += present->service_result == Result::SUBMITTED;
   if (present->service_result == Result::SUBMITTED) {
@@ -776,7 +794,7 @@ struct ProxyHooks {
     if (present.service_owned) ++proxy_depth;
     const HRESULT status = reinterpret_cast<PresentFn>(proxies[Index].real[0])(swapchain, interval, flags);
     if (present.service_owned) --proxy_depth;
-    try { EndPresent(&present); } catch (...) { PublishResult(Result::FAILED); }
+    try { EndPresent(&present, status); } catch (...) { PublishResult(Result::FAILED); }
     --proxy_entry_depth;
     return status;
   }
@@ -791,7 +809,7 @@ struct ProxyHooks {
     if (present.service_owned) ++proxy_depth;
     const HRESULT status = reinterpret_cast<Present1Fn>(proxies[Index].real[1])(swapchain, interval, flags, parameters);
     if (present.service_owned) --proxy_depth;
-    try { EndPresent(&present); } catch (...) { PublishResult(Result::FAILED); }
+    try { EndPresent(&present, status); } catch (...) { PublishResult(Result::FAILED); }
     --proxy_entry_depth;
     return status;
   }
@@ -881,10 +899,11 @@ inline bool InstallProxy(IUnknown* object, HMODULE sdk_module) {
   return false;
 }
 
-inline constexpr std::array<const char*, 9> EXPORTS{
+inline constexpr std::array<const char*, 10> EXPORTS{
     "xefgSwapChainD3D12InitFromSwapChain", "xefgSwapChainD3D12InitFromSwapChainDesc",
     "xefgSwapChainD3D12GetSwapChainPtr", "xefgSwapChainD3D12TagFrameResource", "xefgSwapChainTagFrameConstants",
-    "xefgSwapChainSetPresentId", "xefgSwapChainSetEnabled", "xefgSwapChainSetUiCompositionState", "xefgSwapChainDestroy"};
+    "xefgSwapChainSetPresentId", "xefgSwapChainSetEnabled", "xefgSwapChainSetUiCompositionState", "xefgSwapChainDestroy",
+    "xefgSwapChainSetNumInterpolatedFrames"};
 struct SdkSlot {
   HMODULE module = nullptr;
   std::array<void*, EXPORTS.size()> real{};
@@ -1158,6 +1177,7 @@ struct SdkHooks {
     if (status == 0) {
       std::unique_lock lock(state.mutex);
       if (const auto it = state.contexts.find(handle); it != state.contexts.end()) {
+        output_framerate::Invalidate();
         ReleaseFrames(it->second.get());
         // Keep recordings that can still replay alive; submission owns only
         // tokens, never COM references to their operands.
@@ -1172,6 +1192,23 @@ struct SdkHooks {
     }
     return status;
   }
+  static int32_t NumInterpolated(void* handle, uint32_t count) {
+    if (!stopped.load()) PinRuntimeCallback();
+    const auto status = reinterpret_cast<int32_t (*)(void*, uint32_t)>(modules[Index].real[9])(handle, count);
+    if (status == 0) {
+      std::unique_lock lock(state.mutex);
+      if (const auto it = state.contexts.find(handle); it != state.contexts.end()) {
+        auto& context = *it->second;
+        if (!context.requested_interpolated_known || context.requested_interpolated != count) {
+          ++context.framerate_configuration;
+          output_framerate::Invalidate();
+        }
+        context.requested_interpolated = count;
+        context.requested_interpolated_known = true;
+      }
+    }
+    return status;
+  }
 };
 
 template <size_t Index>
@@ -1180,7 +1217,7 @@ inline std::array<void*, EXPORTS.size()> SdkDetours() {
       reinterpret_cast<void*>(&SdkHooks<Index>::GetSwapchain), reinterpret_cast<void*>(&SdkHooks<Index>::Resource),
       reinterpret_cast<void*>(&SdkHooks<Index>::Constants), reinterpret_cast<void*>(&SdkHooks<Index>::PresentId),
       reinterpret_cast<void*>(&SdkHooks<Index>::Enable), reinterpret_cast<void*>(&SdkHooks<Index>::UiState),
-      reinterpret_cast<void*>(&SdkHooks<Index>::Destroy)};
+      reinterpret_cast<void*>(&SdkHooks<Index>::Destroy), reinterpret_cast<void*>(&SdkHooks<Index>::NumInterpolated)};
 }
 }  // namespace internal
 
@@ -1284,7 +1321,7 @@ inline void Poll(bool force_discovery = true) {
         available += exports[i] != nullptr;
         // Older public runtimes always interpolate UI and have no dynamic
         // composition setter. Absence keeps the documented disabled default.
-        if (i != 7) complete &= exports[i] != nullptr;
+        if (i != 7 && i != 9) complete &= exports[i] != nullptr;
       }
       if (!complete) break;
       HMODULE pinned = nullptr;

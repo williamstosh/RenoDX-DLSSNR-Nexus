@@ -739,6 +739,10 @@ int RunNativeRequiredMenuTest() {
 
 int main(int argc, char** argv) {
 #if defined(NR_NEXUS_TEST_NATIVE_NGX)
+  if (argc == 3 && std::strcmp(argv[1], "--control-mask-native-ngx-resize") == 0) {
+    return control_mask_gpu_cases::RunNativeNgx(
+        argv[2], false, renodx::addons::dlss5::internal::kControlMaskRgb, false, false, true);
+  }
   if (argc == 3 && std::strcmp(argv[1], "--control-mask-native-ngx-motion") == 0) {
     return control_mask_gpu_cases::RunNativeNgx(
         argv[2], false, renodx::addons::dlss5::internal::kControlMaskRgb, false, true);

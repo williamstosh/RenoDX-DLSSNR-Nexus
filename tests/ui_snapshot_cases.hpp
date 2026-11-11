@@ -33,6 +33,8 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
   const char* pages[] = {"quality", "multipass", "diagnostics", "advanced"};
   std::vector<Scenario> scenarios;
   if (!docs_only) {
+    scenarios.push_back({.id = "adaptive-resolution", .action = "adaptive-resolution", .language = 1});
+    scenarios.push_back({.id = "adaptive-resolution-zh", .action = "adaptive-resolution", .language = 14});
     for (float width : {450.f, 600.f}) {
       scenarios.push_back({.id = "r7-quality-" + std::to_string(static_cast<int>(width)) + "-common",
                            .action = "r7-common", .width = width});
@@ -351,6 +353,9 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     if (std::find(registry["expected"].begin(), registry["expected"].end(), scenario.id)
         == registry["expected"].end()) continue;
     const bool round_seven = scenario.action.starts_with("r7-");
+    const bool saved_adaptive_enabled = runtime::nr_adaptive_enabled.load();
+    const float saved_adaptive_target = runtime::nr_adaptive_target_fps.load();
+    const float saved_adaptive_minimum = runtime::nr_adaptive_min_scale.load();
     const bool motion_snapshot = scenario.action == "r7-depth-fine";
     const bool saved_motion_enabled = runtime::control_mask_motion_enabled.load();
     const float saved_motion_start = runtime::control_mask_motion_start.load();
@@ -520,6 +525,11 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       if (scenario.action == "r2-pass3") {
         runtime::ui_selected_pass = 2;
       }
+    }
+    if (scenario.action == "adaptive-resolution") {
+      runtime::nr_adaptive_enabled = true;
+      runtime::nr_adaptive_target_fps = 120.f;
+      runtime::nr_adaptive_min_scale = .67f;
     }
     const bool render_stage_resolution = scenario.action == "render-stage-resolution";
     const bool present_stage_resolution = scenario.action == "present-stage-resolution";
@@ -704,7 +714,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     const bool long_page = scenario.action == "expanded" || scenario.action == "collapsed"
         || scenario.action == "pass-independent" || scenario.action == "pass-first" || scenario.action == "doc-default"
         || cross_stage || scenario.action == "gpu-pass-diagnostics" || scenario.action == "gpu-comparison"
-        || round_seven
+        || round_seven || scenario.action == "adaptive-resolution"
         || (scenario.action.starts_with("r2-") && scenario.action != "r2-reset-confirm");
     if (scenario.action == "cross-stage-resolution" || same_stage_resolution) {
       check(items.contains(find("##pass_resolution_scale").id), "independent pass resolution slider is drawn");
@@ -713,6 +723,11 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
             "drawing the resolution editor preserves its independent mode and scale");
       check(runtime::pass_stage[0].load() == (same_stage_resolution ? 0u : 2u) && runtime::pass_preset[0].load() == 2,
             "resolution editor preserves Stage and Model selection");
+    }
+    if (scenario.action == "adaptive-resolution") {
+      check(items.contains(find("##adaptive_minimum").id), "adaptive minimum control is drawn when enabled");
+      check(runtime::nr_adaptive_target_fps.load() == 120.f && runtime::nr_adaptive_min_scale.load() == .67f,
+            "drawing adaptive controls preserves the target and relative minimum");
     }
     ImGuiWindow* settings = nullptr;
     if (long_page) {
@@ -1537,6 +1552,9 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     }
     if (!ImGui::GetCurrentContext()->OpenPopupStack.empty()) ImGui::ClosePopupToLevel(0, true);
     for (const auto& [setting, value] : round_seven_restore) setting->Store(value);
+    runtime::nr_adaptive_enabled = saved_adaptive_enabled;
+    runtime::nr_adaptive_target_fps = saved_adaptive_target;
+    runtime::nr_adaptive_min_scale = saved_adaptive_minimum;
     if (motion_snapshot) {
       runtime::control_mask_motion_enabled = saved_motion_enabled;
       runtime::control_mask_motion_start = saved_motion_start;

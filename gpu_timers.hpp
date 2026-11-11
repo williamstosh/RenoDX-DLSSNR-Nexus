@@ -29,6 +29,7 @@
 #pragma once
 
 #include "brand.h"
+#include "adaptive_resolution.hpp"
 
 #include <algorithm>
 #include <array>
@@ -163,6 +164,7 @@ struct Segment {
   uint32_t color_role = 0;  // 0: ordinary chain, 1: FG backbuffer, 2: FG HUDLess.
   gpu_comparison::Sample comparison;
   uint64_t diagnostic_token = 0;
+  adaptive_resolution::Frame adaptive;
 };
 
 // Latest published per-evaluate timing, in microseconds.  Guarded by
@@ -366,6 +368,12 @@ inline bool Ensure(ID3D12Device* device) {
 // `log`: the "NR gpu timers" lines, NRGpuTimers' own; the cost meter's
 // samples publish silently (the addon logs their sum as "NR cost:").
 inline void Reject(const Segment& s, SampleState state) {
+  if (s.measure && s.adaptive.session != nullptr && state != SampleState::PENDING) {
+    s.adaptive.session->ObserveGpu({.generation = s.adaptive.generation,
+        .frame = s.adaptive.application_frame, .sequence = s.sequence,
+        .recorded_ns = static_cast<int64_t>(s.comparison.recorded_ns), .completed_ns = NowNs(),
+        .role = s.adaptive.role, .required_roles = s.adaptive.required_roles}, NowNs());
+  }
   if (s.measure && s.diagnostic_token != 0 && raw_observer != nullptr && state != SampleState::PENDING) {
     Stats rejected{.width = s.width, .height = s.height, .passes = s.passes,
                    .state = state, .sequence = s.sequence, .measured_ns = NowNs(),
@@ -406,8 +414,8 @@ inline bool Publish(const Segment& s, bool log, const void* queue) {
   const auto& previous_stage = stage_stats[StageIndex(s.path)];
   // Recording a newer pending sample does not supersede a completed result.
   // Present-owned lists can be reused before the next lifecycle poll.
-  if (s.sequence < result_sequences[StageIndex(s.path)]) return false;
-  if (s.sequence < previous_stage.sequence && previous_stage.state != SampleState::PENDING) return false;
+  const bool superseded = s.sequence < result_sequences[StageIndex(s.path)]
+      || (s.sequence < previous_stage.sequence && previous_stage.state != SampleState::PENDING);
   if (frequency <= 0.0 || mapped == nullptr) return false;
   const uint64_t* q = mapped + s.base;
   if (q[kSlotFrameStart] == kUnwritten) {
@@ -492,6 +500,18 @@ inline bool Publish(const Segment& s, bool log, const void* queue) {
   next.recorded_ns = static_cast<int64_t>(s.comparison.recorded_ns);
   next.queue = queue;
   next.samples = 1;
+  if (s.adaptive.session != nullptr) {
+    const bool complete = std::all_of(next.passes.begin(), next.passes.begin() + s.pass_count,
+        [](const auto& pass) { return pass.state == SampleState::VALID; });
+    s.adaptive.session->ObserveGpu({.generation = s.adaptive.generation,
+        .frame = s.adaptive.application_frame, .sequence = s.sequence,
+        .context = reinterpret_cast<uintptr_t>(queue) ^ s.comparison.identity.device_session,
+        .recorded_ns = next.recorded_ns, .completed_ns = next.measured_ns,
+        .total_us = static_cast<double>(next.total_us), .role = s.adaptive.role,
+        .required_roles = s.adaptive.required_roles, .valid = complete,
+        .stable = s.comparison.stable}, next.measured_ns);
+  }
+  if (superseded) return false;
   if (s.diagnostic_token != 0 && raw_observer != nullptr) {
     raw_observer(next, s.diagnostic_token);
   }
@@ -690,6 +710,7 @@ inline bool Begin(
   s.passes = {};
   s.comparison = {};
   s.diagnostic_token = 0;
+  s.adaptive = {};
   s.comparison.stage = StageIndex(path);
   s.comparison.recorded_ns = NowNs();
   s.comparison.identity.device_session = device_session;

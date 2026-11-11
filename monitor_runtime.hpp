@@ -392,6 +392,23 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
   summary.stage = execution;
   summary.fg = ui::Tr(card.fg_declared || card.frame_gen_multiplier > 1 ? "On"
       : native_fg_declaration.load() == NativeFgDeclaration::kOff ? "Off" : "Unknown");
+  const auto output_rate = output_framerate::Read(now);
+  char multiplier[96]{};
+  if (output_rate.fg_off) {
+    summary.fg = ui::Tr("Off");
+  } else if (output_rate.observed_multiplier > 0.) {
+    std::snprintf(multiplier, sizeof(multiplier), ui::Tr("Observed ~%.1fx"), output_rate.observed_multiplier);
+  } else if (output_rate.dynamic) {
+    summary.fg = ui::Tr("Dynamic");
+  } else if (output_rate.requested_multiplier > 1) {
+    std::snprintf(multiplier, sizeof(multiplier), ui::Tr("Requested %ux"), output_rate.requested_multiplier);
+  } else if (output_rate.declared_multiplier > 1) {
+    std::snprintf(multiplier, sizeof(multiplier), ui::Tr("Declared %ux"), output_rate.declared_multiplier);
+  } else if (output_rate.maximum_multiplier > 1) {
+    std::snprintf(multiplier, sizeof(multiplier), ui::Tr("Up to %ux"), output_rate.maximum_multiplier);
+  }
+  if (multiplier[0] != 0) summary.fg = multiplier;
+  summary.fg_tip = output_framerate::SourceText(output_rate.source);
   summary.gpu_reference = gpu_total.reference;
   if (gpu_total.reference) {
     summary.gpu_tip = "Reference sum of recent stage GPU times, including each stage's shared work once. Not same-frame or FG end-to-end latency.";

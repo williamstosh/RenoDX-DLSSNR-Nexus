@@ -267,6 +267,32 @@ Remove-Item Env:NR_NEXUS_TEST_CONTROL_MASK_COST_MODE
 宿主 SR 为 MOCK，NR Evaluate 与 GPU 完成为 NATIVE_NGX／NATIVE_GPU。
 合成输入的串行提交耗时用于离线对照；游戏帧时、FG、画质和长时稳定性各自验收。
 
+## 自适应工作分辨率
+
+控制器和内置输出帧率窗口使用纯 CPU 入口，不需要游戏或帧率采样程序：
+
+~~~powershell
+./tools/run-tests.ps1 -Suite adaptive-resolution
+~~~
+
+用例覆盖低帧试探、限帧无收益回退、恢复画质、双颜色完整计时、过期样本、
+SDK 动态计数、固定倍率失效和来源切换。配置保存／方案另用
+`tests/run-present-restore-configuration-tests.ps1 -Case nr-resolution-adaptive,profiles`。
+
+真实 NR 尺寸往返复用公开 SDK 预初始化入口：
+
+~~~powershell
+./tools/run-tests.ps1 -Suite fg-native -NativeCase control-mask-native-ngx-resize `
+  -NativeNgxProjectIdPath <已有ProjectID文件> `
+  -NativeNgxSdkLibraryDirectory <同版SDK静态库目录> `
+  -NativeNgxRuntimePath <已有nvngx_dlssnr.dll>
+~~~
+
+输出逐帧 CPU 创建／wrapper、真实 SR／NR GPU timestamp、完成 Fence、尺寸、
+工作集与显存信息。创建后暂未执行 NR 的帧单独记录，不能当作零成本执行。
+冷切换、预备成本和 ready 档重新激活分别比较；离线原生结果不包含游戏 FG、
+显示帧率对照或动态视觉验收。WARP／硬件遮罩用例另核对自动缩放时的手动上限运动参考。
+
 ## 自动回归与证据保存
 
 ~~~powershell

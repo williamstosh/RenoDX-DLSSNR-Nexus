@@ -313,6 +313,43 @@ int main(int argc, char** argv) {
     if (test_case == "fail-sdr-version") failed_key = "NRPresentSdrRestoreConfigVersion";
     if (test_case == "fail-hdr-version") failed_key = "NRPresentHdrPedestalConfigVersion";
     runtime::LoadConfiguration();
+    if (test_case == "nr-resolution-adaptive") {
+      Check(!runtime::nr_adaptive_enabled.load() && runtime::nr_adaptive_target_fps.load() == 60.f
+                && runtime::nr_adaptive_min_scale.load() == .67f,
+            "adaptive resolution defaults to Off, 60 output FPS and 67 percent relative minimum");
+      const auto original = runtime::profile_ui::Snapshot();
+      runtime::kSetAdaptiveEnabled.Commit(1.f);
+      runtime::kSetAdaptiveTargetFps.Commit(120.f);
+      runtime::kSetAdaptiveMinScale.Commit(.5f);
+      runtime::LoadConfiguration();
+      Check(runtime::nr_adaptive_enabled.load() && runtime::nr_adaptive_target_fps.load() == 120.f
+                && runtime::nr_adaptive_min_scale.load() == .5f,
+            "adaptive preferences persist and reload through production settings");
+      const auto saved = runtime::profile_ui::Snapshot();
+      Check(saved.at("NRAdaptiveEnabled") == true && saved.at("NRAdaptiveTargetFPS") == 120.f
+                && saved.at("NRAdaptiveMinScale") == .5f,
+            "profiles include adaptive preferences without transient levels or statistics");
+      std::string error;
+      Check(runtime::profile_ui::ApplySnapshot(original, &error), "profile undo restores adaptive preferences");
+      Check(!runtime::nr_adaptive_enabled.load() && runtime::nr_adaptive_target_fps.load() == 60.f,
+            "profile undo restores the original adaptive toggle and target");
+      Check(runtime::profile_ui::ApplySnapshot(saved, &error), "profile redo restores adaptive preferences");
+      Check(WritePrivateProfileStringA(runtime::kConfigSection, "NRAdaptiveTargetFPS", "nan", ini_path.c_str())
+                && WritePrivateProfileStringA(runtime::kConfigSection, "NRAdaptiveMinScale", "2", ini_path.c_str()),
+            "write invalid adaptive preference fixture");
+      runtime::LoadConfiguration();
+      Check(runtime::nr_adaptive_target_fps.load() == 60.f && runtime::nr_adaptive_min_scale.load() == 1.f,
+            "adaptive target rejects non-finite values and minimum is bounded");
+      runtime::ResetSettings({runtime::kPerformanceSettings});
+      Check(!runtime::nr_adaptive_enabled.load() && runtime::nr_adaptive_target_fps.load() == 60.f
+                && runtime::nr_adaptive_min_scale.load() == .67f,
+            "performance reset restores all adaptive defaults");
+      // This CPU-only fixture has no active graphics API for a new manual
+      // resolution capability decision. Restore its original stored inputs.
+      runtime::kSetFollowInputRes.Commit(original.at("NRFollowInputRes").get<bool>() ? 1.f : 0.f);
+      runtime::kSetResolutionScale.Commit(original.at("NRResolutionScale").get<float>());
+      runtime::LoadConfiguration();
+    }
     if (test_case == "control-mask-depth") {
       auto check_motion = [](const auto& mask, bool enabled, float start, float end, const char* description) {
         Check(mask.motion_enabled == enabled && mask.motion_start == start && mask.motion_end == end, description);

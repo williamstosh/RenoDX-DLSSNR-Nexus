@@ -24,6 +24,14 @@ namespace pair = same_stage_resolution_cases;
 using stage_execution_cases::Capture;
 using stage_execution_cases::Snapshot;
 
+NVSDK_NGX_Result NVSDK_CONV EvaluateAdaptive(ID3D12GraphicsCommandList* list, const NVSDK_NGX_Handle* handle,
+    const NVSDK_NGX_Parameter* parameters, PFN_NVSDK_NGX_ProgressCallback callback) {
+  // The pair observer intentionally accepts only the two consumed colors.
+  // Standby first-evaluates still execute the existing real GPU substitute.
+  if (native::preparing_adaptive_frame != nullptr) return EvaluateModel(list, handle, parameters, callback);
+  return pair::Evaluate(list, handle, parameters, callback);
+}
+
 int Run(bool hardware) {
   try {
     const auto started = std::chrono::steady_clock::now();
@@ -166,6 +174,7 @@ int Run(bool hardware) {
     Snapshot original_frame;
     uint32_t consumers = 0;
     bool replaced = false;
+    bool adaptive_dual_probe = false;
     const auto record = [&](bool new_frame = true, bool fg_success = true) {
       if (new_frame) {
         ++frame_id;
@@ -206,7 +215,7 @@ int Run(bool hardware) {
       pair::evaluations.clear();
       replaced = false;
       auto* original = native::RunNativePreFg(gpu.list.Get(), &parameters, handle, &replaced);
-      Check(original == nullptr, "single Backbuffer contract never acquires HUDLess");
+      Check(original == nullptr || adaptive_dual_probe, "single Backbuffer contract never acquires HUDLess");
       // A real consumer copy follows RunNativePreFg on the actual Host list.
       // Record it even on decline to catch partial output leaking into FG.
       auto* input = native::PreFgResource(&parameters, NVSDK_NGX_DLSSG_Parameter_Backbuffer);
@@ -356,7 +365,8 @@ int Run(bool hardware) {
           && diagnostic->second.find("uir=1") != std::string::npos
           && diagnostic->second.find("alpha=[present=1 size=16x16 format=61") != std::string::npos
           && diagnostic->second.find("hudless=[present=1") != std::string::npos
-          && diagnostic->second.find("group_complete=0 model_pass_mask=0") != std::string::npos,
+          && diagnostic->second.find("group_complete=0") != std::string::npos
+          && diagnostic->second.find("model_pass_mask=0") != std::string::npos,
           "first rejection is absent uint64 FrameID, not the downstream HUDLess/UI gate");
       size_t tracked = 0;
       {
@@ -621,6 +631,84 @@ int Run(bool hardware) {
     }
     std::cout << "PASS MFG multipliers=2,4,3 nr_api_delta=0; cached consumers do not replay producer list\n";
     parameters.Set(NVSDK_NGX_DLSSG_Parameter_MultiFrameIndex, 1u);
+    {
+      const bool previous_experiment = native::experimental_native_prefg_resolution.load();
+      const uint32_t previous_passes = native::stack_passes.load();
+      const float previous_scale = native::nr_resolution_scale.load();
+      auto hudless = texture(DXGI_FORMAT_R8G8B8A8_UNORM);
+      gpu.Write(hudless.Get(), 64);
+      gpu.Transition(hudless.Get(), D3D12_RESOURCE_STATE_COMMON, NATIVE_INPUT_STATE);
+      submit();
+      adaptive_dual_probe = true;
+      parameters.Set(NVSDK_NGX_DLSSG_Parameter_HUDLess, hudless.Get());
+      native::experimental_native_prefg_resolution.store(false);
+      native::stack_passes.store(1);
+      native::nr_resolution_scale.store(1.f);
+      native::nr_adaptive_enabled.store(true);
+      native::direct_api.evaluate = EvaluateAdaptive;
+      native::adaptive_configuration_settings = native::comparison_ui::CaptureAdaptiveSettings;
+      ++native::nr_resolution_commit_epochs[0];
+      ++native::configuration_generation;
+      for (uint32_t frame = 0; frame < 12; ++frame) {
+        record();
+        submit();
+      }
+      auto& stream = native::fg_service::streams.at({true, reinterpret_cast<uintptr_t>(&owner)});
+      Check(stream.adaptive_session != nullptr && stream.adaptive_session->ladder.count == 2,
+          "dual-color automatic sizing reserves two complete tiers in the four-workset pool");
+      std::array<std::shared_ptr<native::AdaptiveFeatureCache>, 2> caches;
+      std::array<std::array<const NVSDK_NGX_Handle*, 2>, 2> models{};
+      for (uint32_t role = 0; role < 2; ++role) {
+        caches[role] = native::features.at(stream.roles[role].Handle()).adaptive_cache;
+        Check(caches[role] != nullptr && caches[role]->count == 2, "each consumed color owns its complete tier cache");
+        native::PollAdaptiveCache(caches[role].get());
+        for (uint32_t tier = 0; tier < 2; ++tier) {
+          Check(caches[role]->tiers[tier].ready, "both colors have first-evaluate and GPU-complete ready proof");
+          models[role][tier] = (tier == caches[role]->active
+              ? native::features.at(stream.roles[role].Handle()).slots[0].handle
+              : caches[role]->tiers[tier].state.slots[0].handle);
+        }
+        Check(models[role][0] != models[role][1], "a color's prepared tiers own distinct NR Features");
+      }
+      const auto before_retired = native::worksets_retired;
+      const auto before_created = native::worksets_created;
+      stream.adaptive_session->Request(1, native::SteadyNowNs());
+      Check(record(), "complete dual-color ready tier activates as one application-frame transaction");
+      submit();
+      Check(caches[0]->active == 1 && caches[1]->active == 1,
+          "both FG color roles activate the same prepared tier");
+      Check(pair::evaluations.size() == 2 && pair::evaluations[0].input.width == pair::evaluations[1].input.width
+          && pair::evaluations[0].input.height == pair::evaluations[1].input.height,
+          "dual-color recording freezes one complete working-size tuple");
+      const auto frozen_generation = stream.adaptive_frame.generation;
+      const auto frozen_sizes = stream.adaptive_frame.sizes;
+      const auto repeated_calls = model_calls;
+      parameters.Set(NVSDK_NGX_DLSSG_Parameter_MultiFrameIndex, 2u);
+      Check(record(false), "MFG continuation reuses the automatic producer");
+      submit();
+      Check(model_calls == repeated_calls && stream.adaptive_frame.generation == frozen_generation
+          && stream.adaptive_frame.sizes == frozen_sizes,
+          "MFG continuation preserves the automatic generation and every role's dimensions");
+      Check(native::worksets_created == before_created && native::worksets_retired == before_retired,
+          "ready activation and MFG reuse neither allocate nor retire a sibling tier");
+      parameters.Set(NVSDK_NGX_DLSSG_Parameter_MultiFrameIndex, 1u);
+      native::nr_adaptive_enabled.store(false);
+      Check(record(), "automatic Off restores the ready manual upper tier");
+      submit();
+      for (uint32_t role = 0; role < 2; ++role) {
+        Check(native::features.at(stream.roles[role].Handle()).slots[0].handle == models[role][0],
+            "automatic Off reuses the upper Feature without Create");
+      }
+      parameters.Set(NVSDK_NGX_DLSSG_Parameter_HUDLess, static_cast<ID3D12Resource*>(nullptr));
+      adaptive_dual_probe = false;
+      native::stack_passes.store(previous_passes);
+      native::nr_resolution_scale.store(previous_scale);
+      native::experimental_native_prefg_resolution.store(previous_experiment);
+      native::direct_api.evaluate = pair::Evaluate;
+      ++native::configuration_generation;
+      mature();
+      std::cout << "PASS automatic dual-color complete tiers, same-frame tuple, MFG generation and ready Off restoration\n";
+    }
     const auto submitted_before_discard = native::native_fg_submitted_frames.load();
     Check(record(), "discard starts with a complete pair");
     Check(native::native_fg_submitted_frames.load() == submitted_before_discard,

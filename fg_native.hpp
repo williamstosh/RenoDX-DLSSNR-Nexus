@@ -22,6 +22,8 @@ struct Slot {
 };
 
 struct Stream {
+  std::shared_ptr<adaptive_resolution::Session> adaptive_session;
+  adaptive_resolution::Frame adaptive_frame;
   ID3D12Device* device = nullptr;
   ID3D12CommandQueue* queue = nullptr;
   ID3D12Fence* fence = nullptr;
@@ -124,6 +126,7 @@ inline void Invalidate(Stream* stream) {
   stream->result = fg::Result::NOT_SERVED;
   for (auto& role : stream->roles) {
     if (const auto it = features.find(role.Handle()); it != features.end()) {
+      ReleaseAdaptiveCache(&it->second, true);
       ReleaseAllNrSlots(it->second, true);
       features.erase(it);
     }
@@ -373,6 +376,38 @@ inline fg::Result Record(Stream* stream, Slot* slot, ID3D12GraphicsCommandList* 
   contract.motion_scale_y = (real_guides ? input.motion_scale_y : static_cast<float>(input.color_height));
   contract.create_flags = (real_guides ? input.init_flags : NVSDK_NGX_DLSS_Feature_Flags_DepthInverted);
   contract.frame_reset = (input.reset ? 1 : 0);
+  const auto adaptive_plan = EvaluationStagePlan(stream->roles[0].Handle(), false);
+  stream->adaptive_frame = FreezeAdaptiveFrame(&stream->adaptive_session, adaptive_plan,
+      {.stage = stage_plan::Stage::PRESENT, .count = adaptive_plan.pass_count},
+      input.color_width, input.color_height, contract.input_width, contract.input_height,
+      reinterpret_cast<uintptr_t>(stream) ^ reinterpret_cast<uintptr_t>(stream->device)
+          ^ reinterpret_cast<uintptr_t>(stream->queue) ^ input.epoch
+          ^ stream->native_options_generation ^ static_cast<uint64_t>(base.hdr_mode)
+          ^ (static_cast<uint64_t>(coupled_ui) << 40) ^ (static_cast<uint64_t>(may_compose) << 41),
+      !base.d3d11_bridge && !base.native_prefg_resolution_pair,
+      input.application_frame, (has_hudless && !coupled_ui ? 3u : 1u), true);
+  if (stream->adaptive_session != nullptr && stream->adaptive_frame.enabled) {
+    const size_t requested_slot = stream->adaptive_session->level;
+    bool group_ready = true;
+    size_t current_slot = 0;
+    for (uint32_t i = 0; i < 2; ++i) {
+      if (i == 1 && (!has_hudless || coupled_ui)) continue;
+      const auto feature = features.find(stream->roles[i].Handle());
+      if (feature == features.end() || feature->second.adaptive_cache == nullptr
+          || feature->second.adaptive_cache->identity != stream->adaptive_frame.layout_identity) {
+        group_ready = false;
+        continue;
+      }
+      auto& cache = *feature->second.adaptive_cache;
+      PollAdaptiveCache(&cache);
+      current_slot = cache.active;
+      group_ready &= requested_slot < cache.count && !cache.failed && !cache.budget_blocked
+          && (requested_slot == cache.active || cache.tiers[requested_slot].ready);
+    }
+    const size_t slot = (group_ready ? requested_slot : current_slot);
+    stream->adaptive_frame.slot = static_cast<uint32_t>(slot);
+    stream->adaptive_frame.sizes = stream->adaptive_session->ladder.sizes[slot];
+  }
   if (!real_guides) {
     auto& role = stream->roles[0];
     for (auto [surface, format] : {std::pair{&role.neutral_motion, DXGI_FORMAT_R16G16_FLOAT},
@@ -448,6 +483,9 @@ inline fg::Result Record(Stream* stream, Slot* slot, ID3D12GraphicsCommandList* 
     role.parameters.Set(NVSDK_NGX_Parameter_Jitter_Offset_X, input.jitter_x);
     role.parameters.Set(NVSDK_NGX_Parameter_Jitter_Offset_Y, input.jitter_y);
     PresentTarget target = base;
+    auto adaptive_role = stream->adaptive_frame;
+    adaptive_role.role = (i == 0 ? 1u : 2u);
+    target.adaptive_frame = &adaptive_role;
     target.game_frame_observed = true;
     target.output_state = kRead;
     target.source_color = (borrow_color_inputs ? (i == 0 ? input.backbuffer : input.hudless) : nullptr);
@@ -498,6 +536,9 @@ inline fg::Result Record(Stream* stream, Slot* slot, ID3D12GraphicsCommandList* 
         || (NativePreFgResolutionPairAllowed(target)
             && recording.group_complete && recording.model_pass_mask == 3u);
     if (!accepted || !recording.output_ready || !complete_pair) {
+      if (stream->adaptive_session != nullptr && !recording.prepared) {
+        stream->adaptive_session->Fail(stream->adaptive_frame.generation);
+      }
       restore_guides();
       return (accepted && prepared ? fg::Result::PREPARED : fg::Result::FAILED);
     }
@@ -598,6 +639,7 @@ inline fg::Result Record(Stream* stream, Slot* slot, ID3D12GraphicsCommandList* 
       FillPresentBlock(&role, input.hudless, motion, depth, contract,
                        input.color_width, input.color_height, 1.f, 1);
       PresentTarget target = base;
+      target.adaptive_frame = &stream->adaptive_frame;
       target.game_frame_observed = true;
       target.source_color = nullptr;
       target.output_state = kRead;
@@ -610,6 +652,19 @@ inline fg::Result Record(Stream* stream, Slot* slot, ID3D12GraphicsCommandList* 
     }
   }
   restore_guides();
+  // Composition can consume only HUDLess; a failed composition falls back to
+  // two model colors. Freeze the actual complete role set before submission.
+  uint32_t measured_roles = 0;
+  for (uint32_t i = 0; i < recordings->size(); ++i) {
+    if ((*recordings)[i].model_recorded) measured_roles |= 1u << i;
+  }
+  for (auto& segment : gpu_timers::internal::segments) {
+    if (segment.adaptive.session == stream->adaptive_session
+        && segment.adaptive.application_frame == stream->adaptive_frame.application_frame
+        && segment.adaptive.generation == stream->adaptive_frame.generation) {
+      segment.adaptive.required_roles = measured_roles;
+    }
+  }
   if (input.application_frame != 0) {
     for (uint32_t i = 0; i < recordings->size(); ++i) {
       if ((*recordings)[i].model_recorded) {
@@ -890,6 +945,7 @@ inline void OnNativePresentPassthrough(const PresentStream* owner) {
 inline void OnNativeFgFeatureReleased(const NVSDK_NGX_Handle* handle) {
   if (handle == nullptr) return;
   if (native_fg_owner == handle) {
+    output_framerate::ReleaseNative();
     native_fg_owner = nullptr;
     native_fg_owns.store(false, std::memory_order_release);
     native_fg_marker.store(nullptr, std::memory_order_release);
@@ -911,6 +967,7 @@ inline void OnNativePresentStreamRetired(const void* owner) {
   for (auto binding = fg_service::native_bindings.begin(); binding != fg_service::native_bindings.end();) {
     if (binding->second == context) {
       if (native_fg_owner == binding->first) {
+        output_framerate::ReleaseNative();
         native_fg_owner = nullptr;
         native_fg_owns.store(false, std::memory_order_release);
         native_fg_marker.store(nullptr, std::memory_order_release);

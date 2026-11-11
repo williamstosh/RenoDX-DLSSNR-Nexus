@@ -70,9 +70,11 @@
 
 ![画质页的核心画质与处理入口](images/ui/quality-zh.webp)
 
+*当前开发版界面；自适应分辨率见[工作分辨率](#zh-resolution)。*
+
 用 **Neural Rendering／F6** 比较关／开。**Auto** 是未应用方案时的基础模型默认值；兼容的 **310.9.16.0** 运行时支持 **A（Legacy）／B（Small FP8）**，可比较两者外观和成本。
 
-0.2.0 保留顶部 F6 开关与六个快速方案，画质页分为三个常开区：**核心画质**按模型、强度、工作分辨率／比例与上采样排列，并显示第 1 层当前尺寸证据；**处理与兼容性**包含**介入点（Hook point，即处理位置）**，Present 下显示深度／运动与 HUD 选项，低频 HDR 与 FG 选项折叠；**外观与结果**常显模型风格等常用控件，结果的四个高级分组继续按需展开。
+顶部保留 F6 开关与六个快速方案，画质页分为三个常开区：**核心画质**按模型、强度、工作分辨率／比例与上采样排列，并显示第 1 层当前尺寸证据；**处理与兼容性**包含**介入点（Hook point，即处理位置）**，Present 下显示深度／运动与 HUD 选项，低频 HDR 与 FG 选项折叠；**外观与结果**常显模型风格等常用控件，结果的四个高级分组继续按需展开。
 
 按用途选择位置：**Upscaled** 在游戏 DLSS 输出后处理，适合先比较 NR 外观。**Render** 在 DLSS 放大前处理，可比较较小输入的成本；**Present** 处理游戏完成后、ReShade 效果前的画面。Ray Reconstruction 开启时，Render 使用兼容的 Upscaled 路径。Present 默认保留 HUD，仍受影响时可比较 UI 修正或改用 Upscaled。
 
@@ -239,7 +241,7 @@ F6 立即提示开关操作，随后状态更新为正在检查、正常运行�
 
 当前版本会忽略旧诊断配置 `NRControlMaskUseCoreContext=1`，并修复已有处理历史在切回 Upscaled 或逐层处理时阻止 NR 继续运行的问题。无需手动删除此键；更新插件并重启游戏后生效。
 
-**开发版新增：运动衰减**（尚未包含在 v0.3.0 安装包中）。它位于区域遮罩设置内，与深度衰减分组排列，无需再展开子菜单；开启后显示运动淡出起点／终点，关闭时收起并保留数值。运动越快的区域使用越少的 NR，包含转动相机产生的画面运动。默认关闭，起点／终点为 **2／16 像素／帧**，按当前层的输入分辨率计量：低于起点保留 R，达到终点时 R 降至 0。提高起点可让轻微运动继续保留 NR，提高终点可让过渡更缓。工作分辨率或帧率改变后，可按画面重新调节。
+**开发版新增：运动衰减**（尚未包含在 v0.3.0 安装包中）。它位于区域遮罩设置内，与深度衰减分组排列，无需再展开子菜单；开启后显示运动淡出起点／终点，关闭时收起并保留数值。运动越快的区域使用越少的 NR，包含转动相机产生的画面运动。默认关闭，起点／终点为 **2／16 像素／帧**，按当前层的输入分辨率计量：低于起点保留 R，达到终点时 R 降至 0。提高起点可让轻微运动继续保留 NR，提高终点可让过渡更缓。自动调整分辨率时，运动阈值保持各层手动上限的参考尺度；手动尺寸或帧率改变后，可按画面重新调节。
 
 运动衰减可以和深度衰减同时使用，重叠区域采用较强的衰减，G、B、角色遮罩和混合模式保持各自设置。每层可继承 Pass 1，或独立设置运动开关与范围。关闭运动衰减便恢复该层原有区域设置；缺少有效运动或深度输入时，只跳过对应自动规则。它按运动矢量选取区域，不区分相机运动与移动物体。
 
@@ -298,6 +300,14 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 | Follow input／跟随输入 | 有效 Guide 与参考尺寸逐轴取较小值 | 缺少有效 Guide 时使用先前保存的比例；选择跟随不会改写该比例，也不会更改游戏 DLSS 模式。 |
 
 比例作用于宽高，50% 约四分之一像素。Render 基准为可用渲染区域，Upscaled 为 DLSS 输出区域，Present 为呈现帧。跟随输入时禁用比例滑条，保留其保存值。当前设置区可看预计／实际尺寸，历史在诊断页。
+
+**开发版新增：自适应分辨率**（尚未包含在 v0.3.0 安装包中）。在工作分辨率下开启后，设置**目标输出 FPS**和**最低相对比例**，默认分别为 **60 FPS／67%**，范围为 **20–360 FPS／33–100%**。目标包含生成帧；各层手动分辨率作为上限，最低比例相对于各自上限计算。例如上限为 2560×1440，最低 67% 约为 1715×965，仍须满足原有阶段尺寸限制。关闭自动后恢复手动上限。
+
+自动功能在 NR 降尺寸确实有助于接近目标时保留较低档，收益不明确时恢复较高画质；持续达到目标后会缓慢尝试恢复细节。界面显示估算输出 FPS、来源、当前比例或暂停原因，FG 状态区分观测、请求、声明、动态及上限。估算在插件内完成，无需额外安装或运行帧率程序；限帧或其他负载可能使目标无法达到，自动功能不会改变游戏、FG 或限帧设置。
+
+首版面向原生 DX12 的单个处理阶段，包括兼容的 XeFG／原生 FG 同尺寸链。跨阶段链、FG 异尺寸、DX11 Bridge 和 Vulkan 继续使用手动分辨率；缺少可靠帧率来源时暂停自动并保留合法尺寸。更改设置或 GPU A/B 对比期间暂停自动。动态画质、限帧场景的估算误差与游戏内切换流畅度仍待实机确认。
+
+自动调节使用少量预备档位。首次开启或模型、游戏尺寸变化后需要重新准备，期间可能短暂停顿；显存或工作集容量不足时暂停自动。完成准备后再切入就绪档位。
 
 | 上采样选项 | NR 低于输出尺寸时的行为 |
 | --- | --- |
@@ -603,9 +613,11 @@ There are four main tabs: **Quality, Multi-Pass, Diagnostics and Advanced**. **M
 
 ![Quality page: core quality and processing](images/ui/quality.webp)
 
+*Current development UI; see [working resolution](#en-resolution) for automatic sizing.*
+
 Compare off/on with **Neural Rendering/F6**. **Auto** is the base model default before applying a profile. Compatible runtime **310.9.16.0** supports **A (Legacy)/B (Small FP8)** for comparing appearance and cost.
 
-Version 0.2.0 keeps the F6 toggle and six quick profiles at the top, followed by three always-visible sections. **Core quality** orders model, strength, working resolution/scale and upsampling, with current Pass 1 size evidence. **Processing & compatibility** contains **Hook point** (processing location), depth/motion and HUD options for Present, and collapsed low-frequency HDR and FG options. **Appearance & result** keeps common model styling controls visible, with the four advanced result groups available to expand as needed.
+The F6 toggle and six quick profiles stay at the top, followed by three always-visible sections. **Core quality** orders model, strength, working resolution/scale and upsampling, with current Pass 1 size evidence. **Processing & compatibility** contains **Hook point** (processing location), depth/motion and HUD options for Present, and collapsed low-frequency HDR and FG options. **Appearance & result** keeps common model styling controls visible, with the four advanced result groups available to expand as needed.
 
 Choose a location for your goal: **Upscaled**, after game DLSS output, is useful for initial look comparisons. **Render** runs before DLSS upscaling to compare smaller inputs; **Present** processes the finished game frame before ReShade effects. With Ray Reconstruction, Render uses the compatible Upscaled route. Present defaults to Keep the HUD; compare UI correction or Upscaled if HUD elements still change.
 
@@ -831,6 +843,14 @@ Present offers the following. Compatible Pre-FG enhances game frames before FG. 
 | Follow input | Per-axis minimum of valid guides and reference size | Without valid guides, uses the saved scale. Selecting Follow input preserves that scale and does not change the game's DLSS mode. |
 
 Scale applies to width and height; 50% is about one quarter of the pixels. Render uses the available render region, Upscaled the DLSS output region and Present the presented frame. Follow input disables the slider while retaining its value. Read current estimated/actual size in settings and history in Diagnostics.
+
+**New in development builds: Adaptive resolution** (not included in the v0.3.0 download). Enable it below working resolution, then set **Target output FPS** and **Minimum relative scale**. Defaults are **60 FPS / 67%**, with ranges of **20–360 FPS / 33–100%**. The target includes generated frames. Each pass's manual resolution is its upper limit, and the minimum is relative to that limit. For example, a 2560×1440 upper limit at 67% gives approximately 1715×965, subject to existing stage limits. Turning automatic sizing off restores the manual limits.
+
+Automatic sizing keeps a lower level when reducing NR resolution helps approach the target and restores higher quality when the benefit is unclear. After holding the target, it slowly tries to recover detail. The controls show estimated output FPS, its source, the current scale or a pause reason; FG status distinguishes observed, requested, declared, dynamic and maximum multipliers. Estimation runs inside the add-on, with no extra FPS program to install or run. Frame caps and other workloads can prevent reaching the target; game, FG and frame-cap settings are left to you.
+
+The first implementation targets one processing stage on native DX12, including compatible same-size XeFG / native FG chains. Cross-stage chains, FG chains with different sizes, DX11 Bridge and Vulkan retain manual resolution. Automatic sizing pauses without a reliable output-rate source and keeps a legal size. Editing settings and GPU A/B comparisons pause it. Dynamic quality, estimation error with frame caps and in-game switching smoothness still require game validation.
+
+Automatic sizing uses a few prepared levels. Initial activation and model or game-size changes require preparation, which can cause a brief pause. Insufficient video memory or workset capacity pauses automatic sizing. Only ready levels are selected after preparation.
 
 | Upsampling choice | Behaviour below output size |
 | --- | --- |

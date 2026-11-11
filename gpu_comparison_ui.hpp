@@ -7,7 +7,7 @@
 namespace comparison_ui {
 namespace comparison = gpu_comparison;
 
-inline void CaptureSettings(comparison::Identity* identity) {
+inline void CaptureConfiguration(comparison::Identity* identity, bool include_adaptive) {
   std::shared_lock config_lock(present_restore_configuration.mutex);
   identity->configuration_generation = configuration_generation.load();
   identity->config_epoch = present_restore_configuration.epoch;
@@ -30,6 +30,7 @@ inline void CaptureSettings(comparison::Identity* identity) {
     for (const auto* setting : section) {
       const std::string_view key(setting->key);
       if (!key.starts_with("NR") && key != "NeuralUplift") continue;
+      if (!include_adaptive && key.starts_with("NRAdaptive")) continue;
       if (key.starts_with("NRScreenshot") || key == "NRToggleKey" || key == "NRGpuTimers"
           || key.starts_with("NROfficialCycle") || key.starts_with("NRCustomCycle")
           || key == "NRCostMeter" || key == "NREditTrace") continue;
@@ -48,6 +49,14 @@ inline void CaptureSettings(comparison::Identity* identity) {
            experimental_present_chain.load(), experimental_native_prefg_resolution.load()}) {
     append(&identity->settings_hash, value);
   }
+}
+
+inline void CaptureSettings(comparison::Identity* identity) {
+  CaptureConfiguration(identity, true);
+}
+
+inline void CaptureAdaptiveSettings(comparison::Identity* identity) {
+  CaptureConfiguration(identity, false);
 }
 
 inline const char* ReasonText(comparison::Reason reason) {

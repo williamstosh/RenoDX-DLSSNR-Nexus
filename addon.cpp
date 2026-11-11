@@ -17,6 +17,25 @@
 #include "dlssnr.hpp"
 
 #include "lastgasp.hpp"
+#include "output_framerate.hpp"
+
+namespace {
+void ObserveOutputPresent(reshade::api::command_queue* queue, reshade::api::swapchain* swapchain,
+    const reshade::api::rect*, const reshade::api::rect*, uint32_t, const reshade::api::rect*) {
+  if (queue == nullptr || swapchain == nullptr || swapchain->get_back_buffer_count() == 0) return;
+  namespace nr = renodx::addons::dlss5;
+  const bool fg_active = nr::internal::present_fg_multiplier.load(std::memory_order_relaxed) > 1
+      || nr::internal::native_fg_declaration.load(std::memory_order_relaxed)
+          == nr::internal::NativeFgDeclaration::kOn;
+  nr::output_framerate::ObservePresent(reinterpret_cast<uintptr_t>(swapchain),
+      nr::internal::configuration_generation.load(std::memory_order_relaxed),
+      fg_active, nr::output_framerate::NowNs());
+}
+
+void ObserveOutputDestroy(reshade::api::swapchain*, bool) {
+  renodx::addons::dlss5::output_framerate::Invalidate();
+}
+}  // namespace
 
 #if defined(NR_NEXUS_IME_DIAGNOSTICS)
 #include "tests/ime_trace.hpp"
@@ -38,6 +57,8 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
       renodx::addons::dlss5::lastgasp::Uninstall();
       return FALSE;
     }
+    reshade::register_event<reshade::addon_event::present>(ObserveOutputPresent);
+    reshade::register_event<reshade::addon_event::destroy_swapchain>(ObserveOutputDestroy);
   }
 
   renodx::addons::dlss5::Use(reason, module, reserved);
@@ -52,6 +73,8 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
 #endif
 
   if (reason == DLL_PROCESS_DETACH) {
+    reshade::unregister_event<reshade::addon_event::present>(ObserveOutputPresent);
+    reshade::unregister_event<reshade::addon_event::destroy_swapchain>(ObserveOutputDestroy);
     reshade::unregister_addon(module);
     // `reserved` is null for FreeLibrary and non-null at process exit.
     // [exit] (lastgasp.hpp): the session ended here, not in a silent death.
