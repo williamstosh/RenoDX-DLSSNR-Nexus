@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -111,6 +112,7 @@ void Check(bool condition, const char* message) {
   if (!condition) throw std::runtime_error(message);
 }
 
+#if defined(NR_NEXUS_TEST_NATIVE_NGX)
 addon::vk::EvaluateFn native_real_evaluate = nullptr;
 NVSDK_NGX_Resource_VK native_observed_mask{};
 bool native_observed_mask_bound = false;
@@ -120,6 +122,8 @@ NVSDK_NGX_Result native_observed_result = NVSDK_NGX_Result_FAIL_UnableToInitiali
 NVSDK_NGX_Result NVSDK_CONV ObserveNativeEvaluate(
     VkCommandBuffer command_buffer, const NVSDK_NGX_Handle* handle,
     const NVSDK_NGX_Parameter* parameters, PFN_NVSDK_NGX_ProgressCallback callback) {
+  Check(addon::get_module_filename_iat == nullptr,
+        "public SDK Evaluate does not install the caller identity IAT bridge");
   void* value = nullptr;
   ++native_evaluate_count;
   native_observed_mask_bound = false;
@@ -131,6 +135,8 @@ NVSDK_NGX_Result NVSDK_CONV ObserveNativeEvaluate(
     native_observed_mask_bound = true;
   }
   native_observed_result = native_real_evaluate(command_buffer, handle, parameters, callback);
+  Check(addon::get_module_filename_iat == nullptr,
+        "public SDK Evaluate leaves the caller identity IAT untouched");
   return native_observed_result;
 }
 
@@ -158,7 +164,7 @@ Buffer UploadImage(vk_test::VulkanContext& context, vk_test::CommandList& comman
   return upload;
 }
 
-void RunNativeNgx() {
+void RunNativeNgx(const wchar_t* project_id_path) {
   vk_test::VulkanContext context;
   vk_test::Device device(&context);
   vk_test::CommandList command_list(&context, &device);
@@ -172,10 +178,22 @@ void RunNativeNgx() {
   reshade::api::resource_view motion_view{};
   std::vector<Buffer> uploads;
   Buffer mask_readback{};
+  bool public_sdk_initialized = false;
+  bool cleanup_done = false;
   const auto cleanup = [&] {
-    if (addon::vk::game_api_device.load(std::memory_order_relaxed) == &device) {
+    if (cleanup_done) return;
+    cleanup_done = true;
+    if (addon::vk::runtime.device == context.device) {
       std::lock_guard lock(addon::runtime_mutex);
       addon::vk::ShutdownNr(context.device);
+      public_sdk_initialized = false;
+    }
+    if (public_sdk_initialized) {
+      NVSDK_NGX_VULKAN_Shutdown1(context.device);
+      public_sdk_initialized = false;
+    }
+    if (addon::vk::game_api_device.load(std::memory_order_relaxed) == &device) {
+      std::lock_guard lock(addon::runtime_mutex);
       addon::vk::OnDestroyGameDevice();
     }
     addon::vk::OnDestroyDeviceContext(&device);
@@ -192,6 +210,8 @@ void RunNativeNgx() {
   };
 
   try {
+    Check(addon::get_module_filename_iat == nullptr,
+          "public SDK test starts without a caller identity IAT bridge");
     addon::addon_module = GetModuleHandleW(nullptr);
     addon::hooks_enabled = false;
     Begin(context);
@@ -230,11 +250,50 @@ void RunNativeNgx() {
     addon::color_strength = 1.f;
     addon::look_mode = false;
     addon::detail_stability = 1;
-    addon::PreloadNrRuntime(nullptr);
-    Check(addon::direct_api.module != nullptr && addon::direct_api.init != nullptr,
-          "production Vulkan loader preloads the selected NR Runtime");
-    Check(addon::direct_runtime_requirements.file_version == "310.9.16.0",
-          "production Vulkan loader identifies the selected 310.9.16.0 Runtime");
+    addon::PrimeNgxLoaderSymbols(nullptr);
+    const auto& provider = addon::NgxLoaderView();
+    Check(provider.nr_ready && !provider.nr_failed
+              && provider.nr_requirements.file_version == "310.9.16.0",
+          "read-only loader metadata identifies the selected 310.9.16.0 Runtime");
+    Check(addon::get_module_filename_iat == nullptr,
+          "priming Runtime metadata does not install a caller identity bridge");
+    std::ifstream project_id_file(project_id_path);
+    std::string project_id;
+    Check(project_id_file.is_open() && std::getline(project_id_file, project_id)
+              && project_id.size() == 36,
+          "read the existing isolated NGX ProjectID");
+    const std::wstring runtime_directory = addon::AddonDirectory().wstring();
+    const wchar_t* runtime_paths[] = {runtime_directory.c_str()};
+    NVSDK_NGX_FeatureCommonInfo common_info{};
+    common_info.PathListInfo = {runtime_paths, 1};
+    const HMODULE loader = GetModuleHandleW(L"vulkan-1.dll");
+    const auto get_instance_proc = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+        GetProcAddress(loader, "vkGetInstanceProcAddr"));
+    const auto get_device_proc = reinterpret_cast<PFN_vkGetDeviceProcAddr>(
+        GetProcAddress(loader, "vkGetDeviceProcAddr"));
+    Check(get_instance_proc != nullptr && get_device_proc != nullptr,
+          "public Vulkan SDK Init receives the existing loader proc addresses");
+    const auto init_result = NVSDK_NGX_VULKAN_Init_with_ProjectID(
+        project_id.c_str(), NVSDK_NGX_ENGINE_TYPE_CUSTOM, "NR-Nexus-ControlMask-Vulkan-offline-1",
+        runtime_directory.c_str(), context.instance, context.physical, context.device,
+        get_instance_proc, get_device_proc, &common_info);
+    std::cout << "PUBLIC_SDK Vulkan Init_with_ProjectID result=0x" << std::hex
+              << static_cast<uint32_t>(init_result) << std::dec << std::endl;
+    public_sdk_initialized = NVSDK_NGX_SUCCEED(init_result);
+    Check(public_sdk_initialized, "public Vulkan SDK/Core ProjectID Init succeeds");
+    Check(addon::get_module_filename_iat == nullptr,
+          "public Vulkan SDK Init leaves the caller identity IAT untouched");
+    // Adopt the SDK-initialized device so EnsureRuntime takes its existing-device
+    // fast path. Create/Evaluate/Release/Shutdown remain public SDK/Core calls.
+    addon::vk::runtime = {
+        .create = &NVSDK_NGX_VULKAN_CreateFeature1,
+        .evaluate = &NVSDK_NGX_VULKAN_EvaluateFeature,
+        .release = &NVSDK_NGX_VULKAN_ReleaseFeature,
+        .shutdown = &NVSDK_NGX_VULKAN_Shutdown1,
+        .device = context.device,
+    };
+    addon::direct_runtime_requirements = provider.nr_requirements;
+    addon::direct_runtime_sha256 = provider.nr_sha256;
 
     constexpr uint32_t width = 960;
     constexpr uint32_t height = 540;
@@ -342,6 +401,11 @@ void RunNativeNgx() {
     addon::vk::features.emplace(owner, std::move(feature));
 
     const auto first = addon::vk::ProcessNr(context.command_buffer, owner, &parameters);
+    std::cout << "PUBLIC_SDK production Feature18 Create result=0x" << std::hex
+              << addon::last_result.load() << std::dec
+              << " decline=" << static_cast<int>(first) << std::endl;
+    Check(addon::get_module_filename_iat == nullptr,
+          "production Vulkan Create bypasses the snippet identity bridge");
     Check(first == renodx::addons::dlss5::NrDeclineReason::kSlotWarmupMaturation,
           "production Vulkan Feature 18 create reaches warmup maturation");
     SubmitAndWait(context);
@@ -374,6 +438,9 @@ void RunNativeNgx() {
       addon::vk::runtime.evaluate = ObserveNativeEvaluate;
       const auto second = addon::vk::ProcessNr(context.command_buffer, owner, &parameters);
       addon::vk::runtime.evaluate = native_real_evaluate;
+      std::cout << "PUBLIC_SDK production Feature18 Evaluate frame=" << frame
+                << " result=0x" << std::hex << static_cast<uint32_t>(native_observed_result)
+                << std::dec << " decline=" << static_cast<int>(second) << std::endl;
       Check(second == renodx::addons::dlss5::NrDeclineReason::kCount,
             "production Vulkan Feature 18 Evaluate completes with ControlMask enabled");
       Check(NVSDK_NGX_SUCCEED(native_observed_result),
@@ -442,6 +509,8 @@ void RunNativeNgx() {
                    " R/G/B/A readback passed\n";
     }
     cleanup();
+    Check(addon::get_module_filename_iat == nullptr,
+          "public Vulkan SDK cleanup leaves the caller identity IAT untouched");
     std::cout << "PASS NATIVE_GPU+NATIVE_NGX: production Vulkan Feature 18 Create/Evaluate consumed"
                  " depth/motion ControlMask through OFF/ON/OFF, replayed the completed command buffer,"
                  " and completed reset/RGBA readback\n";
@@ -451,238 +520,7 @@ void RunNativeNgx() {
   }
 }
 
-void RunNativeNgxEvaluateOnly() {
-  vk_test::VulkanContext context;
-  vk_test::Device device(&context);
-  vk_test::CommandList command_list(&context, &device);
-  reshade::api::resource color{};
-  reshade::api::resource output{};
-  reshade::api::resource depth{};
-  reshade::api::resource motion{};
-  reshade::api::resource_view color_view{};
-  reshade::api::resource_view output_view{};
-  reshade::api::resource_view depth_view{};
-  reshade::api::resource_view motion_view{};
-  std::vector<Buffer> uploads;
-  NVSDK_NGX_Handle* handle = nullptr;
-  const auto cleanup = [&] {
-    if (handle != nullptr && addon::vk::runtime.release != nullptr) {
-      addon::vk::runtime.release(handle);
-      handle = nullptr;
-    }
-    if (addon::vk::runtime.device == context.device ||
-        addon::vk::game_api_device.load(std::memory_order_relaxed) == &device) {
-      std::lock_guard lock(addon::runtime_mutex);
-      if (addon::vk::runtime.device == context.device) {
-        addon::vk::ShutdownNr(context.device);
-      }
-      if (addon::vk::game_api_device.load(std::memory_order_relaxed) == &device) {
-        addon::vk::OnDestroyGameDevice();
-      }
-    }
-    addon::vk::OnDestroyDeviceContext(&device);
-    for (Buffer& buffer : uploads) DestroyBuffer(context, &buffer);
-    device.destroy_resource_view(motion_view);
-    device.destroy_resource_view(depth_view);
-    device.destroy_resource_view(output_view);
-    device.destroy_resource_view(color_view);
-    device.destroy_resource(motion);
-    device.destroy_resource(depth);
-    device.destroy_resource(output);
-    device.destroy_resource(color);
-  };
-
-  try {
-    addon::addon_module = GetModuleHandleW(nullptr);
-    addon::hooks_enabled = false;
-    Begin(context);
-    addon::vk::OnResetCommandList(&command_list);
-    addon::vk::game_instance.store(context.instance, std::memory_order_relaxed);
-    addon::vk::game_physical_device.store(context.physical, std::memory_order_relaxed);
-    addon::vk::game_init_device.store(context.device, std::memory_order_relaxed);
-    {
-      std::lock_guard lock(addon::vk::context_mutex);
-      addon::vk::device_contexts[context.device] = {context.instance, context.physical};
-      addon::vk::api_devices[context.device] = &device;
-    }
-    addon::hooks_enabled = true;
-    addon::enabled = true;
-    addon::control_mask_enabled = false;
-    addon::stack_passes = 1;
-    addon::preset = 1;
-    addon::intensity = 1.f;
-    addon::transfer_strength = 1.f;
-    addon::color_strength = 1.f;
-    addon::look_mode = false;
-    addon::detail_stability = 1;
-    constexpr uint32_t width = 960;
-    constexpr uint32_t height = 540;
-    constexpr uint32_t depth_width = width;
-    constexpr uint32_t depth_height = height;
-    const auto usages = reshade::api::resource_usage::shader_resource
-        | reshade::api::resource_usage::unordered_access
-        | reshade::api::resource_usage::copy_dest
-        | reshade::api::resource_usage::copy_source;
-    Check(device.create_resource({width, height, 1, 1, reshade::api::format::r16g16b16a16_float, 1,
-                                  reshade::api::memory_heap::gpu_only, usages},
-                                 nullptr, reshade::api::resource_usage::undefined, &color),
-          "evaluate-only color image");
-    Check(device.create_resource({width, height, 1, 1, reshade::api::format::r16g16b16a16_float, 1,
-                                  reshade::api::memory_heap::gpu_only, usages},
-                                 nullptr, reshade::api::resource_usage::undefined, &output),
-          "evaluate-only output image");
-    Check(device.create_resource({depth_width, depth_height, 1, 1, reshade::api::format::r32_float, 1,
-                                  reshade::api::memory_heap::gpu_only, usages},
-                                 nullptr, reshade::api::resource_usage::undefined, &depth),
-          "evaluate-only depth image");
-    Check(device.create_resource({width, height, 1, 1, reshade::api::format::r16g16_float, 1,
-                                  reshade::api::memory_heap::gpu_only, usages},
-                                 nullptr, reshade::api::resource_usage::undefined, &motion),
-          "evaluate-only motion image");
-    Check(device.create_resource_view(color, reshade::api::resource_usage::undefined,
-                                     reshade::api::resource_view_desc(reshade::api::format::r16g16b16a16_float),
-                                     &color_view), "evaluate-only color view");
-    Check(device.create_resource_view(output, reshade::api::resource_usage::undefined,
-                                     reshade::api::resource_view_desc(reshade::api::format::r16g16b16a16_float),
-                                     &output_view), "evaluate-only output view");
-    Check(device.create_resource_view(depth, reshade::api::resource_usage::undefined,
-                                     reshade::api::resource_view_desc(reshade::api::format::r32_float),
-                                     &depth_view), "evaluate-only depth view");
-    Check(device.create_resource_view(motion, reshade::api::resource_usage::undefined,
-                                     reshade::api::resource_view_desc(reshade::api::format::r16g16_float),
-                                     &motion_view), "evaluate-only motion view");
-
-    std::vector<uint16_t> color_data(width * height * 4, 0x3c00);
-    std::vector<uint16_t> output_data(width * height * 4, 0);
-    std::vector<float> depth_data(depth_width * depth_height, 0.5f);
-    std::vector<uint16_t> motion_data(width * height * 2, 0);
-    Begin(context);
-    addon::vk::OnResetCommandList(&command_list);
-    uploads.push_back(UploadImage(context, command_list, color,
-                                  vk_test::NativeHandle<VkImage>(color.handle), color_data.data(),
-                                  color_data.size(), width, height));
-    uploads.push_back(UploadImage(context, command_list, output,
-                                  vk_test::NativeHandle<VkImage>(output.handle), output_data.data(),
-                                  output_data.size(), width, height));
-    uploads.push_back(UploadImage(context, command_list, depth,
-                                  vk_test::NativeHandle<VkImage>(depth.handle), depth_data.data(),
-                                  depth_data.size() * sizeof(float), depth_width, depth_height));
-    uploads.push_back(UploadImage(context, command_list, motion,
-                                  vk_test::NativeHandle<VkImage>(motion.handle), motion_data.data(),
-                                  motion_data.size() * sizeof(uint16_t), width, height));
-    SubmitAndWait(context);
-
-    const auto color_vk = addon::vk::ImageResource(color_view, color, width, height, false,
-                                                   VK_FORMAT_R16G16B16A16_SFLOAT);
-    const auto output_vk = addon::vk::ImageResource(output_view, output, width, height, true,
-                                                    VK_FORMAT_R16G16B16A16_SFLOAT);
-    const auto depth_vk = addon::vk::ImageResource(depth_view, depth, depth_width, depth_height,
-                                                   false, VK_FORMAT_R32_SFLOAT);
-    const auto motion_vk = addon::vk::ImageResource(motion_view, motion, width, height, false,
-                                                    VK_FORMAT_R16G16_SFLOAT);
-    renodx::addons::dlss5::bridge::OwnedParameters parameters;
-    addon::SetNrCreateParameters(&parameters, width, height, width, height, 0, false, 1);
-    parameters.Set(NVSDK_NGX_Parameter_Color, const_cast<NVSDK_NGX_Resource_VK*>(&color_vk));
-    parameters.Set(NVSDK_NGX_Parameter_Output, const_cast<NVSDK_NGX_Resource_VK*>(&output_vk));
-    parameters.Set(NVSDK_NGX_Parameter_Depth, const_cast<NVSDK_NGX_Resource_VK*>(&depth_vk));
-    parameters.Set(NVSDK_NGX_Parameter_MotionVectors, const_cast<NVSDK_NGX_Resource_VK*>(&motion_vk));
-    parameters.Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, width);
-    parameters.Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, height);
-    parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, 0u);
-    parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, 0u);
-    parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X, 0u);
-    parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y, 0u);
-    parameters.Set(NVSDK_NGX_Parameter_MV_Scale_X, 1.f);
-    parameters.Set(NVSDK_NGX_Parameter_MV_Scale_Y, 1.f);
-    addon::vk::SetControlMaskParameters(&parameters, nullptr, 0, 0, 0);
-    parameters.Set("DLSSNR.Color", const_cast<NVSDK_NGX_Resource_VK*>(&color_vk));
-    parameters.Set("DLSSNR.Output", const_cast<NVSDK_NGX_Resource_VK*>(&output_vk));
-    parameters.Set("DLSSNR.Depth", const_cast<NVSDK_NGX_Resource_VK*>(&depth_vk));
-    parameters.Set("DLSSNR.MVec", const_cast<NVSDK_NGX_Resource_VK*>(&motion_vk));
-    for (const auto& [key, value] : std::initializer_list<std::pair<const char*, uint32_t>>{
-             {NVSDK_NGX_Parameter_Width, width},
-             {NVSDK_NGX_Parameter_Height, height},
-             {NVSDK_NGX_Parameter_OutWidth, width},
-             {NVSDK_NGX_Parameter_OutHeight, height},
-             {"DLSSNR.ColorSubrectBaseX", 0},
-             {"DLSSNR.ColorSubrectBaseY", 0},
-             {"DLSSNR.ColorSubrectWidth", width},
-             {"DLSSNR.ColorSubrectHeight", height},
-             {"DLSSNR.DepthSubrectBaseX", 0},
-             {"DLSSNR.DepthSubrectBaseY", 0},
-             {"DLSSNR.DepthSubrectWidth", width},
-             {"DLSSNR.DepthSubrectHeight", height},
-             {"DLSSNR.MVecSubrectBaseX", 0},
-             {"DLSSNR.MVecSubrectBaseY", 0},
-             {"DLSSNR.MVecSubrectWidth", width},
-             {"DLSSNR.MVecSubrectHeight", height},
-             {"DLSSNR.OutputSubrectBaseX", 0},
-             {"DLSSNR.OutputSubrectBaseY", 0},
-             {"DLSSNR.OutputSubrectWidth", width},
-             {"DLSSNR.OutputSubrectHeight", height},
-             {"DLSSNR.InputWidth", width},
-             {"DLSSNR.InputHeight", height},
-             {"DLSSNR.OutputWidth", width},
-             {"DLSSNR.OutputHeight", height},
-         }) {
-      parameters.Set(key, value);
-    }
-    parameters.Set("DLSSNR.ScalingRatio", 1.f);
-    parameters.Set("DLSSNR.Scale", 1.f);
-    parameters.Set("DLSSNR.MVecScaleX", 1.f);
-    parameters.Set("DLSSNR.MVecScaleY", 1.f);
-
-    addon::PreloadNrRuntime(nullptr);
-    const auto runtime_status = addon::vk::EnsureRuntime(context.device);
-    if (runtime_status != renodx::addons::dlss5::NrDeclineReason::kCount) {
-      throw std::runtime_error(
-          "evaluate-only Runtime Init failed decline="
-          + std::to_string(static_cast<int>(runtime_status))
-          + " last=0x" + std::to_string(addon::last_result)
-          + " module=" + std::to_string(addon::direct_api.module != nullptr)
-          + " init=" + std::to_string(addon::direct_api.init != nullptr));
-    }
-    addon::vk::CheckExtensions();
-    Check(addon::vk::extension_state.load(std::memory_order_relaxed) != 2,
-          "evaluate-only Runtime extension requirements are enabled");
-
-    Begin(context);
-    const auto create_result = addon::vk::runtime.create(
-        context.device, context.command_buffer, addon::kFeatureDlssNr, &parameters, &handle);
-    Check(NVSDK_NGX_SUCCEED(create_result) && handle != nullptr,
-          "evaluate-only Feature 18 Create succeeds");
-    SubmitAndWait(context);
-
-    Begin(context);
-    const reshade::api::resource output_resource[] = {output};
-    const reshade::api::resource_usage output_before[] = {
-        reshade::api::resource_usage::shader_resource};
-    const reshade::api::resource_usage output_write[] = {
-        reshade::api::resource_usage::unordered_access};
-    command_list.barrier(1, output_resource, output_before, output_write);
-    addon::NrFeatureSlot model_slot{};
-    model_slot.parameters = &parameters;
-    model_slot.nr_preset = 1;
-    model_slot.pending_reset = true;
-    addon::SetModelParameters(model_slot, 0,
-                              addon::history_reset_epoch.load(std::memory_order_relaxed),
-                              0, 1, false);
-    const auto evaluate_result = addon::vk::runtime.evaluate(
-        context.command_buffer, handle, &parameters, nullptr);
-    if (NVSDK_NGX_FAILED(evaluate_result)) {
-      throw std::runtime_error(
-          "evaluate-only Feature 18 Evaluate failed result="
-          + std::to_string(static_cast<uint32_t>(evaluate_result)));
-    }
-    SubmitAndWait(context);
-    std::cout << "PASS NATIVE_NGX: Feature 18 Evaluate-only command buffer completed"
-                 " without production codec or ControlMask dispatch\n";
-    cleanup();
-  } catch (...) {
-    cleanup();
-    throw;
-  }
-}
+#endif  // NR_NEXUS_TEST_NATIVE_NGX
 
 void RunProductionMaskDispatchMock() {
   vk_test::VulkanContext context;
@@ -910,9 +748,14 @@ int wmain(int argc, wchar_t** argv) {
   try {
     addon::addon_module = GetModuleHandleW(nullptr);
     if (argc > 1 && std::wstring(argv[1]) == L"--native-ngx") {
-      RunNativeNgx();
+#if defined(NR_NEXUS_TEST_NATIVE_NGX)
+      Check(argc == 3, "--native-ngx requires an existing ProjectIDPath argument");
+      RunNativeNgx(argv[2]);
+#else
+      throw std::runtime_error("--native-ngx requires NR_NEXUS_TEST_NATIVE_NGX and the public NGX SDK library");
+#endif
     } else if (argc > 1 && std::wstring(argv[1]) == L"--native-ngx-evaluate-only") {
-      RunNativeNgxEvaluateOnly();
+      throw std::runtime_error("legacy snippet probe removed; use --native-ngx <ProjectIDPath> for public SDK validation");
     } else {
       RunProductionMaskDispatchMock();
     }

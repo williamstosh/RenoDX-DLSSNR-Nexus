@@ -14,6 +14,7 @@ param(
     [ValidateSet('Auto','Quick','Full','None')][string]$UiPreview = 'Auto',
     [ValidateSet('control-mask','control-mask-safety','control-mask-safety-hardware','control-mask-capture','control-mask-native-ngx','control-mask-native-ngx-toggle','control-mask-native-ngx-toggle-rgb','control-mask-native-ngx-cost','control-mask-native-ngx-motion','control-mask-native-ngx-fg','gpu-pass-diagnostics','native-required-menu','native-owner-idle','native-options-resume','native-options-delayed','native-guide-contract','present-guide-models','vulkan-recorded-use-contract','native-present-decision','trace-metadata','stage-chain','stage-resolution','stage-resolution-hardware','same-stage-resolution','same-stage-resolution-hardware','render-stage-resolution','render-stage-resolution-hardware','present-stage-resolution','present-stage-resolution-hardware','native-prefg-resolution','native-prefg-resolution-hardware','native-frame-identity','same-stage-model-pair','same-stage-mixed-pair','source-lifecycle','feature-switch','feature-switch-hardware','f5-mixed','present-chain','present-chain-hardware','present-chain-scrgb','present-chain-hdr10','native-full','native-full-hardware')]
     [string[]]$NativeCase = @(),
+    [switch]$VulkanNativeNgx,
     [string]$NativeNgxProjectIdPath,
     [string]$NativeNgxSdkLibraryDirectory,
     [string]$NativeNgxRuntimePath = $(if ($env:NR_NEXUS_NGX_RUNTIME_DIR) { Join-Path $env:NR_NEXUS_NGX_RUNTIME_DIR 'nvngx_dlssnr.dll' }),
@@ -59,8 +60,10 @@ if ($BuildOnly -and @($Suite | Where-Object { $_ -in @('config','constants','lif
     throw '-BuildOnly requires explicitly selecting native/policy/scope/fg-xefg/fg-native/bridge-motion suites.'
 }
 if ($NativeCase.Count -and $Suite -notcontains 'fg-native') { throw '-NativeCase requires -Suite fg-native (or all).' }
-$usesNativeNgx = @($NativeCase | Where-Object { $_ -in @('control-mask-native-ngx','control-mask-native-ngx-toggle','control-mask-native-ngx-toggle-rgb','control-mask-native-ngx-cost','control-mask-native-ngx-motion','control-mask-native-ngx-fg') }).Count -gt 0
-if ($Suite -contains 'fg-native' -and ($usesNativeNgx -or $NativeNgxSdkLibraryDirectory)) {
+if ($VulkanNativeNgx -and $Suite -notcontains 'vulkan-control-mask') { throw '-VulkanNativeNgx requires -Suite vulkan-control-mask (or all).' }
+if ($VulkanNativeNgx -and $SoftwareOnly) { throw '-VulkanNativeNgx requires a native Vulkan GPU.' }
+$usesNativeNgx = $VulkanNativeNgx -or (@($NativeCase | Where-Object { $_ -in @('control-mask-native-ngx','control-mask-native-ngx-toggle','control-mask-native-ngx-toggle-rgb','control-mask-native-ngx-cost','control-mask-native-ngx-motion','control-mask-native-ngx-fg') }).Count -gt 0)
+if (@($Suite | Where-Object { $_ -in @('fg-native','vulkan-control-mask') }).Count -gt 0 -and ($usesNativeNgx -or $NativeNgxSdkLibraryDirectory)) {
     if (-not $NativeNgxSdkLibraryDirectory -or
         -not (Test-Path -LiteralPath (Join-Path $NativeNgxSdkLibraryDirectory 'nvsdk_ngx_s.lib') -PathType Leaf)) {
         throw 'Native NGX support requires -NativeNgxSdkLibraryDirectory containing nvsdk_ngx_s.lib; omit it for WARP+MOCK cases.'
@@ -146,7 +149,7 @@ foreach ($item in $Suite) {
             "/I$HostRoot/external/json/include", "/I$HostRoot/external/frozen/include", "/I$HostRoot/external/gtl/include")
         if ($item -eq 'vulkan-control-mask') { $arguments += "/I$VulkanIncludeDirectory" }
         $link += @('user32.lib','gdi32.lib','ole32.lib','psapi.lib')
-        if ($item -eq 'fg-native' -and $NativeNgxSdkLibraryDirectory) {
+        if ($item -in @('fg-native','vulkan-control-mask') -and $NativeNgxSdkLibraryDirectory) {
             $arguments += '/DNR_NEXUS_TEST_NATIVE_NGX'
             $link += (Join-Path $NativeNgxSdkLibraryDirectory 'nvsdk_ngx_s.lib')
         }
@@ -199,6 +202,16 @@ foreach ($item in $Suite) {
             if ($item -eq 'fg-native') {
                 Invoke-TestProcess $exe $directory 'f5-mixed' @('--f5-mixed')
                 Invoke-TestProcess $exe $directory 'control-mask' @('--control-mask')
+            }
+        }
+        if ($item -eq 'vulkan-control-mask' -and $VulkanNativeNgx) {
+            $runtimeLink = Join-Path $directory 'nvngx_dlssnr.dll'
+            if (Test-Path -LiteralPath $runtimeLink) { throw "Runtime link target already exists: $runtimeLink" }
+            New-Item -ItemType HardLink -Path $runtimeLink -Target $NativeNgxRuntimePath | Out-Null
+            try {
+                Invoke-TestProcess $exe $directory 'native-ngx' @('--native-ngx', $NativeNgxProjectIdPath) -TimeoutMilliseconds 90000
+            } finally {
+                if (Test-Path -LiteralPath $runtimeLink) { Remove-Item -LiteralPath $runtimeLink -Force }
             }
         }
         foreach ($inputHash in $hashes) {

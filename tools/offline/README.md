@@ -210,11 +210,16 @@ identical=true，避免不可移植的 JSON Infinity。比较工具只测给定�
 其中生产 Render／Upscaled／Present／FG 输入角色还核对非零运动的 R 与缺少来源凭据时的手动值恢复。
 `-Suite bridge-motion -BridgeCase sr` 核对 D3D11 RG16 直拷／RG32 转换后，经生产入口得到的运动 R/G/B/A；
 这些链路使用真实 GPU，NR 为 MOCK。`vulkan-control-mask` 核对 Vulkan Shader 的运动采样与深度重叠；
-其编译产物的 `--native-ngx` 入口另以真实 Runtime 验证生产参数解析、非零偏移与 scale、
-深度重叠、OFF→ON→OFF、重放和 reset，需在隔离运行目录提供既有 `nvngx_dlssnr.dll`。
+`-VulkanNativeNgx` 另通过公开 SDK ProjectID provider 验证生产参数解析、非零偏移与 scale、
+深度重叠、OFF→ON→OFF、重放和 reset。两种原生入口都显式提供已有 SDK、ProjectID 与 Runtime，
+不回退到 snippet 身份桥；公开 provider 的失败须按实际 API 结果报告。
 
 ~~~powershell
 pwsh -File tools/run-tests.ps1 -Suite fg-native -NativeCase control-mask-native-ngx-motion `
+    -NativeNgxProjectIdPath $projectIdPath -NativeNgxSdkLibraryDirectory $sdkLibraryDirectory `
+    -NativeNgxRuntimePath $runtimePath -UiPreview None
+
+pwsh -File tools/run-tests.ps1 -Suite vulkan-control-mask -VulkanNativeNgx `
     -NativeNgxProjectIdPath $projectIdPath -NativeNgxSdkLibraryDirectory $sdkLibraryDirectory `
     -NativeNgxRuntimePath $runtimePath -UiPreview None
 ~~~
