@@ -211,7 +211,8 @@ inline void NotifyCompletedModelAdjustments(int64_t now) {
   if (gpu_timers::comparison_settings != nullptr) gpu_timers::comparison_settings(&current_identity);
   for (size_t stage = 0; plan.valid && stage < stage_telemetry.size(); ++stage) {
     const gpu_timers::Stats* latest = nullptr;
-    for (const auto* completed : {&gpu_timers::execution_stats[stage], &gpu_timers::stage_stats[stage]}) {
+    for (const auto* completed : {&gpu_timers::execution_stats[stage], &gpu_timers::stage_stats[stage],
+             &gpu_timers::completed_stats[stage]}) {
       if (!CurrentGpuSample(*completed, now, &current_identity)
           || gpu_timers::StageIndex(completed->path) != stage) continue;
       if (latest == nullptr || completed->sequence > latest->sequence) latest = completed;

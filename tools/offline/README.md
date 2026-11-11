@@ -283,9 +283,10 @@ SDK 动态计数、固定倍率失效和来源切换。配置保存／方案另�
 
 ~~~powershell
 ./tools/run-tests.ps1 -Suite fg-native -NativeCase adaptive-fg-service -SoftwareOnly
+./tools/run-tests.ps1 -Suite fg-native -NativeCase adaptive-inline -SoftwareOnly
 ~~~
 
-此入口使用 16×16 WARP、模型替身和实际 Service／提交路径，覆盖四档就绪、临时容量占用解除后恢复、ControlMask 未提交时等待，以及真正 Evaluate 失败仍暂停；属于 WARP＋MOCK，不调用硬件 NR Runtime 或游戏。
+`adaptive-fg-service` 使用 16×16 WARP、模型替身和实际 Service／提交路径，覆盖四档就绪、临时容量占用解除后恢复、ControlMask 未提交时的当前档／预备档等待，以及真正 Evaluate 失败仍暂停。`adaptive-inline` 使用生产 Render／Upscaled 入口，核对轮换输出的档位准备、GPU 完成和模拟输出帧率驱动的自动降档。两者均为 WARP＋MOCK，不调用硬件 NR Runtime 或游戏。
 
 真实 NR 尺寸往返复用公开 SDK 预初始化入口：
 

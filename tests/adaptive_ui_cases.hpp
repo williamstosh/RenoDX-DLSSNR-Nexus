@@ -243,16 +243,84 @@
   runtime::stack_passes = 1;
   runtime::ui_menu_page = 0;
   runtime::ui_classic_layout = false;
-  for (const auto& [label, stored] : {std::pair{"Upscaled", 0u}, {"Render", 1u}}) {
-    runtime::hook_point = runtime::kHookPresent;
-    frame(); frame();
-    check(find("##actual_resolution_scale").disabled && !find(label).disabled,
-          "the complete Quality page restores interaction after the adaptive read-only control");
-    click(find(label));
-    if (runtime::stage_edit::pending) click(find("confirm_stage_change"));
-    check(runtime::hook_point.load() == stored,
-          "the complete Quality page applies adaptive Present to inline Hook changes");
+  for (const bool minimum_reached : {false, true}) {
+    for (const auto& [label, stored] : {std::pair{"Upscaled", 0u}, {"Render", 1u}}) {
+      runtime::hook_point = runtime::kHookPresent;
+      namespace adaptive = renodx::addons::dlss5::adaptive_resolution;
+      adaptive::Session session;
+      adaptive::Sizes upper{}, floor{};
+      upper[0] = {.width = 3840, .height = 2160};
+      floor[0] = {.width = 1267, .height = 713};
+      const adaptive::Settings settings{.enabled = true, .target_fps = 116.f, .minimum_scale = .33f, .prepared_levels = 4};
+      const auto now = runtime::SteadyNowNs();
+      const adaptive::Output output{.available = true, .source = 1, .generation = 1, .configuration = 1,
+          .serial = 1, .begin_ns = now - 500'000'000, .end_ns = now, .fps = (minimum_reached ? 50. : 120.)};
+      session.Prepare(settings, upper, floor, 42, output, now - 10'000'000'000, true, false);
+      session.Request(minimum_reached ? session.ladder.count - 1 : 0, now - 10'000'000'000);
+      session.Applied(session.status.generation, session.status.requested, now - 10'000'000'000);
+      for (uint64_t sample = 0; sample < 5; ++sample) {
+        session.ObserveGpu({.generation = session.status.generation, .frame = sample + 1, .sequence = sample + 1,
+            .recorded_ns = now - 1'500'000'000 + static_cast<int64_t>(sample) * 250'000'000,
+            .completed_ns = now - 500'000'000, .total_us = 1000., .valid = true, .stable = true}, now);
+      }
+      session.Prepare(settings, upper, floor, 42, output, now, true, false);
+      check(session.status.reason == (minimum_reached ? adaptive::Reason::AT_MINIMUM : adaptive::Reason::OBSERVING),
+          "the held-click fixture starts from normal or minimum-reached controller status");
+      runtime::PublishAdaptiveStatus(session.status);
+      frame(); frame();
+      check(find("##actual_resolution_scale").disabled && !find(label).disabled,
+            "the complete Quality page restores interaction after the adaptive read-only control");
+      auto button = find(label);
+      for (int attempt = 0; attempt < 4 && !button.window->InnerClipRect.Contains(button.rect.GetCenter()); ++attempt) {
+        ImGui::SetScrollY(button.window, button.window->Scroll.y + button.rect.GetCenter().y
+            - button.window->InnerClipRect.GetCenter().y);
+        frame(); frame();
+        button = find(label);
+      }
+      const auto pressed_at = button.rect.GetCenter();
+      io.AddMousePosEvent(pressed_at.x, pressed_at.y);
+      frame();
+      io.AddMouseButtonEvent(0, true);
+      frame();
+      check(!runtime::nr_adaptive_editing.load(), "holding a Stage button never masquerades as an unpublished slider edit");
+      session.Prepare(settings, upper, floor, 42, output, now, true, runtime::nr_adaptive_editing.load());
+      runtime::PublishAdaptiveStatus(session.status);
+      frame();
+      check(std::abs(find(label).rect.Min.y - button.rect.Min.y) < .5f,
+          "temporary adaptive pause cannot move the pressed Stage button before mouse release");
+      io.AddMouseButtonEvent(0, false);
+      frame(); frame();
+      if (runtime::stage_edit::pending) click(find("confirm_stage_change"));
+      check(runtime::hook_point.load() == stored,
+            "the complete Quality page applies adaptive Present to inline Hook changes");
+    }
   }
+  auto minimum_slider = find("##adaptive_minimum");
+  for (int attempt = 0; attempt < 4 && !minimum_slider.window->InnerClipRect.Contains(minimum_slider.rect.GetCenter()); ++attempt) {
+    ImGui::SetScrollY(minimum_slider.window, minimum_slider.window->Scroll.y + minimum_slider.rect.GetCenter().y
+        - minimum_slider.window->InnerClipRect.GetCenter().y);
+    frame(); frame();
+    minimum_slider = find("##adaptive_minimum");
+  }
+  const auto minimum_position = minimum_slider.rect.GetCenter();
+  io.AddMousePosEvent(minimum_position.x, minimum_position.y);
+  frame();
+  io.AddMouseButtonEvent(0, true);
+  frame();
+  io.AddMousePosEvent(minimum_position.x + 10.f, minimum_position.y);
+  frame();
+  check(runtime::slider_pending == &runtime::kSetAdaptiveMinScale && runtime::nr_adaptive_editing.load(),
+      "an actual minimum-scale drag retains the production adaptive pause");
+  std::shared_ptr<renodx::addons::dlss5::adaptive_resolution::Session> editing_session;
+  const auto editing_plan = runtime::RequestedStagePlan();
+  runtime::FreezeAdaptiveFrame(&editing_session, editing_plan, editing_plan.At(editing_plan.effective[0]),
+      3840, 2160, 1920, 1080, 0xADA57A6E, true);
+  check(editing_session->status.reason == renodx::addons::dlss5::adaptive_resolution::Reason::FROZEN,
+      "real slider edits still freeze evaluation while Stage-button holds do not");
+  io.AddMouseButtonEvent(0, false);
+  frame(); frame();
+  check(runtime::slider_pending == nullptr && !runtime::nr_adaptive_editing.load(),
+      "releasing the actual slider settles the edit and resumes adaptive evaluation");
   xefg::internal::requested = saved_requested;
   xefg::internal::owns_stream = saved_owns;
   hook_editor_fixture = false;

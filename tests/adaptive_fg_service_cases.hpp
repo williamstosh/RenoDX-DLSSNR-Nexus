@@ -148,6 +148,19 @@ int Run() {
       Check(cache->tiers[tier].ready,
           "every tier matures through complete two-Pass recording and actual WARP submission");
     }
+    auto& standby = cache->tiers[1];
+    Check(standby.state.control_mask_stream != nullptr,
+        "standby tier has its own ordered ControlMask producer");
+    standby.output_completions.clear();
+    standby.ready = false;
+    Check(addon::control_mask_execution::BeginRecording(standby.state.control_mask_stream, gpu.list.Get()),
+        "standby preparation can be deferred by an earlier unsubmitted producer");
+    service();
+    Check(!stream.adaptive_session->failed && !cache->failed,
+        "standby admission rejection after a successful active frame never latches NR failure");
+    for (uint32_t frame = 0; frame < 8; ++frame) service();
+    native::PollAdaptiveCache(cache.get());
+    Check(standby.ready, "standby preparation resumes after its earlier producer submits");
     auto mask_stream = native::features.at(stream.roles[0].Handle()).control_mask_stream;
     Check(mask_stream != nullptr, "the mocked 310.9.16 contract enables the real ControlMask producer");
     Check(addon::control_mask_execution::BeginRecording(mask_stream, gpu.list.Get()),
@@ -159,10 +172,17 @@ int Run() {
     for (uint32_t frame = 0; frame < 16; ++frame) service();
     Check(service() == fg::Result::SUBMITTED && !stream.adaptive_session->failed,
         "the service resumes after the pending producer is submitted");
-    fail_call = model_calls + 1;
+    auto failure_cache = native::features.at(stream.roles[0].Handle()).adaptive_cache;
+    Check(failure_cache != nullptr && failure_cache->count > 1,
+        "active-stream recovery exposes the current standby cache for failure injection");
+    auto& failure_standby = failure_cache->tiers[(failure_cache->active + 1) % failure_cache->count];
+    failure_standby.output_completions.clear();
+    failure_standby.ready = false;
+    const auto before_failure = model_calls;
+    fail_call = model_calls + 3;  // Both active Passes succeed, then standby P1 fails.
     service();
-    Check(stream.adaptive_session->failed,
-        "an actual model Evaluate failure pauses the adaptive session");
+    Check(model_calls == before_failure + 3 && stream.adaptive_session->failed && failure_cache->failed,
+        "an actual standby Evaluate failure after both active Passes pauses the adaptive session");
     fail_call = 0;
     model_parameter_observer = {};
     native::fg_service::Retire();

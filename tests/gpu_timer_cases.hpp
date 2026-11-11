@@ -447,6 +447,54 @@ int Run() {
     native::ForgetSourceHandleLocked(handle);
     finish();
     Check(native::worksets.empty() && !model_released_handles.empty(), "source retirement releases model worksets");
+    native::enabled = true;
+    native::hook_point = native::kHookUpscaled;
+    native::stack_passes = 1;
+    native::active_features = 1;
+    addon::NrVerdict verdict{.state = addon::NrState::kEngaged, .seen = 100, .eligible = 100,
+        .injected = 100, .ratio = 1., .api = "d3d12", .path = "inline"};
+    for (const bool measured : {true, false}) {
+      native::card_observation.window = {};
+      native::card_observation.completions = {};
+      native::CollectCardInputs(verdict, timers::NowNs());
+      const auto complete_recording = [&] {
+        Check(timers::Begin(gpu.list.Get(), gpu.device.Get(), "postSR", 16, 16, 0, 1, measured),
+            "batched completion begins on the actual WARP recording");
+        auto& segment = timers::internal::segments[timers::internal::current.idx];
+        segment.comparison.identity.stable_epoch = native::comparison_stable_epochs[1];
+        timers::SetPass(0, 0, 1, 16, 16, 16, 16);
+        for (const auto marker : {timers::PassEncodeStart(0), timers::PassEncodeEnd(0),
+                 timers::PassEvalStart(0), timers::PassEvalEnd(0), timers::PassResolveEnd(0),
+                 timers::kSlotCopyBackEnd}) {
+          timers::Mark(gpu.list.Get(), marker);
+        }
+        timers::End(gpu.list.Get());
+        return segment.sequence;
+      };
+      const auto good = complete_recording();
+      finish(1, true, false);
+      const auto replayed = complete_recording();
+      finish(2, true, false);
+      // No UI or collector may consume the valid result between these two
+      // terminal records. The production Poll must preserve the completion.
+      timers::Poll(true, false);
+      const auto& latest = (measured ? timers::stage_stats[1] : timers::execution_stats[1]);
+      Check(latest.sequence == replayed && !latest.valid && latest.state == State::REPLAYED,
+          "the latest cost/proof result still reports the newer real replay rejection");
+      Check(timers::completed_stats[1].valid && timers::completed_stats[1].sequence == good,
+          "one Poll retains the earlier complete GPU result before a later rejection overwrites latest");
+      const auto inputs = native::CollectCardInputs(verdict, timers::NowNs());
+      Check(inputs.recent.has_value() && inputs.recent->gpu_completed,
+          "production card consumer sees a completion that was overwritten within the same Poll");
+      const auto now = timers::NowNs();
+      const addon::stage_plan::Group group{.stage = addon::stage_plan::Stage::UPSCALED, .count = 1};
+      Check(native::CurrentCompletedGroup(timers::completed_stats[1], group, now),
+          "retained completion remains bound to the actual settings, device and complete group");
+      ++native::configuration_generation;
+      Check(!native::CurrentCompletedGroup(timers::completed_stats[1], group, timers::NowNs()),
+          "configuration changes invalidate producer-retained execution evidence");
+    }
+    std::cout << "PASS batched Poll completion: measured/completion-only real WARP success then replay, production card consumer\n";
     timers::ReleaseAll();
 
     // Deterministic timestamp arithmetic uses the real publisher after all GPU

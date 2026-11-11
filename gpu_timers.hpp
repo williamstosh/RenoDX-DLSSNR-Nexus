@@ -198,6 +198,9 @@ inline Stats stats;
 inline Stats stage_stats[3];
 // Completion proofs have no measured durations and are consumed only by status collectors.
 inline Stats execution_stats[3];
+// Preserve a proven complete group before a later result in the same Poll can
+// replace the latest measurement. Consumers still validate its identity/age.
+inline Stats completed_stats[3];
 inline uint64_t stage_published[3] = {};
 inline uint64_t measured_total_us = 0;
 inline uint64_t dropped_segments = 0;
@@ -312,6 +315,7 @@ inline void Release() {
   stats.state = SampleState::NOT_MEASURED;
   for (auto& stage : stage_stats) stage = Stats{};
   for (auto& stage : execution_stats) stage = Stats{};
+  for (auto& stage : completed_stats) stage = Stats{};
   display_windows = {};
   result_sequences = {};
   execution_result_sequences = {};
@@ -500,9 +504,14 @@ inline bool Publish(const Segment& s, bool log, const void* queue) {
   next.recorded_ns = static_cast<int64_t>(s.comparison.recorded_ns);
   next.queue = queue;
   next.samples = 1;
+  const bool complete = s.pass_count != 0 && s.pass_count <= kTimerMaxPasses
+      && std::all_of(next.passes.begin(), next.passes.begin() + std::min(s.pass_count, kTimerMaxPasses),
+          [](const auto& pass) { return pass.state == SampleState::VALID; });
+  auto& completed = completed_stats[StageIndex(s.path)];
+  if (complete && next.sequence > completed.sequence) {
+    completed = next;
+  }
   if (s.adaptive.session != nullptr) {
-    const bool complete = std::all_of(next.passes.begin(), next.passes.begin() + s.pass_count,
-        [](const auto& pass) { return pass.state == SampleState::VALID; });
     s.adaptive.session->ObserveGpu({.generation = s.adaptive.generation,
         .frame = s.adaptive.application_frame, .sequence = s.sequence,
         .context = reinterpret_cast<uintptr_t>(queue) ^ s.comparison.identity.device_session,
@@ -861,6 +870,12 @@ inline void Poll(bool exact_proofs, bool log) {
       proof.state = SampleState::EXPIRED;
     }
   }
+  for (auto& proof : completed_stats) {
+    if (proof.valid && NowNs() - proof.measured_ns > internal::kSampleAgeNs) {
+      proof.valid = false;
+      proof.state = SampleState::EXPIRED;
+    }
+  }
   if (stats.valid && NowNs() - stats.measured_ns > internal::kSampleAgeNs) {
     stats.valid = false;
     stats.state = SampleState::EXPIRED;
@@ -894,19 +909,24 @@ inline void Poll(bool exact_proofs, bool log) {
           }
         }
         if (complete) {
+          Stats next{.width = s.width, .height = s.height, .valid = true, .passes = s.passes,
+                     .state = SampleState::VALID, .sequence = s.sequence, .measured_ns = NowNs(),
+                     .identity = s.comparison.identity,
+                     .recorded_ns = static_cast<int64_t>(s.comparison.recorded_ns)};
+          std::memcpy(next.path, s.path, sizeof(next.path));
+          for (uint32_t pass = 0; pass < s.pass_count; ++pass) {
+            next.passes[pass].state = SampleState::VALID;
+            next.passes[pass].look_measured = (s.written & (uint64_t{1} << PassLookEnd(pass))) != 0;
+          }
+          auto& completed = completed_stats[StageIndex(s.path)];
+          if (next.sequence > completed.sequence) {
+            completed = next;
+          }
           auto& target = execution_stats[StageIndex(s.path)];
           if (s.sequence >= internal::execution_result_sequences[StageIndex(s.path)]
               && (s.sequence >= target.sequence || target.state == SampleState::PENDING)) {
             internal::execution_result_sequences[StageIndex(s.path)] = s.sequence;
-            target = Stats{.width = s.width, .height = s.height, .valid = true, .passes = s.passes,
-                           .state = SampleState::VALID, .sequence = s.sequence, .measured_ns = NowNs(),
-                           .identity = s.comparison.identity,
-                           .recorded_ns = static_cast<int64_t>(s.comparison.recorded_ns)};
-            std::memcpy(target.path, s.path, sizeof(target.path));
-            for (uint32_t pass = 0; pass < s.pass_count; ++pass) {
-              target.passes[pass].state = SampleState::VALID;
-              target.passes[pass].look_measured = (s.written & (uint64_t{1} << PassLookEnd(pass))) != 0;
-            }
+            target = next;
           }
         } else {
           internal::Reject(s, SampleState::NOT_EXECUTED);

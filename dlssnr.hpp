@@ -10516,7 +10516,6 @@ inline void PrepareAdaptiveTier(FeatureState* feature, const adaptive_resolution
   preparation.slot = static_cast<uint32_t>(slot);
   preparation.sizes = frame.session->ladder.sizes[slot];
   preparation.preparing = true;
-  preparation.session.reset();
   const auto previous_frame = preparing_adaptive_frame;
   const auto previous_chain = evaluate_chain;
   const auto stable_after = comparison_stable_after_ns;
@@ -10567,9 +10566,10 @@ inline void PrepareAdaptiveTier(FeatureState* feature, const adaptive_resolution
   comparison_stable_epochs = stable_epochs;
   stage_telemetry = observed;
   if (cache->budget_blocked) ReleaseAdaptiveStandby(cache.get(), true);
-  if (!succeeded) {
+  // Admission guards can defer a standby recording before calling NR. Only
+  // ObserveNrEvaluation's actual API failure pauses the shared session.
+  if (frame.session->failed) {
     cache->failed = true;
-    frame.session->Fail(frame.generation);
   }
   std::ostringstream message;
   message << "NR adaptive preparation: slot=" << slot << " cpu_ms=" << elapsed_ms
@@ -11732,7 +11732,7 @@ inline bool RecordInline(
   }
   stage_stats.work_width = nr_input_width;
   stage_stats.work_height = nr_input_height;
-  if (adaptive.session != nullptr) {
+  if (adaptive.session != nullptr && !adaptive.preparing) {
     adaptive_resolution::Sizes actual;
     for (uint32_t pass = 0; pass < requested_stack; ++pass) {
       actual[group.begin + pass] = {.width = pass_widths[pass], .height = pass_heights[pass]};
@@ -13964,7 +13964,7 @@ inline bool RecordInlinePreSR(
   }
   stage_stats.work_width = nr_input_width;
   stage_stats.work_height = nr_input_height;
-  if (adaptive.session != nullptr) {
+  if (adaptive.session != nullptr && !adaptive.preparing) {
     adaptive_resolution::Sizes actual;
     for (uint32_t pass = 0; pass < requested_stack; ++pass) {
       actual[group.begin + pass] = {.width = pass_widths[pass], .height = pass_heights[pass]};
@@ -21189,7 +21189,8 @@ inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
         }
         // A rejected recording removes its measurement, not an earlier current
         // completion. Retain only status evidence; costs use the latest result.
-        for (const auto* sample : {&gpu_timers::stage_stats[stage], &gpu_timers::execution_stats[stage]}) {
+        for (const auto* sample : {&gpu_timers::stage_stats[stage], &gpu_timers::execution_stats[stage],
+                 &gpu_timers::completed_stats[stage]}) {
           if (CurrentCompletedGroup(*sample, group, now_ns) && sample->sequence > retained.sequence) {
             retained = *sample;
           }
@@ -25505,7 +25506,6 @@ inline void DrawResolutionObserved(const ui::PanelText& text, uint32_t pass = 0,
         case adaptive_resolution::Reason::UNSUPPORTED:
         case adaptive_resolution::Reason::OUTPUT_UNAVAILABLE:
         case adaptive_resolution::Reason::AT_MINIMUM:
-        case adaptive_resolution::Reason::FROZEN:
         case adaptive_resolution::Reason::FAILED:
         case adaptive_resolution::Reason::BUDGET: {
           ui::StyleScope warning;
@@ -28267,7 +28267,7 @@ inline void OnOverlay(reshade::api::effect_runtime* runtime) {
     ImGui::EndChild();
   }
   SettleSlider(false);
-  nr_adaptive_editing.store(slider_pending != nullptr || ImGui::IsAnyItemActive(), std::memory_order_relaxed);
+  nr_adaptive_editing.store(slider_pending != nullptr, std::memory_order_relaxed);
   profile_ui::Tick();
   if (!ui_capture_dir.empty()) {
     ui_panel_draws.fetch_add(1, std::memory_order_relaxed);
