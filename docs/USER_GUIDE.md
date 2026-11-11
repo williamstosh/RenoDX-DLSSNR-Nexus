@@ -239,7 +239,7 @@ F6 立即提示开关操作，随后状态更新为正在检查、正常运行�
 
 当前版本会忽略旧诊断配置 `NRControlMaskUseCoreContext=1`，并修复已有处理历史在切回 Upscaled 或逐层处理时阻止 NR 继续运行的问题。无需手动删除此键；更新插件并重启游戏后生效。
 
-**开发版新增：运动衰减**（尚未包含在 v0.3.0 安装包中）。在区域遮罩设置中开启后，运动越快的区域使用越少的 NR，包含转动相机产生的画面运动。默认关闭，运动淡出起点／终点为 **2／16 像素／帧**，按当前层的输入分辨率计量：低于起点保留 R，达到终点时 R 降至 0。提高起点可让轻微运动继续保留 NR，提高终点可让过渡更缓。工作分辨率或帧率改变后，可按画面重新调节。
+**开发版新增：运动衰减**（尚未包含在 v0.3.0 安装包中）。它位于区域遮罩设置内，与深度衰减分组排列，无需再展开子菜单；开启后显示运动淡出起点／终点，关闭时收起并保留数值。运动越快的区域使用越少的 NR，包含转动相机产生的画面运动。默认关闭，起点／终点为 **2／16 像素／帧**，按当前层的输入分辨率计量：低于起点保留 R，达到终点时 R 降至 0。提高起点可让轻微运动继续保留 NR，提高终点可让过渡更缓。工作分辨率或帧率改变后，可按画面重新调节。
 
 运动衰减可以和深度衰减同时使用，重叠区域采用较强的衰减，G、B、角色遮罩和混合模式保持各自设置。每层可继承 Pass 1，或独立设置运动开关与范围。关闭运动衰减便恢复该层原有区域设置；缺少有效运动或深度输入时，只跳过对应自动规则。它按运动矢量选取区域，不区分相机运动与移动物体。
 
@@ -772,7 +772,7 @@ Region mask lets you tune NR intensity, tone and structure separately, or gradua
 
 Current builds ignore the old diagnostic setting `NRControlMaskUseCoreContext=1` and fix existing processing history blocking NR when switching back to Upscaled or using stages per pass. There is no need to delete the key; update the addon and restart the game.
 
-**New in development builds: Motion attenuation** (not included in the v0.3.0 download). Enable it in Region mask settings to use less NR in faster moving areas, including movement caused by turning the camera. It is off by default, with Motion fade start / end at **2 / 16 pixels per frame**, measured at the current pass's input resolution. Below the start, R is kept; at the end, R reaches 0. Raise the start to keep NR during small movements, or raise the end for a gentler transition. Adjust to the picture after changing working resolution or frame rate.
+**New in development builds: Motion attenuation** (not included in the v0.3.0 download). It is grouped alongside the depth controls inside Region mask settings, with no additional submenu. Enabling it reveals Motion fade start / end; turning it off hides those controls and preserves their values. It uses less NR in faster moving areas, including movement caused by turning the camera. It is off by default, with start / end at **2 / 16 pixels per frame**, measured at the current pass's input resolution. Below the start, R is kept; at the end, R reaches 0. Raise the start to keep NR during small movements, or raise the end for a gentler transition. Adjust to the picture after changing working resolution or frame rate.
 
 Motion and depth fades can run together; overlapping areas use the stronger fade. G, B, Character mask and Blend mode keep their own settings. Each pass can inherit Pass 1 or set its own motion switch and range. Turning motion attenuation off restores that pass's other region settings. If motion or depth input is unavailable, only that automatic rule is skipped. Selection follows motion vectors and includes both camera and object movement.
 

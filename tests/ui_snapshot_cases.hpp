@@ -801,20 +801,37 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
           }
           throw std::runtime_error(std::string("motion control missing: ") + label);
         };
+        const auto check_motion_parameters = [&](bool visible) {
+          for (const char* label : {"Motion fade start", "Motion fade end"}) {
+            const std::string translated = ui::Tr(label);
+            check(std::ranges::any_of(rendered_text, [&](const auto& text) { return text.text == translated; }) == visible,
+                  "motion parameters are visible only while motion attenuation is enabled");
+          }
+        };
+        check_motion_parameters(true);
         click(motion_control("Motion attenuation"));
         check(!runtime::control_mask_motion_enabled.load(), "motion attenuation switch disables the global setting");
+        check_motion_parameters(false);
         click(motion_control("Motion attenuation"));
         check(runtime::control_mask_motion_enabled.load(), "motion attenuation switch enables the global setting");
+        check_motion_parameters(true);
         click(motion_control("Motion fade end"));
         check(runtime::control_mask_motion_end.load() != 16.f, "motion fade end slider updates its setting");
         auto start_slider = motion_control("Motion fade start");
         start_slider.rect.Max.x = start_slider.rect.GetCenter().x;
         click(start_slider);
         check(runtime::control_mask_motion_start.load() != 2.f, "motion fade start slider updates its setting");
+        const float edited_start = runtime::control_mask_motion_start.load();
+        const float edited_end = runtime::control_mask_motion_end.load();
         click(motion_control("Motion attenuation"));
         check(!runtime::control_mask_motion_enabled.load(), "motion attenuation switch disables the global setting");
+        check_motion_parameters(false);
         click(motion_control("Motion attenuation"));
         check(runtime::control_mask_motion_enabled.load(), "motion attenuation can be enabled again for capture");
+        check_motion_parameters(true);
+        check(runtime::control_mask_motion_start.load() == edited_start
+                  && runtime::control_mask_motion_end.load() == edited_end,
+              "hiding motion parameters preserves their edited values");
         interaction = "real motion switch and slider edits; motion enabled for capture";
       }
       if (scenario.action == "r7-common") interaction = "production default folds; always-open common quality controls";

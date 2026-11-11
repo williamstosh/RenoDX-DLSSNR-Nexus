@@ -24120,8 +24120,87 @@ inline void DrawControlMaskValues(
                 ui::text::kControlMaskBlueTip);
   ImGui::EndDisabled();
 
+  if (mode == kControlMaskDepthFar) {
+    ImGui::TextWrapped("%s", text.Tr(ui::text::kControlMaskDepthGuide));
+    if (ImGui::Button(text.Tr("Far scenery"))) {
+      SettleSlider(true);
+      depth_near_setting.Commit(kControlMaskDepthNearDefault);
+      depth_far_setting.Commit(kControlMaskDepthFarDefault);
+    }
+    ui::ItemTooltip("%s", text.Tr("Restore the distant-scene starting point (0.999900 / 0.999950). Use this to recover if too much of the picture loses NR."));
+    ImGui::SameLine();
+    if (ImGui::Button(text.Tr("Sky / far plane"))) {
+      SettleSlider(true);
+      depth_near_setting.Commit(0.99999f);
+      depth_far_setting.Commit(1.f);
+    }
+    ui::ItemTooltip("%s", text.Tr("Fade only very close to the game's far depth limit (0.999990 / 1.000000). This selects depth, not semantic sky detection."));
+
+    auto depth_slider = [&](const Setting& setting, const char* label, const char* tip,
+                            bool near_endpoint, bool precise) {
+      ImGui::PushID(precise ? "exact_depth" : "depth_range");
+      ImGui::PushID(setting.key);
+      const float depth = setting.Get();
+      // A fixed logarithmic scale gives distant perspective depths usable mouse
+      // travel. Unlike changing slider bounds, editing one end keeps the other still.
+      float value = (precise ? depth : -std::log10(std::max(1.f - depth, 0.000001f)) * (100.f / 6.f));
+      const char* format = (precise ? "%.6f" : "%.1f");
+      bool changed;
+      if (text.modern) {
+        ui::RowLabel(label, tip);
+        changed = ui::Slider("##value", &value, 0.f, precise ? 1.f : 100.f, format, tip);
+      } else {
+        changed = ImGui::SliderFloat(ui::ControlLabel(label).c_str(), &value, 0.f, precise ? 1.f : 100.f, format);
+        ui::ItemTooltip("%s", text.Tr(tip));
+      }
+      if (changed && std::isfinite(value)) {
+        const float requested = (precise ? value : (value >= 100.f ? 1.f : 1.f - std::pow(10.f, -value * 0.06f)));
+        const float near_depth = depth_near_value.load(std::memory_order_relaxed);
+        const float far_depth = depth_far_value.load(std::memory_order_relaxed);
+        const float adjusted = (near_endpoint
+            ? std::clamp(requested, 0.f, std::nextafter(far_depth, 0.f))
+            : std::clamp(requested, std::nextafter(near_depth, 1.f), 1.f));
+        if (slider_pending != &setting) SettleSlider(true);
+        setting.Store(adjusted);
+        slider_pending = &setting;
+      }
+      SettleSlider(false);
+      if (text.modern && setting.Modified()) {
+        const bool reset_valid = (near_endpoint ? setting.fallback < depth_far_value.load()
+                                                : setting.fallback > depth_near_value.load());
+        char stock[32];
+        std::snprintf(stock, sizeof(stock), format, precise ? setting.fallback
+            : -std::log10(std::max(1.f - setting.fallback, 0.000001f)) * (100.f / 6.f));
+        ImGui::BeginDisabled(!reset_valid);
+        if (ui::ResetButton("reset", stock)) {
+          SettleSlider(true);
+          setting.Commit(setting.fallback);
+        }
+        ImGui::EndDisabled();
+        if (!reset_valid) ui::ItemTooltip("%s", text.Tr(ui::text::kControlMaskResetBlocked));
+      }
+      ImGui::PopID();
+      ImGui::PopID();
+    };
+    depth_slider(depth_near_setting, "Fade start", ui::text::kControlMaskNearTip, true, false);
+    depth_slider(depth_far_setting, "Fade end", ui::text::kControlMaskFarTip, false, false);
+    if (ui::TreeNode("exact_control_mask_depth", text.Tr("Exact depth values"))) {
+      ImGui::TextWrapped("%s", text.Tr(ui::text::kControlMaskRawDepthTip));
+      depth_slider(depth_near_setting, ui::text::kNearDepth, ui::text::kControlMaskNearTip, true, true);
+      depth_slider(depth_far_setting, ui::text::kFarDepth, ui::text::kControlMaskFarTip, false, true);
+      ImGui::TreePop();
+    }
+  }
+
+  ImGui::Spacing();
+  ImGui::Separator();
+  ImGui::Spacing();
   ToggleSetting(text, pass == 0 ? kSetControlMaskMotionEnabled : kSetPassControlMaskMotionEnabled[pass - 1],
                 ui::text::kControlMaskMotion, ui::text::kControlMaskMotionTip);
+  const bool motion_enabled = (pass == 0 ? control_mask_motion_enabled.load()
+                                        : pass_control_mask[pass - 1].motion_enabled.load());
+  if (!motion_enabled) return;
+  ImGui::Indent();
   const Setting& motion_start_setting = (pass == 0 ? kSetControlMaskMotionStart : kSetPassControlMaskMotionStart[pass - 1]);
   const Setting& motion_end_setting = (pass == 0 ? kSetControlMaskMotionEnd : kSetPassControlMaskMotionEnd[pass - 1]);
   const auto motion_slider = [&](const Setting& setting, const char* label, bool start_endpoint) {
@@ -24159,76 +24238,7 @@ inline void DrawControlMaskValues(
   };
   motion_slider(motion_start_setting, ui::text::kControlMaskMotionStart, true);
   motion_slider(motion_end_setting, ui::text::kControlMaskMotionEnd, false);
-  if (mode != kControlMaskDepthFar) return;
-  ImGui::TextWrapped("%s", text.Tr(ui::text::kControlMaskDepthGuide));
-  if (ImGui::Button(text.Tr("Far scenery"))) {
-    SettleSlider(true);
-    depth_near_setting.Commit(kControlMaskDepthNearDefault);
-    depth_far_setting.Commit(kControlMaskDepthFarDefault);
-  }
-  ui::ItemTooltip("%s", text.Tr("Restore the distant-scene starting point (0.999900 / 0.999950). Use this to recover if too much of the picture loses NR."));
-  ImGui::SameLine();
-  if (ImGui::Button(text.Tr("Sky / far plane"))) {
-    SettleSlider(true);
-    depth_near_setting.Commit(0.99999f);
-    depth_far_setting.Commit(1.f);
-  }
-  ui::ItemTooltip("%s", text.Tr("Fade only very close to the game's far depth limit (0.999990 / 1.000000). This selects depth, not semantic sky detection."));
-
-  auto depth_slider = [&](const Setting& setting, const char* label, const char* tip,
-                          bool near_endpoint, bool precise) {
-    ImGui::PushID(precise ? "exact_depth" : "depth_range");
-    ImGui::PushID(setting.key);
-    const float depth = setting.Get();
-    // A fixed logarithmic scale gives distant perspective depths usable mouse
-    // travel. Unlike changing slider bounds, editing one end keeps the other still.
-    float value = (precise ? depth : -std::log10(std::max(1.f - depth, 0.000001f)) * (100.f / 6.f));
-    const char* format = (precise ? "%.6f" : "%.1f");
-    bool changed;
-    if (text.modern) {
-      ui::RowLabel(label, tip);
-      changed = ui::Slider("##value", &value, 0.f, precise ? 1.f : 100.f, format, tip);
-    } else {
-      changed = ImGui::SliderFloat(ui::ControlLabel(label).c_str(), &value, 0.f, precise ? 1.f : 100.f, format);
-      ui::ItemTooltip("%s", text.Tr(tip));
-    }
-    if (changed && std::isfinite(value)) {
-      const float requested = (precise ? value : (value >= 100.f ? 1.f : 1.f - std::pow(10.f, -value * 0.06f)));
-      const float near_depth = depth_near_value.load(std::memory_order_relaxed);
-      const float far_depth = depth_far_value.load(std::memory_order_relaxed);
-      const float adjusted = (near_endpoint
-          ? std::clamp(requested, 0.f, std::nextafter(far_depth, 0.f))
-          : std::clamp(requested, std::nextafter(near_depth, 1.f), 1.f));
-      if (slider_pending != &setting) SettleSlider(true);
-      setting.Store(adjusted);
-      slider_pending = &setting;
-    }
-    SettleSlider(false);
-    if (text.modern && setting.Modified()) {
-      const bool reset_valid = (near_endpoint ? setting.fallback < depth_far_value.load()
-                                              : setting.fallback > depth_near_value.load());
-      char stock[32];
-      std::snprintf(stock, sizeof(stock), format, precise ? setting.fallback
-          : -std::log10(std::max(1.f - setting.fallback, 0.000001f)) * (100.f / 6.f));
-      ImGui::BeginDisabled(!reset_valid);
-      if (ui::ResetButton("reset", stock)) {
-        SettleSlider(true);
-        setting.Commit(setting.fallback);
-      }
-      ImGui::EndDisabled();
-      if (!reset_valid) ui::ItemTooltip("%s", text.Tr(ui::text::kControlMaskResetBlocked));
-    }
-    ImGui::PopID();
-    ImGui::PopID();
-  };
-  depth_slider(depth_near_setting, "Fade start", ui::text::kControlMaskNearTip, true, false);
-  depth_slider(depth_far_setting, "Fade end", ui::text::kControlMaskFarTip, false, false);
-  if (ui::TreeNode("exact_control_mask_depth", text.Tr("Exact depth values"))) {
-    ImGui::TextWrapped("%s", text.Tr(ui::text::kControlMaskRawDepthTip));
-    depth_slider(depth_near_setting, ui::text::kNearDepth, ui::text::kControlMaskNearTip, true, true);
-    depth_slider(depth_far_setting, ui::text::kFarDepth, ui::text::kControlMaskFarTip, false, true);
-    ImGui::TreePop();
-  }
+  ImGui::Unindent();
 }
 
 inline void DrawSectionNrCore(const ui::PanelText& text) {
