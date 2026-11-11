@@ -112,17 +112,23 @@ void Check(bool condition, const char* message) {
 }
 
 addon::vk::EvaluateFn native_real_evaluate = nullptr;
-NVSDK_NGX_Resource_VK* native_observed_mask = nullptr;
+NVSDK_NGX_Resource_VK native_observed_mask{};
+bool native_observed_mask_bound = false;
+uint32_t native_evaluate_count = 0;
 NVSDK_NGX_Result native_observed_result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
 
 NVSDK_NGX_Result NVSDK_CONV ObserveNativeEvaluate(
     VkCommandBuffer command_buffer, const NVSDK_NGX_Handle* handle,
     const NVSDK_NGX_Parameter* parameters, PFN_NVSDK_NGX_ProgressCallback callback) {
   void* value = nullptr;
+  ++native_evaluate_count;
+  native_observed_mask_bound = false;
   if (parameters != nullptr
       && NVSDK_NGX_SUCCEED(const_cast<NVSDK_NGX_Parameter*>(parameters)->Get(
-          "DLSSNR.ControlMask", &value))) {
-    native_observed_mask = static_cast<NVSDK_NGX_Resource_VK*>(value);
+          "DLSSNR.ControlMask", &value)) && value != nullptr) {
+    // ProcessNr owns this descriptor on its stack and unbinds it after Evaluate.
+    native_observed_mask = *static_cast<NVSDK_NGX_Resource_VK*>(value);
+    native_observed_mask_bound = true;
   }
   native_observed_result = native_real_evaluate(command_buffer, handle, parameters, callback);
   return native_observed_result;
@@ -208,6 +214,14 @@ void RunNativeNgx() {
     addon::control_mask_depth_near = 0.7f;
     addon::control_mask_depth_far = 0.9f;
     addon::control_mask_blend_mode = 0;
+    addon::control_mask_red = 0.75f;
+    addon::control_mask_green = 0.25f;
+    addon::control_mask_blue = 0.5f;
+    addon::control_mask_motion_enabled = false;
+    addon::control_mask_motion_start = 2.f;
+    addon::control_mask_motion_end = 14.f;
+    addon::motion_scale_x_multiplier = 1.f;
+    addon::motion_scale_y_multiplier = 1.f;
     addon::stack_passes = 1;
     addon::hook_point = addon::kHookUpscaled;
     addon::preset = 1;
@@ -228,6 +242,10 @@ void RunNativeNgx() {
     constexpr uint32_t depth_base_y = 6;
     constexpr uint32_t depth_width = width + depth_base_x;
     constexpr uint32_t depth_height = height + depth_base_y;
+    constexpr uint32_t motion_base_x = 2;
+    constexpr uint32_t motion_base_y = 4;
+    constexpr uint32_t motion_width = width + motion_base_x;
+    constexpr uint32_t motion_height = height + motion_base_y;
     const auto usages = reshade::api::resource_usage::shader_resource
         | reshade::api::resource_usage::unordered_access
         | reshade::api::resource_usage::copy_dest
@@ -244,7 +262,7 @@ void RunNativeNgx() {
                                   reshade::api::memory_heap::gpu_only, usages},
                                  nullptr, reshade::api::resource_usage::undefined, &depth),
           "native depth image");
-    Check(device.create_resource({width, height, 1, 1, reshade::api::format::r16g16_float, 1,
+    Check(device.create_resource({motion_width, motion_height, 1, 1, reshade::api::format::r16g16_float, 1,
                                   reshade::api::memory_heap::gpu_only, usages},
                                  nullptr, reshade::api::resource_usage::undefined, &motion),
           "native motion image");
@@ -269,7 +287,15 @@ void RunNativeNgx() {
       const float value = relative_y < 32 ? 0.5f : (relative_y < 56 ? 0.8f : 1.0f);
       for (uint32_t x = 0; x < depth_width; ++x) depth_data[y * depth_width + x] = value;
     }
-    std::vector<uint16_t> motion_data(width * height * 2, 0);
+    std::vector<uint16_t> motion_data(motion_width * motion_height * 2, 0);
+    for (uint32_t y = 0; y < height; ++y) {
+      for (uint32_t x = 0; x < width; ++x) {
+        const size_t index = ((y + motion_base_y) * motion_width + x + motion_base_x) * 2;
+        // FP16 (4, 0) and (0, 32), scaled by (-2, 0.5), are 8 and 16 pixels/frame.
+        motion_data[index] = (x < width / 2 ? 0x4400 : 0);
+        motion_data[index + 1] = (x < width / 2 ? 0 : 0x5000);
+      }
+    }
     Begin(context);
     addon::hooks_enabled = false;
     addon::vk::OnResetCommandList(&command_list);
@@ -285,7 +311,7 @@ void RunNativeNgx() {
                                   depth_data.size() * sizeof(float), depth_width, depth_height));
     uploads.push_back(UploadImage(context, command_list, motion,
                                   vk_test::NativeHandle<VkImage>(motion.handle), motion_data.data(),
-                                  motion_data.size() * sizeof(uint16_t), width, height));
+                                  motion_data.size() * sizeof(uint16_t), motion_width, motion_height));
 
     const auto color_vk = addon::vk::ImageResource(color_view, color, width, height, false,
                                                    VK_FORMAT_R16G16B16A16_SFLOAT);
@@ -293,7 +319,7 @@ void RunNativeNgx() {
                                                     VK_FORMAT_R16G16B16A16_SFLOAT);
     const auto depth_vk = addon::vk::ImageResource(depth_view, depth, depth_width, depth_height, false,
                                                    VK_FORMAT_R32_SFLOAT);
-    const auto motion_vk = addon::vk::ImageResource(motion_view, motion, width, height, false,
+    const auto motion_vk = addon::vk::ImageResource(motion_view, motion, motion_width, motion_height, false,
                                                     VK_FORMAT_R16G16_SFLOAT);
     renodx::addons::dlss5::bridge::OwnedParameters parameters;
     addon::SetNrCreateParameters(&parameters, width, height, width, height, 0, false, 1);
@@ -305,10 +331,10 @@ void RunNativeNgx() {
     parameters.Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, height);
     parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, depth_base_x);
     parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, depth_base_y);
-    parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X, 0u);
-    parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y, 0u);
-    parameters.Set(NVSDK_NGX_Parameter_MV_Scale_X, 1.f);
-    parameters.Set(NVSDK_NGX_Parameter_MV_Scale_Y, 1.f);
+    parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X, motion_base_x);
+    parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y, motion_base_y);
+    parameters.Set(NVSDK_NGX_Parameter_MV_Scale_X, -2.f);
+    parameters.Set(NVSDK_NGX_Parameter_MV_Scale_Y, 0.5f);
     const auto* owner = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xC0A71003});
     addon::vk::Feature feature{};
     feature.id = addon::kFeatureDlss;
@@ -320,70 +346,105 @@ void RunNativeNgx() {
           "production Vulkan Feature 18 create reaches warmup maturation");
     SubmitAndWait(context);
 
-    Begin(context);
-    addon::hooks_enabled = false;
-    addon::vk::OnResetCommandList(&command_list);
-    addon::hooks_enabled = true;
-    const reshade::api::resource_usage color_before[] = {reshade::api::resource_usage::shader_resource};
-    const reshade::api::resource_usage color_copy[] = {reshade::api::resource_usage::copy_source};
-    const reshade::api::resource_usage output_before[] = {reshade::api::resource_usage::shader_resource};
-    const reshade::api::resource_usage output_copy[] = {reshade::api::resource_usage::copy_dest};
-    const reshade::api::resource_usage output_write[] = {reshade::api::resource_usage::unordered_access};
-    command_list.barrier(1, &color, color_before, color_copy);
-    command_list.barrier(1, &output, output_before, output_copy);
-    command_list.copy_texture_region(color, 0, nullptr, output, 0, nullptr);
-    command_list.barrier(1, &color, color_copy, color_before);
-    command_list.barrier(1, &output, output_copy, output_write);
-
-    native_real_evaluate = addon::vk::runtime.evaluate;
-    Check(native_real_evaluate != nullptr, "production Vulkan Runtime exposes Feature 18 Evaluate");
-    native_observed_mask = nullptr;
-    addon::vk::runtime.evaluate = ObserveNativeEvaluate;
-    const auto second = addon::vk::ProcessNr(context.command_buffer, owner, &parameters);
-    addon::vk::runtime.evaluate = native_real_evaluate;
-    Check(second == renodx::addons::dlss5::NrDeclineReason::kCount,
-          "production Vulkan Feature 18 Evaluate completes with ControlMask enabled");
-    Check(NVSDK_NGX_SUCCEED(native_observed_result),
-          "real Vulkan Runtime Feature 18 Evaluate returns success");
-    const auto& workset = addon::vk::features.at(owner).worksets.front();
-    Check(native_observed_mask != nullptr,
-          "real Vulkan Runtime Evaluate receives a ControlMask resource");
-    Check(native_observed_mask->Resource.ImageViewInfo.Image
-              == vk_test::NativeHandle<VkImage>(workset.images[addon::vk::kControlMask].handle),
-          "real Vulkan Runtime receives the generated production mask image");
-
     mask_readback = CreateHostBuffer(context, width * height * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-    const reshade::api::resource mask_resource = workset.images[addon::vk::kControlMask];
-    const reshade::api::resource_usage mask_before[] = {reshade::api::resource_usage::unordered_access};
-    const reshade::api::resource_usage mask_copy[] = {reshade::api::resource_usage::copy_source};
-    command_list.barrier(1, &mask_resource, mask_before, mask_copy);
-    const VkBufferImageCopy mask_region{0, 0, 0,
-        {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, 0, 0, 0, {width, height, 1}};
-    context.DeviceProc<PFN_vkCmdCopyImageToBuffer>("vkCmdCopyImageToBuffer")(
-        context.command_buffer, vk_test::NativeHandle<VkImage>(mask_resource.handle),
-        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, mask_readback.buffer, 1, &mask_region);
-    SubmitAndWait(context);
-    void* mapped = nullptr;
-    vk_test::Require(context.DeviceProc<PFN_vkMapMemory>("vkMapMemory")(
-                         context.device, mask_readback.memory, 0, mask_readback.size, 0, &mapped),
-                     "map native production mask");
-    const auto* pixels = static_cast<const uint8_t*>(mapped);
-    Check(pixels[0] > 190 && pixels[0] <= 255, "native production mask retains near depth weight");
-    Check(pixels[32 * width * 4] > 90 && pixels[32 * width * 4] < 230,
-          "native production mask contains the depth-far transition");
-    Check(pixels[63 * width * 4] == 0, "native production mask fades far depth to zero");
-    context.DeviceProc<PFN_vkUnmapMemory>("vkUnmapMemory")(context.device, mask_readback.memory);
-    SubmitRecordedAndWait(context);
-    Check(!addon::vk::RecordedUseComplete(workset.use_id),
-          "completed production Vulkan recording remains live while replayable");
-    Begin(context);
-    addon::vk::OnResetCommandList(&command_list);
-    Check(addon::vk::RecordedUseComplete(workset.use_id),
-          "production reset retires the replayed workset use");
+    std::vector<uint8_t> disabled_mask;
+    native_evaluate_count = 0;
+    for (uint32_t frame = 0; frame < 3; ++frame) {
+      const bool motion_enabled = frame == 1;
+      addon::control_mask_motion_enabled = motion_enabled;
+      Begin(context);
+      addon::hooks_enabled = false;
+      addon::vk::OnResetCommandList(&command_list);
+      addon::hooks_enabled = true;
+      const reshade::api::resource_usage color_before[] = {reshade::api::resource_usage::shader_resource};
+      const reshade::api::resource_usage color_copy[] = {reshade::api::resource_usage::copy_source};
+      const reshade::api::resource_usage output_before[] = {reshade::api::resource_usage::shader_resource};
+      const reshade::api::resource_usage output_copy[] = {reshade::api::resource_usage::copy_dest};
+      const reshade::api::resource_usage output_write[] = {reshade::api::resource_usage::unordered_access};
+      command_list.barrier(1, &color, color_before, color_copy);
+      command_list.barrier(1, &output, output_before, output_copy);
+      command_list.copy_texture_region(color, 0, nullptr, output, 0, nullptr);
+      command_list.barrier(1, &color, color_copy, color_before);
+      command_list.barrier(1, &output, output_copy, output_write);
+
+      native_real_evaluate = addon::vk::runtime.evaluate;
+      Check(native_real_evaluate != nullptr, "production Vulkan Runtime exposes Feature 18 Evaluate");
+      native_observed_mask_bound = false;
+      native_observed_result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
+      addon::vk::runtime.evaluate = ObserveNativeEvaluate;
+      const auto second = addon::vk::ProcessNr(context.command_buffer, owner, &parameters);
+      addon::vk::runtime.evaluate = native_real_evaluate;
+      Check(second == renodx::addons::dlss5::NrDeclineReason::kCount,
+            "production Vulkan Feature 18 Evaluate completes with ControlMask enabled");
+      Check(NVSDK_NGX_SUCCEED(native_observed_result),
+            "real Vulkan Runtime Feature 18 Evaluate returns success");
+      Check(native_evaluate_count == frame + 1,
+            "each production Vulkan frame performs exactly one real Feature 18 Evaluate");
+      const auto& workset = addon::vk::features.at(owner).worksets.front();
+      Check(native_observed_mask_bound,
+            "real Vulkan Runtime Evaluate receives a ControlMask resource");
+      Check(native_observed_mask.Resource.ImageViewInfo.Image
+                == vk_test::NativeHandle<VkImage>(workset.images[addon::vk::kControlMask].handle),
+            "real Vulkan Runtime receives the generated production mask image");
+
+      const reshade::api::resource mask_resource = workset.images[addon::vk::kControlMask];
+      const reshade::api::resource_usage mask_before[] = {reshade::api::resource_usage::unordered_access};
+      const reshade::api::resource_usage mask_copy[] = {reshade::api::resource_usage::copy_source};
+      command_list.barrier(1, &mask_resource, mask_before, mask_copy);
+      const VkBufferImageCopy mask_region{0, 0, 0,
+          {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, 0, 0, 0, {width, height, 1}};
+      context.DeviceProc<PFN_vkCmdCopyImageToBuffer>("vkCmdCopyImageToBuffer")(
+          context.command_buffer, vk_test::NativeHandle<VkImage>(mask_resource.handle),
+          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, mask_readback.buffer, 1, &mask_region);
+      // Restore layouts so the completed recording can also be replayed as-is.
+      command_list.barrier(1, &mask_resource, mask_copy, mask_before);
+      command_list.barrier(1, &output, output_write, output_before);
+      SubmitAndWait(context);
+      void* mapped = nullptr;
+      vk_test::Require(context.DeviceProc<PFN_vkMapMemory>("vkMapMemory")(
+                           context.device, mask_readback.memory, 0, mask_readback.size, 0, &mapped),
+                       "map native production mask");
+      const auto* pixels = static_cast<const uint8_t*>(mapped);
+      for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+          const size_t index = (y * width + x) * 4;
+          // At 8 pixels/frame motion keep is 0.5; at 16 it is 0. Depth keep is 1/0.5/0.
+          int expected_red = (y < 32 ? 191 : (y < 56 ? 96 : 0));
+          if (motion_enabled) {
+            expected_red = (x < width / 2 && y < 56 ? 96 : 0);
+          }
+          Check(std::abs(static_cast<int>(pixels[index]) - expected_red) <= 1,
+                "native production motion/depth R uses parsed subrect/scales and strongest protection");
+          Check(pixels[index + 1] == 64
+                    && std::abs(static_cast<int>(pixels[index + 2]) - 128) <= 1
+                    && pixels[index + 3] == 255,
+                "native production motion attenuation preserves configured G/B and opaque A");
+        }
+      }
+      if (frame == 0) {
+        disabled_mask.assign(pixels, pixels + mask_readback.size);
+      } else if (frame == 2) {
+        Check(std::memcmp(disabled_mask.data(), pixels, disabled_mask.size()) == 0,
+              "disabling motion attenuation exactly restores the depth/manual mask with unchanged nonzero motion");
+      }
+      context.DeviceProc<PFN_vkUnmapMemory>("vkUnmapMemory")(context.device, mask_readback.memory);
+      if (frame == 0) {
+        SubmitRecordedAndWait(context);
+      }
+      Check(!addon::vk::RecordedUseComplete(workset.use_id),
+            "completed production Vulkan recording remains live while replayable");
+      Begin(context);
+      addon::vk::OnResetCommandList(&command_list);
+      Check(addon::vk::RecordedUseComplete(workset.use_id),
+            "production reset retires the replayed workset use");
+      std::cout << "NATIVE_GPU+NATIVE_NGX motion frame=" << frame
+                << " enabled=" << motion_enabled << " scale=(-2,0.5) subrect=(2,4,960,540)"
+                   " R/G/B/A readback passed\n";
+    }
     cleanup();
     std::cout << "PASS NATIVE_GPU+NATIVE_NGX: production Vulkan Feature 18 Create/Evaluate consumed"
-                 " the generated depth-far ControlMask, replayed the completed command buffer,"
-                 " and completed reset/readback\n";
+                 " depth/motion ControlMask through OFF/ON/OFF, replayed the completed command buffer,"
+                 " and completed reset/RGBA readback\n";
   } catch (...) {
     cleanup();
     throw;

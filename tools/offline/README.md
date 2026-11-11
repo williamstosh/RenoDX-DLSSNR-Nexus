@@ -207,7 +207,11 @@ identical=true，避免不可移植的 JSON Infinity。比较工具只测给定�
 
 `control-mask-safety`／`control-mask-safety-hardware` 复用生产生成器，读回运动阈值、
 正负 scale、非零 Subrect、低／显示分辨率运动、非有限向量、无效窗口及独立规则回退。
-`vulkan-control-mask` 另核对 Vulkan Shader 的运动采样与深度重叠。
+其中生产 Render／Upscaled／Present／FG 输入角色还核对非零运动的 R 与缺少来源凭据时的手动值恢复。
+`-Suite bridge-motion -BridgeCase sr` 核对 D3D11 RG16 直拷／RG32 转换后，经生产入口得到的运动 R/G/B/A；
+这些链路使用真实 GPU，NR 为 MOCK。`vulkan-control-mask` 核对 Vulkan Shader 的运动采样与深度重叠；
+其编译产物的 `--native-ngx` 入口另以真实 Runtime 验证生产参数解析、非零偏移与 scale、
+深度重叠、OFF→ON→OFF、重放和 reset，需在隔离运行目录提供既有 `nvngx_dlssnr.dll`。
 
 ~~~powershell
 pwsh -File tools/run-tests.ps1 -Suite fg-native -NativeCase control-mask-native-ngx-motion `
@@ -215,13 +219,23 @@ pwsh -File tools/run-tests.ps1 -Suite fg-native -NativeCase control-mask-native-
     -NativeNgxRuntimePath $runtimePath -UiPreview None
 ~~~
 
-该原生用例在同一生产 Feature 上执行关闭／开启运动衰减的两段 8 帧合成序列，
-各段相同 Reset 前缀，输入平移与运动矢量一致。实际 GPU 完成后检查每次 Evaluate
-消费的遮罩、G/B/A、停止后的恢复及 RGBA16F 输出。`controlmask-motion.json`
-保存逐帧位移、遮罩值、输出差、Reset、单次调用数和 Fence；原始读回仅在内存配对。
-短序列 GPU timestamp 包围 NR wrapper，包含遮罩、codec 和 Runtime，排除上传及读回，
-用于发现明显开销变化；不作为稳定性能或游戏画质验收。宿主 SR 为 MOCK，
-NR 消费与 GPU 完成分别属于 NATIVE_NGX／NATIVE_GPU，内部模型身份保持未知。
+该用例通过生产 Create／Evaluate／Release 包装器调用真实 DLSS SR，
+将 640×360 放大为 960×540 后交给生产 NR 执行链；SR 与 NR 均属于 NATIVE_NGX。
+公开 SDK 使用 ProjectID 初始化设备，再将已初始化的 provider 接入生产 owned Feature 状态，
+不执行 snippet 身份桥；游戏加载器及生产 Runtime 初始化不在此用例范围内。
+
+同一组真实 SR／NR Feature 执行关闭／开启运动衰减的两段 8 帧合成序列，
+各段相同 Reset 前缀，输入平移与低分辨率运动矢量一致，MV scale 为 (-2,1)。
+固定帧测光、关闭亮度 governor 和细节稳定，以隔离墙钟及前段历史对配对的影响。
+在实际消费边界复制 SR 输出、NR proxy 和 raw neural，Fence 完成后检查两组 SR／proxy
+逐字节相同、实际遮罩及 G/B/A、停止后的 R 恢复，以及 neural／最终输出响应；
+完全运动衰减时另核对 neural RGB 等于实际 proxy。完成后核对 NR 关闭后的 SR 续跑、
+真实 SR Release、SDK shutdown 和身份桥未安装。
+
+`controlmask-motion.json` 保存逐帧位移、遮罩值、两级输出差、Reset、SR／NR 单次调用数、
+Fence、provider 边界与实际 NGX 模块身份；原始读回仅在内存配对。GPU timestamp
+包含 SR、NR 及消费边界读回，仅作诊断，不与旧 NR wrapper 计时比较，也不用于性能或游戏画质验收。
+内部实际模型身份保持未知；动态实机由人工验收。
 
 ## ControlMask 原生成本
 

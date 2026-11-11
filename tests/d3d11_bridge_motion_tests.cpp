@@ -732,6 +732,66 @@ int main(int argc, char** argv) {
         const auto original_rg16 = Read11(rg16.Get(), 4);
         Check(std::memcmp(original_rg16.data(), rg16_pixels.data(), original_rg16.size()) == 0, "original RG16 motion untouched");
         Check(params::GetD3D11Resource(&parameters, NVSDK_NGX_Parameter_Color) == color.Get(), "Render Color binding restored");
+        if (!depth_convert) {
+          const bool saved_motion_enabled = native::control_mask_motion_enabled.exchange(true);
+          const float saved_start = native::control_mask_motion_start.exchange(2.f);
+          const float saved_end = native::control_mask_motion_end.exchange(6.f);
+          const float saved_red = native::control_mask_red.exchange(0.8f);
+          const float saved_green = native::control_mask_green.exchange(0.5f);
+          const float saved_blue = native::control_mask_blue.exchange(0.25f);
+          native::control_mask_mode.store(native::kControlMaskRgb);
+          std::vector<float> moving32(width * height * 2, 0.f);
+          std::vector<unsigned short> moving16(width * height * 2, 0);
+          for (size_t i = 0; i < width * height; ++i) {
+            moving32[i * 2] = 1.f;
+            moving16[i * 2] = 0x3c00;
+          }
+          context->UpdateSubresource(convert ? motion.Get() : rg16.Get(), 0, nullptr,
+              convert ? static_cast<const void*>(moving32.data()) : static_cast<const void*>(moving16.data()),
+              width * (convert ? 8 : 4), 0);
+          const float scale_x = 4.f * width / (pre ? width : 17.f);
+          parameters.Set(NVSDK_NGX_Parameter_MV_Scale_X, scale_x);
+          parameters.Set(NVSDK_NGX_Parameter_MV_Scale_Y, -2.f);
+          const auto motion_calls_before = model_calls;
+          ++native::present_generation;
+          bool motion_delivered = false;
+          if (pre) {
+            params::ScopedD3D11Redirect redirect;
+            motion_delivered = native::RunBridge(context.Get(), handle, &parameters, &redirect);
+          } else {
+            motion_delivered = native::RunBridge(context.Get(), handle, &parameters, nullptr);
+          }
+          Check(motion_delivered && model_calls == motion_calls_before + 1,
+              "moving frame reaches the production Bridge model consumer");
+          WaitForGpu(native::bridge.fence_done12, native::bridge_submitted_value.load());
+          Check(model_observations[motion_calls_before].control_mask == mask_workset.control_mask,
+              "moving frame binds the generated mask to the model consumer");
+          const auto moving_mask = Read12(mask_workset.control_mask, 4, mask_workset.control_mask_state);
+          for (size_t i = 0; i < moving_mask.size(); i += 4) {
+            Check(std::abs(int(moving_mask[i]) - 102) <= 1
+                      && std::abs(int(moving_mask[i + 1]) - 128) <= 1
+                      && std::abs(int(moving_mask[i + 2]) - 64) <= 1 && moving_mask[i + 3] == 255,
+                "scaled motion halves R and preserves G/B/A on the GPU");
+          }
+          Check(params::GetD3D11Resource(&parameters, NVSDK_NGX_Parameter_Color) == color.Get()
+                    && native::GetFloat(&parameters, NVSDK_NGX_Parameter_MV_Scale_X) == scale_x
+                    && native::GetFloat(&parameters, NVSDK_NGX_Parameter_MV_Scale_Y) == -2.f,
+              "moving frame restores game Color and preserves motion scales");
+          context->UpdateSubresource(convert ? motion.Get() : rg16.Get(), 0, nullptr,
+              convert ? static_cast<const void*>(motion_pixels.data()) : static_cast<const void*>(rg16_pixels.data()),
+              width * (convert ? 8 : 4), 0);
+          parameters.Set(NVSDK_NGX_Parameter_MV_Scale_X, 1.f);
+          parameters.Set(NVSDK_NGX_Parameter_MV_Scale_Y, 1.f);
+          native::control_mask_mode.store(native::kControlMaskDepthFar);
+          native::control_mask_motion_enabled.store(saved_motion_enabled);
+          native::control_mask_motion_start.store(saved_start);
+          native::control_mask_motion_end.store(saved_end);
+          native::control_mask_red.store(saved_red);
+          native::control_mask_green.store(saved_green);
+          native::control_mask_blue.store(saved_blue);
+          std::printf("PASS ControlMask motion mode=%s path=%s GPU=real NR=MOCK rgba=102,128,64,255\n",
+              pre ? "Render" : "Upscaled", convert ? "RG32-convert" : "RG16-direct");
+        }
         // Hold one observer reference: after retirement only that reference may remain.
         ComPtr<ID3D11Texture2D> stage = set.motion_stage;
         ComPtr<ID3D11ShaderResourceView> motion_srv = set.motion_srv;
