@@ -239,9 +239,14 @@ struct StatusSummaryFields {
 };
 
 inline void DrawSummaryMetric(const char* label, const std::string& value, const char* tip, float width) {
+  const float left = ImGui::GetCursorPosX();
+  const auto title = Ellipsize(Tr(label), width);
+  const auto value_text = Ellipsize(value.empty() ? "—" : value.c_str(), width);
   ImGui::BeginGroup();
-  ImGui::TextUnformatted(Ellipsize(Tr(label), width).c_str());
-  ImGui::TextUnformatted(Ellipsize(value.empty() ? "—" : value.c_str(), width).c_str());
+  ImGui::SetCursorPosX(left + (width - ImGui::CalcTextSize(title.c_str()).x) * .5f);
+  ImGui::TextUnformatted(title.c_str());
+  ImGui::SetCursorPosX(left + (width - ImGui::CalcTextSize(value_text.c_str()).x) * .5f);
+  ImGui::TextUnformatted(value_text.c_str());
   ImGui::EndGroup();
   ItemTooltip("%s\n%s", Tr(label), tip != nullptr ? Tr(tip) : "");
 }

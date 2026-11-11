@@ -450,6 +450,8 @@ int main() {
     bool adaptive_editor_fixture = false;
     bool adaptive_pass_fixture = false;
     bool summary_fixture = false;
+    bool fg_route_fixture = false;
+    bool fg_route_detailed = false;
     ui::StatusSummaryFields summary_fields;
     bool hud_fixture = false;
     bool independent_hud_fixture = false;
@@ -476,7 +478,9 @@ int main() {
         ImGui::PushClipRect(ImVec2(-10.f, -10.f), ImVec2(-1.f, -1.f), true);
       }
       const auto panel_start = std::chrono::steady_clock::now();
-      if (summary_fixture) {
+      if (fg_route_fixture) {
+        runtime::DrawFgRoute(false, fg_route_detailed);
+      } else if (summary_fixture) {
         ui::DrawStatusSummary(ui::StatusCard{}, 0, summary_fields);
       } else if (adaptive_editor_fixture) {
         const auto* saved_view = runtime::ui_monitor_view;

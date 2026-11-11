@@ -89,11 +89,19 @@
     check(locate("153").Min.y > fps.Min.y && locate("6.6ms").Min.y > gpu.Min.y
               && locate("4x").Min.y > fg.Min.y,
           "each compact metric places its value on the second line");
+    check(std::abs(locate("153").GetCenter().x - fps.GetCenter().x) < 1.f
+              && std::abs(locate("6.6ms").GetCenter().x - gpu.GetCenter().x) < 1.f
+              && std::abs(locate("4x").GetCenter().x - fg.GetCenter().x) < 1.f,
+          "metric labels and values share each column's center");
     if (width >= 340.f) {
       check(fps.Min.x < gpu.Min.x && gpu.Min.x < fg.Min.x && std::abs(fps.Min.y - fg.Min.y) < 1.f,
             "wide and game-sized 340 px status fit three ordered metric columns");
+      const auto first = std::ranges::find_if(rendered_text, [](const auto& item) { return item.text == "FPS"; });
+      const auto& content = first->window->WorkRect;
+      check(std::abs((fps.GetCenter().x - content.Min.x) - (content.Max.x - fg.GetCenter().x)) < 1.f,
+            "three metric columns leave symmetric space at the content edges");
     } else {
-      check(fps.Min.x < gpu.Min.x && std::abs(fps.Min.x - fg.Min.x) < 1.f && fg.Min.y > fps.Min.y,
+      check(fps.Min.x < gpu.Min.x && std::abs(fps.GetCenter().x - fg.GetCenter().x) < 1.f && fg.Min.y > fps.Min.y,
             "narrow status wraps the third metric onto a second row");
     }
   }
@@ -131,6 +139,35 @@
       .observed_multiplier = 3.99});
   check(observed.fg == "4x" && observed.fps == "153", "observed near-integer FG and output FPS share concise values");
   check(observed.fg_tip.find("Observed") != std::string::npos, "FG estimation and source details remain discoverable in its tooltip");
+  const auto saved_route = runtime::ui_fg_route;
+  const auto saved_hook = runtime::hook_point.load();
+  const bool saved_vulkan = runtime::vulkan_present_seen.load();
+  const bool saved_unusable = runtime::present_unusable.load();
+  runtime::hook_point = runtime::kHookPresent;
+  runtime::vulkan_present_seen = false;
+  runtime::present_unusable = false;
+  runtime::ui_fg_route.route = ui::FgRoute::kBeforeFg;
+  runtime::ui_fg_route.previous.multiplier = 1;
+  fg_route_fixture = true;
+  frame(); frame();
+  check(rendered_text.empty(), "normal Pre-FG route adds no duplicate status row beside the shared SDK FG value");
+  fg_route_detailed = true;
+  frame(); frame();
+  check(std::ranges::any_of(rendered_text, [](const auto& item) { return item.text == ui::Tr(ui::text::kFgBefore); })
+            && std::ranges::none_of(rendered_text, [](const auto& item) {
+              return item.text == ui::Tr(ui::text::kFgBeforeUnknown) || item.text == ui::Tr(ui::text::kFgUnknownMultiplierTip);
+            }),
+        "detailed Pre-FG diagnostics retain the route without contradicting reliable SDK multiplier evidence");
+  runtime::ui_fg_route.route = ui::FgRoute::kFallbackPresent;
+  fg_route_detailed = false;
+  frame(); frame();
+  check(std::ranges::any_of(rendered_text, [](const auto& item) { return item.text == ui::Tr(ui::text::kFgFallbackShort); }),
+        "compact Pre-FG fallback warnings remain visible");
+  fg_route_fixture = false;
+  runtime::ui_fg_route = saved_route;
+  runtime::hook_point = saved_hook;
+  runtime::vulkan_present_seen = saved_vulkan;
+  runtime::present_unusable = saved_unusable;
   {
     std::unique_lock lock(rate::internal::state.mutex);
     rate::internal::state.stream = saved_stream;

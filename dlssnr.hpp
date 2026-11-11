@@ -25261,14 +25261,12 @@ inline bool SavePresentRestoreScope(present_restore_scope::Scope scope) {
   return true;
 }
 
-// A stable single line carries the conclusion; full explanations are available
-// on hover and in Diagnostics. Multi-Pass normally needs only the cost reminder.
+// The shared summary shows FG state. Keep route warnings, diagnostic details,
+// and the multi-pass cost reminder beside the execution controls.
 inline void DrawFgRoute(bool stacking = false, bool detailed = false) {
   const auto route = ui_fg_route.route;
-  const bool declared = fg::xefg::OwnsStream()
-                        || native_fg_declaration.load() == NativeFgDeclaration::kOn;
   const char* message = ui::text::kFgUnknown;
-  const char* brief = declared ? ui::text::kFgDeclared : ui::text::kFgStatusUnknown;
+  const char* brief = ui::text::kFgStatusUnknown;
   bool warning = false;
   if (hook_point.load() != kHookPresent) {
     message = ui::text::kFgOtherStage;
@@ -25276,7 +25274,6 @@ inline void DrawFgRoute(bool stacking = false, bool detailed = false) {
     switch (route) {
       case ui::FgRoute::kBeforeFg:
         message = ui::text::kFgBefore;
-        brief = ui_fg_route.previous.multiplier > 1 ? ui::text::kFgBeforeShort : ui::text::kFgBeforeUnknown;
         break;
       case ui::FgRoute::kEveryPresent:
         message = ui::text::kFgEvery;
@@ -25318,23 +25315,21 @@ inline void DrawFgRoute(bool stacking = false, bool detailed = false) {
   if (stacking && !warning) {
     brief = ui::text::kStackCost;
   }
+  // The shared summary owns FG state and multiplier; keep route warnings and
+  // multi-pass cost guidance here without a second multiplier verdict.
+  if (!detailed && !warning && !stacking) {
+    return;
+  }
   ImGui::PushID("fg_route");
   ui::StyleScope tone;
   tone.Color(ImGuiCol_Text, warning ? ui::CurrentTheme().warn : ui::CurrentTheme().text_secondary);
   if (detailed) {
     ImGui::TextWrapped("%s", ui::Tr(message));
-    if (ui_fg_route.previous.multiplier <= 1 && (declared || route == ui::FgRoute::kBeforeFg)) {
-      ImGui::TextWrapped("%s", ui::Tr(ui::text::kFgUnknownMultiplierTip));
-    }
   } else {
     const bool link = warning && ImGui::GetContentRegionAvail().x > ImGui::GetFontSize() * 16.f;
     const float reserve = link ? ImGui::CalcTextSize(ui::Tr(ui::text::kDiagnostics)).x + ImGui::GetStyle().ItemSpacing.x : 0.f;
     ImGui::TextUnformatted(ui::Ellipsize(ui::Tr(brief), ImGui::GetContentRegionAvail().x - reserve).c_str());
-    if (ui_fg_route.previous.multiplier <= 1) {
-      ui::ItemTooltip("%s\n%s", ui::Tr(message), ui::Tr(ui::text::kFgUnknownMultiplierTip));
-    } else {
-      ui::ItemTooltip("%s", ui::Tr(message));
-    }
+    ui::ItemTooltip("%s", ui::Tr(message));
     if (link) {
       ImGui::SameLine();
       if (ImGui::TextLink(ui::Tr(ui::text::kDiagnostics))) {
