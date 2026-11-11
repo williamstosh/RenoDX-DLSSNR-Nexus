@@ -2182,6 +2182,7 @@ inline constexpr Translation kIt[] = {
     {"Lock", "Blocca"},
     {"Unlock", "Sblocca"},
     {"Compact", "Compatto"},
+    {"NR resolution", "Risoluzione NR"},
     {"NR GPU", "GPU NR"},
     {"ReShade FPS", "FPS di ReShade"},
     {"FG", "Generazione di fotogrammi"},

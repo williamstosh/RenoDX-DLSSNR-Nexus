@@ -279,6 +279,14 @@ Remove-Item Env:NR_NEXUS_TEST_CONTROL_MASK_COST_MODE
 SDK 动态计数、固定倍率失效和来源切换。配置保存／方案另用
 `tests/run-present-restore-configuration-tests.ps1 -Case nr-resolution-adaptive,profiles`。
 
+双 Present 的自适应开关与预备使用独立的小型 Service 入口：
+
+~~~powershell
+./tools/run-tests.ps1 -Suite fg-native -NativeCase adaptive-fg-service -SoftwareOnly
+~~~
+
+此入口使用 16×16 WARP、模型替身和实际 Service／提交路径，覆盖四档就绪、临时容量占用解除后恢复、ControlMask 未提交时等待，以及真正 Evaluate 失败仍暂停；属于 WARP＋MOCK，不调用硬件 NR Runtime 或游戏。
+
 真实 NR 尺寸往返复用公开 SDK 预初始化入口：
 
 ~~~powershell

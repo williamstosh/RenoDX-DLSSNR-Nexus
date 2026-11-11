@@ -17,6 +17,7 @@ constexpr int64_t SAMPLE_INTERVAL_NS = 250'000'000;
 constexpr int64_t SAMPLE_MAX_AGE_NS = 2'000'000'000;
 constexpr int64_t WARMUP_NS = 1'000'000'000;
 constexpr size_t MAX_PASSES = 4, MAX_LEVELS = 16;
+constexpr uint32_t MAX_PREPARED_LEVELS = 8;
 
 enum class Reason : uint8_t {
   DISABLED, UNSUPPORTED, OUTPUT_UNAVAILABLE, COLLECTING, WARMING, OBSERVING,

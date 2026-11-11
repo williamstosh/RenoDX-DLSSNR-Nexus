@@ -149,6 +149,7 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   preserve(r::profile_ui::writable);
   preserve(r::flush_profile_storage);
   preserve(r::card_observation.window);
+  preserve(r::card_observation.completions);
   preserve(r::card_observation.configuration);
   preserve(r::card_observation.declines);
   preserve(r::card_observation.declines_sampled_ns);

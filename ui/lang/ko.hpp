@@ -2182,6 +2182,7 @@ inline constexpr Translation kKo[] = {
     {"Lock", "잠금"},
     {"Unlock", "잠금 해제"},
     {"Compact", "간략히"},
+    {"NR resolution", "NR 해상도"},
     {"NR GPU", "NR GPU"},
     {"ReShade FPS", "ReShade 프레임률"},
     {"FG", "프레임 생성"},

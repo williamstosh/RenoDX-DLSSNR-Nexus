@@ -2182,6 +2182,7 @@ inline constexpr Translation kTh[] = {
     {"Lock", "ล็อก"},
     {"Unlock", "ปลดล็อก"},
     {"Compact", "แบบย่อ"},
+    {"NR resolution", "ความละเอียด NR"},
     {"NR GPU", "GPU ของ NR"},
     {"ReShade FPS", "อัตราเฟรม ReShade"},
     {"FG", "การสร้างเฟรม"},

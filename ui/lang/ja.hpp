@@ -2182,6 +2182,7 @@ inline constexpr Translation kJa[] = {
     {"Lock", "ロック"},
     {"Unlock", "ロック解除"},
     {"Compact", "コンパクト"},
+    {"NR resolution", "NR 解像度"},
     {"NR GPU", "NR GPU"},
     {"ReShade FPS", "ReShade フレームレート"},
     {"FG", "フレーム生成"},

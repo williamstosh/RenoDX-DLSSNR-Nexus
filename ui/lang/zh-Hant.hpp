@@ -2181,6 +2181,7 @@ inline constexpr Translation kZhHant[] = {
     {"Lock", "鎖定"},
     {"Unlock", "解鎖"},
     {"Compact", "精簡"},
+    {"NR resolution", "NR 解析度"},
     {"NR GPU", "NR GPU"},
     {"ReShade FPS", "ReShade 幀率"},
     {"FG", "影格生成"},

@@ -2182,6 +2182,7 @@ inline constexpr Translation kBg[] = {
     {"Lock", "Заключване"},
     {"Unlock", "Отключване"},
     {"Compact", "Компактно"},
+    {"NR resolution", "NR резолюция"},
     {"NR GPU", "GPU на NR"},
     {"ReShade FPS", "FPS на ReShade"},
     {"FG", "Генериране на кадри"},

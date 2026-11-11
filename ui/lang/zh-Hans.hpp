@@ -2184,6 +2184,7 @@ inline constexpr Translation kZhHans[] = {
     {"Lock", "锁定"},
     {"Unlock", "解锁"},
     {"Compact", "精简"},
+    {"NR resolution", "NR 分辨率"},
     {"NR GPU", "NR GPU"},
     {"ReShade FPS", "ReShade 帧率"},
     {"FG", "帧生成"},

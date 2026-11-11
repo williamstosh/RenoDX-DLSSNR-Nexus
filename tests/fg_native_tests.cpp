@@ -736,8 +736,10 @@ int RunNativeRequiredMenuTest() {
 #include "gpu_timer_cases.hpp"
 #include "control_mask_gpu_cases.hpp"
 #include "control_mask_capture_cases.hpp"
+#include "adaptive_fg_service_cases.hpp"
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--adaptive-fg-service") == 0) return adaptive_fg_service_cases::Run();
 #if defined(NR_NEXUS_TEST_NATIVE_NGX)
   if (argc == 3 && std::strcmp(argv[1], "--control-mask-native-ngx-resize") == 0) {
     return control_mask_gpu_cases::RunNativeNgx(

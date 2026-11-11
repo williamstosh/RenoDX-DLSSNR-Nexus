@@ -2182,6 +2182,7 @@ inline constexpr Translation kFr[] = {
     {"Lock", "Verrouiller"},
     {"Unlock", "Déverrouiller"},
     {"Compact", "Compact"},
+    {"NR resolution", "Résolution NR"},
     {"NR GPU", "GPU NR"},
     {"ReShade FPS", "FPS ReShade"},
     {"FG", "Génération d’images"},

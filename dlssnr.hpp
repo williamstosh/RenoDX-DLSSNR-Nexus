@@ -563,7 +563,7 @@ struct AdaptiveFeatureCache {
     bool ready = false;
     double preparation_cpu_ms = 0.;
   };
-  std::array<Tier, 3> tiers;
+  std::array<Tier, adaptive_resolution::MAX_PREPARED_LEVELS> tiers;
   const NVSDK_NGX_Handle* owner = nullptr;
   uint64_t identity = 0;
   uint64_t pending_identity = 0;
@@ -10280,7 +10280,7 @@ inline adaptive_resolution::Frame FreezeAdaptiveFrame(
   }
   supported &= capability::Query(baseline).CanSubmit();
   const uint32_t outputs = (required_roles == 3 ? 2u : 1u) * source_outputs;
-  const uint32_t levels = std::min(3u, max_worksets.load() / outputs);
+  const uint32_t levels = std::min(adaptive_resolution::MAX_PREPARED_LEVELS, max_worksets.load() / outputs);
   const bool eligible = supported && plan.valid && !plan.mixed && plan.group_count == 1 && levels >= 2;
   const bool same_source = (*owner)->identity == source_identity;
   (*owner)->Prepare({.enabled = nr_adaptive_enabled.load(), .target_fps = target_fps,
@@ -10482,7 +10482,6 @@ inline void PrepareAdaptiveTier(FeatureState* feature, const adaptive_resolution
     if (resident < required) pending_capacity += required - resident;
   }
   if (pending_capacity > max_worksets.load()) {
-    cache->budget_blocked = true;
     frame.session->status.reason = adaptive_resolution::Reason::BUDGET;
     PublishAdaptiveStatus(frame.session->status);
     return;
@@ -21002,6 +21001,7 @@ inline std::atomic_bool card_partial_latched{false};
 struct CardObservation {
   std::shared_mutex mutex;
   ui::RecentHealthWindow window;
+  std::array<gpu_timers::Stats, 3> completions{};
   uint64_t configuration = 0;
   std::array<uint64_t, static_cast<size_t>(NrDeclineReason::kCount)> declines{};
   int64_t declines_sampled_ns = 0;
@@ -21036,6 +21036,22 @@ inline bool CurrentGpuSample(const gpu_timers::Stats& sample, int64_t now_ns,
       && sample.identity.device_session == gpu_timers::device_session
       && sample.identity.settings_hash == current.settings_hash && sample.identity.resolution_hash == current.resolution_hash
       && sample.identity.route == current.route && sample.identity.fg == current.fg;
+}
+
+inline bool CurrentCompletedGroup(const gpu_timers::Stats& sample, const stage_plan::Group& group,
+                                  int64_t now_ns, const gpu_comparison::Identity* identity = nullptr) {
+  const auto stage = static_cast<uint32_t>(group.stage);
+  if (group.count == 0 || !CurrentGpuSample(sample, now_ns, identity)
+      || gpu_timers::StageIndex(sample.path) != stage
+      || sample.identity.stable_epoch != comparison_stable_epochs[stage]) return false;
+  const auto& observed = stage_telemetry[stage].last_evaluate;
+  if (observed.observed_ns >= sample.recorded_ns
+      && (!observed.api_returned || NVSDK_NGX_FAILED(observed.result))) return false;
+  for (uint32_t pass = group.begin; pass < group.begin + group.count; ++pass) {
+    const auto& completed = sample.passes[pass - group.begin];
+    if (completed.id != pass || completed.state != gpu_timers::SampleState::VALID) return false;
+  }
+  return true;
 }
 
 // Current completed single-group cost. Independent stage windows are reference
@@ -21123,7 +21139,7 @@ inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
   // The flicker at Present, with the verdict's top decline in the player's
   // words.
   in.present_gaps = in.fg_submitted_frames.has_value() ? 0 : present_gaps.load(std::memory_order_relaxed);
-  if (!in.fg_submitted_frames.has_value()) {
+  {
     // Include runtime route changes as well as editable execution controls.
     // History reset epochs also include scene cuts and are deliberately not a
     // configuration identity: a camera cut must not erase a real skip streak.
@@ -21163,56 +21179,59 @@ inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
       completed.current = plan.valid && plan.group_count != 0;
       completed.completed_ns = now_ns;
       completed.sequence = UINT64_MAX;
+      std::unique_lock observation_lock(card_observation.mutex);
       for (uint32_t group_index = 0; group_index < plan.group_count; ++group_index) {
         const auto& group = plan.groups[group_index];
-        const auto current_group = [&](const gpu_timers::Stats& sample) {
-          if (!CurrentGpuSample(sample, now_ns) || sample.state != gpu_timers::SampleState::VALID) return false;
-          for (uint32_t pass = group.begin; pass < group.begin + group.count; ++pass) {
-            const auto& measured_pass = sample.passes[pass - group.begin];
-            if (measured_pass.id != pass || measured_pass.state != gpu_timers::SampleState::VALID) return false;
+        const auto stage = static_cast<uint32_t>(group.stage);
+        auto& retained = card_observation.completions[stage];
+        if (!CurrentCompletedGroup(retained, group, now_ns)) {
+          retained = {};
+        }
+        // A rejected recording removes its measurement, not an earlier current
+        // completion. Retain only status evidence; costs use the latest result.
+        for (const auto* sample : {&gpu_timers::stage_stats[stage], &gpu_timers::execution_stats[stage]}) {
+          if (CurrentCompletedGroup(*sample, group, now_ns) && sample->sequence > retained.sequence) {
+            retained = *sample;
           }
-          return true;
-        };
-        const auto& timing = gpu_timers::stage_stats[static_cast<uint32_t>(group.stage)];
-        const auto& proof = gpu_timers::execution_stats[static_cast<uint32_t>(group.stage)];
-        const gpu_timers::Stats* sample = current_group(timing) ? &timing : nullptr;
-        if (current_group(proof) && (sample == nullptr || proof.sequence > sample->sequence)) sample = &proof;
-        if (sample == nullptr) {
+        }
+        if (!retained.valid) {
           completed.current = false;
           continue;
         }
-        completed.completed_ns = (std::min)(completed.completed_ns, sample->measured_ns);
-        completed.sequence = (std::min)(completed.sequence, sample->sequence);
+        completed.completed_ns = (std::min)(completed.completed_ns, retained.measured_ns);
+        completed.sequence = (std::min)(completed.sequence, retained.sequence);
       }
     }
-    std::unique_lock observation_lock(card_observation.mutex);
-    in.recent = card_observation.window.Observe(configuration, verdict.eligible,
-        verdict.injected, in.present_gaps, now_ns, recorded_sequence, completed);
-    in.present_gaps = in.recent->gaps;
-    if (card_observation.configuration != configuration
-        || now_ns - card_observation.declines_sampled_ns >= 100'000'000LL) {
-      const bool changed = card_observation.configuration != configuration;
-      if (changed) {
-        card_observation.last_decline = nullptr;
-        card_observation.last_decline_ns = 0;
-      }
-      uint64_t largest = 0;
-      for (size_t i = 0; i < card_observation.declines.size(); ++i) {
-        const auto count = nr_decline_counts[i].load(std::memory_order_relaxed);
-        const auto previous = card_observation.declines[i];
-        const auto delta = (count >= previous ? count - previous : 0);
-        card_observation.declines[i] = count;
-        if (!changed && !NrTerminalIsIneligible(i) && kSkipReasonText[i] != nullptr && delta > largest) {
-          largest = delta;
-          card_observation.last_decline = kSkipReasonText[i];
-          card_observation.last_decline_ns = now_ns;
+    if (!in.fg_submitted_frames.has_value()) {
+      std::unique_lock observation_lock(card_observation.mutex);
+      in.recent = card_observation.window.Observe(configuration, verdict.eligible,
+          verdict.injected, in.present_gaps, now_ns, recorded_sequence, completed);
+      in.present_gaps = in.recent->gaps;
+      if (card_observation.configuration != configuration
+          || now_ns - card_observation.declines_sampled_ns >= 100'000'000LL) {
+        const bool changed = card_observation.configuration != configuration;
+        if (changed) {
+          card_observation.last_decline = nullptr;
+          card_observation.last_decline_ns = 0;
         }
+        uint64_t largest = 0;
+        for (size_t i = 0; i < card_observation.declines.size(); ++i) {
+          const auto count = nr_decline_counts[i].load(std::memory_order_relaxed);
+          const auto previous = card_observation.declines[i];
+          const auto delta = (count >= previous ? count - previous : 0);
+          card_observation.declines[i] = count;
+          if (!changed && !NrTerminalIsIneligible(i) && kSkipReasonText[i] != nullptr && delta > largest) {
+            largest = delta;
+            card_observation.last_decline = kSkipReasonText[i];
+            card_observation.last_decline_ns = now_ns;
+          }
+        }
+        card_observation.configuration = configuration;
+        card_observation.declines_sampled_ns = now_ns;
       }
-      card_observation.configuration = configuration;
-      card_observation.declines_sampled_ns = now_ns;
-    }
-    if (now_ns - card_observation.last_decline_ns <= ui::RecentHealthWindow::kWindowNs) {
-      in.gap_reason = card_observation.last_decline;
+      if (now_ns - card_observation.last_decline_ns <= ui::RecentHealthWindow::kWindowNs) {
+        in.gap_reason = card_observation.last_decline;
+      }
     }
   }
   if (!in.recent && verdict.reason != nullptr) {

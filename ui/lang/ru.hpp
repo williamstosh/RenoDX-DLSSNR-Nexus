@@ -2182,6 +2182,7 @@ inline constexpr Translation kRu[] = {
     {"Lock", "Закрепить"},
     {"Unlock", "Открепить"},
     {"Compact", "Кратко"},
+    {"NR resolution", "Разрешение NR"},
     {"NR GPU", "GPU NR"},
     {"ReShade FPS", "FPS ReShade"},
     {"FG", "Генерация кадров"},

@@ -2182,6 +2182,7 @@ inline constexpr Translation kPtBr[] = {
     {"Lock", "Bloquear"},
     {"Unlock", "Desbloquear"},
     {"Compact", "Compacto"},
+    {"NR resolution", "Resolução NR"},
     {"NR GPU", "GPU de NR"},
     {"ReShade FPS", "FPS do ReShade"},
     {"FG", "Geração de quadros"},

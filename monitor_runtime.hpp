@@ -281,16 +281,18 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
   const auto queried = need_monitor ? QueryConfigurationCapability() : capability::Result{};
   const auto timings = std::array{gpu_timers::stage_stats[0], gpu_timers::stage_stats[1], gpu_timers::stage_stats[2]};
   const auto proofs = std::array{gpu_timers::execution_stats[0], gpu_timers::execution_stats[1], gpu_timers::execution_stats[2]};
+  std::array<gpu_timers::Stats, 3> completions;
+  {
+    std::shared_lock observation_lock(card_observation.mutex);
+    completions = card_observation.completions;
+  }
   gpu_comparison::Identity current_identity;
   if (gpu_timers::comparison_settings != nullptr) gpu_timers::comparison_settings(&current_identity);
-  std::array<bool, 3> timing_current{}, proof_current{};
+  std::array<bool, 3> timing_current{}, proof_current{}, completion_fallback{};
   for (size_t stage = 0; stage < timings.size(); ++stage) {
-    timing_current[stage] = CurrentGpuSample(timings[stage], now, &current_identity)
-        && timings[stage].state == gpu_timers::SampleState::VALID
-        && gpu_timers::StageIndex(timings[stage].path) == stage;
-    proof_current[stage] = CurrentGpuSample(proofs[stage], now, &current_identity)
-        && proofs[stage].state == gpu_timers::SampleState::VALID
-        && gpu_timers::StageIndex(proofs[stage].path) == stage;
+    const auto group = plan.At(static_cast<stage_plan::Stage>(stage));
+    timing_current[stage] = CurrentCompletedGroup(timings[stage], group, now, &current_identity);
+    proof_current[stage] = CurrentCompletedGroup(proofs[stage], group, now, &current_identity);
     // A newer completion can prove a different working contract while an
     // older timed recording is still fresh. Do not attach its cost to that size.
     if (timing_current[stage] && proof_current[stage] && proofs[stage].sequence > timings[stage].sequence) {
@@ -303,6 +305,8 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
             && timed.state == completed.state && timed.look_measured == completed.look_measured;
       }
     }
+    completion_fallback[stage] = !timing_current[stage] && !proof_current[stage]
+        && CurrentCompletedGroup(completions[stage], group, now, &current_identity);
   }
   std::array<PassResolutionSettings, kMaxNrPasses> resolutions;
   std::array<uint32_t, kMaxNrPasses> models{};
@@ -412,7 +416,7 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
   warnings += card.present_gaps != 0;
   std::string execution;
   for (size_t stage = 0; stage < timings.size(); ++stage) {
-    if (!timing_current[stage] && !proof_current[stage]) continue;
+    if (!timing_current[stage] && !proof_current[stage] && !completion_fallback[stage]) continue;
     if (!execution.empty()) execution += " + ";
     execution += ui::StageDisplayName(static_cast<stage_plan::Stage>(stage));
   }
@@ -470,6 +474,7 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
     summary.gpu = cost;
   }
   summary.resolution = ui::Tr("Pending confirmation");
+  summary.resolution_tip = ui::Tr("No current completed sample");
   ui::MonitorInputs monitor{.card = card, .now_ns = now};
   monitor.summary = summary;
   if (need_monitor) {
@@ -524,6 +529,9 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
       const auto& proof = proofs[stage];
       const auto* completed = timing_current[stage] ? &timing : proof_current[stage] ? &proof : nullptr;
       if (proof_current[stage] && (completed == nullptr || proof.sequence > completed->sequence)) completed = &proof;
+      if (completed == nullptr && completion_fallback[stage]) {
+        completed = &completions[stage];
+      }
       if (completed != nullptr) {
         for (const auto& sample : completed->passes) {
           if (sample.id != pass || sample.state != gpu_timers::SampleState::VALID
@@ -538,6 +546,19 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
             char ratio[32];
             std::snprintf(ratio, sizeof(ratio), "%.0f%%", row.actual_scale * 100.f);
             row.actual_size += std::string(" (") + ratio + ")";
+            if (pass == 0) {
+              summary.resolution_ratio = ratio;
+              const char* reference = ui::text::kResolutionReferenceUpscaled;
+              switch (plan.effective[pass]) {
+                case stage_plan::Stage::RENDER: reference = ui::text::kResolutionReferenceRender; break;
+                case stage_plan::Stage::UPSCALED: break;
+                case stage_plan::Stage::PRESENT: reference = ui::text::kResolutionReferencePresent; break;
+              }
+              summary.resolution_tip = std::string(ui::Tr("Pass")) + " 1\n"
+                  + ui::Tr("Actual working resolution") + ": " + row.actual_size + "\n"
+                  + ui::Tr(reference) + ": " + std::to_string(completed->width) + " x "
+                  + std::to_string(completed->height);
+            }
             if (nr_adaptive_enabled.load()) {
               row.requested_size = ratio;
             }
@@ -575,6 +596,8 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
         timings[stage].recorded_ns + gpu_timers::internal::kSampleAgeNs);
     if (proof_current[stage]) cached.valid_until_ns = (std::min)(cached.valid_until_ns,
         proofs[stage].recorded_ns + gpu_timers::internal::kSampleAgeNs);
+    if (completion_fallback[stage]) cached.valid_until_ns = (std::min)(cached.valid_until_ns,
+        completions[stage].recorded_ns + gpu_timers::internal::kSampleAgeNs);
   }
   cached.complete = need_monitor;
   ++cached.refreshes;

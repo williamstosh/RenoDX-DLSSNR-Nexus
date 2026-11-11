@@ -2182,6 +2182,7 @@ inline constexpr Translation kSl[] = {
     {"Lock", "Zakleni"},
     {"Unlock", "Odkleni"},
     {"Compact", "Strnjeno"},
+    {"NR resolution", "Ločljivost NR"},
     {"NR GPU", "GPU za NR"},
     {"ReShade FPS", "FPS za ReShade"},
     {"FG", "Ustvarjanje sličic"},

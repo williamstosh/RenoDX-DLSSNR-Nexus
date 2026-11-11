@@ -75,36 +75,75 @@
   summary_fields.fps = "153";
   summary_fields.gpu = "6.6ms";
   summary_fields.fg = "4x";
+  summary_fields.resolution_ratio = "67%";
+  if (std::getenv("NR_NEXUS_UX_REPRO") != nullptr) {
+    const float saved_height = panel_height;
+    panel_height = 240.f;
+    for (const auto& [language, suffix] : {std::pair{0, "en"}, std::pair{13, "zh"}}) {
+      ui::SelectLanguage(language);
+      runtime::ui_language_choice = language + 1;
+      for (const int width : {1000, 340}) {
+        panel_width = static_cast<float>(width);
+        capture((std::string("adaptive-summary-filled-") + suffix + "-" + std::to_string(width)).c_str());
+      }
+    }
+    panel_height = saved_height;
+    runtime::ui_language_choice = 1;
+    ui::SelectLanguage(0);
+  }
   for (const auto width : {1000.f, 340.f, 220.f}) {
     panel_width = width;
     frame(); frame();
     const auto locate = [&](const char* label) {
       const auto found = std::ranges::find_if(rendered_text, [label](const auto& item) { return item.text == label; });
-      check(found != rendered_text.end(), "all three compact metric labels and values remain visible");
+      check(found != rendered_text.end(), "all four compact metric labels and values remain visible");
       return found->rect;
     };
     const auto fps = locate("FPS");
     const auto gpu = locate("NR GPU");
     const auto fg = locate("FG");
+    const auto resolution = locate("NR resolution");
     check(locate("153").Min.y > fps.Min.y && locate("6.6ms").Min.y > gpu.Min.y
-              && locate("4x").Min.y > fg.Min.y,
+              && locate("4x").Min.y > fg.Min.y && locate("67%").Min.y > resolution.Min.y,
           "each compact metric places its value on the second line");
     check(std::abs(locate("153").GetCenter().x - fps.GetCenter().x) < 1.f
               && std::abs(locate("6.6ms").GetCenter().x - gpu.GetCenter().x) < 1.f
-              && std::abs(locate("4x").GetCenter().x - fg.GetCenter().x) < 1.f,
+              && std::abs(locate("4x").GetCenter().x - fg.GetCenter().x) < 1.f
+              && std::abs(locate("67%").GetCenter().x - resolution.GetCenter().x) < 1.f,
           "metric labels and values share each column's center");
     if (width >= 340.f) {
-      check(fps.Min.x < gpu.Min.x && gpu.Min.x < fg.Min.x && std::abs(fps.Min.y - fg.Min.y) < 1.f,
-            "wide and game-sized 340 px status fit three ordered metric columns");
+      check(fps.Min.x < gpu.Min.x && gpu.Min.x < fg.Min.x && fg.Min.x < resolution.Min.x
+                && std::abs(fps.Min.y - resolution.Min.y) < 1.f,
+            "wide and game-sized 340 px status fit four ordered metric columns");
       const auto first = std::ranges::find_if(rendered_text, [](const auto& item) { return item.text == "FPS"; });
       const auto& content = first->window->WorkRect;
-      check(std::abs((fps.GetCenter().x - content.Min.x) - (content.Max.x - fg.GetCenter().x)) < 1.f,
-            "three metric columns leave symmetric space at the content edges");
+      check(std::abs((fps.Min.x - content.Min.x) - (content.Max.x - resolution.Max.x)) < 1.f,
+            "four metric columns leave symmetric text padding at the content edges");
     } else {
-      check(fps.Min.x < gpu.Min.x && std::abs(fps.GetCenter().x - fg.GetCenter().x) < 1.f && fg.Min.y > fps.Min.y,
-            "narrow status wraps the third metric onto a second row");
+      check(gpu.Min.y > fps.Min.y && fg.Min.y > gpu.Min.y && resolution.Min.y > fg.Min.y,
+            "narrow status stacks complete metric labels without clipping");
     }
   }
+  for (int language = 0; language < ui::kLanguageCount; ++language) {
+    ui::SelectLanguage(language);
+    for (const float width : {1000.f, 340.f, 220.f}) {
+      panel_width = width;
+      frame(); frame();
+      for (const char* key : {"FPS", "NR GPU", "FG", "NR resolution", "67%"}) {
+        check(std::ranges::any_of(rendered_text, [&](const auto& item) { return item.text == ui::Tr(key); }),
+              "four summary fields retain their complete labels and values in every language and width");
+      }
+      for (const auto& item : rendered_text) {
+        if (std::strstr(item.window->Name, "##nr_status_summary") == nullptr) continue;
+        check(item.rect.Max.x <= item.window->InnerClipRect.Max.x + 1.f
+                  && item.rect.Max.y <= item.window->InnerClipRect.Max.y + 1.f,
+              "wrapped summary fields stay inside the compact card");
+      }
+    }
+  }
+  ui::SelectLanguage(0);
+  check(ui::SummaryMetricColumns(summary_fields, 1000.f) == 3,
+        "the runtime monitor retains its existing three-column metric layout");
   runtime::MonitorCadence cadence;
   ui::frame_metrics::Sample raw{.source = ui::frame_metrics::Source::PRESENT, .raw_interval_ms = 28.f,
       .interval_ms = 1000.f / 35.f, .raw_valid = true, .valid = true};
@@ -171,5 +210,206 @@
   {
     std::unique_lock lock(rate::internal::state.mutex);
     rate::internal::state.stream = saved_stream;
+  }
+  summary_fixture = false;
+  panel_width = 1000.f;
+  hook_editor_fixture = true;
+  runtime::nr_adaptive_enabled = true;
+  runtime::nr_follow_input_res = false;
+  runtime::nr_resolution_scale = 1.f;
+  runtime::preset = 2;
+  namespace xefg = renodx::addons::dlss5::fg::xefg;
+  const auto saved_requested = xefg::internal::requested.load();
+  const bool saved_owns = xefg::internal::owns_stream.load();
+  xefg::internal::requested = runtime::fg_service::Requested;
+  xefg::internal::owns_stream = true;
+  runtime::hooks_enabled = true;
+  runtime::enabled = true;
+  for (const uint32_t passes : {1u, 2u}) {
+    runtime::stack_passes = passes;
+    runtime::pass_resolution_mode[0] = 2;
+    runtime::pass_resolution_scale[0] = 1.f;
+    runtime::pass_stage[0] = 1;
+    for (const auto& [label, stored] : {std::pair{"Upscaled", 0u}, {"Render", 1u}}) {
+      runtime::hook_point = runtime::kHookPresent;
+      frame(); frame();
+      check(!find(label).disabled, "adaptive Present permits a supported return to inline execution");
+      click(find(label));
+      if (runtime::stage_edit::pending) click(find("confirm_stage_change"));
+      check(runtime::hook_point.load() == stored, "adaptive Hook click applies the requested inline stage");
+    }
+  }
+  hook_editor_fixture = false;
+  runtime::stack_passes = 1;
+  runtime::ui_menu_page = 0;
+  runtime::ui_classic_layout = false;
+  for (const auto& [label, stored] : {std::pair{"Upscaled", 0u}, {"Render", 1u}}) {
+    runtime::hook_point = runtime::kHookPresent;
+    frame(); frame();
+    check(find("##actual_resolution_scale").disabled && !find(label).disabled,
+          "the complete Quality page restores interaction after the adaptive read-only control");
+    click(find(label));
+    if (runtime::stage_edit::pending) click(find("confirm_stage_change"));
+    check(runtime::hook_point.load() == stored,
+          "the complete Quality page applies adaptive Present to inline Hook changes");
+  }
+  xefg::internal::requested = saved_requested;
+  xefg::internal::owns_stream = saved_owns;
+  hook_editor_fixture = false;
+  {
+    namespace addon = renodx::addons::dlss5;
+    namespace timers = addon::gpu_timers;
+    runtime::hook_point = runtime::kHookUpscaled;
+    runtime::stack_passes = 1;
+    runtime::active_features = 1;
+    runtime::nr_adaptive_enabled = false;
+    runtime::card_observation.window = {};
+    addon::NrVerdict verdict{.state = addon::NrState::kEngaged, .api = "d3d12", .path = "inline"};
+    verdict.eligible = verdict.injected = 100;
+    const auto started = runtime::SteadyNowNs();
+    auto& measured = timers::stage_stats[1];
+    measured = {};
+    timers::execution_stats[1] = {};
+    timers::internal::next_sequence = 10;
+    runtime::CollectCardInputs(verdict, started);
+    measured.valid = true;
+    measured.state = timers::SampleState::VALID;
+    measured.sequence = ++timers::internal::next_sequence;
+    measured.recorded_ns = measured.measured_ns = started + 100'000'000LL;
+    runtime::comparison_ui::CaptureSettings(&measured.identity);
+    measured.identity.device_session = timers::device_session;
+    measured.passes[0] = {.id = 0, .state = timers::SampleState::VALID};
+    verdict.eligible = verdict.injected = 110;
+    check(runtime::CollectCardInputs(verdict, started + 100'000'000LL).recent->gpu_completed,
+          "a current GPU completion establishes card execution evidence");
+    const auto completed = measured;
+    measured.state = timers::SampleState::REPLAYED;
+    measured.sequence = ++timers::internal::next_sequence;
+    verdict.eligible = verdict.injected = 120;
+    check(runtime::CollectCardInputs(verdict, started + 200'000'000LL).recent->gpu_completed,
+          "a rejected newer recording cannot erase a still-current completed execution");
+    auto& observed = runtime::stage_telemetry[1].last_evaluate;
+    observed.observed_ns = started + 250'000'000LL;
+    observed.api_returned = true;
+    observed.result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
+    check(!runtime::CollectCardInputs(verdict, started + 250'000'000LL).recent->gpu_completed,
+          "a real Evaluate failure immediately invalidates retained execution evidence");
+    observed = {};
+    measured = completed;
+    runtime::CollectCardInputs(verdict, started + 300'000'000LL);
+    check(!runtime::CollectCardInputs(verdict, started + ui::RecentHealthWindow::kStaleNs + 100'000'001LL)
+               .recent->gpu_completed,
+          "retained execution evidence expires at the existing two-second bound");
+    measured = completed;
+    measured.sequence = ++timers::internal::next_sequence;
+    measured.recorded_ns = measured.measured_ns = started + 300'000'000LL;
+    ++runtime::configuration_generation;
+    check(!runtime::CollectCardInputs(verdict, started + 300'000'000LL).recent->gpu_completed,
+          "a settings change rejects both latest and retained old-configuration completions");
+    runtime::nr_resolution_scale = .42f;
+    for (const auto hook : {runtime::kHookRender, runtime::kHookUpscaled, runtime::kHookPresent}) {
+      runtime::hook_point = hook;
+      const size_t stage = (hook == runtime::kHookRender ? 0 : hook == runtime::kHookUpscaled ? 1 : 2);
+      auto& sample = timers::stage_stats[stage];
+      sample = completed;
+      sample.recorded_ns = sample.measured_ns = runtime::SteadyNowNs();
+      sample.width = (hook == runtime::kHookRender ? 2560 : 3840);
+      sample.height = (hook == runtime::kHookRender ? 1440 : 2160);
+      sample.passes[0].width = (hook == runtime::kHookRender ? 1715 : 2573);
+      sample.passes[0].height = (hook == runtime::kHookRender ? 965 : 1447);
+      std::strcpy(sample.path, (stage == 0 ? "preSR" : stage == 1 ? "upscaled" : "present"));
+      runtime::comparison_ui::CaptureSettings(&sample.identity);
+      sample.identity.device_session = timers::device_session;
+      runtime::monitor_snapshot.attempted_ns = 0;
+      const auto actual_snapshot = runtime::RefreshMonitorSnapshot(true);
+      const auto reference = std::to_string(sample.width) + " x " + std::to_string(sample.height);
+      const auto actual_size = std::to_string(sample.passes[0].width) + " x " + std::to_string(sample.passes[0].height);
+      check(actual_snapshot.summary.resolution_ratio == "67%"
+                && actual_snapshot.monitor.passes[0].actual_scale == static_cast<float>(sample.passes[0].width) / sample.width
+                && actual_snapshot.summary.resolution_tip.find(reference) != std::string::npos
+                && actual_snapshot.summary.resolution_tip.find(actual_size) != std::string::npos,
+            "the fourth field shares Pass 1 completed working dimensions and the selected Stage reference");
+      sample.state = timers::SampleState::EXPIRED;
+      runtime::card_observation.completions[stage].recorded_ns = runtime::SteadyNowNs()
+          - timers::internal::kSampleAgeNs - 1;
+      runtime::monitor_snapshot.attempted_ns = 0;
+      check(runtime::RefreshMonitorSnapshot(true).summary.resolution_ratio.empty(),
+            "an unknown actual ratio never falls back to the saved manual percentage");
+    }
+    const auto saved_policy = xefg::internal::requested.load();
+    const bool saved_stream_owned = xefg::internal::owns_stream.load();
+    xefg::internal::requested = runtime::fg_service::Requested;
+    for (const bool private_fg : {false, true}) {
+      runtime::hook_point = (private_fg ? runtime::kHookPresent : runtime::kHookUpscaled);
+      xefg::internal::owns_stream = private_fg;
+      const size_t stage = (private_fg ? 2 : 1);
+      auto& sample = timers::stage_stats[stage];
+      auto& proof = timers::execution_stats[stage];
+      const auto seed = [&] {
+        runtime::stage_telemetry[stage].last_evaluate = {.source_generation = 99};
+        proof = {};
+        sample = completed;
+        sample.sequence = ++timers::internal::next_sequence;
+        sample.recorded_ns = sample.measured_ns = runtime::SteadyNowNs();
+        sample.width = 3840;
+        sample.height = 2160;
+        sample.total_us = 6600;
+        sample.passes[0] = {.id = 0, .model = runtime::preset.load(), .width = 2573, .height = 1447,
+            .output_width = 2573, .output_height = 1447, .total_us = 6600, .state = timers::SampleState::VALID};
+        std::strcpy(sample.path, (private_fg ? "present" : "upscaled"));
+        runtime::comparison_ui::CaptureSettings(&sample.identity);
+        sample.identity.source_generation = 99;
+        sample.identity.stable_epoch = runtime::comparison_stable_epochs[stage];
+        sample.identity.device_session = timers::device_session;
+        runtime::monitor_snapshot.attempted_ns = 0;
+        const auto snapshot = runtime::RefreshMonitorSnapshot(true);
+        check(snapshot.summary.resolution_ratio == "67%" && snapshot.summary.gpu == "6.6ms",
+              "inline and private FG share the same current completed size and measured GPU source");
+        sample.state = timers::SampleState::REPLAYED;
+        sample.sequence = ++timers::internal::next_sequence;
+      };
+      seed();
+      runtime::monitor_snapshot.attempted_ns = 0;
+      const auto rejected = runtime::RefreshMonitorSnapshot(true);
+      check(rejected.summary.resolution_ratio == "67%" && rejected.summary.gpu.empty()
+                && rejected.monitor.passes[0].execution_confirmed,
+            "a rejected latest recording retains bounded actual size while leaving GPU cost unavailable");
+      proof = runtime::card_observation.completions[stage];
+      proof.sequence = ++timers::internal::next_sequence;
+      proof.recorded_ns = proof.measured_ns = runtime::SteadyNowNs();
+      proof.passes[0].width = 1920;
+      proof.passes[0].height = 1080;
+      runtime::monitor_snapshot.attempted_ns = 0;
+      check(runtime::RefreshMonitorSnapshot(true).summary.resolution_ratio == "50%",
+            "a new completed working size takes priority over retained actual dimensions");
+      for (int rejection = 0; rejection < 8; ++rejection) {
+        seed();
+        auto& observed = runtime::stage_telemetry[stage].last_evaluate;
+        switch (rejection) {
+          case 0:
+            runtime::card_observation.completions[stage].recorded_ns = runtime::SteadyNowNs()
+                - timers::internal::kSampleAgeNs - 1;
+            break;
+          case 1: ++runtime::configuration_generation; break;
+          case 2: ++timers::device_session; break;
+          case 3: observed.source_released = true; break;
+          case 4: ++observed.source_generation; break;
+          case 5: ++runtime::comparison_stable_epochs[stage]; break;
+          case 6:
+          case 7:
+            observed.observed_ns = runtime::SteadyNowNs();
+            observed.api_returned = rejection == 7;
+            observed.result = NVSDK_NGX_Result_FAIL_UnableToInitializeFeature;
+            break;
+        }
+        runtime::monitor_snapshot.attempted_ns = 0;
+        const auto invalid = runtime::RefreshMonitorSnapshot(true);
+        check(invalid.summary.resolution_ratio.empty() && invalid.summary.gpu.empty()
+                  && !invalid.monitor.passes[0].execution_confirmed,
+              "expired, changed, released or truly failed execution cannot retain actual dimensions");
+      }
+    }
+    xefg::internal::requested = saved_policy;
+    xefg::internal::owns_stream = saved_stream_owned;
   }
 }

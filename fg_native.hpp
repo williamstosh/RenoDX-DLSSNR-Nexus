@@ -553,9 +553,8 @@ inline fg::Result Record(Stream* stream, Slot* slot, ID3D12GraphicsCommandList* 
         || (NativePreFgResolutionPairAllowed(target)
             && recording.group_complete && recording.model_pass_mask == 3u);
     if (!accepted || !recording.output_ready || !complete_pair) {
-      if (stream->adaptive_session != nullptr && !recording.prepared) {
-        stream->adaptive_session->Fail(stream->adaptive_frame.generation);
-      }
+      // Admission and History-order guards can defer a frame before any model
+      // call. Actual Evaluate failures latch their own adaptive session.
       restore_guides();
       return (accepted && prepared ? fg::Result::PREPARED : fg::Result::FAILED);
     }

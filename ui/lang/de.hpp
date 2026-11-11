@@ -2182,6 +2182,7 @@ inline constexpr Translation kDe[] = {
     {"Lock", "Sperren"},
     {"Unlock", "Entsperren"},
     {"Compact", "Kompakt"},
+    {"NR resolution", "NR-Auflösung"},
     {"NR GPU", "NR GPU"},
     {"ReShade FPS", "ReShade-FPS"},
     {"FG", "Bildgenerierung"},

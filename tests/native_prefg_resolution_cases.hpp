@@ -984,6 +984,7 @@ int Run(bool hardware) {
     native::OnNativePresentStreamRetired(&owner);
     native::DrainRetiredResources(true);
     {
+      const auto previous_workset_budget = native::max_worksets.exchange(3);
       native::stack_passes.store(1);
       native::nr_resolution_scale.store(1.f);
       native::nr_adaptive_enabled.store(true);
@@ -1097,6 +1098,7 @@ int Run(bool hardware) {
         Check(std::count(model_released_handles.begin(), model_released_handles.end(), retiring_models[tier]) == release_counts[tier] + 1,
             "source retirement releases every prepared Feature exactly once after healthy GPU completion");
       }
+      native::max_worksets.store(previous_workset_budget);
       int rotating_identity = 0;
       auto& rotating = native::present_streams[&rotating_identity];
       const auto* rotating_handle = rotating.Handle();

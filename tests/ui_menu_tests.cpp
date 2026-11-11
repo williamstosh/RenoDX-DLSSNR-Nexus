@@ -449,6 +449,7 @@ int main() {
     float resolution_observed_bottom = 0.f;
     bool adaptive_editor_fixture = false;
     bool adaptive_pass_fixture = false;
+    bool hook_editor_fixture = false;
     bool summary_fixture = false;
     bool fg_route_fixture = false;
     bool fg_route_detailed = false;
@@ -478,7 +479,10 @@ int main() {
         ImGui::PushClipRect(ImVec2(-10.f, -10.f), ImVec2(-1.f, -1.f), true);
       }
       const auto panel_start = std::chrono::steady_clock::now();
-      if (fg_route_fixture) {
+      if (hook_editor_fixture) {
+        runtime::DrawSectionHookPoint(ui::kModernText, false);
+        runtime::stage_edit::Draw();
+      } else if (fg_route_fixture) {
         runtime::DrawFgRoute(false, fg_route_detailed);
       } else if (summary_fixture) {
         ui::DrawStatusSummary(ui::StatusCard{}, 0, summary_fields);

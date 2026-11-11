@@ -2182,6 +2182,7 @@ inline constexpr Translation kEs[] = {
     {"Lock", "Bloquear"},
     {"Unlock", "Desbloquear"},
     {"Compact", "Compacto"},
+    {"NR resolution", "Resolución NR"},
     {"NR GPU", "GPU de NR"},
     {"ReShade FPS", "FPS de ReShade"},
     {"FG", "Generación de fotogramas"},

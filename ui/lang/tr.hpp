@@ -2182,6 +2182,7 @@ inline constexpr Translation kTr[] = {
     {"Lock", "Kilitle"},
     {"Unlock", "Kilidi aç"},
     {"Compact", "Kompakt"},
+    {"NR resolution", "NR çözünürlüğü"},
     {"NR GPU", "NR GPU"},
     {"ReShade FPS", "ReShade kare hızı"},
     {"FG", "Kare üretimi"},

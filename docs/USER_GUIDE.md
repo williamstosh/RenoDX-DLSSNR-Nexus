@@ -303,11 +303,11 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 
 **开发版新增：自适应分辨率**（尚未包含在 v0.3.0 安装包中）。在工作分辨率下开启后，设置**目标输出 FPS**和**最低相对比例**，默认分别为 **60 FPS／67%**，范围为 **30–360 FPS／33–100%**。目标包含生成帧；各层手动分辨率作为上限，最低比例相对于各自上限计算。例如上限为 2560×1440，最低 67% 约为 1715×965，仍须满足原有阶段尺寸限制。目标既可拖动滑条，也可直接在数字框输入，例如 **116**。自动运行时，工作分辨率和比例显示只读的实际值；保存的手动上限可悬停查看，关闭自动后恢复原手动编辑。
 
-自动功能在 NR 降尺寸确实有助于接近目标时保留较低档，收益不明确时恢复较高画质；持续达到目标后会缓慢尝试恢复细节。顶栏按「帧率／NR GPU／帧生成」分两行显示标签与数值，窄面板自动换行；悬停可查看来源和倍率计算方法。分辨率区保留紧凑自动状态，关键暂停／错误仍直接显示。估算在插件内完成，无需额外安装或运行帧率程序；限帧或其他负载可能使目标无法达到，自动功能不会改变游戏、FG 或限帧设置。
+自动功能在 NR 降尺寸确实有助于接近目标时保留较低档，收益不明确时恢复较高画质；持续达到目标后会缓慢尝试恢复细节。顶栏依次显示「帧率／NR GPU／帧生成／NR 分辨率」，标签在上、数值在下，窄面板自动换行。NR 分辨率显示第 1 层当前实际工作比例；悬停可查看实际尺寸及对应介入点的基准，其他数值可查看来源和倍率计算方法。分辨率区保留紧凑自动状态，关键暂停／错误仍直接显示。估算在插件内完成，无需额外安装或运行帧率程序；限帧或其他负载可能使目标无法达到，自动功能不会改变游戏、FG 或限帧设置。
 
 首版面向原生 DX12 的单个处理阶段，包括兼容的 XeFG／原生 FG 同尺寸链。跨阶段链、FG 异尺寸、DX11 Bridge 和 Vulkan 继续使用手动分辨率；缺少可靠帧率来源时暂停自动并保留合法尺寸。动态 FG 还需匹配的游戏帧计数；信息不足时暂停试探并等待采样，估算输出帧率仍可显示。更改设置或 GPU A/B 对比期间暂停自动。动态画质、限帧场景的估算误差与游戏内切换流畅度仍待实机确认。
 
-自动调节使用少量预备档位。首次开启或模型、游戏尺寸变化后需要重新准备，期间可能短暂停顿；显存或工作集容量不足时暂停自动。完成准备后再切入就绪档位。提高最低比例可缩小档位间的外观差异；比较流畅度时，将首次准备与后续切换分开观察。
+自动调节在现有缓存预算内准备档位；默认单颜色、单输出最多 4 档，双颜色通常 2 档，轮换输出会占用相应容量。增加档位会增加首次准备及显存开销；首次开启或模型、游戏尺寸变化后需要重新准备，期间可能短暂停顿。临时容量占用解除后继续准备，显存不足时暂停自动；完成准备后再切入就绪档位。提高最低比例可缩小档位间的外观差异；比较流畅度时，将首次准备与后续切换分开观察。
 
 | 上采样选项 | NR 低于输出尺寸时的行为 |
 | --- | --- |
@@ -846,11 +846,11 @@ Scale applies to width and height; 50% is about one quarter of the pixels. Rende
 
 **New in development builds: Adaptive resolution** (not included in the v0.3.0 download). Enable it below working resolution, then set **Target output FPS** and **Minimum relative scale**. Defaults are **60 FPS / 67%**, with ranges of **30–360 FPS / 33–100%**. The target includes generated frames. Each pass's manual resolution is its upper limit, and the minimum is relative to that limit. For example, a 2560×1440 upper limit at 67% gives approximately 1715×965, subject to existing stage limits. Drag the slider or enter an exact target, such as **116**, in the number box. While automatic sizing is on, working resolution and scale show read-only actual values; hover for the saved manual upper limit. Turning it off restores manual editing.
 
-Automatic sizing keeps a lower level when reducing NR resolution helps approach the target and restores higher quality when the benefit is unclear. After holding the target, it slowly tries to recover detail. The top summary shows FPS / NR GPU / FG as labels above values, wrapping in narrow panels. Hover for the source and multiplier calculation. Resolution controls keep a compact automatic status, while important pause and error states stay visible. Estimation runs inside the add-on, with no extra FPS program to install or run. Frame caps and other workloads can prevent reaching the target; game, FG and frame-cap settings are left to you.
+Automatic sizing keeps a lower level when reducing NR resolution helps approach the target and restores higher quality when the benefit is unclear. After holding the target, it slowly tries to recover detail. The top summary shows FPS / NR GPU / FG / NR resolution, with labels above values and wrapping in narrow panels. NR resolution shows Pass 1's current actual working scale; hover for its dimensions and the reference size at that hook point. Other values provide their source and multiplier calculation on hover. Resolution controls keep a compact automatic status, while important pause and error states stay visible. Estimation runs inside the add-on, with no extra FPS program to install or run. Frame caps and other workloads can prevent reaching the target; game, FG and frame-cap settings are left to you.
 
 The first implementation targets one processing stage on native DX12, including compatible same-size XeFG / native FG chains. Cross-stage chains, FG chains with different sizes, DX11 Bridge and Vulkan retain manual resolution. Automatic sizing pauses without a reliable output-rate source and keeps a legal size. Dynamic FG also needs matching game-frame counts; while those are unavailable, it pauses quality trials and collects samples, and estimated output FPS can still be shown. Editing settings and GPU A/B comparisons pause it. Dynamic quality, estimation error with frame caps and in-game switching smoothness still require game validation.
 
-Automatic sizing uses a few prepared levels. Initial activation and model or game-size changes require preparation, which can cause a brief pause. Insufficient video memory or workset capacity pauses automatic sizing. Only ready levels are selected after preparation. Raising the minimum scale reduces appearance differences between levels; compare initial preparation and subsequent switches separately.
+Automatic sizing prepares levels within the existing cache budget. The default allows up to four levels for one color and one output, usually two for two colors; rotating outputs consume corresponding capacity. More levels increase initial preparation and video-memory use. Initial activation and model or game-size changes require preparation, which can cause a brief pause. Preparation resumes after temporary capacity use clears; insufficient video memory pauses automatic sizing. Only ready levels are selected after preparation. Raising the minimum scale reduces appearance differences between levels; compare initial preparation and subsequent switches separately.
 
 | Upsampling choice | Behaviour below output size |
 | --- | --- |
