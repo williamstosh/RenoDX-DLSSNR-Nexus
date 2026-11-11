@@ -771,7 +771,7 @@ inline fg::Result Service(const fg::FrameInput& input) noexcept {
       candidate.fence_value = 0;
     }
     if (discarded) {
-      submission::PruneCompletedGenerations();
+      PruneCompletedSubmissionUses();
     }
     Slot* slot = nullptr;
     for (auto& candidate : stream.slots) {

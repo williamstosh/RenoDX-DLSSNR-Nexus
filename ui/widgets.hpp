@@ -246,6 +246,18 @@ inline void DrawSummaryMetric(const char* label, const std::string& value, const
   ItemTooltip("%s\n%s", Tr(label), tip != nullptr ? Tr(tip) : "");
 }
 
+inline int SummaryMetricColumns(const StatusSummaryFields& fields, float available) {
+  const char* labels[] = {"FPS", "NR GPU", "FG"};
+  const std::string* values[] = {&fields.fps, &fields.gpu, &fields.fg};
+  float widest = 0.f;
+  for (size_t index = 0; index < std::size(labels); ++index) {
+    widest = (std::max)({widest, ImGui::CalcTextSize(Tr(labels[index])).x,
+        ImGui::CalcTextSize(values[index]->empty() ? "—" : values[index]->c_str()).x});
+  }
+  const float spacing = ImGui::GetStyle().ItemSpacing.x * 2.f + ImGui::GetStyle().CellPadding.x * 6.f;
+  return (available >= widest * 3.f + spacing ? 3 : 2);
+}
+
 // Only the compact child participates in settings layout. The caller opens
 // complete runtime details without expanding the summary's default height.
 inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, const StatusSummaryFields& fields,
@@ -263,7 +275,7 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, co
   const float action_width = (std::min)(available, ImGui::CalcTextSize(monitor_label.c_str()).x
       + ImGui::GetStyle().FramePadding.x * 2.f);
   const float title_width = (std::max)(1.f, available - action_width - gap);
-  const int columns = (available >= font * 28.f ? 3 : 2);
+  const int columns = SummaryMetricColumns(fields, available);
   const float field_width = (available - gap * (columns - 1)) / columns;
   const float heading_height = ImGui::GetFrameHeight();
   const float height = ImGui::GetStyle().WindowPadding.y * 2.f + heading_height

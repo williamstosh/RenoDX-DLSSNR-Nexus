@@ -426,7 +426,7 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
     ImGui::PopStyleColor();
     const float font = ImGui::GetFontSize();
     const float metric_available = ImGui::GetContentRegionAvail().x;
-    const int metric_columns = (metric_available >= font * 28.f ? 3 : 2);
+    const int metric_columns = SummaryMetricColumns(inputs.summary, metric_available);
     if (ImGui::BeginTable("monitor_dashboard", metric_columns, ImGuiTableFlags_SizingStretchSame)) {
       const auto metric = [](const char* label, const std::string& value, const char* tip) {
         ImGui::TableNextColumn();

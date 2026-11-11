@@ -75,7 +75,7 @@
   summary_fields.fps = "153";
   summary_fields.gpu = "6.6ms";
   summary_fields.fg = "4x";
-  for (const auto width : {1000.f, 340.f}) {
+  for (const auto width : {1000.f, 340.f, 220.f}) {
     panel_width = width;
     frame(); frame();
     const auto locate = [&](const char* label) {
@@ -89,9 +89,9 @@
     check(locate("153").Min.y > fps.Min.y && locate("6.6ms").Min.y > gpu.Min.y
               && locate("4x").Min.y > fg.Min.y,
           "each compact metric places its value on the second line");
-    if (width == 1000.f) {
+    if (width >= 340.f) {
       check(fps.Min.x < gpu.Min.x && gpu.Min.x < fg.Min.x && std::abs(fps.Min.y - fg.Min.y) < 1.f,
-            "wide status presents FPS, NR GPU and FG in three ordered columns");
+            "wide and game-sized 340 px status fit three ordered metric columns");
     } else {
       check(fps.Min.x < gpu.Min.x && std::abs(fps.Min.x - fg.Min.x) < 1.f && fg.Min.y > fps.Min.y,
             "narrow status wraps the third metric onto a second row");

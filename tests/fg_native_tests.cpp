@@ -4173,6 +4173,50 @@ int RunPresentGuideModelsTest(bool native_ngx, const char* project_id_path) {
         }
         Check(warm, "XeFG mask-off frame populates each private recording slot");
       }
+      if (!native_ngx) {
+        namespace timers = renodx::addons::dlss5::gpu_timers;
+        const bool saved_timing = native::gpu_timers_enabled.load();
+        const bool saved_cost = native::cost_meter_enabled.load();
+        const auto saved_capture = timers::comparison_settings;
+        native::gpu_timers_enabled = false;
+        native::cost_meter_enabled = false;
+        timers::comparison_settings = native::comparison_ui::CaptureSettings;
+        timers::Poll(true, false);
+        const auto first_sequence = timers::internal::next_sequence + 1;
+        for (uint32_t frame = 0; frame < 2; ++frame) {
+          // Deterministically schedule the existing completion-only sampler;
+          // the real Service owns recording, submission, Reset and pruning.
+          native::stage_cost_sample_due_ns[2] = 0;
+          const uint32_t present_id = 10000u + frame;
+          xefg_session.Guides(present_id, guides[3].Get(), guides[2].Get());
+          xefg_session.Tag(present_id, HUDLESS, hudless.Get());
+          xefg_session.Present(present_id);
+          Check(xefg::CurrentResult() == fg::Result::SUBMITTED,
+                "completion-only XeFG fixture reaches the actual Service submission");
+          wait_service_fence(native::fg_service::streams.at({false, xefg_context}));
+          timers::Poll(true, false);
+          if (frame == 0) {
+            Check(!timers::execution_stats[2].valid || timers::execution_stats[2].sequence < first_sequence,
+                  "GPU completion alone cannot publish a still-replayable Service recording");
+          }
+        }
+        const auto& completed = timers::execution_stats[2];
+        std::cout << "XEFG_COMPLETION_PROOF timing=off source=Service/reset/prune state="
+                  << static_cast<unsigned>(completed.state) << " valid=" << completed.valid
+                  << " sequence=" << completed.sequence << " expected_at_least=" << first_sequence
+                  << " stage=" << completed.width << 'x' << completed.height
+                  << " pass=" << completed.passes[0].width << 'x' << completed.passes[0].height << '\n';
+        Check(completed.valid && completed.state == timers::SampleState::VALID
+                  && completed.sequence >= first_sequence
+                  && completed.width == width && completed.height == height
+                  && completed.passes[0].width == width && completed.passes[0].height == height
+                  && completed.total_us == 0 && completed.passes[0].total_us == 0
+                  && native::CurrentGpuSample(completed, timers::NowNs()),
+              "XeFG completed-list recycling preserves actual execution dimensions with both timing options off");
+        native::gpu_timers_enabled = saved_timing;
+        native::cost_meter_enabled = saved_cost;
+        timers::comparison_settings = saved_capture;
+      }
       native::control_mask_enabled.store(true);
       for (uint32_t frame = 0; frame < native::kContractDebounceFrames + 3
            && xefg_result != fg::Result::SUBMITTED; ++frame) {
