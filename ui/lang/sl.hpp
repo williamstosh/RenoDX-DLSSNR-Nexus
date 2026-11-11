@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kSl[] = {
+    {"Motion attenuation", "Slabljenje gibanja"},
+    {"Reduce R in moving areas, including camera motion. Disabled or unavailable motion leaves the other region-mask settings active.", "Zmanjša R na gibajočih se območjih, vključno z gibanjem kamere. Če je gibanje onemogočeno ali ni na voljo, druge nastavitve maske območja ostanejo aktivne."},
+    {"Motion fade start", "Začetek pojemanja gibanja"},
+    {"Motion fade end", "Konec pojemanja gibanja"},
+    {"Pixels per frame at this pass's input resolution. Motion below the start keeps R; motion at or above the end removes R. G and B keep their configured values.", "Slikovne točke na sličico pri vhodni ločljivosti tega prehoda. Pod začetno vrednostjo se R ohrani; pri končni vrednosti ali nad njo se R odstrani. G in B ohranita nastavljeni vrednosti."},
     {"Region mask", "Maska območja"},
     {"Region mask settings", "Nastavitve maske območja"},
     {"Use Pass 1 region mask settings", "Uporabi nastavitve maske območja prvega prehoda"},

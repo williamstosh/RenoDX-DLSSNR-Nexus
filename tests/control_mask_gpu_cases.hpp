@@ -408,6 +408,7 @@ HRESULT STDMETHODCALLTYPE Allocate(ID3D12Device* device, const D3D12_HEAP_PROPER
 }
 
 void RunInline(Gpu& gpu, bool hardware, bool safety) {
+  const bool saved_motion_enabled = addon::control_mask_motion_enabled.load();
   using renodx::addons::dlss5::NrDeclineReason;
   using renodx::addons::dlss5::kNrDeclineTags;
   Check(static_cast<size_t>(NrDeclineReason::kControlMaskSubmissionsUnproven)
@@ -461,6 +462,8 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   auto motion = texture(DXGI_FORMAT_R16G16_FLOAT, false);
   gpu.Write(source.Get(), 96);
   gpu.Write(output.Get(), 96);
+  gpu.Write(depth.Get(), 0);
+  gpu.Write(motion.Get(), 0x50);
   gpu.Transition(source.Get(), D3D12_RESOURCE_STATE_COMMON, NATIVE_INPUT_STATE);
   gpu.Transition(depth.Get(), D3D12_RESOURCE_STATE_COMMON, NATIVE_INPUT_STATE);
   gpu.Transition(motion.Get(), D3D12_RESOURCE_STATE_COMMON, NATIVE_INPUT_STATE);
@@ -625,6 +628,7 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
             && addon::features.at(owner).slots[0].recording == nullptr,
         "default-off NR allocates no ControlMask recording observations");
   addon::control_mask_enabled = true;
+  addon::control_mask_motion_enabled = true;
   bool saw_mask = false;
   model_parameter_observer = [&](const NVSDK_NGX_Handle*, const NVSDK_NGX_Parameter* block) {
     saw_mask = addon::GetD3D12Resource(block, "DLSSNR.ControlMask") != nullptr;
@@ -710,14 +714,14 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
       gpu.Submit();
       addon::DrainRetiredResources(true);
       if (model_calls == model_before + 1) {
-        Check(present_mask == nullptr,
-              "final Present without a real depth-guide serial evaluates without ControlMask");
+        Check(present_mask != nullptr,
+              "final Present without a depth-guide serial keeps manual mask settings active");
         break;
       }
     }
-    Check(present_mask == nullptr && !feature.slots[0].control_mask_bound
+    Check(present_mask != nullptr && !feature.slots[0].control_mask_bound
               && addon::GetD3D12Resource(feature.slots[0].parameters, "DLSSNR.ControlMask") == nullptr,
-          "final Present without guide provenance is refused or evaluated with no ControlMask binding");
+          "final Present fallback clears its transient ControlMask binding");
     const std::array pre_fg_roles{
         std::pair{renodx::addons::dlss5::present_restore_scope::Domain::PRE_FG_BACKBUFFER, uintptr_t{0xC04AB}},
         std::pair{renodx::addons::dlss5::present_restore_scope::Domain::PRE_FG_HUDLESS, uintptr_t{0xC04AC}}};
@@ -759,10 +763,10 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
       addon::ProcessInline(gpu.list.Get(), role_owner, &parameters, nullptr, &role_target);
       gpu.Submit();
       addon::DrainRetiredResources(true);
-      Check(present_mask == nullptr && model_calls <= model_before_missing_guide + 1
+      Check(present_mask != nullptr && model_calls == model_before_missing_guide + 1
                 && !role_feature.slots[0].control_mask_bound
                 && addon::GetD3D12Resource(role_feature.slots[0].parameters, "DLSSNR.ControlMask") == nullptr,
-            "pre-FG role without guide provenance cannot retain or consume a depth ControlMask");
+            "pre-FG role without guide provenance keeps manual settings and clears the transient binding");
       parameters.Set(NVSDK_NGX_Parameter_Output, output.Get());
       addon::ForgetSourceHandleLocked(role_owner);
       addon::DrainRetiredResources(true);
@@ -979,8 +983,8 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
   const auto depth_misfit_models = model_calls;
   saw_mask = true;
   mature();
-  Check(model_calls == depth_misfit_models + 1 && mask_dispatches == depth_misfit_dispatches
-            && !saw_mask && !slot.control_mask_bound,
+  Check(model_calls == depth_misfit_models + 1 && mask_dispatches == depth_misfit_dispatches + 1
+            && saw_mask && !slot.control_mask_bound,
         "invalid current depth subrect skips only the depth rule and clears its Evaluate binding");
   parameters.Set(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, 0u);
   const auto depth_recovery_dispatches = mask_dispatches;
@@ -1014,22 +1018,51 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
     shot::stage_planes_enabled.store(previous_planes);
   }
   const auto run_stack_case = [&](uint32_t pass_count, uint32_t resolution_mode,
-                                  float resolution_scale, uint32_t expected_second_width) {
+                                  float resolution_scale, uint32_t expected_second_width, bool motion_case = false) {
     const uint32_t saved_stack_passes = addon::stack_passes.exchange(pass_count);
     const bool saved_follow_input = addon::nr_follow_input_res.exchange(false);
     const float saved_scale = addon::nr_resolution_scale.exchange(1.f);
     const uint32_t saved_pass_mode = addon::pass_resolution_mode[0].exchange(resolution_mode);
     const float saved_pass_scale = addon::pass_resolution_scale[0].exchange(resolution_scale);
+    const bool saved_motion = addon::control_mask_motion_enabled.exchange(motion_case);
+    auto& second_mask = addon::pass_control_mask[0];
+    const bool saved_mask_follow = second_mask.follow.load();
+    const addon::ControlMaskParameters saved_second{
+        second_mask.mode.load(), second_mask.blend_mode.load(),
+        {second_mask.red.load(), second_mask.green.load(), second_mask.blue.load()},
+        second_mask.depth_near.load(), second_mask.depth_far.load(),
+        second_mask.motion_enabled.load(), second_mask.motion_start.load(), second_mask.motion_end.load()};
+    if (motion_case) {
+      second_mask.follow = false;
+      second_mask.mode = addon::kControlMaskRgb;
+      second_mask.blend_mode = 3;
+      second_mask.red = 0.5f;
+      second_mask.green = 0.25f;
+      second_mask.blue = 0.75f;
+      second_mask.motion_enabled = false;
+    }
     addon::configuration_generation.fetch_add(1);
     const auto saved_parameter_observer = model_parameter_observer;
     std::vector<ID3D12Resource*> stack_masks;
+    std::vector<d3d12_test::TextureTransfer> stack_readbacks;
     model_parameter_observer = [&](const NVSDK_NGX_Handle*, const NVSDK_NGX_Parameter* block) {
-      stack_masks.push_back(addon::GetD3D12Resource(block, "DLSSNR.ControlMask"));
+      auto* mask = addon::GetD3D12Resource(block, "DLSSNR.ControlMask");
+      stack_masks.push_back(mask);
+      if (motion_case) {
+        const size_t pass = (stack_masks.size() - 1) % pass_count;
+        Check(mask != nullptr && addon::GetUInt(block, "DLSSNR.MaskBlendMode") == (pass == 1 ? 3u : addon::control_mask_blend_mode.load()),
+            "each motion-mask pass consumes its own Blend mode");
+        stack_readbacks.push_back(gpu.CreateTextureTransfer(mask));
+        gpu.Transition(mask, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        gpu.RecordTextureReadback(mask, stack_readbacks.back());
+        gpu.Transition(mask, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+      }
     };
     bool stack_ready = false;
     for (uint32_t attempt = 0; attempt < addon::kContractDebounceFrames + 32; ++attempt) {
       const auto dispatch_before = mask_dispatches;
       const auto masks_before = stack_masks.size();
+      stack_readbacks.clear();
       if (record() == pass_count) {
         Check(mask_dispatches == dispatch_before + pass_count
                   && stack_masks.size() == masks_before + pass_count,
@@ -1042,6 +1075,20 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
           const uint32_t expected_width = (pass == 1 ? expected_second_width : 8u);
           Check(mask_desc.Width == expected_width && mask_desc.Height == expected_width,
                 "each Feature Slot receives a mask at its configured working resolution");
+          if (motion_case) {
+            const auto bytes = gpu.ReadTexture(stack_readbacks[pass]);
+            const std::array<int, 4> expected = (pass == 1 ? std::array<int, 4>{128, 64, 191, 255}
+                                                                         : std::array<int, 4>{0, 255, 255, 255});
+            for (size_t component = 0; component < bytes.size(); ++component) {
+              if (std::abs(static_cast<int>(bytes[component]) - expected[component % 4]) > 1) {
+                std::cerr << "STACK_MOTION mismatch pass=" << pass << " component=" << component
+                          << " actual=" << static_cast<int>(bytes[component])
+                          << " expected=" << expected[component % 4] << '\n';
+              }
+              Check(std::abs(static_cast<int>(bytes[component]) - expected[component % 4]) <= 1,
+                  "same-size passes consume distinct motion/manual RGB masks before the shared workset is overwritten");
+            }
+          }
           if (pass == 0 || expected_second_width == 8) {
             Check(pass_mask == first_mask,
                   "same-size Feature Slots share their mask workset");
@@ -1066,11 +1113,20 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
     addon::nr_resolution_scale.store(saved_scale);
     addon::pass_resolution_mode[0].store(saved_pass_mode);
     addon::pass_resolution_scale[0].store(saved_pass_scale);
+    addon::control_mask_motion_enabled = saved_motion;
+    second_mask.follow = saved_mask_follow;
+    second_mask.mode = saved_second.mode;
+    second_mask.blend_mode = saved_second.blend_mode;
+    second_mask.red = saved_second.rgb[0];
+    second_mask.green = saved_second.rgb[1];
+    second_mask.blue = saved_second.rgb[2];
+    second_mask.motion_enabled = saved_second.motion_enabled;
     addon::configuration_generation.fetch_add(1);
     mature();
   };
   run_stack_case(2, 0, 1.f, 8);
-  run_stack_case(2, 2, 0.5f, 4);
+  run_stack_case(2, 0, 1.f, 8, true);
+  run_stack_case(2, 2, 0.5f, 4, true);
   run_stack_case(3, 0, 1.f, 8);
   run_stack_case(4, 0, 1.f, 8);
   {
@@ -1550,9 +1606,12 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
     recovered.list->SetComputeRootDescriptorTable(3, addon::DescriptorHeapSlot(
         rebuilt->descriptors->GetGPUDescriptorHandleForHeapStart(), addon::kDescriptorControlMaskDepthNullSrv,
         rebuilt->descriptor_size));
-    const std::array<uint32_t, 16> constants{8, 8, addon::kControlMaskNeutral, 4, 4, 0, 0, 0,
+    recovered.list->SetComputeRootDescriptorTable(4, addon::DescriptorHeapSlot(
+        rebuilt->descriptors->GetGPUDescriptorHandleForHeapStart(), addon::kDescriptorControlMaskMotionNullSrv,
+        rebuilt->descriptor_size));
+    const std::array<uint32_t, 28> constants{8, 8, addon::kControlMaskNeutral, 4, 4, 0, 0, 0,
         0, 0, 0, 0, 0, std::bit_cast<uint32_t>(0.7f), std::bit_cast<uint32_t>(0.9f), 0};
-    recovered.list->SetComputeRoot32BitConstants(2, 16, constants.data(), 0);
+    recovered.list->SetComputeRoot32BitConstants(2, static_cast<UINT>(constants.size()), constants.data(), 0);
     recovered.list->Dispatch(1, 1, 1);
     recovered.Transition(rebuilt->control_mask, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
     auto transfer = recovered.CreateTextureTransfer(rebuilt->control_mask);
@@ -1583,6 +1642,7 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
             && DetourDetach(reinterpret_cast<PVOID*>(&real_removed), reinterpret_cast<PVOID>(RemovedReason)) == NO_ERROR
             && DetourTransactionCommit() == NO_ERROR, "ControlMask observers detached");
   std::cout << "PASS ControlMask ProcessInline default-off dispatch, allocation/NGX failure and no-retry contracts\n";
+  addon::control_mask_motion_enabled = saved_motion_enabled;
 }
 
 std::vector<uint8_t> ReadPixels(Gpu& gpu, ID3D12Resource* texture) {
@@ -1632,7 +1692,10 @@ void Dispatch(Gpu& gpu, ID3D12Resource* texture, ID3D12DescriptorHeap* heap,
   srv.ptr += static_cast<UINT64>(depth_descriptor)
       * gpu.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
   gpu.list->SetComputeRootDescriptorTable(3, srv);
-  const std::array<uint32_t, 16> constants{
+  gpu.list->SetComputeRootDescriptorTable(4, addon::DescriptorHeapSlot(
+      heap->GetGPUDescriptorHandleForHeapStart(), addon::kDescriptorControlMaskMotionNullSrv,
+      gpu.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)));
+  const std::array<uint32_t, 28> constants{
       static_cast<uint32_t>(texture->GetDesc().Width), texture->GetDesc().Height,
       mode, rect_width, rect_height,
       std::bit_cast<uint32_t>(red), std::bit_cast<uint32_t>(green), std::bit_cast<uint32_t>(blue),
@@ -1802,6 +1865,11 @@ int RunSafety(bool hardware, bool safety = true) {
         addon::DescriptorHeapSlot(heap->GetCPUDescriptorHandleForHeapStart(),
             addon::kDescriptorControlMaskDepthNullSrv,
             gpu.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)));
+    null_depth_srv.Format = DXGI_FORMAT_R16G16_FLOAT;
+    gpu.device->CreateShaderResourceView(nullptr, &null_depth_srv,
+        addon::DescriptorHeapSlot(heap->GetCPUDescriptorHandleForHeapStart(),
+            addon::kDescriptorControlMaskMotionNullSrv,
+            gpu.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)));
     D3D12_UNORDERED_ACCESS_VIEW_DESC view{.Format = DXGI_FORMAT_R8G8B8A8_UNORM,
         .ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D};
     auto cpu = heap->GetCPUDescriptorHandleForHeapStart();
@@ -1928,6 +1996,121 @@ int RunSafety(bool hardware, bool safety = true) {
     }
     gpu.device->CreateUnorderedAccessView(texture.Get(), nullptr, &view, cpu);
 
+    {
+      const auto* motion_owner = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xC04AF});
+      const addon::WorksetKey motion_key{motion_owner, texture.Get(), false};
+      auto* workset = addon::EnsureWorkset(gpu.device.Get(), motion_owner, texture.Get(), 5, 1, 5, 1,
+          DXGI_FORMAT_R8G8B8A8_UNORM, 0, 1, 0, false, nullptr, nullptr, true);
+      Check(workset != nullptr && workset->control_mask != nullptr, "motion mask fixture owns a production workset");
+      auto vectors = gpu.Texture(14, 4, DXGI_FORMAT_R32G32_FLOAT);
+      const auto vector_desc = vectors->GetDesc();
+      const auto depth_desc = depth_input->GetDesc();
+      const float saved_multiplier_x = addon::motion_scale_x_multiplier.exchange(1.f);
+      const float saved_multiplier_y = addon::motion_scale_y_multiplier.exchange(1.f);
+      struct MotionCase {
+        const char* name;
+        bool display_grid;
+        float scale_x;
+        bool depth;
+        bool motion;
+        bool missing_motion;
+        bool missing_depth;
+        std::array<int, 5> red;
+        bool vertical = false;
+        bool invalid_window = false;
+        bool neutral = false;
+      };
+      const MotionCase cases[]{
+          {"low-res", false, 1.f, false, true, false, false, {204, 0, 102, 204, 204}},
+          {"negative-scale", false, -1.f, false, true, false, false, {204, 0, 102, 204, 204}},
+          {"display-res-subrect", true, 1.f, false, true, false, false, {204, 0, 102, 204, 204}},
+          {"vertical-display", true, 1.f, false, true, false, false, {204, 0, 102, 204, 204}, true},
+          {"depth-overlap", true, -1.f, true, true, false, false, {204, 0, 44, 0, 204}},
+          {"motion-missing", false, 1.f, true, true, true, false, {204, 160, 44, 0, 204}},
+          {"depth-missing", false, 1.f, true, true, false, true, {204, 0, 102, 204, 204}},
+          {"motion-off", false, 1.f, false, false, false, false, {204, 204, 204, 204, 204}},
+          {"invalid-scale", false, std::numeric_limits<float>::infinity(), false, true, false, false,
+              {204, 204, 204, 204, 204}},
+          {"invalid-window", false, 1.f, false, true, false, false, {204, 204, 204, 204, 204}, false, true},
+          {"neutral-hidden-rgb", false, 1.f, false, true, false, false,
+              {255, 0, 128, 255, 255}, false, false, true}};
+      bool first_upload = true;
+      for (const auto& test : cases) {
+        addon::EvaluationContract frame{};
+        frame.input_width = 5;
+        frame.input_height = 1;
+        frame.motion = (test.missing_motion ? nullptr : vectors.Get());
+        frame.motion_x = 3;
+        frame.motion_y = 1;
+        frame.depth_x = 1;
+        frame.depth_y = 1;
+        frame.depth = (test.missing_depth ? nullptr : depth_input.Get());
+        frame.create_flags = (test.display_grid ? 0u : static_cast<uint32_t>(NVSDK_NGX_DLSS_Feature_Flags_MVLowRes));
+        const auto window = addon::ResolveMotionWindow(frame.create_flags, frame.motion_x, frame.motion_y,
+            5, 1, 10, 2, vector_desc);
+        frame.motion_width = window.width;
+        frame.motion_height = window.height;
+        frame.motion_scale_x = test.scale_x;
+        frame.motion_scale_y = -1.f;
+        const std::array<float, 5> speed{0.f, 16.f, 9.f, 2.f, std::numeric_limits<float>::quiet_NaN()};
+        std::array<float, 14 * 4 * 2> vector_data{};
+        for (uint32_t y = 0; y < frame.motion_height; ++y) {
+          for (uint32_t x = 0; x < frame.motion_width; ++x) {
+            const size_t index = (static_cast<size_t>(y + frame.motion_y) * 14 + x + frame.motion_x) * 2;
+            const float value = speed[x * 5 / frame.motion_width];
+            if (test.vertical) {
+              vector_data[index + 1] = value * static_cast<float>(frame.motion_height);
+            } else {
+              vector_data[index] = value * static_cast<float>(frame.motion_width) / 5.f;
+            }
+          }
+        }
+        auto transfer = gpu.CreateTextureTransfer(vectors.Get());
+        gpu.Transition(vectors.Get(), first_upload ? D3D12_RESOURCE_STATE_COMMON
+                                                  : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_COPY_DEST);
+        gpu.UploadTexture(vectors.Get(), transfer, reinterpret_cast<const uint8_t*>(vector_data.data()),
+            sizeof(vector_data), 14 * 2 * sizeof(float));
+        gpu.Transition(vectors.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        first_upload = false;
+        const addon::ControlMaskParameters settings{
+            test.neutral ? addon::kControlMaskNeutral : (test.depth ? addon::kControlMaskDepthFar : addon::kControlMaskRgb),
+            2, {0.8f, 0.5f, 0.25f}, 0.25f, 0.75f, test.motion, 2.f, 16.f};
+        if (test.invalid_window) {
+          frame.motion_x = 13;
+        }
+        Check(addon::DispatchControlMask(gpu.device.Get(), gpu.list.Get(), *workset, frame.depth,
+                  depth_desc, frame, 5, 1, settings),
+              "production mask generator accepts independent motion/depth rule inputs");
+        gpu.Transition(workset->control_mask, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        workset->control_mask_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        const auto bytes = ReadPixels(gpu, workset->control_mask);
+        const int expected_green = (test.neutral ? 255 : 128);
+        const int expected_blue = (test.neutral ? 255 : 64);
+        for (size_t x = 0; x < test.red.size(); ++x) {
+          if (std::abs(static_cast<int>(bytes[x * 4]) - test.red[x]) > 1
+              || std::abs(static_cast<int>(bytes[x * 4 + 1]) - expected_green) > 1
+              || bytes[x * 4 + 2] != expected_blue || bytes[x * 4 + 3] != 255) {
+            std::cerr << "MOTION_MASK mismatch case=" << test.name << " x=" << x
+                      << " actual=" << static_cast<int>(bytes[x * 4]) << ',' << static_cast<int>(bytes[x * 4 + 1])
+                      << ',' << static_cast<int>(bytes[x * 4 + 2]) << ',' << static_cast<int>(bytes[x * 4 + 3])
+                      << " expected_red=" << test.red[x] << '\n';
+          }
+          Check(std::abs(static_cast<int>(bytes[x * 4]) - test.red[x]) <= 1
+                    && std::abs(static_cast<int>(bytes[x * 4 + 1]) - expected_green) <= 1
+                    && bytes[x * 4 + 2] == expected_blue && bytes[x * 4 + 3] == 255,
+                test.name);
+        }
+        std::cout << "MOTION_MASK case=" << test.name << " size=5x1 motion_base=3,1 grid="
+                  << frame.motion_width << 'x' << frame.motion_height << " rgba8=PASS\n";
+      }
+      addon::motion_scale_x_multiplier = saved_multiplier_x;
+      addon::motion_scale_y_multiplier = saved_multiplier_y;
+      addon::RetireWorkset(motion_key);
+      addon::DrainRetiredResources(true);
+    }
+
     const auto* owner = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xC04A5});
     const auto* disabled_owner = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xC04A4});
     const addon::WorksetKey workset_key{owner, texture.Get(), false};
@@ -2052,9 +2235,10 @@ NVSDK_NGX_Result NVSDK_CONV ObserveNativeRuntimeEvaluate(
 }
 
 int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
-                 uint32_t mask_mode = addon::kControlMaskDepthFar, bool cost = false) {
+                 uint32_t mask_mode = addon::kControlMaskDepthFar, bool cost = false,
+                 bool motion_test = false) {
   try {
-    const bool single_stage = hot_toggle || cost;
+    const bool single_stage = hot_toggle || cost || motion_test;
     const char* cost_mode_environment = std::getenv("NR_NEXUS_TEST_CONTROL_MASK_COST_MODE");
     const std::string cost_mode = (cost_mode_environment != nullptr ? cost_mode_environment : "depthfar");
     if (cost) {
@@ -2206,6 +2390,14 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
     addon::control_mask_depth_near = 0.7f;
     addon::control_mask_depth_far = 0.9f;
     addon::control_mask_blend_mode = 0u;
+    if (motion_test) {
+      addon::control_mask_mode = addon::kControlMaskRgb;
+      addon::control_mask_motion_enabled = false;
+      addon::control_mask_motion_start = 2.f;
+      addon::control_mask_motion_end = 16.f;
+      addon::use_auto_mask = false;
+      native_cost_observe = true;
+    }
     if (cost) {
       addon::use_auto_mask = false;
       addon::control_mask_red = 1.f;
@@ -2330,6 +2522,137 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
     }
     Check(production_chain_completed,
           "real Runtime completes both production Render and Upscaled stages within the debounce window");
+    if (motion_test) {
+      constexpr std::array<float, 8> speeds{0.f, 0.f, 2.f, 8.f, 16.f, 0.f, 0.f, 0.f};
+      std::array<std::vector<uint8_t>, speeds.size()> reference;
+      auto motion_queries = d3d12_test::CreateTimestampQueries(gpu, 2 * static_cast<UINT>(speeds.size()));
+      nlohmann::json report{{"evidence", "NATIVE_GPU+NATIVE_NGX"}, {"host_sr", "MOCK"},
+          {"runtime", addon::direct_runtime_requirements.file_version},
+          {"requested_model", "B"}, {"internal_model", "unknown"},
+          {"format", "RGBA16_FLOAT"}, {"motion_format", "RG16_FLOAT"},
+          {"width", width}, {"height", height}, {"start", 2}, {"end", 16},
+          {"initial_prefix_evaluates", 1},
+          {"motion_scale", {-1, 1}}, {"motion_base", {0, 0}}, {"frames", nlohmann::json::array()}};
+      double moving_difference = 0;
+      for (const bool attenuate : {false, true}) {
+        float shift = 0.f;
+        addon::control_mask_motion_enabled = attenuate;
+        for (size_t frame_index = 0; frame_index < speeds.size(); ++frame_index) {
+          shift += speeds[frame_index];
+          for (UINT y = 0; y < height; ++y) {
+            for (UINT x = 0; x < width; ++x) {
+              const size_t pixel = static_cast<size_t>(y) * width + x;
+              const float u = (static_cast<float>(x) - shift) / width;
+              const float v = static_cast<float>(y) / height;
+              color_data[pixel * 4] = DirectX::PackedVector::XMConvertFloatToHalf(
+                  0.35f + 0.2f * std::sin(u * 40.f) + 0.1f * v);
+              color_data[pixel * 4 + 1] = DirectX::PackedVector::XMConvertFloatToHalf(0.1f + 0.65f * v);
+              color_data[pixel * 4 + 2] = DirectX::PackedVector::XMConvertFloatToHalf(
+                  0.4f + 0.2f * std::cos(u * 23.f + v * 11.f));
+              motion_data[pixel * 2] = DirectX::PackedVector::XMConvertFloatToHalf(speeds[frame_index]);
+            }
+          }
+          auto dynamic_color = gpu.CreateTextureTransfer(color.Get());
+          auto dynamic_motion = gpu.CreateTextureTransfer(motion.Get());
+          for (auto* input : {color.Get(), motion.Get()}) {
+            gpu.Transition(input, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+          }
+          gpu.UploadTexture(color.Get(), dynamic_color, reinterpret_cast<const uint8_t*>(color_data.data()),
+              color_data.size() * sizeof(uint16_t), width * 8);
+          gpu.UploadTexture(motion.Get(), dynamic_motion, reinterpret_cast<const uint8_t*>(motion_data.data()),
+              motion_data.size() * sizeof(uint16_t), width * 4);
+          gpu.Transition(color.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE);
+          gpu.Transition(output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
+          gpu.list->CopyResource(output.Get(), color.Get());
+          gpu.Transition(color.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+          gpu.Transition(motion.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+          gpu.Transition(output.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+          parameters.Set(NVSDK_NGX_Parameter_Reset, (frame_index == 0 ? 1 : 0));
+          parameters.Set(NVSDK_NGX_Parameter_MV_Scale_X, -1.f);
+          native_runtime_masks.clear();
+          native_runtime_results.clear();
+          native_runtime_resets.clear();
+          const UINT interval = static_cast<UINT>(frame_index + (attenuate ? speeds.size() : 0));
+          motion_queries.Begin(gpu.list.Get(), interval);
+          addon::ngx_slot_real[0].evaluate = reinterpret_cast<void*>(SuccessfulHostEvaluate);
+          const auto result = addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), owner, &parameters, nullptr);
+          addon::ngx_slot_real[0].evaluate = nullptr;
+          motion_queries.EndAndResolve(gpu.list.Get(), interval);
+          Check(NVSDK_NGX_SUCCEED(result) && native_runtime_results.size() == 1
+                    && NVSDK_NGX_SUCCEED(native_runtime_results[0]) && native_runtime_masks[0] != nullptr,
+                "dynamic motion frame records exactly one real NR Evaluate with a generated mask");
+          Check(native_runtime_resets.size() == 1 && native_runtime_resets[0] == (frame_index == 0 ? 1 : 0),
+                "paired motion sequences have the same explicit Reset prefix");
+          auto* mask = native_runtime_masks[0];
+          auto mask_readback = gpu.CreateTextureTransfer(mask);
+          auto final_readback = gpu.CreateTextureTransfer(output.Get());
+          for (auto* resource : {mask, output.Get()}) {
+            gpu.Transition(resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+          }
+          gpu.RecordTextureReadback(mask, mask_readback);
+          gpu.RecordTextureReadback(output.Get(), final_readback);
+          for (auto* resource : {mask, output.Get()}) {
+            gpu.Transition(resource, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+          }
+          gpu.Submit();
+          addon::DrainRetiredResources(true);
+          const auto mask_bytes = gpu.ReadTexture(mask_readback);
+          const auto final_bytes = gpu.ReadTexture(final_readback);
+          const float t = std::clamp((speeds[frame_index] - 2.f) / 14.f, 0.f, 1.f);
+          const int expected_red = static_cast<int>(std::lround(255.f * (attenuate ? 1.f - t * t * (3.f - 2.f * t) : 1.f)));
+          for (size_t pixel = 0; pixel < pixel_count; ++pixel) {
+            Check(std::abs(static_cast<int>(mask_bytes[pixel * 4]) - expected_red) <= 1
+                      && mask_bytes[pixel * 4 + 1] == 255 && mask_bytes[pixel * 4 + 2] == 255
+                      && mask_bytes[pixel * 4 + 3] == 255,
+                  "native consumer's completed mask matches the motion fade and preserves G/B/A");
+          }
+          double difference = 0;
+          for (size_t component = 0; component < pixel_count * 4; ++component) {
+            uint16_t value;
+            std::memcpy(&value, final_bytes.data() + component * 2, 2);
+            const float actual = DirectX::PackedVector::XMConvertHalfToFloat(value);
+            Check(std::isfinite(actual), "dynamic native output is finite");
+            if (attenuate) {
+              uint16_t original;
+              std::memcpy(&original, reference[frame_index].data() + component * 2, 2);
+              difference += std::abs(actual - DirectX::PackedVector::XMConvertHalfToFloat(original));
+            }
+          }
+          difference /= pixel_count * 4;
+          if (!attenuate) {
+            reference[frame_index] = final_bytes;
+          }
+          if (attenuate && speeds[frame_index] >= 16.f) {
+            moving_difference = difference;
+          }
+          if (attenuate && frame_index < 2) {
+            Check(difference < 1e-5, "common zero-motion Reset prefix reproduces the paired native output");
+          }
+          report["frames"].push_back({{"attenuate", attenuate}, {"frame", frame_index},
+              {"speed", speeds[frame_index]}, {"shift", shift}, {"expected_red", expected_red},
+              {"observed_red", mask_bytes[0]}, {"output_mae_vs_off", difference},
+              {"fence", gpu.serial}, {"completed_fence", gpu.fence->GetCompletedValue()},
+              {"evaluate_count", native_runtime_results.size()}, {"reset", native_runtime_resets[0]}});
+        }
+      }
+      Check(moving_difference > 1e-5, "motion attenuation changes real native output on the paired moving frame");
+      const auto motion_timings = motion_queries.ReadAll();
+      report["timestamp_frequency_hz"] = motion_queries.frequency_hz;
+      report["timing_scope"] = "NR wrapper GPU work including mask, codec and Runtime; excludes uploads and readbacks; short diagnostic sequence";
+      for (size_t index = 0; index < motion_timings.size(); ++index) {
+        report["frames"][index]["wrapper_gpu_ms"] = motion_timings[index].gpu_ms;
+        report["frames"][index]["wrapper_gpu_ticks"] = motion_timings[index].ticks;
+      }
+      Check(!addon::features.at(owner).slots[0].control_mask_bound
+                && SUCCEEDED(gpu.device->GetDeviceRemovedReason()),
+            "motion sequence clears transient bindings and leaves a healthy device");
+      std::ofstream motion_file("controlmask-motion.json", std::ios::binary | std::ios::trunc);
+      motion_file << report.dump(2) << '\n';
+      motion_file.close();
+      Check(!motion_file.fail(), "motion evidence JSON is saved");
+      std::cout << "PASS motion dynamic pair frames=16 native_evaluates=16 moving_output_mae="
+                << moving_difference << " zero_prefix=reproduced stopped_mask=restored\n";
+    }
     if (cost) {
       constexpr uint32_t warmup_frames = 16;
       constexpr uint32_t sample_frames = 64;
@@ -2657,7 +2980,7 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
     }
     std::cout << "PASS ControlMask production chain stages=" << (single_stage ? "Upscaled" : "Render+Upscaled")
               << " evidence=NATIVE_GPU+NATIVE_NGX host_sr=MOCK frames="
-              << (cost ? 80 : (hot_toggle ? 52 : 1))
+              << (cost ? 80 : (motion_test ? 17 : (hot_toggle ? 52 : 1)))
               << " size=" << width << 'x' << height << " mask="
               << (mask_enabled ? mask_mode_name : "off")
               << " output_readback=rgba16f raw="

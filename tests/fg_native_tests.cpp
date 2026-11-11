@@ -739,6 +739,10 @@ int RunNativeRequiredMenuTest() {
 
 int main(int argc, char** argv) {
 #if defined(NR_NEXUS_TEST_NATIVE_NGX)
+  if (argc == 3 && std::strcmp(argv[1], "--control-mask-native-ngx-motion") == 0) {
+    return control_mask_gpu_cases::RunNativeNgx(
+        argv[2], false, renodx::addons::dlss5::internal::kControlMaskRgb, false, true);
+  }
   if (argc == 3 && std::strcmp(argv[1], "--control-mask-native-ngx-cost") == 0) {
     return control_mask_gpu_cases::RunNativeNgx(
         argv[2], false, renodx::addons::dlss5::internal::kControlMaskDepthFar, true);
@@ -4007,6 +4011,7 @@ int RunPresentGuideModelsTest(bool native_ngx, const char* project_id_path) {
     }
     const bool saved_control_mask_enabled = native::control_mask_enabled.exchange(true);
     const uint32_t saved_control_mask_mode = native::control_mask_mode.exchange(native::kControlMaskDepthFar);
+    const bool saved_control_mask_motion = native::control_mask_motion_enabled.exchange(true);
     const std::string saved_control_mask_runtime_version = native::direct_runtime_requirements.file_version;
     if (!native_ngx) {
       native::direct_runtime_requirements.file_version = "310.9.16.0";
@@ -4246,6 +4251,7 @@ int RunPresentGuideModelsTest(bool native_ngx, const char* project_id_path) {
       }
       native::control_mask_enabled.store(saved_control_mask_enabled);
       native::control_mask_mode.store(saved_control_mask_mode);
+      native::control_mask_motion_enabled.store(saved_control_mask_motion);
       native::direct_runtime_requirements.file_version = saved_control_mask_runtime_version;
       std::cout << "PASS native FG ControlMask roles=Backbuffer+HUDLess "
                    "evidence=NATIVE_GPU+NATIVE_NGX+MOCK_XeFG runtime=310.9.16.0" << std::endl;
@@ -4254,6 +4260,7 @@ int RunPresentGuideModelsTest(bool native_ngx, const char* project_id_path) {
     }
     native::control_mask_enabled.store(saved_control_mask_enabled);
     native::control_mask_mode.store(saved_control_mask_mode);
+    native::control_mask_motion_enabled.store(saved_control_mask_motion);
     native::direct_runtime_requirements.file_version = saved_control_mask_runtime_version;
     std::array<native::FeatureState, 2> contracts;
     for (size_t i = 0; i < contracts.size(); ++i) {

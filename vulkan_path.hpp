@@ -78,6 +78,8 @@ typedef enum VkFormat {
   VK_FORMAT_UNDEFINED = 0,
   VK_FORMAT_R8G8B8A8_UNORM = 37,
   VK_FORMAT_R16_SFLOAT = 76,
+  VK_FORMAT_R16G16_UNORM = 77,
+  VK_FORMAT_R16G16_SNORM = 78,
   VK_FORMAT_R16G16_SFLOAT = 83,
   VK_FORMAT_R16G16B16A16_SFLOAT = 97,
   VK_FORMAT_R32_SFLOAT = 100,
@@ -880,6 +882,7 @@ inline std::atomic_bool control_mask_pipeline_logged{false};
 inline std::atomic_bool control_mask_version_logged{false};
 inline std::atomic_bool control_mask_resource_logged{false};
 inline std::atomic_bool control_mask_depth_logged{false};
+inline std::atomic_bool control_mask_motion_logged{false};
 inline std::atomic_bool control_mask_active_logged{false};
 inline bool ControlMaskDepthFormat(VkFormat format) {
   switch (format) {
@@ -1618,11 +1621,12 @@ inline bool EnsureControlMaskPipeline(reshade::api::device* device) {
   const descriptor_range ranges[] = {
       {0, 0, 0, 1, shader_stage::all_compute, 1, descriptor_type::texture_shader_resource_view},
       {4, 0, 0, 1, shader_stage::all_compute, 1, descriptor_type::texture_unordered_access_view},
+      {1, 0, 0, 1, shader_stage::all_compute, 1, descriptor_type::texture_shader_resource_view},
   };
   pipeline_layout_param params[2];
   params[0].type = pipeline_layout_param_type::push_descriptors_with_ranges;
-  params[0].descriptor_table = {2, ranges};
-  params[1] = constant_range{0, 0, 0, 16, shader_stage::all_compute};
+  params[0].descriptor_table = {3, ranges};
+  params[1] = constant_range{0, 0, 0, 28, shader_stage::all_compute};
   bool made = device->create_pipeline_layout(2, params, &control_mask_layout);
   if (made) {
     shader_desc shader = {__vk_control_mask.data(), __vk_control_mask.size(), "main"};
@@ -1648,13 +1652,18 @@ struct ControlMaskConstants {
   uint32_t depth_base_x, depth_base_y, depth_width, depth_height;
   uint32_t depth_inverted;
   float depth_near, depth_far;
-  uint32_t padding;
+  uint32_t motion_enabled;
+  uint32_t motion_base_x, motion_base_y, motion_width, motion_height;
+  float motion_scale_x, motion_scale_y, motion_start, motion_end;
+  uint32_t padding[4];
 };
-static_assert(sizeof(ControlMaskConstants) == 16 * sizeof(uint32_t));
+static_assert(sizeof(ControlMaskConstants) == 28 * sizeof(uint32_t));
 
 inline void RecordControlMaskDispatch(reshade::api::command_list* cmd,
                                      const NVSDK_NGX_Resource_VK* depth,
+                                     const NVSDK_NGX_Resource_VK* motion,
                                      reshade::api::resource_view depth_view,
+                                     reshade::api::resource_view motion_view,
                                      reshade::api::resource_view mask_view,
                                      const ControlMaskConstants& constants) {
   using namespace reshade::api;
@@ -1662,11 +1671,21 @@ inline void RecordControlMaskDispatch(reshade::api::command_list* cmd,
       {}, 0, 0, 1, descriptor_type::texture_shader_resource_view, &depth_view};
   const descriptor_table_update mask_update{
       {}, 4, 0, 1, descriptor_type::texture_unordered_access_view, &mask_view};
-  const SampledInputScope sampled_depth(cmd, depth);
+  const descriptor_table_update motion_update{
+      {}, 1, 0, 1, descriptor_type::texture_shader_resource_view, &motion_view};
+  std::optional<SampledInputScope> sampled_depth;
+  std::optional<SampledInputScope> sampled_motion;
+  if (depth != nullptr) {
+    sampled_depth.emplace(cmd, depth);
+  }
+  if (motion != nullptr) {
+    sampled_motion.emplace(cmd, motion);
+  }
   cmd->bind_pipeline(pipeline_stage::all_compute, control_mask_program);
   cmd->push_descriptors(shader_stage::all_compute, control_mask_layout, 0, depth_update);
   cmd->push_descriptors(shader_stage::all_compute, control_mask_layout, 0, mask_update);
-  cmd->push_constants(shader_stage::all_compute, control_mask_layout, 1, 0, 16, &constants);
+  cmd->push_descriptors(shader_stage::all_compute, control_mask_layout, 0, motion_update);
+  cmd->push_constants(shader_stage::all_compute, control_mask_layout, 1, 0, 28, &constants);
   cmd->dispatch((constants.width + 15) / 16, (constants.height + 15) / 16, 1);
 }
 
@@ -2564,20 +2583,13 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
       GetUInt(parameters, NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y);
   const NVSDK_NGX_ImageViewInfo_VK& depth_info = depth->Resource.ImageViewInfo;
   const bool control_mask_depth_usable = ControlMaskDepthFormat(depth_info.Format)
+      && depth_info.ImageView != 0 && depth_info.Image != 0
+      && render_width != 0 && render_height != 0
       && depth_info.Width != 0 && depth_info.Height != 0
       && depth_base_x <= depth_info.Width && render_width <= depth_info.Width - depth_base_x
       && depth_base_y <= depth_info.Height && render_height <= depth_info.Height - depth_base_y;
-  bool control_mask_depth_far_requested = false;
-  const bool control_mask_mode_eligible = AnyControlMaskPassEligible(
-      0, passes, control_mask_depth_usable, true, &control_mask_depth_far_requested);
-  if (control_mask_requested && control_mask_depth_far_requested
-      && !control_mask_depth_usable
-      && !control_mask_depth_logged.exchange(true, std::memory_order_relaxed)) {
-    Log(reshade::log::level::warning,
-        "ControlMask depth-far is skipped on Vulkan because the current depth format or subrect is unsupported");
-  }
   const bool control_mask_eligible = control_mask_requested && control_mask_version_supported
-      && control_mask_surface_ready && control_mask_mode_eligible;
+      && control_mask_surface_ready;
   const uint32_t motion_x = GetUInt(parameters, NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X);
   const uint32_t motion_y = GetUInt(parameters, NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y);
   // The shared contract helper uses only Width/Height from this description.
@@ -2601,16 +2613,60 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
   // Every pass of this frame resets against the same epoch (ProcessInline).
   const uint64_t chain_reset_epoch = history_reset_epoch.load(std::memory_order_relaxed);
   const resource_view output_view = {reinterpret_cast<uint64_t>(out.ImageView)};
+  const NVSDK_NGX_ImageViewInfo_VK& motion_info = motion->Resource.ImageViewInfo;
+  const bool control_mask_motion_format = motion_info.Format == VK_FORMAT_R16G16_SFLOAT
+      || motion_info.Format == VK_FORMAT_R32G32_SFLOAT
+      || motion_info.Format == VK_FORMAT_R16G16_SNORM
+      || motion_info.Format == VK_FORMAT_R16G16_UNORM
+      || motion_info.Format == VK_FORMAT_R16G16B16A16_SFLOAT
+      || motion_info.Format == VK_FORMAT_R32G32B32A32_SFLOAT;
+  const float mask_motion_scale_x = motion_scale_x * motion_scale_x_multiplier.load()
+      * static_cast<float>(width) / static_cast<float>(std::max(motion_width, 1u));
+  const float mask_motion_scale_y = motion_scale_y * motion_scale_y_multiplier.load()
+      * static_cast<float>(height) / static_cast<float>(std::max(motion_height, 1u));
+  const bool control_mask_motion_usable = control_mask_motion_format
+      && motion_info.ImageView != 0 && motion_info.Image != 0
+      && motion_info.SubresourceRange.layerCount == 1
+      && motion_width != 0 && motion_height != 0 && !motion_window.outside
+      && std::isfinite(mask_motion_scale_x) && std::isfinite(mask_motion_scale_y);
   const auto dispatch_control_mask = [&](const ControlMaskParameters& mask_parameters) {
+    const bool depth_usable = mask_parameters.mode == kControlMaskDepthFar && control_mask_depth_usable;
+    const bool motion_usable = mask_parameters.motion_enabled && control_mask_motion_usable
+        && std::isfinite(mask_parameters.motion_start) && std::isfinite(mask_parameters.motion_end)
+        && mask_parameters.motion_start >= 0.f && mask_parameters.motion_end <= 256.f
+        && mask_parameters.motion_end > mask_parameters.motion_start;
+    if (mask_parameters.mode == kControlMaskDepthFar && !depth_usable
+        && !control_mask_depth_logged.exchange(true, std::memory_order_relaxed)) {
+      Log(reshade::log::level::warning,
+          "ControlMask depth rule unavailable on Vulkan: unsupported format or invalid window; depth keep=1");
+    }
+    if (mask_parameters.motion_enabled && !motion_usable
+        && !control_mask_motion_logged.exchange(true, std::memory_order_relaxed)) {
+      Log(reshade::log::level::warning,
+          "ControlMask motion rule unavailable on Vulkan: unsupported format, invalid window, scale or range; motion keep=1");
+    }
+    if (motion_usable && (feature.create_flags & NVSDK_NGX_DLSS_Feature_Flags_MVJittered) != 0
+        && !control_mask_motion_jitter_logged.exchange(true, std::memory_order_relaxed)) {
+      Log(reshade::log::level::info,
+          "ControlMask motion uses the game's MVJittered vectors, including jitter and camera motion; no de-jitter or object separation");
+    }
     transition(kControlMask, resource_usage::unordered_access);
     const ControlMaskConstants constants{
         width, height, mask_parameters.mode, width / 2, height / 2,
         mask_parameters.rgb[0], mask_parameters.rgb[1], mask_parameters.rgb[2],
-        depth_base_x, depth_base_y, render_width, render_height,
+        depth_base_x, depth_base_y, depth_usable ? render_width : 0u, depth_usable ? render_height : 0u,
         ResolveDepthInverted(feature.create_flags) ? 1u : 0u,
-        mask_parameters.depth_near, mask_parameters.depth_far, 0};
-    const resource_view depth_view{reinterpret_cast<uint64_t>(depth_info.ImageView)};
-    RecordControlMaskDispatch(cmd, depth, depth_view, views[kControlMask], constants);
+        mask_parameters.depth_near, mask_parameters.depth_far, motion_usable ? 1u : 0u,
+        motion_x, motion_y, motion_width, motion_height,
+        motion_usable ? mask_motion_scale_x : 0.f, motion_usable ? mask_motion_scale_y : 0.f,
+        mask_parameters.motion_start, mask_parameters.motion_end, {}};
+    // Disabled inputs bind an existing sampled image and are never loaded.
+    const resource_view depth_view = (depth_usable
+        ? resource_view{reinterpret_cast<uint64_t>(depth_info.ImageView)} : views[kOriginal]);
+    const resource_view motion_view = (motion_usable
+        ? resource_view{reinterpret_cast<uint64_t>(motion_info.ImageView)} : views[kOriginal]);
+    RecordControlMaskDispatch(cmd, depth_usable ? depth : nullptr, motion_usable ? motion : nullptr,
+                              depth_view, motion_view, views[kControlMask], constants);
     transition(kControlMask, resource_usage::shader_resource);
   };
   float final_transfer = 0.f;
@@ -2663,8 +2719,7 @@ inline NrDeclineReason ProcessNr(VkCommandBuffer command_buffer,
     NVSDK_NGX_Resource_VK control_mask_vk{};
     const ControlMaskParameters mask_parameters =
         ResolveControlMaskParameters(pass);
-    bool pass_control_mask_eligible = control_mask_eligible
-        && ControlMaskModeEligible(mask_parameters, control_mask_depth_usable);
+    bool pass_control_mask_eligible = control_mask_eligible;
     if (pass_control_mask_eligible) {
       dispatch_control_mask(mask_parameters);
       control_mask_vk = ImageResource(views[kControlMask], images[kControlMask], width, height, false,

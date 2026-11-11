@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kTh[] = {
+    {"Motion attenuation", "ลดทอนตามการเคลื่อนไหว"},
+    {"Reduce R in moving areas, including camera motion. Disabled or unavailable motion leaves the other region-mask settings active.", "ลดค่า R ในบริเวณที่เคลื่อนไหว รวมถึงการเคลื่อนไหวของกล้อง เมื่อปิดใช้งานหรือไม่มีข้อมูลการเคลื่อนไหว การตั้งค่าอื่นของมาสก์บริเวณยังคงทำงาน"},
+    {"Motion fade start", "จุดเริ่มลดทอนการเคลื่อนไหว"},
+    {"Motion fade end", "จุดสิ้นสุดการลดทอนการเคลื่อนไหว"},
+    {"Pixels per frame at this pass's input resolution. Motion below the start keeps R; motion at or above the end removes R. G and B keep their configured values.", "พิกเซลต่อเฟรมที่ความละเอียดอินพุตของพาสนี้ เมื่อการเคลื่อนไหวต่ำกว่าจุดเริ่มจะคงค่า R ไว้ และเมื่อถึงหรือเกินจุดสิ้นสุดจะลด R เป็นศูนย์ ส่วน G และ B คงค่าที่ตั้งไว้"},
     {"Region mask", "มาสก์พื้นที่"},
     {"Region mask settings", "การตั้งค่ามาสก์พื้นที่"},
     {"Use Pass 1 region mask settings", "ใช้การตั้งค่ามาสก์พื้นที่ของ Pass 1"},

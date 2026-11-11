@@ -764,7 +764,9 @@ constexpr uint32_t kDescriptorControlMaskUav =
 constexpr uint32_t kControlMaskDepthRingSize = 4;
 constexpr uint32_t kDescriptorControlMaskDepthNullSrv = kDescriptorControlMaskUav + 2;
 constexpr uint32_t kDescriptorControlMaskDepthSrv = kDescriptorControlMaskDepthNullSrv + 1;
-constexpr uint32_t kDescriptorHeapSize = kDescriptorControlMaskDepthSrv + kControlMaskDepthRingSize;
+constexpr uint32_t kDescriptorControlMaskMotionNullSrv = kDescriptorControlMaskDepthSrv + kControlMaskDepthRingSize;
+constexpr uint32_t kDescriptorControlMaskMotionSrv = kDescriptorControlMaskMotionNullSrv + 1;
+constexpr uint32_t kDescriptorHeapSize = kDescriptorControlMaskMotionSrv + kMotionRingSize;
 
 // FinalResources::look_surfaces bits: what a workset allocated for the look.
 constexpr uint32_t kLookSurfaceOutput = 1u;     // look_output, the look set
@@ -912,6 +914,7 @@ struct FinalResources {
   // Depth guides rotate independently of the workset; each view is write-once
   // until the submission tracker proves its resource idle.
   ID3D12Resource* control_mask_depth_views[kControlMaskDepthRingSize] = {};
+  ID3D12Resource* control_mask_motion_views[kMotionRingSize] = {};
   // The pre-SR path's game color, held for the same reason (v7.0.0-rc10):
   // the workset is keyed by its pointer and its views are written once, so
   // a same-size color the game recreated at a freed one's address matched
@@ -2286,12 +2289,18 @@ inline bool MigrateControlMaskDepthDefaults(float* depth_near, float* depth_far)
 inline std::atomic<float> control_mask_depth_near = kControlMaskDepthNearDefault;
 inline std::atomic<float> control_mask_depth_far = kControlMaskDepthFarDefault;
 inline std::atomic_uint32_t control_mask_blend_mode = 0;
+inline std::atomic_bool control_mask_motion_enabled = false;
+inline std::atomic<float> control_mask_motion_start = 2.f;
+inline std::atomic<float> control_mask_motion_end = 16.f;
 struct ControlMaskParameters {
   uint32_t mode;
   uint32_t blend_mode;
   std::array<float, 3> rgb;
   float depth_near;
   float depth_far;
+  bool motion_enabled = false;
+  float motion_start = 2.f;
+  float motion_end = 16.f;
 };
 struct PassControlMask {
   std::atomic_bool follow{true};
@@ -2302,6 +2311,9 @@ struct PassControlMask {
   std::atomic<float> blue{1.f};
   std::atomic<float> depth_near{kControlMaskDepthNearDefault};
   std::atomic<float> depth_far{kControlMaskDepthFarDefault};
+  std::atomic_bool motion_enabled{false};
+  std::atomic<float> motion_start{2.f};
+  std::atomic<float> motion_end{16.f};
 };
 inline PassControlMask pass_control_mask[kMaxNrPasses - 1];
 inline ControlMaskParameters ResolveControlMaskParameters(uint32_t pass_index) {
@@ -2314,7 +2326,10 @@ inline ControlMaskParameters ResolveControlMaskParameters(uint32_t pass_index) {
              std::clamp(pass.green.load(std::memory_order_relaxed), 0.f, 1.f),
              std::clamp(pass.blue.load(std::memory_order_relaxed), 0.f, 1.f)},
             pass.depth_near.load(std::memory_order_relaxed),
-            pass.depth_far.load(std::memory_order_relaxed)};
+            pass.depth_far.load(std::memory_order_relaxed),
+            pass.motion_enabled.load(std::memory_order_relaxed),
+            pass.motion_start.load(std::memory_order_relaxed),
+            pass.motion_end.load(std::memory_order_relaxed)};
   }
   return {control_mask_mode.load(std::memory_order_relaxed),
           control_mask_blend_mode.load(std::memory_order_relaxed),
@@ -2322,26 +2337,10 @@ inline ControlMaskParameters ResolveControlMaskParameters(uint32_t pass_index) {
            std::clamp(control_mask_green.load(std::memory_order_relaxed), 0.f, 1.f),
            std::clamp(control_mask_blue.load(std::memory_order_relaxed), 0.f, 1.f)},
           control_mask_depth_near.load(std::memory_order_relaxed),
-          control_mask_depth_far.load(std::memory_order_relaxed)};
-}
-inline bool ControlMaskModeEligible(
-    const ControlMaskParameters& parameters, bool depth_usable,
-    bool depth_has_provenance = true) {
-  return parameters.mode != kControlMaskDepthFar
-      || (depth_usable && depth_has_provenance);
-}
-inline bool AnyControlMaskPassEligible(
-    uint32_t first_pass, uint32_t pass_count, bool depth_usable,
-    bool depth_has_provenance, bool* depth_far_requested = nullptr) {
-  bool any_eligible = false;
-  bool any_depth_far = false;
-  for (uint32_t pass = 0; pass < pass_count; ++pass) {
-    const ControlMaskParameters parameters = ResolveControlMaskParameters(first_pass + pass);
-    any_depth_far |= parameters.mode == kControlMaskDepthFar;
-    any_eligible |= ControlMaskModeEligible(parameters, depth_usable, depth_has_provenance);
-  }
-  if (depth_far_requested != nullptr) *depth_far_requested = any_depth_far;
-  return any_eligible;
+          control_mask_depth_far.load(std::memory_order_relaxed),
+          control_mask_motion_enabled.load(std::memory_order_relaxed),
+          control_mask_motion_start.load(std::memory_order_relaxed),
+          control_mask_motion_end.load(std::memory_order_relaxed)};
 }
 inline std::atomic_bool control_mask_refusal_logged{false};
 inline std::atomic_bool control_mask_failure_logged{false};
@@ -2349,6 +2348,10 @@ inline std::atomic_bool control_mask_active_logged[2]{};
 inline std::atomic_bool control_mask_success_logged[2]{};
 inline std::atomic_bool control_mask_evaluate_failure_logged{false};
 inline std::atomic_bool control_mask_depth_refusal_logged{false};
+inline std::atomic_bool control_mask_motion_refusal_logged{false};
+inline std::atomic_bool control_mask_motion_jitter_logged{false};
+inline std::atomic_uint64_t control_mask_motion_ring_recycled{0};
+inline std::atomic_uint64_t control_mask_motion_ring_full{0};
 inline std::atomic_uint64_t control_mask_depth_ring_recycled{0};
 inline std::atomic_uint64_t control_mask_depth_ring_full{0};
 inline std::atomic_bool ui_correction = defaults::kUiCorrection;
@@ -4650,6 +4653,7 @@ inline void ReleaseFinalResources(FinalResources& resources) {
   for (ID3D12Resource*& motion : resources.motion_views) ReleaseCom(motion);
   for (ID3D12Resource*& exposure : resources.exposure_views) ReleaseCom(exposure);
   for (ID3D12Resource*& depth : resources.control_mask_depth_views) ReleaseCom(depth);
+  for (ID3D12Resource*& motion : resources.control_mask_motion_views) ReleaseCom(motion);
   ReleaseCom(resources.pre_sr_source);
   resources = {};
 }
@@ -5812,7 +5816,7 @@ inline bool EnsureCodecRootSignature(ID3D12Device* device) {
     return false;
   }
 
-  D3D12_DESCRIPTOR_RANGE ranges[3]{};
+  D3D12_DESCRIPTOR_RANGE ranges[4]{};
   ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
   ranges[0].NumDescriptors = 4;
   ranges[0].BaseShaderRegister = 0;
@@ -5823,7 +5827,10 @@ inline bool EnsureCodecRootSignature(ID3D12Device* device) {
   ranges[2].NumDescriptors = 1;
   ranges[2].BaseShaderRegister = 4;
 
-  D3D12_ROOT_PARAMETER root_parameters[4]{};
+  ranges[3].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+  ranges[3].NumDescriptors = 1;
+  ranges[3].BaseShaderRegister = 5;
+  D3D12_ROOT_PARAMETER root_parameters[5]{};
   root_parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
   root_parameters[0].DescriptorTable.NumDescriptorRanges = 1;
   root_parameters[0].DescriptorTable.pDescriptorRanges = &ranges[0];
@@ -5843,7 +5850,10 @@ inline bool EnsureCodecRootSignature(ID3D12Device* device) {
   root_parameters[3].DescriptorTable.pDescriptorRanges = &ranges[2];
 
   D3D12_ROOT_SIGNATURE_DESC root_desc{};
-  root_desc.NumParameters = 4;
+  root_parameters[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  root_parameters[4].DescriptorTable.NumDescriptorRanges = 1;
+  root_parameters[4].DescriptorTable.pDescriptorRanges = &ranges[3];
+  root_desc.NumParameters = 5;
   root_desc.pParameters = root_parameters;
   ID3DBlob* serialized = nullptr;
   ID3DBlob* errors = nullptr;
@@ -6948,6 +6958,10 @@ inline FinalResources* EnsureWorkset(
   device->CreateShaderResourceView(
       nullptr, &null_depth_srv,
       DescriptorHeapSlot(heap_start, kDescriptorControlMaskDepthNullSrv, resources.descriptor_size));
+  null_depth_srv.Format = DXGI_FORMAT_R16G16_FLOAT;
+  device->CreateShaderResourceView(
+      nullptr, &null_depth_srv,
+      DescriptorHeapSlot(heap_start, kDescriptorControlMaskMotionNullSrv, resources.descriptor_size));
   D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
   srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
   srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -8231,6 +8245,8 @@ inline void BindCodec(
   const D3D12_GPU_DESCRIPTOR_HANDLE heap_start =
       resources.descriptors->GetGPUDescriptorHandleForHeapStart();
   command_list->SetComputeRootDescriptorTable(
+      4, DescriptorHeapSlot(heap_start, kDescriptorControlMaskMotionNullSrv, resources.descriptor_size));
+  command_list->SetComputeRootDescriptorTable(
       0,
       DescriptorHeapSlot(
           heap_start, srv_table_start, resources.descriptor_size));
@@ -8462,16 +8478,77 @@ inline bool DispatchControlMask(
     ID3D12Device* device, ID3D12GraphicsCommandList* command_list,
     FinalResources& resources, ID3D12Resource* depth,
     const D3D12_RESOURCE_DESC& depth_desc, const EvaluationContract& frame,
-    uint32_t width, uint32_t height, const ControlMaskParameters& parameters) {
+    uint32_t width, uint32_t height, const ControlMaskParameters& parameters,
+    bool depth_has_provenance = true, bool motion_has_provenance = true) {
+  const bool depth_usable = parameters.mode == kControlMaskDepthFar
+      && depth != nullptr && depth_has_provenance
+      && depth_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D
+      && depth_desc.DepthOrArraySize == 1 && depth_desc.SampleDesc.Count == 1
+      && (depth_desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0
+      && ControlMaskDepthViewFormat(depth_desc.Format) != DXGI_FORMAT_UNKNOWN
+      && frame.input_width != 0 && frame.input_height != 0
+      && frame.depth_x <= depth_desc.Width && frame.input_width <= depth_desc.Width - frame.depth_x
+      && frame.depth_y <= depth_desc.Height && frame.input_height <= depth_desc.Height - frame.depth_y;
+  if (parameters.mode == kControlMaskDepthFar && !depth_usable
+      && !control_mask_depth_refusal_logged.exchange(true, std::memory_order_relaxed)) {
+    Log(reshade::log::level::warning,
+        "ControlMask depth rule unavailable: missing real guide, unsupported format or invalid window; depth keep=1");
+  }
+  const D3D12_RESOURCE_DESC motion_desc = (frame.motion != nullptr ? frame.motion->GetDesc() : D3D12_RESOURCE_DESC{});
+  DXGI_FORMAT motion_format = DXGI_FORMAT_UNKNOWN;
+  switch (motion_desc.Format) {
+    case DXGI_FORMAT_R16G16_FLOAT:
+    case DXGI_FORMAT_R32G32_FLOAT:
+    case DXGI_FORMAT_R16G16_SNORM:
+    case DXGI_FORMAT_R16G16_UNORM:
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:
+    case DXGI_FORMAT_R32G32B32A32_FLOAT:
+      motion_format = motion_desc.Format;
+      break;
+    default: break;
+  }
+  // The contract's resolved scale preserves flipped axes. MVJittered inputs
+  // retain the game's jitter; this rule does not separate camera/object motion.
+  const float motion_scale_x = frame.motion_scale_x * motion_scale_x_multiplier.load()
+      * static_cast<float>(width) / static_cast<float>(std::max(frame.motion_width, 1u));
+  const float motion_scale_y = frame.motion_scale_y * motion_scale_y_multiplier.load()
+      * static_cast<float>(height) / static_cast<float>(std::max(frame.motion_height, 1u));
+  const bool motion_usable = parameters.motion_enabled && frame.motion != nullptr
+      && motion_has_provenance && motion_format != DXGI_FORMAT_UNKNOWN
+      && motion_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D
+      && motion_desc.DepthOrArraySize == 1 && motion_desc.SampleDesc.Count == 1
+      && (motion_desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0
+      && frame.motion_width != 0 && frame.motion_height != 0
+      && frame.motion_x <= motion_desc.Width && frame.motion_width <= motion_desc.Width - frame.motion_x
+      && frame.motion_y <= motion_desc.Height && frame.motion_height <= motion_desc.Height - frame.motion_y
+      && std::isfinite(motion_scale_x) && std::isfinite(motion_scale_y)
+      && std::isfinite(parameters.motion_start) && std::isfinite(parameters.motion_end)
+      && parameters.motion_start >= 0.f && parameters.motion_end <= 256.f
+      && parameters.motion_end > parameters.motion_start;
+  if (parameters.motion_enabled && !motion_usable
+      && !control_mask_motion_refusal_logged.exchange(true, std::memory_order_relaxed)) {
+    Log(reshade::log::level::warning,
+        "ControlMask motion rule unavailable: missing real guide, unsupported format, invalid window, scale or range; motion keep=1");
+  }
+  if (motion_usable && (frame.create_flags & NVSDK_NGX_DLSS_Feature_Flags_MVJittered) != 0
+      && !control_mask_motion_jitter_logged.exchange(true, std::memory_order_relaxed)) {
+    Log(reshade::log::level::info,
+        "ControlMask motion uses the game's MVJittered vectors, including jitter and camera motion; no de-jitter or object separation");
+  }
   uint32_t depth_ring = kControlMaskDepthRingSize;
-  if (parameters.mode == kControlMaskDepthFar) {
+  if (depth_usable) {
     depth_ring = RingSlot(resources.control_mask_depth_views, depth,
-                          &control_mask_depth_ring_recycled,
-                          &control_mask_depth_ring_full,
-                          "depth-far protection is skipped for this frame");
+                         &control_mask_depth_ring_recycled, &control_mask_depth_ring_full,
+                         "ControlMask generation is skipped for this frame");
     if (depth_ring == kControlMaskDepthRingSize) return false;
   }
-
+  uint32_t motion_ring = kMotionRingSize;
+  if (motion_usable) {
+    motion_ring = RingSlot(resources.control_mask_motion_views, frame.motion,
+                          &control_mask_motion_ring_recycled, &control_mask_motion_ring_full,
+                          "ControlMask generation is skipped for this frame");
+    if (motion_ring == kMotionRingSize) return false;
+  }
   Transition(command_list, resources.control_mask, resources.control_mask_state,
              D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   resources.control_mask_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -8479,12 +8556,12 @@ inline bool DispatchControlMask(
   command_list->SetDescriptorHeaps(1, heaps);
   command_list->SetComputeRootSignature(codec_pipeline.root_signature);
   command_list->SetPipelineState(codec_pipeline.control_mask);
-  const D3D12_GPU_DESCRIPTOR_HANDLE heap_start =
-      resources.descriptors->GetGPUDescriptorHandleForHeapStart();
+  const D3D12_GPU_DESCRIPTOR_HANDLE heap_start = resources.descriptors->GetGPUDescriptorHandleForHeapStart();
+  const D3D12_CPU_DESCRIPTOR_HANDLE heap_cpu = resources.descriptors->GetCPUDescriptorHandleForHeapStart();
   command_list->SetComputeRootDescriptorTable(
       1, DescriptorHeapSlot(heap_start, kDescriptorControlMaskUav, resources.descriptor_size));
   uint32_t depth_descriptor = kDescriptorControlMaskDepthNullSrv;
-  if (parameters.mode == kControlMaskDepthFar) {
+  if (depth_usable) {
     if (resources.control_mask_depth_views[depth_ring] == nullptr) {
       depth->AddRef();
       resources.control_mask_depth_views[depth_ring] = depth;
@@ -8493,30 +8570,53 @@ inline bool DispatchControlMask(
       depth_srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
       depth_srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
       depth_srv.Texture2D.MipLevels = 1;
-      device->CreateShaderResourceView(
-          depth, &depth_srv,
-          DescriptorHeapSlot(resources.descriptors->GetCPUDescriptorHandleForHeapStart(),
-                             kDescriptorControlMaskDepthSrv + depth_ring, resources.descriptor_size));
+      device->CreateShaderResourceView(depth, &depth_srv,
+          DescriptorHeapSlot(heap_cpu, kDescriptorControlMaskDepthSrv + depth_ring, resources.descriptor_size));
     }
     submission::TrackUse(command_list, depth);
     depth_descriptor = kDescriptorControlMaskDepthSrv + depth_ring;
   }
   command_list->SetComputeRootDescriptorTable(
       3, DescriptorHeapSlot(heap_start, depth_descriptor, resources.descriptor_size));
+  uint32_t motion_descriptor = kDescriptorControlMaskMotionNullSrv;
+  if (motion_usable) {
+    if (resources.control_mask_motion_views[motion_ring] == nullptr) {
+      frame.motion->AddRef();
+      resources.control_mask_motion_views[motion_ring] = frame.motion;
+      D3D12_SHADER_RESOURCE_VIEW_DESC motion_srv{};
+      motion_srv.Format = motion_format;
+      motion_srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+      motion_srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+      motion_srv.Texture2D.MipLevels = 1;
+      device->CreateShaderResourceView(frame.motion, &motion_srv,
+          DescriptorHeapSlot(heap_cpu, kDescriptorControlMaskMotionSrv + motion_ring, resources.descriptor_size));
+    }
+    submission::TrackUse(command_list, frame.motion);
+    motion_descriptor = kDescriptorControlMaskMotionSrv + motion_ring;
+  }
+  command_list->SetComputeRootDescriptorTable(
+      4, DescriptorHeapSlot(heap_start, motion_descriptor, resources.descriptor_size));
   struct ControlMaskConstants {
     uint32_t width, height, mode, rect_width, rect_height;
     float red, green, blue;
     uint32_t depth_base_x, depth_base_y, depth_width, depth_height;
     uint32_t depth_inverted;
     float depth_near, depth_far;
-    uint32_t padding;
+    uint32_t motion_enabled;
+    uint32_t motion_base_x, motion_base_y, motion_width, motion_height;
+    float motion_scale_x, motion_scale_y, motion_start, motion_end;
+    uint32_t padding[4];
   } constants{
       width, height, parameters.mode, width / 2, height / 2,
       parameters.rgb[0], parameters.rgb[1], parameters.rgb[2],
-      frame.depth_x, frame.depth_y, frame.input_width, frame.input_height,
+      frame.depth_x, frame.depth_y, depth_usable ? frame.input_width : 0u, depth_usable ? frame.input_height : 0u,
       ResolveDepthInverted(frame.create_flags) ? 1u : 0u,
-      parameters.depth_near, parameters.depth_far, 0};
-  command_list->SetComputeRoot32BitConstants(2, 16, &constants, 0);
+      parameters.depth_near, parameters.depth_far, motion_usable ? 1u : 0u,
+      frame.motion_x, frame.motion_y, frame.motion_width, frame.motion_height,
+      motion_usable ? motion_scale_x : 0.f, motion_usable ? motion_scale_y : 0.f,
+      parameters.motion_start, parameters.motion_end, {}};
+  static_assert(sizeof(ControlMaskConstants) == 28 * sizeof(uint32_t));
+  command_list->SetComputeRoot32BitConstants(2, 28, &constants, 0);
   command_list->Dispatch((width + 15) / 16, (height + 15) / 16, 1);
   UavBarrier(command_list, resources.control_mask);
   Transition(command_list, resources.control_mask,
@@ -10891,23 +10991,7 @@ inline bool ProcessInline(
     return false;
   }
   const uint32_t requested_stack = group.count;
-  const bool control_mask_depth_format_supported =
-      ControlMaskDepthViewFormat(depth_desc.Format) != DXGI_FORMAT_UNKNOWN;
-  const bool control_mask_depth_usable = depth_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D
-      && depth_desc.DepthOrArraySize == 1 && depth_desc.SampleDesc.Count == 1
-      && (depth_desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0
-      && SubrectFits(current.depth_x, current.depth_y, current.input_width, current.input_height, depth_desc)
-      && control_mask_depth_format_supported;
-  const bool control_mask_depth_has_provenance = present == nullptr || present->guide_serial != 0;
-  bool control_mask_depth_far_requested = false;
-  const bool control_mask_mode_eligible = AnyControlMaskPassEligible(
-      group.begin, group.count, control_mask_depth_usable,
-      control_mask_depth_has_provenance, &control_mask_depth_far_requested);
-  if (control_mask_depth_far_requested && !control_mask_depth_usable
-      && !control_mask_depth_refusal_logged.exchange(true, std::memory_order_relaxed)) {
-    Log(reshade::log::level::warning,
-        "ControlMask depth-far rule skipped: current depth format or subrect is unsupported");
-  }
+  const bool control_mask_guides_have_provenance = present == nullptr || present->guide_serial != 0;
   const bool control_mask_render_upscaled_chain = plan.mixed
       && plan.At(stage_plan::Stage::RENDER).count != 0
       && plan.At(stage_plan::Stage::UPSCALED).count != 0
@@ -10932,18 +11016,12 @@ inline bool ProcessInline(
       && execution_stage == stage_plan::Stage::UPSCALED) || control_mask_present_route)
       && !plan.mixed && group.begin == 0
       && nr_model::SupportsControlMask(direct_runtime_requirements.file_version);
-  if (control_mask_depth_far_requested && present != nullptr
-      && !control_mask_depth_has_provenance
-      && !control_mask_depth_refusal_logged.exchange(true, std::memory_order_relaxed)) {
-    Log(reshade::log::level::warning,
-        "ControlMask depth-far rule skipped: this Present has no real depth guide");
-  }
   const bool control_mask_capture_eligible = control_mask_capture::Enabled()
       && gpu_timers_enabled.load(std::memory_order_relaxed)
-      && control_mask_capture_route_eligible && control_mask_mode_eligible;
+      && control_mask_capture_route_eligible;
   const bool control_mask_requested = control_mask_enabled.load(std::memory_order_relaxed);
   const bool control_mask_eligible = control_mask_requested
-      && control_mask_route_eligible && control_mask_mode_eligible;
+      && control_mask_route_eligible;
   if (control_mask_requested && !control_mask_route_eligible
       && !control_mask_refusal_logged.exchange(true, std::memory_order_relaxed)) {
     Log(reshade::log::level::warning,
@@ -11970,9 +12048,7 @@ inline bool ProcessInline(
     const uint32_t mask_mode = mask_parameters.mode;
     const uint32_t mask_blend = mask_parameters.blend_mode;
     const std::array<float, 3>& mask_rgb = mask_parameters.rgb;
-    bool pass_control_mask_eligible = control_mask_eligible
-        && ControlMaskModeEligible(mask_parameters, control_mask_depth_usable,
-                                   control_mask_depth_has_provenance);
+    bool pass_control_mask_eligible = control_mask_eligible;
     if (pass_control_mask_eligible) {
       const uint32_t model_bucket = feature.slots[pass].nr_preset == 2u ? 1u : 0u;
       if (!control_mask_active_logged[model_bucket].exchange(true, std::memory_order_relaxed)) {
@@ -12002,7 +12078,8 @@ inline bool ProcessInline(
       }
       pass_control_mask_eligible = DispatchControlMask(
           device, command_list, res, frame.depth, depth_desc, frame,
-          nr_input_width, nr_input_height, mask_parameters);
+          nr_input_width, nr_input_height, mask_parameters,
+          control_mask_guides_have_provenance, control_mask_guides_have_provenance);
     }
     SetEvaluationParameters(
         feature,
@@ -13079,27 +13156,13 @@ inline bool ProcessInlinePreSR(
   const DXGI_FORMAT color_format = ConcreteResourceFormat(color_desc.Format);
   const uint8_t hdr_mode = FrameHdrMode(color_format, feature.create_flags);
   const uint32_t requested_stack = group.count;
-  const bool control_mask_depth_usable = depth_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D
-      && depth_desc.DepthOrArraySize == 1 && depth_desc.SampleDesc.Count == 1
-      && (depth_desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0
-      && SubrectFits(current.depth_x, current.depth_y, width, height, depth_desc)
-      && ControlMaskDepthViewFormat(depth_desc.Format) != DXGI_FORMAT_UNKNOWN;
-  bool control_mask_depth_far_requested = false;
-  const bool control_mask_mode_eligible = AnyControlMaskPassEligible(
-      group.begin, group.count, control_mask_depth_usable, true,
-      &control_mask_depth_far_requested);
-  if (control_mask_depth_far_requested && !control_mask_depth_usable
-      && !control_mask_depth_refusal_logged.exchange(true, std::memory_order_relaxed)) {
-    Log(reshade::log::level::warning,
-        "ControlMask depth-far rule skipped: current depth format or subrect is unsupported");
-  }
   const bool control_mask_route_eligible = !control_mask_use_core_context.load(std::memory_order_relaxed)
       && !direct_api.borrowed_core_context
       && group.stage == stage_plan::Stage::RENDER
       && nr_model::SupportsControlMask(direct_runtime_requirements.file_version);
   const bool control_mask_requested = control_mask_enabled.load(std::memory_order_relaxed);
   const bool control_mask_eligible = control_mask_requested
-      && control_mask_route_eligible && control_mask_mode_eligible;
+      && control_mask_route_eligible;
   if (control_mask_requested && !control_mask_route_eligible
       && !control_mask_refusal_logged.exchange(true, std::memory_order_relaxed)) {
     Log(reshade::log::level::warning,
@@ -13880,8 +13943,7 @@ inline bool ProcessInlinePreSR(
     res.nr_output_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     const ControlMaskParameters mask_parameters =
         ResolveControlMaskParameters(group.begin + pass);
-    bool pass_control_mask_eligible = control_mask_eligible
-        && ControlMaskModeEligible(mask_parameters, control_mask_depth_usable);
+    bool pass_control_mask_eligible = control_mask_eligible;
     const uint32_t mask_blend = mask_parameters.blend_mode;
     if (pass_control_mask_eligible) {
       pass_control_mask_eligible = DispatchControlMask(
@@ -22681,9 +22743,11 @@ struct Setting {
     return b->load() ? 1.f : 0.f;
   }
   bool Modified() const {
-    // Perspective-depth changes can matter below the ordinary slider tolerance.
+    // Mask thresholds preserve exact preset values below the ordinary slider tolerance.
     if (std::string_view(key).ends_with("ControlMaskDepthNear")
-        || std::string_view(key).ends_with("ControlMaskDepthFar")) {
+        || std::string_view(key).ends_with("ControlMaskDepthFar")
+        || std::string_view(key).ends_with("ControlMaskMotionStart")
+        || std::string_view(key).ends_with("ControlMaskMotionEnd")) {
       return Get() != fallback;
     }
     return std::abs(Get() - fallback) > 1e-4f * (std::max)(1.f, std::abs(fallback));
@@ -22849,6 +22913,24 @@ inline constexpr Setting kSetControlMaskDepthNear{
     "NRControlMaskDepthNear", &control_mask_depth_near, kControlMaskDepthNearDefault, SettingEffect::kNone};
 inline constexpr Setting kSetControlMaskDepthFar{
     "NRControlMaskDepthFar", &control_mask_depth_far, kControlMaskDepthFarDefault, SettingEffect::kNone};
+inline constexpr Setting kSetControlMaskMotionEnabled{
+    "NRControlMaskMotionEnabled", &control_mask_motion_enabled, false, SettingEffect::kNone};
+inline constexpr Setting kSetPassControlMaskMotionEnabled[] = {
+    {"NRPass2ControlMaskMotionEnabled", &pass_control_mask[0].motion_enabled, false, SettingEffect::kNone},
+    {"NRPass3ControlMaskMotionEnabled", &pass_control_mask[1].motion_enabled, false, SettingEffect::kNone},
+    {"NRPass4ControlMaskMotionEnabled", &pass_control_mask[2].motion_enabled, false, SettingEffect::kNone}};
+inline constexpr Setting kSetControlMaskMotionStart{
+    "NRControlMaskMotionStart", &control_mask_motion_start, 2.f, SettingEffect::kNone};
+inline constexpr Setting kSetPassControlMaskMotionStart[] = {
+    {"NRPass2ControlMaskMotionStart", &pass_control_mask[0].motion_start, 2.f, SettingEffect::kNone},
+    {"NRPass3ControlMaskMotionStart", &pass_control_mask[1].motion_start, 2.f, SettingEffect::kNone},
+    {"NRPass4ControlMaskMotionStart", &pass_control_mask[2].motion_start, 2.f, SettingEffect::kNone}};
+inline constexpr Setting kSetControlMaskMotionEnd{
+    "NRControlMaskMotionEnd", &control_mask_motion_end, 16.f, SettingEffect::kNone};
+inline constexpr Setting kSetPassControlMaskMotionEnd[] = {
+    {"NRPass2ControlMaskMotionEnd", &pass_control_mask[0].motion_end, 16.f, SettingEffect::kNone},
+    {"NRPass3ControlMaskMotionEnd", &pass_control_mask[1].motion_end, 16.f, SettingEffect::kNone},
+    {"NRPass4ControlMaskMotionEnd", &pass_control_mask[2].motion_end, 16.f, SettingEffect::kNone}};
 inline constexpr Setting kSetPassControlMaskFollow[] = {
     {"NRPass2ControlMaskFollowPass1", &pass_control_mask[0].follow, 1.f, SettingEffect::kNone},
     {"NRPass3ControlMaskFollowPass1", &pass_control_mask[1].follow, 1.f, SettingEffect::kNone},
@@ -23362,6 +23444,7 @@ inline constexpr const Setting* kLookSettings[] = {
     &kSetAutoMask,       &kSetUiCorrection,
     &kSetControlMaskEnabled, &kSetControlMaskMode, &kSetControlMaskBlendMode,
     &kSetControlMaskRed, &kSetControlMaskGreen, &kSetControlMaskBlue,
+    &kSetControlMaskMotionEnabled, &kSetControlMaskMotionStart, &kSetControlMaskMotionEnd,
     &kSetControlMaskDepthNear, &kSetControlMaskDepthFar};
 inline constexpr const Setting* kLookResultSettings[] = {
     &kSetDetailStability,
@@ -23396,15 +23479,18 @@ inline constexpr const Setting* kStackingSettings[] = {
     &kSetPassControlMaskMode[0], &kSetPassControlMaskBlendMode[0],
     &kSetPassControlMaskRed[0], &kSetPassControlMaskGreen[0],
     &kSetPassControlMaskBlue[0], &kSetPassControlMaskDepthNear[0],
-    &kSetPassControlMaskDepthFar[0], &kSetPassControlMaskFollow[1],
+    &kSetPassControlMaskDepthFar[0], &kSetPassControlMaskMotionEnabled[0],
+    &kSetPassControlMaskMotionStart[0], &kSetPassControlMaskMotionEnd[0], &kSetPassControlMaskFollow[1],
     &kSetPassControlMaskMode[1], &kSetPassControlMaskBlendMode[1],
     &kSetPassControlMaskRed[1], &kSetPassControlMaskGreen[1],
     &kSetPassControlMaskBlue[1], &kSetPassControlMaskDepthNear[1],
-    &kSetPassControlMaskDepthFar[1], &kSetPassControlMaskFollow[2],
+    &kSetPassControlMaskDepthFar[1], &kSetPassControlMaskMotionEnabled[1],
+    &kSetPassControlMaskMotionStart[1], &kSetPassControlMaskMotionEnd[1], &kSetPassControlMaskFollow[2],
     &kSetPassControlMaskMode[2], &kSetPassControlMaskBlendMode[2],
     &kSetPassControlMaskRed[2], &kSetPassControlMaskGreen[2],
     &kSetPassControlMaskBlue[2], &kSetPassControlMaskDepthNear[2],
-    &kSetPassControlMaskDepthFar[2], &kSetPassStyle[0],     &kSetPassStyle[1],
+    &kSetPassControlMaskDepthFar[2], &kSetPassControlMaskMotionEnabled[2],
+    &kSetPassControlMaskMotionStart[2], &kSetPassControlMaskMotionEnd[2], &kSetPassStyle[0],     &kSetPassStyle[1],
     &kSetPassStyle[2],    &kSetPassLocalTone[0], &kSetPassLocalTone[1],
     &kSetPassLocalTone[2], &kSetPassStructure[0], &kSetPassStructure[1],
     &kSetPassStructure[2], &kSetPassSkin[0],      &kSetPassSkin[1],
@@ -24034,6 +24120,45 @@ inline void DrawControlMaskValues(
                 ui::text::kControlMaskBlueTip);
   ImGui::EndDisabled();
 
+  ToggleSetting(text, pass == 0 ? kSetControlMaskMotionEnabled : kSetPassControlMaskMotionEnabled[pass - 1],
+                ui::text::kControlMaskMotion, ui::text::kControlMaskMotionTip);
+  const Setting& motion_start_setting = (pass == 0 ? kSetControlMaskMotionStart : kSetPassControlMaskMotionStart[pass - 1]);
+  const Setting& motion_end_setting = (pass == 0 ? kSetControlMaskMotionEnd : kSetPassControlMaskMotionEnd[pass - 1]);
+  const auto motion_slider = [&](const Setting& setting, const char* label, bool start_endpoint) {
+    ImGui::PushID(setting.key);
+    float value = setting.Get();
+    bool changed;
+    if (text.modern) {
+      ui::RowLabel(label, ui::text::kControlMaskMotionRangeTip);
+      changed = ui::Slider("##value", &value, 0.f, 256.f, "%.2f", ui::text::kControlMaskMotionRangeTip);
+    } else {
+      changed = ImGui::SliderFloat(ui::ControlLabel(label).c_str(), &value, 0.f, 256.f, "%.2f");
+      ui::ItemTooltip("%s", text.Tr(ui::text::kControlMaskMotionRangeTip));
+    }
+    if (changed) {
+      value = (start_endpoint
+          ? std::clamp(value, 0.f, std::nextafter(motion_end_setting.Get(), 0.f))
+          : std::clamp(value, std::nextafter(motion_start_setting.Get(), 256.f), 256.f));
+      if (slider_pending != &setting) SettleSlider(true);
+      setting.Store(value);
+      slider_pending = &setting;
+    }
+    SettleSlider(false);
+    if (text.modern && setting.Modified()) {
+      char stock[32];
+      std::snprintf(stock, sizeof(stock), "%.2f", setting.fallback);
+      ImGui::BeginDisabled(start_endpoint ? setting.fallback >= motion_end_setting.Get()
+                                         : setting.fallback <= motion_start_setting.Get());
+      if (ui::ResetButton("reset", stock)) {
+        SettleSlider(true);
+        setting.Commit(setting.fallback);
+      }
+      ImGui::EndDisabled();
+    }
+    ImGui::PopID();
+  };
+  motion_slider(motion_start_setting, ui::text::kControlMaskMotionStart, true);
+  motion_slider(motion_end_setting, ui::text::kControlMaskMotionEnd, false);
   if (mode != kControlMaskDepthFar) return;
   ImGui::TextWrapped("%s", text.Tr(ui::text::kControlMaskDepthGuide));
   if (ImGui::Button(text.Tr("Far scenery"))) {
@@ -24985,6 +25110,9 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
               &(pass == 0 ? kSetControlMaskGreen : kSetPassControlMaskGreen[pass - 1]),
               &(pass == 0 ? kSetControlMaskBlue : kSetPassControlMaskBlue[pass - 1]),
               &(pass == 0 ? kSetControlMaskDepthNear : kSetPassControlMaskDepthNear[pass - 1]),
+              &(pass == 0 ? kSetControlMaskMotionEnabled : kSetPassControlMaskMotionEnabled[pass - 1]),
+              &(pass == 0 ? kSetControlMaskMotionStart : kSetPassControlMaskMotionStart[pass - 1]),
+              &(pass == 0 ? kSetControlMaskMotionEnd : kSetPassControlMaskMotionEnd[pass - 1]),
               &(pass == 0 ? kSetControlMaskDepthFar : kSetPassControlMaskDepthFar[pass - 1])};
           const size_t result_count = std::size(kPassLookResultSettings) / (kMaxNrPasses - 1);
           const bool modified = AnyModified({node_settings}) || AnyModified({mask_settings})
@@ -27637,6 +27765,9 @@ inline void ReadIniRawValues() {
       {"NRControlMaskGreen", IniKind::kFloat},
       {"NRControlMaskBlue", IniKind::kFloat},
       {"NRControlMaskDepthNear", IniKind::kFloat},
+      {"NRControlMaskMotionEnabled", IniKind::kBool},
+      {"NRControlMaskMotionStart", IniKind::kFloat},
+      {"NRControlMaskMotionEnd", IniKind::kFloat},
       {"NRControlMaskDepthFar", IniKind::kFloat},
       {"NRControlMaskGpuCaptureSamples", IniKind::kUint},
       {"NRControlMaskGpuCaptureSeconds", IniKind::kUint},
@@ -27986,6 +28117,9 @@ inline void LoadConfiguration() {
     float blue = 1.f;
     float depth_near = kControlMaskDepthNearDefault;
     float depth_far = kControlMaskDepthFarDefault;
+    bool motion_enabled = false;
+    float motion_start = 2.f;
+    float motion_end = 16.f;
   } saved_pass_control_mask[kMaxNrPasses - 1];
 
   // Reads are unconditional (targeted migration, not reset): presence of the
@@ -28252,6 +28386,12 @@ inline void LoadConfiguration() {
         (prefix + "ControlMaskDepthNear").c_str(), mask.depth_near);
     reshade::get_config_value(nullptr, kConfigSection,
         (prefix + "ControlMaskDepthFar").c_str(), mask.depth_far);
+    reshade::get_config_value(nullptr, kConfigSection,
+        (prefix + "ControlMaskMotionEnd").c_str(), mask.motion_end);
+    reshade::get_config_value(nullptr, kConfigSection,
+        (prefix + "ControlMaskMotionStart").c_str(), mask.motion_start);
+    reshade::get_config_value(nullptr, kConfigSection,
+        (prefix + "ControlMaskMotionEnabled").c_str(), mask.motion_enabled);
   }
   reshade::get_config_value(
       nullptr, kConfigSection, "NRFollowInputRes", saved_follow_input);
@@ -28300,6 +28440,12 @@ inline void LoadConfiguration() {
   reshade::get_config_value(
       nullptr, kConfigSection, "NRTelemetrySeconds", saved_telemetry_seconds);
   telemetry_seconds = std::min(saved_telemetry_seconds, 3600u);
+  bool saved_control_mask_motion_enabled = false;
+  reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskMotionEnabled", saved_control_mask_motion_enabled);
+  float saved_control_mask_motion_start = 2.f;
+  reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskMotionStart", saved_control_mask_motion_start);
+  float saved_control_mask_motion_end = 16.f;
+  reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskMotionEnd", saved_control_mask_motion_end);
   bool saved_control_mask_enabled = false;
   uint32_t saved_control_mask_mode = kControlMaskRgb;
   uint32_t saved_control_mask_blend_mode = 0;
@@ -28326,6 +28472,9 @@ inline void LoadConfiguration() {
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskBlue", saved_control_mask_blue);
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskDepthNear", saved_control_mask_depth_near);
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskDepthFar", saved_control_mask_depth_far);
+  control_mask_motion_enabled = saved_control_mask_motion_enabled;
+  control_mask_motion_start = SanitizeFloatKey(saved_control_mask_motion_start, 2.f, 0.f, 256.f, "NRControlMaskMotionStart");
+  control_mask_motion_end = SanitizeFloatKey(saved_control_mask_motion_end, 16.f, 0.f, 256.f, "NRControlMaskMotionEnd");
   control_mask_enabled = saved_control_mask_enabled;
   control_mask_mode = SanitizeEnumKey(saved_control_mask_mode, kControlMaskRgb,
       kControlMaskRgb, kControlMaskDepthFar, "NRControlMaskMode");
@@ -28696,6 +28845,9 @@ inline void LoadConfiguration() {
     const SavedControlMask& mask = saved_pass_control_mask[pass - 1];
     PassControlMask& pass_mask = pass_control_mask[pass - 1];
     pass_mask.follow = mask.follow;
+    pass_mask.motion_enabled = mask.motion_enabled;
+    pass_mask.motion_start = SanitizeFloatKey(mask.motion_start, 2.f, 0.f, 256.f, kSetPassControlMaskMotionStart[pass - 1].key);
+    pass_mask.motion_end = SanitizeFloatKey(mask.motion_end, 16.f, 0.f, 256.f, kSetPassControlMaskMotionEnd[pass - 1].key);
     pass_mask.mode = SanitizeEnumKey(mask.mode, kControlMaskRgb,
         kControlMaskRgb, kControlMaskDepthFar, kSetPassControlMaskMode[pass - 1].key);
     pass_mask.blend_mode = SanitizeEnumKey(mask.blend_mode, 0u, 0u, 3u,

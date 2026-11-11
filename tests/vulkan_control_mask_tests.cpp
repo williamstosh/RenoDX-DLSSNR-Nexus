@@ -635,8 +635,10 @@ void RunProductionMaskDispatchMock() {
   constexpr uint32_t depth_height = 8;
 
   reshade::api::resource depth{};
+  reshade::api::resource motion{};
   reshade::api::resource mask{};
   reshade::api::resource_view depth_view{};
+  reshade::api::resource_view motion_view{};
   reshade::api::resource_view mask_view{};
   const auto usages = reshade::api::resource_usage::shader_resource
       | reshade::api::resource_usage::unordered_access
@@ -650,9 +652,16 @@ void RunProductionMaskDispatchMock() {
                                 reshade::api::memory_heap::gpu_only, usages},
                                nullptr, reshade::api::resource_usage::undefined, &mask),
         "create RGBA8 mask image");
+  Check(device.create_resource({16, 16, 1, 1, reshade::api::format::r32g32_float, 1,
+                                reshade::api::memory_heap::gpu_only, usages},
+                               nullptr, reshade::api::resource_usage::undefined, &motion),
+        "create motion image");
   Check(device.create_resource_view(depth, reshade::api::resource_usage::undefined,
                                    reshade::api::resource_view_desc(reshade::api::format::r32_float),
                                    &depth_view), "create depth image view");
+  Check(device.create_resource_view(motion, reshade::api::resource_usage::undefined,
+                                   reshade::api::resource_view_desc(reshade::api::format::r32g32_float),
+                                   &motion_view), "create motion image view");
   Check(device.create_resource_view(mask, reshade::api::resource_usage::undefined,
                                    reshade::api::resource_view_desc(reshade::api::format::r8g8b8a8_unorm),
                                    &mask_view), "create mask image view");
@@ -685,6 +694,24 @@ void RunProductionMaskDispatchMock() {
       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &upload_region);
   const reshade::api::resource_usage depth_after[] = {reshade::api::resource_usage::shader_resource};
   command_list.barrier(1, depth_resource, depth_copy, depth_after);
+  std::array<float, 16 * 16 * 2> vectors{};
+  for (uint32_t y = 0; y < depth_height; ++y) {
+    for (uint32_t x = 0; x < depth_width; ++x) {
+      vectors[((depth_base_y + y) * 16 + depth_base_x + x) * 2] =
+          (x == 0 ? 16.f : (x == 2 ? 9.f : (x == 3 ? std::numeric_limits<float>::quiet_NaN() : 0.f)));
+    }
+  }
+  auto motion_upload = CreateHostBuffer(context, sizeof(vectors), VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+  vk_test::Require(context.DeviceProc<PFN_vkMapMemory>("vkMapMemory")(
+      context.device, motion_upload.memory, 0, motion_upload.size, 0, &mapped), "map motion upload");
+  std::memcpy(mapped, vectors.data(), sizeof(vectors));
+  context.DeviceProc<PFN_vkUnmapMemory>("vkUnmapMemory")(context.device, motion_upload.memory);
+  const reshade::api::resource motion_resource[] = {motion};
+  command_list.barrier(1, motion_resource, depth_before, depth_copy);
+  context.DeviceProc<PFN_vkCmdCopyBufferToImage>("vkCmdCopyBufferToImage")(
+      context.command_buffer, motion_upload.buffer, vk_test::NativeHandle<VkImage>(motion.handle),
+      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &upload_region);
+  command_list.barrier(1, motion_resource, depth_copy, depth_after);
   const reshade::api::resource mask_resource[] = {mask};
   const reshade::api::resource_usage mask_before[] = {reshade::api::resource_usage::undefined};
   const reshade::api::resource_usage mask_write[] = {reshade::api::resource_usage::unordered_access};
@@ -696,7 +723,9 @@ void RunProductionMaskDispatchMock() {
       width, height, addon::kControlMaskDepthFar, width / 2, height / 2,
       0.75f, 0.25f, 0.5f, depth_base_x, depth_base_y, depth_width, depth_height,
       0, 0.7f, 0.9f, 0};
-  addon::vk::RecordControlMaskDispatch(&command_list, &depth_vk, depth_view, mask_view, constants);
+  const auto motion_vk = MakeImageResource(vk_test::NativeHandle<VkImage>(motion.handle),
+      vk_test::NativeHandle<VkImageView>(motion_view.handle), 16, 16, VK_FORMAT_R32G32_SFLOAT, false);
+  addon::vk::RecordControlMaskDispatch(&command_list, &depth_vk, &motion_vk, depth_view, motion_view, mask_view, constants);
   const reshade::api::resource_usage mask_read[] = {reshade::api::resource_usage::shader_resource};
   command_list.barrier(1, mask_resource, mask_write, mask_read);
   const reshade::api::resource_usage mask_copy[] = {reshade::api::resource_usage::copy_source};
@@ -753,6 +782,41 @@ void RunProductionMaskDispatchMock() {
   addon::vk::OnResetCommandList(&command_list);
   Check(addon::vk::RecordedUseComplete(use_id),
         "production reset retirement releases completed mask use");
+  for (const bool combine_depth : {false, true}) {
+    const reshade::api::resource_usage previous_mask[] = {reshade::api::resource_usage::copy_source};
+    command_list.barrier(1, mask_resource, previous_mask, mask_write);
+    auto motion_constants = constants;
+    motion_constants.mode = (combine_depth ? addon::kControlMaskDepthFar : addon::kControlMaskRgb);
+    motion_constants.motion_enabled = 1;
+    motion_constants.motion_base_x = depth_base_x;
+    motion_constants.motion_base_y = depth_base_y;
+    motion_constants.motion_width = depth_width;
+    motion_constants.motion_height = depth_height;
+    motion_constants.motion_scale_x = -1.f;
+    motion_constants.motion_scale_y = 1.f;
+    motion_constants.motion_start = 2.f;
+    motion_constants.motion_end = 16.f;
+    addon::vk::RecordControlMaskDispatch(&command_list, &depth_vk, &motion_vk,
+        depth_view, motion_view, mask_view, motion_constants);
+    command_list.barrier(1, mask_resource, mask_write, mask_copy);
+    context.DeviceProc<PFN_vkCmdCopyImageToBuffer>("vkCmdCopyImageToBuffer")(
+        context.command_buffer, vk_test::NativeHandle<VkImage>(mask.handle),
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.buffer, 1, &read_region);
+    SubmitAndWait(context);
+    vk_test::Require(context.DeviceProc<PFN_vkMapMemory>("vkMapMemory")(
+        context.device, readback.memory, 0, readback.size, 0, &mapped), "map motion mask readback");
+    const auto* motion_pixels = static_cast<const uint8_t*>(mapped);
+    Check(motion_pixels[0] == 0 && std::abs(static_cast<int>(motion_pixels[2 * 4]) - 191) <= 1
+              && std::abs(static_cast<int>(motion_pixels[4 * 4]) - 96) <= 1
+              && std::abs(static_cast<int>(motion_pixels[6 * 4]) - (combine_depth ? 96 : 191)) <= 1,
+          "Vulkan motion subrect, negative scale, midpoint and invalid-vector fallback match the completed shader output");
+    Check(motion_pixels[1] == 64 && std::abs(static_cast<int>(motion_pixels[2]) - 128) <= 1
+              && motion_pixels[3] == 255 && (!combine_depth || motion_pixels[14 * 4] == 0),
+          "Vulkan combines strongest R protection while preserving G/B/A");
+    context.DeviceProc<PFN_vkUnmapMemory>("vkUnmapMemory")(context.device, readback.memory);
+    Begin(context);
+    addon::vk::OnResetCommandList(&command_list);
+  }
 
   constexpr uint64_t discarded_use = 0xC0A71002;
   Begin(context);
@@ -764,11 +828,14 @@ void RunProductionMaskDispatchMock() {
   Check(addon::vk::RecordedUseComplete(discarded_use), "discarded recording retires mask use on reset");
 
   DestroyBuffer(context, &upload);
+  DestroyBuffer(context, &motion_upload);
   DestroyBuffer(context, &readback);
   device.destroy_resource_view(mask_view);
   device.destroy_resource_view(depth_view);
+  device.destroy_resource_view(motion_view);
   device.destroy_resource(mask);
   device.destroy_resource(depth);
+  device.destroy_resource(motion);
   device.destroy_pipeline(addon::vk::control_mask_program);
   device.destroy_pipeline_layout(addon::vk::control_mask_layout);
   addon::vk::control_mask_program = {};

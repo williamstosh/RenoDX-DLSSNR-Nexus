@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kJa[] = {
+    {"Motion attenuation", "動きによる減衰"},
+    {"Reduce R in moving areas, including camera motion. Disabled or unavailable motion leaves the other region-mask settings active.", "カメラの動きを含む、動きのある領域の R を減らします。動きが無効または利用できない場合も、領域マスクの他の設定は有効です。"},
+    {"Motion fade start", "動きの減衰開始"},
+    {"Motion fade end", "動きの減衰終了"},
+    {"Pixels per frame at this pass's input resolution. Motion below the start keeps R; motion at or above the end removes R. G and B keep their configured values.", "このパスの入力解像度におけるフレームあたりのピクセル数です。開始値未満では R を維持し、終了値以上では R を取り除きます。G と B は設定値を維持します。"},
     {"Region mask", "領域マスク"},
     {"Region mask settings", "領域マスク設定"},
     {"Use Pass 1 region mask settings", "パス 1 の領域マスク設定を使用"},

@@ -22,6 +22,8 @@
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include <dlssnr.hpp>
@@ -312,6 +314,89 @@ int main(int argc, char** argv) {
     if (test_case == "fail-hdr-version") failed_key = "NRPresentHdrPedestalConfigVersion";
     runtime::LoadConfiguration();
     if (test_case == "control-mask-depth") {
+      auto check_motion = [](const auto& mask, bool enabled, float start, float end, const char* description) {
+        Check(mask.motion_enabled == enabled && mask.motion_start == start && mask.motion_end == end, description);
+      };
+      for (uint32_t pass = 0; pass < runtime::kMaxNrPasses; ++pass) {
+        check_motion(runtime::ResolveControlMaskParameters(pass), false, 2.f, 16.f,
+                     "missing motion settings resolve to defaults");
+      }
+      for (const std::string prefix : {std::string("NR"), std::string("NRPass2"),
+                                       std::string("NRPass3"), std::string("NRPass4")}) {
+        Check(runtime::preset_ui::ReadSetting(prefix + "ControlMaskMotionEnabled") == false
+                  && runtime::preset_ui::ReadSetting(prefix + "ControlMaskMotionStart") == 2.f
+                  && runtime::preset_ui::ReadSetting(prefix + "ControlMaskMotionEnd") == 16.f,
+              "missing stored motion settings use defaults for every pass");
+      }
+      auto write_motion = [&](const char* prefix, const char* enabled, const char* start, const char* end) {
+        for (const auto& [suffix, value] : {std::pair{"ControlMaskMotionEnabled", enabled},
+                                            std::pair{"ControlMaskMotionStart", start},
+                                            std::pair{"ControlMaskMotionEnd", end}}) {
+          Check(WritePrivateProfileStringA(runtime::kConfigSection, (std::string(prefix) + suffix).c_str(),
+                                           value, ini_path.c_str()) != FALSE, "write motion fixture");
+        }
+      };
+      runtime::kSetControlMaskMotionEnabled.Commit(1.f);
+      runtime::kSetControlMaskMotionStart.Commit(4.f);
+      runtime::kSetControlMaskMotionEnd.Commit(32.f);
+      runtime::LoadConfiguration();
+      check_motion(runtime::ResolveControlMaskParameters(0), true, 4.f, 32.f, "saved motion values reload");
+      write_motion("NR", "1", "0", "256");
+      runtime::LoadConfiguration();
+      check_motion(runtime::ResolveControlMaskParameters(0), true, 0.f, 256.f, "motion range endpoints are valid");
+      struct MotionRangeCase {
+        const char* start;
+        const char* end;
+        float expected_start;
+        float expected_end;
+      };
+      for (const auto& range : {MotionRangeCase{"nan", "32", 2.f, 32.f},
+                                MotionRangeCase{"4", "inf", 4.f, 16.f},
+                                MotionRangeCase{"32", "4", 32.f, 4.f},
+                                MotionRangeCase{"4", "4", 4.f, 4.f}}) {
+        write_motion("NR", "1", range.start, range.end);
+        runtime::LoadConfiguration();
+        check_motion(runtime::ResolveControlMaskParameters(0), true, range.expected_start, range.expected_end,
+                     "motion endpoints sanitize separately and retain finite ordering");
+      }
+      write_motion("NR", "1", "4", "32");
+      write_motion("NRPass2", "0", "8", "64");
+      write_motion("NRPass3", "0", "12", "96");
+      Check(WritePrivateProfileStringA(runtime::kConfigSection, "NRPass2ControlMaskFollowPass1", "0", ini_path.c_str()) != FALSE
+                && WritePrivateProfileStringA(runtime::kConfigSection, "NRPass3ControlMaskFollowPass1", "1", ini_path.c_str()) != FALSE,
+            "write motion inheritance fixtures");
+      runtime::LoadConfiguration();
+      check_motion(runtime::ResolveControlMaskParameters(1), false, 8.f, 64.f, "pass 2 resolves independent motion values");
+      check_motion(runtime::ResolveControlMaskParameters(2), true, 4.f, 32.f, "pass 3 inherits global motion values");
+
+      namespace motion_presets = renodx::addons::dlss5::presets;
+      namespace motion_adapter = runtime::preset_ui;
+      motion_presets::Document motion_document;
+      motion_document.scope = motion_presets::Scope::FULL;
+      for (const std::string prefix : {std::string("NR"), std::string("NRPass2"),
+                                       std::string("NRPass3"), std::string("NRPass4")}) {
+        for (const char* suffix : {"ControlMaskMotionEnabled", "ControlMaskMotionStart", "ControlMaskMotionEnd"}) {
+          const auto key = prefix + suffix;
+          Check(motion_presets::FindRule(key) != nullptr, "motion preset field is discoverable");
+          motion_document.settings[key] = std::string_view(suffix).ends_with("Enabled")
+              ? motion_presets::Json(true) : motion_presets::Json(std::string_view(suffix).ends_with("Start") ? 6.f : 48.f);
+        }
+      }
+      std::string motion_error;
+      const bool motion_applied = motion_adapter::Apply(motion_document, true, false, &motion_error);
+      if (!motion_applied) std::cerr << "Motion preset apply: " << motion_error << '\n';
+      Check(motion_applied, "motion preset applies");
+      if (motion_applied) {
+        const auto motion_capture = motion_adapter::Capture(motion_presets::Scope::FULL, {});
+        for (const auto& [key, value] : motion_document.settings.items()) {
+          Check(motion_capture.settings.contains(key) && motion_capture.settings[key] == value,
+                "motion preset capture preserves applied fields");
+        }
+        runtime::LoadConfiguration();
+        check_motion(runtime::ResolveControlMaskParameters(0), true, 6.f, 48.f, "applied motion preset survives reload");
+        check_motion(runtime::ResolveControlMaskParameters(1), true, 6.f, 48.f, "independent pass motion preset survives reload");
+      }
+
       constexpr float near_default = 0.9999f;
       constexpr float far_default = 0.99995f;
       auto check_pair = [](float near_value, float far_value, float expected_near, float expected_far, const char* description) {

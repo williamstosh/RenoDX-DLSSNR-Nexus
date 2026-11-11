@@ -203,6 +203,26 @@ data-range 必须按实际数据口径指定（例如 RGBA8 为 255）。相同�
 identical=true，避免不可移植的 JSON Infinity。比较工具只测给定数组，不推定来源或
 自动认定两个序列具有相同 History。
 
+## ControlMask 运动衰减
+
+`control-mask-safety`／`control-mask-safety-hardware` 复用生产生成器，读回运动阈值、
+正负 scale、非零 Subrect、低／显示分辨率运动、非有限向量、无效窗口及独立规则回退。
+`vulkan-control-mask` 另核对 Vulkan Shader 的运动采样与深度重叠。
+
+~~~powershell
+pwsh -File tools/run-tests.ps1 -Suite fg-native -NativeCase control-mask-native-ngx-motion `
+    -NativeNgxProjectIdPath $projectIdPath -NativeNgxSdkLibraryDirectory $sdkLibraryDirectory `
+    -NativeNgxRuntimePath $runtimePath -UiPreview None
+~~~
+
+该原生用例在同一生产 Feature 上执行关闭／开启运动衰减的两段 8 帧合成序列，
+各段相同 Reset 前缀，输入平移与运动矢量一致。实际 GPU 完成后检查每次 Evaluate
+消费的遮罩、G/B/A、停止后的恢复及 RGBA16F 输出。`controlmask-motion.json`
+保存逐帧位移、遮罩值、输出差、Reset、单次调用数和 Fence；原始读回仅在内存配对。
+短序列 GPU timestamp 包围 NR wrapper，包含遮罩、codec 和 Runtime，排除上传及读回，
+用于发现明显开销变化；不作为稳定性能或游戏画质验收。宿主 SR 为 MOCK，
+NR 消费与 GPU 完成分别属于 NATIVE_NGX／NATIVE_GPU，内部模型身份保持未知。
+
 ## ControlMask 原生成本
 
 `fg-native` 的 `control-mask-native-ngx-cost` 用例在固定 4K 合成输入上计量

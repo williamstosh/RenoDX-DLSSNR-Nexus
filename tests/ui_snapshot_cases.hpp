@@ -351,6 +351,10 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     if (std::find(registry["expected"].begin(), registry["expected"].end(), scenario.id)
         == registry["expected"].end()) continue;
     const bool round_seven = scenario.action.starts_with("r7-");
+    const bool motion_snapshot = scenario.action == "r7-depth-fine";
+    const bool saved_motion_enabled = runtime::control_mask_motion_enabled.load();
+    const float saved_motion_start = runtime::control_mask_motion_start.load();
+    const float saved_motion_end = runtime::control_mask_motion_end.load();
     std::vector<std::pair<const runtime::Setting*, float>> round_seven_restore;
     if (round_seven) {
       for (const runtime::SettingGroup group : {runtime::SettingGroup(runtime::kCoreSettings),
@@ -461,6 +465,9 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
         runtime::control_mask_mode = runtime::kControlMaskDepthFar;
         runtime::control_mask_depth_near = 0.99989f;
         runtime::control_mask_depth_far = 0.99997f;
+        runtime::control_mask_motion_enabled = true;
+        runtime::control_mask_motion_start = 2.f;
+        runtime::control_mask_motion_end = 16.f;
       }
       for (unsigned pass = 0; pass < 3; ++pass) {
         runtime::pass_follow[pass] = true;
@@ -779,6 +786,37 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       settle();
       check(profile::Snapshot() == configuration && runtime::profile_commit_epoch.load() == epoch,
             "r7 production snapshots do not commit configuration while drawing");
+      if (motion_snapshot) {
+        const auto motion_control = [&](const char* label) {
+          const std::string translated = ui::Tr(label);
+          for (const auto& text : rendered_text) {
+            const bool matches = text.text == translated
+                || (text.text.ends_with("...")
+                    && std::string_view(translated).starts_with(std::string_view(text.text).substr(0, text.text.size() - 3)));
+            if (!matches) continue;
+            for (const auto& [id, item] : items) {
+              if (item.label == "##value" && item.window == text.window
+                  && std::abs(item.rect.GetCenter().y - text.rect.GetCenter().y) < 5.f) return item;
+            }
+          }
+          throw std::runtime_error(std::string("motion control missing: ") + label);
+        };
+        click(motion_control("Motion attenuation"));
+        check(!runtime::control_mask_motion_enabled.load(), "motion attenuation switch disables the global setting");
+        click(motion_control("Motion attenuation"));
+        check(runtime::control_mask_motion_enabled.load(), "motion attenuation switch enables the global setting");
+        click(motion_control("Motion fade end"));
+        check(runtime::control_mask_motion_end.load() != 16.f, "motion fade end slider updates its setting");
+        auto start_slider = motion_control("Motion fade start");
+        start_slider.rect.Max.x = start_slider.rect.GetCenter().x;
+        click(start_slider);
+        check(runtime::control_mask_motion_start.load() != 2.f, "motion fade start slider updates its setting");
+        click(motion_control("Motion attenuation"));
+        check(!runtime::control_mask_motion_enabled.load(), "motion attenuation switch disables the global setting");
+        click(motion_control("Motion attenuation"));
+        check(runtime::control_mask_motion_enabled.load(), "motion attenuation can be enabled again for capture");
+        interaction = "real motion switch and slider edits; motion enabled for capture";
+      }
       if (scenario.action == "r7-common") interaction = "production default folds; always-open common quality controls";
       if (scenario.page == 0) {
         for (const char* group : {"Core quality", "Processing & compatibility", "Appearance & result"}) {
@@ -1482,6 +1520,11 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     }
     if (!ImGui::GetCurrentContext()->OpenPopupStack.empty()) ImGui::ClosePopupToLevel(0, true);
     for (const auto& [setting, value] : round_seven_restore) setting->Store(value);
+    if (motion_snapshot) {
+      runtime::control_mask_motion_enabled = saved_motion_enabled;
+      runtime::control_mask_motion_start = saved_motion_start;
+      runtime::control_mask_motion_end = saved_motion_end;
+    }
   }
   drain_workers();
   clipboard_fixture::Empty();

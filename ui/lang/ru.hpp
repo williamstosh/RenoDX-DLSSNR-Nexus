@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kRu[] = {
+    {"Motion attenuation", "Ослабление движения"},
+    {"Reduce R in moving areas, including camera motion. Disabled or unavailable motion leaves the other region-mask settings active.", "Уменьшает R в движущихся областях, включая движение камеры. Если движение отключено или недоступно, остальные настройки маски области продолжают действовать."},
+    {"Motion fade start", "Начало затухания движения"},
+    {"Motion fade end", "Конец затухания движения"},
+    {"Pixels per frame at this pass's input resolution. Motion below the start keeps R; motion at or above the end removes R. G and B keep their configured values.", "Пиксели на кадр при входном разрешении этого прохода. Ниже начального порога R сохраняется; при конечном пороге и выше R удаляется. G и B сохраняют заданные значения."},
     {"Region mask", "Маска области"},
     {"Region mask settings", "Настройки маски области"},
     {"Use Pass 1 region mask settings", "Использовать настройки маски области прохода 1"},

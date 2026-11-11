@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kZhHans[] = {
+    {"Motion attenuation", "运动衰减"},
+    {"Reduce R in moving areas, including camera motion. Disabled or unavailable motion leaves the other region-mask settings active.", "降低运动区域的 R，包括相机运动。关闭或缺少有效运动输入时，区域遮罩的其他设置仍然生效。"},
+    {"Motion fade start", "运动淡出起点"},
+    {"Motion fade end", "运动淡出终点"},
+    {"Pixels per frame at this pass's input resolution. Motion below the start keeps R; motion at or above the end removes R. G and B keep their configured values.", "单位为当前 Pass 输入分辨率下的像素／帧。低于起点时保留 R，达到终点时 R 降至 0。G 和 B 保持设置值。"},
     {"Region mask", "区域遮罩"},
     {"Region mask settings", "区域遮罩设置"},
     {"Use Pass 1 region mask settings", "继承第 1 层区域遮罩设置"},

@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kFr[] = {
+    {"Motion attenuation", "Atténuation du mouvement"},
+    {"Reduce R in moving areas, including camera motion. Disabled or unavailable motion leaves the other region-mask settings active.", "Réduit R dans les zones en mouvement, y compris lors des mouvements de caméra. Si le mouvement est désactivé ou indisponible, les autres réglages du masque de région restent actifs."},
+    {"Motion fade start", "Début de l'atténuation du mouvement"},
+    {"Motion fade end", "Fin de l'atténuation du mouvement"},
+    {"Pixels per frame at this pass's input resolution. Motion below the start keeps R; motion at or above the end removes R. G and B keep their configured values.", "Pixels par image à la résolution d'entrée de cette passe. Sous le seuil de début, R est conservé ; au seuil de fin ou au-delà, R est supprimé. G et B conservent leurs valeurs définies."},
     {"Region mask", "Masque de région"},
     {"Region mask settings", "Réglages du masque de région"},
     {"Use Pass 1 region mask settings", "Utiliser les réglages du masque de région de la passe 1"},

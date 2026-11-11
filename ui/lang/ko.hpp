@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kKo[] = {
+    {"Motion attenuation", "움직임 감쇠"},
+    {"Reduce R in moving areas, including camera motion. Disabled or unavailable motion leaves the other region-mask settings active.", "카메라 움직임을 포함하여 움직이는 영역의 R을 줄입니다. 움직임이 비활성화되었거나 사용할 수 없는 경우에도 다른 영역 마스크 설정은 유지됩니다."},
+    {"Motion fade start", "움직임 감쇠 시작"},
+    {"Motion fade end", "움직임 감쇠 끝"},
+    {"Pixels per frame at this pass's input resolution. Motion below the start keeps R; motion at or above the end removes R. G and B keep their configured values.", "이 패스의 입력 해상도에서 프레임당 픽셀 수입니다. 시작값 미만에서는 R을 유지하고 끝값 이상에서는 R을 제거합니다. G와 B는 설정된 값을 유지합니다."},
     {"Region mask", "영역 마스크"},
     {"Region mask settings", "영역 마스크 설정"},
     {"Use Pass 1 region mask settings", "패스 1의 영역 마스크 설정 사용"},

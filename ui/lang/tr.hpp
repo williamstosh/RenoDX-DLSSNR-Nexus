@@ -12,6 +12,11 @@
 namespace renodx::addons::dlss5::ui::lang {
 
 inline constexpr Translation kTr[] = {
+    {"Motion attenuation", "Hareket azaltma"},
+    {"Reduce R in moving areas, including camera motion. Disabled or unavailable motion leaves the other region-mask settings active.", "Kamera hareketi dahil hareketli alanlarda R değerini azaltır. Hareket devre dışıysa veya kullanılamıyorsa diğer bölge maskesi ayarları etkin kalır."},
+    {"Motion fade start", "Hareket azaltma başlangıcı"},
+    {"Motion fade end", "Hareket azaltma bitişi"},
+    {"Pixels per frame at this pass's input resolution. Motion below the start keeps R; motion at or above the end removes R. G and B keep their configured values.", "Bu geçişin giriş çözünürlüğünde kare başına piksel. Başlangıç değerinin altında R korunur; bitiş değerinde veya üzerinde R kaldırılır. G ve B yapılandırılan değerlerini korur."},
     {"Region mask", "Bölge maskesi"},
     {"Region mask settings", "Bölge maskesi ayarları"},
     {"Use Pass 1 region mask settings", "Geçiş 1 bölge maskesi ayarlarını kullan"},
