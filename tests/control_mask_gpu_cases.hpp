@@ -415,6 +415,8 @@ HRESULT STDMETHODCALLTYPE Allocate(ID3D12Device* device, const D3D12_HEAP_PROPER
 
 void RunInline(Gpu& gpu, bool hardware, bool safety) {
   const bool saved_motion_enabled = addon::control_mask_motion_enabled.load();
+  const float saved_motion_start = addon::control_mask_motion_start.exchange(2.f);
+  const float saved_motion_end = addon::control_mask_motion_end.exchange(16.f);
   using renodx::addons::dlss5::NrDeclineReason;
   using renodx::addons::dlss5::kNrDeclineTags;
   Check(static_cast<size_t>(NrDeclineReason::kControlMaskSubmissionsUnproven)
@@ -1692,6 +1694,8 @@ void RunInline(Gpu& gpu, bool hardware, bool safety) {
             && DetourTransactionCommit() == NO_ERROR, "ControlMask observers detached");
   std::cout << "PASS ControlMask ProcessInline default-off dispatch, allocation/NGX failure and no-retry contracts\n";
   addon::control_mask_motion_enabled = saved_motion_enabled;
+  addon::control_mask_motion_start = saved_motion_start;
+  addon::control_mask_motion_end = saved_motion_end;
 }
 
 std::vector<uint8_t> ReadPixels(Gpu& gpu, ID3D12Resource* texture) {
@@ -2056,6 +2060,18 @@ int RunSafety(bool hardware, bool safety = true) {
       const auto depth_desc = depth_input->GetDesc();
       const float saved_multiplier_x = addon::motion_scale_x_multiplier.exchange(1.f);
       const float saved_multiplier_y = addon::motion_scale_y_multiplier.exchange(1.f);
+      float migrated_start = 2.f;
+      float migrated_end = 16.f;
+      Check(addon::MigrateControlMaskMotionDefaults(&migrated_start, &migrated_end)
+                && migrated_start == 16.f && migrated_end == 160.f,
+            "exact old motion defaults migrate together");
+      for (const auto custom : {std::pair{2.f, 174.56f}, std::pair{4.f, 16.f}}) {
+        migrated_start = custom.first;
+        migrated_end = custom.second;
+        Check(!addon::MigrateControlMaskMotionDefaults(&migrated_start, &migrated_end)
+                  && migrated_start == custom.first && migrated_end == custom.second,
+              "custom motion ranges remain intact during migration");
+      }
       struct MotionCase {
         const char* name;
         bool display_grid;
@@ -2206,6 +2222,58 @@ int RunSafety(bool hardware, bool safety = true) {
           std::cout << "MOTION_MASK auto_reference=10x2 current=" << current_width << 'x' << current_height
                     << " axis=" << (vertical ? "y" : "x") << " rgba8=PASS adapter="
                     << (hardware ? "NATIVE_GPU" : "WARP") << " nr=MOCK\n";
+        }
+      }
+      // A compressed guide grid retains the scene's normalized MV contract:
+      // scale/window cancel, leaving 3840x2160 reference pixels per frame.
+      addon::EvaluationContract frame{};
+      frame.input_width = frame.motion_width = 10;
+      frame.input_height = frame.motion_height = 2;
+      frame.motion = vectors.Get();
+      frame.motion_x = 3;
+      frame.motion_y = 1;
+      frame.motion_scale_x = 10.f;
+      frame.motion_scale_y = 2.f;
+      workset = addon::EnsureWorkset(gpu.device.Get(), motion_owner, texture.Get(),
+          10, 2, 10, 2, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 1, 0, false, nullptr, nullptr, true);
+      Check(workset != nullptr, "default motion sequence owns its mask dimensions");
+      const addon::ControlMaskParameters settings{
+          .mode = addon::kControlMaskRgb, .blend_mode = 0, .rgb = {1.f, 0.5f, 0.25f},
+          .depth_near = 0.f, .depth_far = 1.f, .motion_enabled = true};
+      constexpr std::array<float, 13> sequence{0.f, 8.f, 16.f, 32.f, 64.f, 96.f, 160.f,
+          96.f, 64.f, 32.f, 16.f, 8.f, 0.f};
+      constexpr std::array<int, 13> expected_red{255, 255, 255, 246, 189, 106, 0,
+          106, 189, 246, 255, 255, 255};
+      for (const bool vertical : {false, true}) {
+        for (size_t step = 0; step < sequence.size(); ++step) {
+          std::array<float, 14 * 4 * 2> vector_data{};
+          for (uint32_t y = 0; y < 2; ++y) {
+            for (uint32_t x = 0; x < 10; ++x) {
+              const size_t index = (static_cast<size_t>(y + 1) * 14 + x + 3) * 2;
+              vector_data[index + (vertical ? 1 : 0)] = sequence[step] / (vertical ? 2160.f : 3840.f);
+            }
+          }
+          auto transfer = gpu.CreateTextureTransfer(vectors.Get());
+          gpu.Transition(vectors.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+          gpu.UploadTexture(vectors.Get(), transfer, reinterpret_cast<const uint8_t*>(vector_data.data()),
+              sizeof(vector_data), 14 * 2 * sizeof(float));
+          gpu.Transition(vectors.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+          Check(addon::DispatchControlMask(gpu.device.Get(), gpu.list.Get(), *workset, nullptr,
+                    depth_desc, frame, 10, 2, settings, false, true, 3840, 2160),
+                "default motion sequence dispatch uses normalized vectors in 4K reference pixels");
+          gpu.Transition(workset->control_mask, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+              D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+          workset->control_mask_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+          const auto bytes = ReadPixels(gpu, workset->control_mask);
+          for (size_t pixel = 0; pixel < bytes.size(); pixel += 4) {
+            Check(std::abs(static_cast<int>(bytes[pixel]) - expected_red[step]) <= 1
+                      && std::abs(static_cast<int>(bytes[pixel + 1]) - 128) <= 1
+                      && bytes[pixel + 2] == 64 && bytes[pixel + 3] == 255,
+                  "default thresholds preserve gentle motion, fade continuously and restore stopped input");
+          }
+          std::cout << "MOTION_MASK default_sequence axis=" << (vertical ? "y" : "x")
+                    << " reference=3840x2160 speed=" << sequence[step]
+                    << " red=" << static_cast<int>(bytes[0]) << " rgba8=PASS\n";
         }
       }
       addon::motion_scale_x_multiplier = saved_multiplier_x;

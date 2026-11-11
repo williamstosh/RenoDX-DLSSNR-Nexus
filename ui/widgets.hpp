@@ -231,12 +231,20 @@ struct StatusSummaryFields {
   std::string fps;
   std::string fg;
   const char* fps_tip = frame_metrics::SourceTip(frame_metrics::Source::NONE);
-  const char* fg_tip = "Observed frame generation route. FG GPU duration is unavailable.";
+  std::string fg_tip = "Observed frame generation route. FG GPU duration is unavailable.";
   const char* resolution_tip = "Configured working ratio and current completed working dimensions when available.";
   const char* stage_tip = "Execution evidence for the current chain. A requested stage is not proof of execution.";
   const char* gpu_tip = "Recent valid NR GPU time. Shows — when no measurement is available.";
   bool gpu_reference = false;
 };
+
+inline void DrawSummaryMetric(const char* label, const std::string& value, const char* tip, float width) {
+  ImGui::BeginGroup();
+  ImGui::TextUnformatted(Ellipsize(Tr(label), width).c_str());
+  ImGui::TextUnformatted(Ellipsize(value.empty() ? "—" : value.c_str(), width).c_str());
+  ImGui::EndGroup();
+  ItemTooltip("%s\n%s", Tr(label), tip != nullptr ? Tr(tip) : "");
+}
 
 // Only the compact child participates in settings layout. The caller opens
 // complete runtime details without expanding the summary's default height.
@@ -255,13 +263,11 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, co
   const float action_width = (std::min)(available, ImGui::CalcTextSize(monitor_label.c_str()).x
       + ImGui::GetStyle().FramePadding.x * 2.f);
   const float title_width = (std::max)(1.f, available - action_width - gap);
-  const bool auxiliary = available >= font * 56.f;
   const int columns = (available >= font * 28.f ? 3 : 2);
   const float field_width = (available - gap * (columns - 1)) / columns;
   const float heading_height = ImGui::GetFrameHeight();
   const float height = ImGui::GetStyle().WindowPadding.y * 2.f + heading_height
-      + ImGui::GetStyle().ItemSpacing.y + ImGui::GetTextLineHeight()
-      + (auxiliary ? ImGui::GetTextLineHeightWithSpacing() : 0.f);
+      + ImGui::GetStyle().ItemSpacing.y + ImGui::GetTextLineHeightWithSpacing() * 2.f * (columns == 3 ? 1.f : 2.f);
   char title[256];
   FormatCardTitle(title, sizeof(title), card);
   const char* short_title = title;
@@ -293,35 +299,13 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, co
     ItemTooltip("%s%s%s\n%s", Tr("Runtime monitor"), monitor_hotkey.empty() ? "" : " · ", monitor_hotkey.c_str(),
         Tr("Open the movable runtime monitor. Diagnostics remain available separately."));
     const float metric_y = heading_at.y + heading_height + ImGui::GetStyle().ItemSpacing.y;
-    const char* names[] = {"NR GPU", "FPS", "FG"};
-    const std::string* values[] = {&fields.gpu, &fields.fps, &fields.fg};
-    const char* tips[] = {fields.gpu_tip, fields.fps_tip, fields.fg_tip};
-    for (int column = 0; column < columns; ++column) {
-      const int index = (columns == 2 && column == 1 && fields.fps.empty() ? 2 : column);
-      const std::string value = (index == 0 && fields.gpu_reference && !values[index]->empty() ? "~ " : "")
-          + (values[index]->empty() ? std::string("—") : *values[index]);
-      const std::string metric = std::string(Tr(names[index])) + "  " + value;
-      ImGui::SetCursorPos(ImVec2(heading_at.x + column * (field_width + gap), metric_y));
-      const float value_width = ImGui::CalcTextSize(value.c_str()).x;
-      const auto label = Ellipsize(Tr(names[index]), (std::max)(0.f, field_width - value_width - font * 0.4f));
-      const std::string shown = label.empty() ? value : label + " " + value;
-      ImGui::TextUnformatted(Ellipsize(shown.c_str(), field_width).c_str());
-      ItemTooltip("%s\n%s", metric.c_str(), tips[index] != nullptr ? Tr(tips[index]) : "");
-    }
-    if (auxiliary) {
-      const float width = (available - gap) * 0.5f;
-      const char* labels[] = {"Working resolution", "Execution stage"};
-      const std::string* values[] = {&fields.resolution, &fields.stage};
-      const char* tips[] = {fields.resolution_tip, fields.stage_tip};
-      StyleScope muted;
-      muted.Color(ImGuiCol_Text, CurrentTheme().text_secondary);
-      for (int column = 0; column < 2; ++column) {
-        const std::string text = std::string(Tr(labels[column])) + "  "
-            + (values[column]->empty() ? "—" : values[column]->c_str());
-        ImGui::SetCursorPos(ImVec2(heading_at.x + column * (width + gap), metric_y + ImGui::GetTextLineHeightWithSpacing()));
-        ImGui::TextUnformatted(Ellipsize(text.c_str(), width).c_str());
-        ItemTooltip("%s\n%s", text.c_str(), tips[column] != nullptr ? Tr(tips[column]) : "");
-      }
+    const char* names[] = {"FPS", "NR GPU", "FG"};
+    const std::string* values[] = {&fields.fps, &fields.gpu, &fields.fg};
+    const char* tips[] = {fields.fps_tip, fields.gpu_tip, fields.fg_tip.c_str()};
+    for (int index = 0; index < 3; ++index) {
+      ImGui::SetCursorPos(ImVec2(heading_at.x + (index % columns) * (field_width + gap),
+          metric_y + (index / columns) * ImGui::GetTextLineHeightWithSpacing() * 2.f));
+      DrawSummaryMetric(names[index], *values[index], tips[index], field_width);
     }
   }
   ImGui::EndChild();
@@ -340,10 +324,12 @@ inline bool DrawStatusSummary(const StatusCard& card, unsigned warning_count, co
   if (!off && execution != nullptr) fields.stage = execution;
   if (!off && card.nr_gpu_ms > 0.f) {
     char gpu[96];
-    std::snprintf(gpu, sizeof(gpu), "%.1f ms", card.nr_gpu_ms);
+    std::snprintf(gpu, sizeof(gpu), "%.1fms", card.nr_gpu_ms);
     fields.gpu = gpu;
   }
-  fields.fg = Tr(card.fg_declared || card.frame_gen_multiplier > 1 ? "On" : "Unknown");
+  if (card.frame_gen_multiplier > 1) {
+    fields.fg = std::to_string(card.frame_gen_multiplier) + "x";
+  }
   return DrawStatusSummary(card, warning_count, fields);
 }
 

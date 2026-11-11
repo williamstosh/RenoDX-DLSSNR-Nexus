@@ -30,7 +30,7 @@ void RunRuntimeMonitorCases(const Check& check) {
         "Simplified Chinese uses the existing player-facing stage names");
   ui::SelectLanguage(0);
   ui::StatusSummaryFields fields{.resolution = "3840x2160 -> 7680x4320",
-                                 .stage = "Render -> Upscaled -> Present", .gpu = "1.2 ms",
+                                 .stage = "Render -> Upscaled -> Present", .gpu = "1.2ms", .fps = "153", .fg = "4x",
                                  .resolution_tip = "Resolution evidence help",
                                  .stage_tip = "Stage evidence help", .gpu_tip = "GPU evidence help"};
   ui::StatusCard summary_card{.title = "Neural Rendering is on"};
@@ -41,9 +41,6 @@ void RunRuntimeMonitorCases(const Check& check) {
     ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
     ImGui::SetNextWindowSize(ImVec2(width, 1400.f));
     ImGui::Begin("adjacent summary widths", nullptr, ImGuiWindowFlags_NoSavedSettings);
-    const float available = ImGui::GetContentRegionAvail().x
-        - (ui::tokens::kCardPadding + ui::kStripeWidth) * 2.f;
-    const float measured_font = ImGui::GetFontSize();
     ImGui::LogToBuffer();
     ui::DrawStatusSummary(summary_card, 0, fields);
     const std::string log = ImGui::GetCurrentContext()->LogBuffer.c_str();
@@ -61,10 +58,10 @@ void RunRuntimeMonitorCases(const Check& check) {
     ImGui::Render();
     check(log.find(fields.gpu) != std::string::npos,
           "NR GPU remains visible at all supported summary widths");
-    check((log.find(fields.stage) != std::string::npos) == (available >= measured_font * 56.f),
-          "stage is auxiliary while metrics keep priority");
-    check((log.find(fields.resolution) != std::string::npos) == (available >= measured_font * 56.f),
-          "working resolution is auxiliary rather than the sole narrow metric");
+    check(log.find(fields.fps) != std::string::npos && log.find(fields.fg) != std::string::npos,
+          "FPS and FG remain visible alongside NR GPU at every supported width");
+    check(log.find(fields.stage) == std::string::npos && log.find(fields.resolution) == std::string::npos,
+          "compact status keeps three metrics while the monitor holds execution details");
     return log;
   };
   for (const auto& theme : ui::kThemes) {
@@ -82,7 +79,8 @@ void RunRuntimeMonitorCases(const Check& check) {
   }
   ui::SelectLanguage(0);
   summary_frame(1600.f, 13.f);
-  io.AddMousePosEvent(summary_window->Pos.x + summary_window->WindowPadding.x + 5.f,
+  const float metric_width = (summary_window->InnerRect.GetWidth() - ImGui::GetStyle().ItemSpacing.x * 2.f) / 3.f;
+  io.AddMousePosEvent(summary_window->Pos.x + summary_window->WindowPadding.x + metric_width + ImGui::GetStyle().ItemSpacing.x + 5.f,
                       summary_window->Pos.y + summary_window->WindowPadding.y + ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y + 5.f);
   std::string tooltip_log;
   for (int tick = 0; tick < 60; ++tick) tooltip_log = summary_frame(1600.f, 13.f);
@@ -147,6 +145,15 @@ void RunRuntimeMonitorCases(const Check& check) {
   next.time_ns = previous.time_ns;
   check(!ui::CanConnectMonitorPoints(previous, next, ui::MonitorMetric::GPU),
         "equal timestamps do not invent an event interval");
+  ui::MonitorPoint output_previous = previous;
+  output_previous.output_rate = true;
+  next = {.time_ns = previous.time_ns + 1'050'000'000LL, .valid = true, .output_rate = true};
+  check(ui::CanConnectMonitorPoints(output_previous, next, ui::MonitorMetric::FPS)
+            && !ui::CanConnectMonitorPoints(previous, next, ui::MonitorMetric::FPS),
+        "output FPS accommodates SDK cadence and cannot connect to callback FPS");
+  next.segment = 1;
+  check(!ui::CanConnectMonitorPoints(output_previous, next, ui::MonitorMetric::FPS),
+        "a source transition explicitly segments the FPS curve");
 
   ui::MonitorInputs inputs;
   inputs.card.title = "Neural Rendering is on";

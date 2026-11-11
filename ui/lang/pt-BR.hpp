@@ -2269,7 +2269,7 @@ inline constexpr Translation kPtBr[] = {
     {"NR: %.1f ms GPU per completed stage group.", "NR: %.1f ms de GPU por grupo de estágios concluído."},
     {"Measured GPU time for the current completed stage group. Compare configurations using GPU A/B; overall FPS also depends on the game and frame limits.", "Tempo de GPU medido para o grupo de estágios atual concluído. Compare configurações com GPU A/B; os FPS gerais também dependem do jogo e dos limites de quadros."},
     {"Frame interval (ms)", "Intervalo entre quadros (ms)"},
-    {"FPS averages the latest 16 intervals; frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "Os FPS usam a média dos últimos 16 intervalos; o intervalo entre quadros mostra amostras brutas. As curvas de GPU preservam os picos das amostras concluídas e deixam as lacunas vazias."},
+    {"FPS follows the current output estimate when available, otherwise cadence. Frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "O FPS usa a estimativa de saída atual quando disponível; caso contrário, a cadência. O intervalo de quadros mostra amostras brutas. As curvas da GPU preservam os picos das amostras concluídas e deixam lacunas sem dados."},
     {"Control mask", "Máscara de controle"},
     {"Control mask settings", "Configurações da máscara de controle"},
     {"Use Pass 1 mask settings", "Usar as configurações de máscara do Pass 1"},
@@ -2330,6 +2330,11 @@ inline constexpr Translation kPtBr[] = {
     {"Paused after an NR execution failure", "Pausado após falha de execução do NR"},
     {"Preparing working resolutions", "Preparando as resoluções de trabalho"},
     {"Paused: insufficient workset capacity", "Pausado: capacidade insuficiente para os recursos de trabalho"},
+    {"Not enabled", "Desativada"},
+    {"Exact target FPS", "Meta exata de FPS"},
+    {"Enter the target output frame rate directly (30-360). Press Enter to apply.", "Digite diretamente a taxa de saída desejada (30–360). Pressione Enter para aplicar."},
+    {"Adaptive resolution controls the current size. Turn it off to edit the saved manual upper limit.", "A resolução adaptativa controla o tamanho atual. Desative-a para editar o limite manual salvo."},
+    {"Saved manual upper limit: %s", "Limite manual salvo: %s"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

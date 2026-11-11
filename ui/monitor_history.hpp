@@ -23,6 +23,7 @@ struct MonitorPoint {
   bool valid = false;
   bool reference = false;
   uint64_t segment = 0;
+  bool output_rate = false;
 };
 
 // 50 ms buckets retain the extrema of actual events, including short spikes.
@@ -37,14 +38,14 @@ struct MonitorSeries {
   const MonitorPoint& At(size_t index) const { return points[(begin + index) % CAPACITY]; }
 
   void Add(int64_t time_ns, float value, bool valid = true, bool reference = false,
-           uint64_t segment = 0) {
+           uint64_t segment = 0, bool output_rate = false) {
     if (time_ns <= 0) return;
     valid &= std::isfinite(value) && value >= 0.f;
     if (count != 0) {
       auto& last = points[(begin + count - 1) % CAPACITY];
       if (time_ns < last.time_ns) return;
       if (!valid && !last.valid) return;
-      if (valid && last.valid && last.reference == reference && last.segment == segment
+      if (valid && last.valid && last.reference == reference && last.segment == segment && last.output_rate == output_rate
           && time_ns / BUCKET_NS == last.time_ns / BUCKET_NS) {
         last.time_ns = time_ns;
         last.value = value;
@@ -61,7 +62,7 @@ struct MonitorSeries {
     points[(begin + count++) % CAPACITY] = {
         .time_ns = time_ns, .value = (valid ? value : 0.f),
         .low = (valid ? value : 0.f), .high = (valid ? value : 0.f),
-        .events = (valid ? 1u : 0u), .valid = valid, .reference = reference, .segment = segment};
+        .events = (valid ? 1u : 0u), .valid = valid, .reference = reference, .segment = segment, .output_rate = output_rate};
     while (count > 1 && time_ns - At(0).time_ns > 60'000'000'000LL) {
       begin = (begin + 1) % CAPACITY;
       --count;
@@ -102,8 +103,8 @@ struct MonitorHistory {
     ++generation;
   }
 
-  void Add(MonitorMetric metric, int64_t time_ns, float value, bool valid = true, bool reference = false) {
-    series[static_cast<size_t>(metric)].Add(time_ns, value, valid, reference, segment);
+  void Add(MonitorMetric metric, int64_t time_ns, float value, bool valid = true, bool reference = false, bool output_rate = false) {
+    series[static_cast<size_t>(metric)].Add(time_ns, value, valid, reference, segment, output_rate);
   }
 };
 

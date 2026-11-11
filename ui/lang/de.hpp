@@ -2269,7 +2269,7 @@ inline constexpr Translation kDe[] = {
     {"NR: %.1f ms GPU per completed stage group.", "NR: %.1f ms GPU-Zeit pro abgeschlossener Stufengruppe."},
     {"Measured GPU time for the current completed stage group. Compare configurations using GPU A/B; overall FPS also depends on the game and frame limits.", "Gemessene GPU-Zeit der aktuellen abgeschlossenen Stufengruppe. Vergleiche Konfigurationen mit GPU A/B; die Gesamtbildrate hängt auch vom Spiel und von Bildratenlimits ab."},
     {"Frame interval (ms)", "Bildintervall (ms)"},
-    {"FPS averages the latest 16 intervals; frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "FPS mittelt die letzten 16 Intervalle; das Bildintervall zeigt Rohmesswerte. GPU-Kurven bewahren Spitzen abgeschlossener Messungen und lassen Lücken leer."},
+    {"FPS follows the current output estimate when available, otherwise cadence. Frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "FPS verwendet die aktuelle Ausgabeschätzung, falls verfügbar, sonst die Aufruffrequenz. Das Bildintervall zeigt Rohmesswerte. GPU-Kurven bewahren Spitzen abgeschlossener Messungen und lassen Lücken leer."},
     {"Control mask", "Steuerungsmaske"},
     {"Control mask settings", "Einstellungen der Steuerungsmaske"},
     {"Use Pass 1 mask settings", "Maskeneinstellungen von Pass 1 verwenden"},
@@ -2330,6 +2330,11 @@ inline constexpr Translation kDe[] = {
     {"Paused after an NR execution failure", "Nach NR-Ausführungsfehler pausiert"},
     {"Preparing working resolutions", "Arbeitsauflösungen werden vorbereitet"},
     {"Paused: insufficient workset capacity", "Pausiert: zu wenig Kapazität für Arbeitsressourcen"},
+    {"Not enabled", "Nicht aktiviert"},
+    {"Exact target FPS", "Exakter FPS-Zielwert"},
+    {"Enter the target output frame rate directly (30-360). Press Enter to apply.", "Zielbildrate direkt eingeben (30–360). Mit Enter anwenden."},
+    {"Adaptive resolution controls the current size. Turn it off to edit the saved manual upper limit.", "Die adaptive Auflösung steuert die aktuelle Größe. Zum Bearbeiten der gespeicherten manuellen Obergrenze ausschalten."},
+    {"Saved manual upper limit: %s", "Gespeicherte manuelle Obergrenze: %s"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

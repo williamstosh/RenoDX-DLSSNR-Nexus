@@ -221,7 +221,7 @@ struct Session {
   void Prepare(const Settings& requested_settings, const Sizes& upper, const Sizes& floor,
                uint64_t source_identity, const Output& output, int64_t now_ns, bool supported, bool frozen) {
     Settings next = requested_settings;
-    next.target_fps = (std::isfinite(next.target_fps) ? std::clamp(next.target_fps, 20.f, 360.f) : 60.f);
+    next.target_fps = (std::isfinite(next.target_fps) ? std::clamp(next.target_fps, 30.f, 360.f) : 60.f);
     next.minimum_scale = (std::isfinite(next.minimum_scale) ? std::clamp(next.minimum_scale, 0.33f, 1.f) : 0.67f);
     const bool changed = identity != source_identity || settings != next || status.upper != upper;
     if (changed) {

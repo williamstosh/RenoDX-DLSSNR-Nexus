@@ -2269,7 +2269,7 @@ inline constexpr Translation kBg[] = {
     {"NR: %.1f ms GPU per completed stage group.", "NR: %.1f ms GPU време за завършена група етапи."},
     {"Measured GPU time for the current completed stage group. Compare configurations using GPU A/B; overall FPS also depends on the game and frame limits.", "Измерено GPU време за текущата завършена група етапи. Сравнявайте конфигурации с GPU A/B; общите FPS зависят и от играта и ограниченията на кадрите."},
     {"Frame interval (ms)", "Интервал между кадрите (ms)"},
-    {"FPS averages the latest 16 intervals; frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "FPS осреднява последните 16 интервала; интервалът между кадрите показва суровите проби. GPU кривите запазват пиковете на завършените проби и оставят празнини при липса на данни."},
+    {"FPS follows the current output estimate when available, otherwise cadence. Frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "FPS следва текущата оценка на изхода, когато е налична; иначе използва честотата на извикванията. Интервалът между кадрите показва сурови проби. GPU кривите запазват пиковете на завършените проби и празнините без данни."},
     {"Control mask", "Контролна маска"},
     {"Control mask settings", "Настройки на контролната маска"},
     {"Use Pass 1 mask settings", "Използвай настройките на маската от Pass 1"},
@@ -2330,6 +2330,11 @@ inline constexpr Translation kBg[] = {
     {"Paused after an NR execution failure", "Пауза след грешка при изпълнение на NR"},
     {"Preparing working resolutions", "Подготовка на работните резолюции"},
     {"Paused: insufficient workset capacity", "Пауза: недостатъчен капацитет за работните ресурси"},
+    {"Not enabled", "Не е включено"},
+    {"Exact target FPS", "Точна цел FPS"},
+    {"Enter the target output frame rate directly (30-360). Press Enter to apply.", "Въведете целевата изходна кадрова честота (30–360). Натиснете Enter за прилагане."},
+    {"Adaptive resolution controls the current size. Turn it off to edit the saved manual upper limit.", "Адаптивната резолюция управлява текущия размер. Изключете я, за да редактирате запазената ръчна горна граница."},
+    {"Saved manual upper limit: %s", "Запазена ръчна горна граница: %s"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

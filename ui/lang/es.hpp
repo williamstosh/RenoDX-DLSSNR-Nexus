@@ -2269,7 +2269,7 @@ inline constexpr Translation kEs[] = {
     {"NR: %.1f ms GPU per completed stage group.", "NR: %.1f ms de GPU por grupo de etapas completado."},
     {"Measured GPU time for the current completed stage group. Compare configurations using GPU A/B; overall FPS also depends on the game and frame limits.", "Tiempo de GPU medido del grupo de etapas actual completado. Compara configuraciones con GPU A/B; los FPS totales también dependen del juego y de los límites de fotogramas."},
     {"Frame interval (ms)", "Intervalo entre fotogramas (ms)"},
-    {"FPS averages the latest 16 intervals; frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "Los FPS promedian los últimos 16 intervalos; el intervalo entre fotogramas muestra las muestras originales. Las curvas de GPU conservan los picos de las muestras completadas y dejan vacíos los huecos."},
+    {"FPS follows the current output estimate when available, otherwise cadence. Frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "Los FPS usan la estimación de salida actual si está disponible; si no, la cadencia. El intervalo de fotograma muestra muestras sin procesar. Las curvas de GPU conservan los picos de las muestras completadas y dejan huecos sin datos."},
     {"Control mask", "Máscara de control"},
     {"Control mask settings", "Ajustes de la máscara de control"},
     {"Use Pass 1 mask settings", "Usar los ajustes de máscara del Pass 1"},
@@ -2330,6 +2330,11 @@ inline constexpr Translation kEs[] = {
     {"Paused after an NR execution failure", "Pausado tras un fallo de ejecución de NR"},
     {"Preparing working resolutions", "Preparando las resoluciones de trabajo"},
     {"Paused: insufficient workset capacity", "Pausado: capacidad insuficiente para los recursos de trabajo"},
+    {"Not enabled", "Sin activar"},
+    {"Exact target FPS", "Objetivo exacto de FPS"},
+    {"Enter the target output frame rate directly (30-360). Press Enter to apply.", "Introduce directamente los FPS de salida objetivo (30–360). Pulsa Intro para aplicar."},
+    {"Adaptive resolution controls the current size. Turn it off to edit the saved manual upper limit.", "La resolución adaptativa controla el tamaño actual. Desactívala para editar el límite manual guardado."},
+    {"Saved manual upper limit: %s", "Límite manual guardado: %s"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

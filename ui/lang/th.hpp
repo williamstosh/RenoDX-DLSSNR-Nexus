@@ -2269,7 +2269,7 @@ inline constexpr Translation kTh[] = {
     {"NR: %.1f ms GPU per completed stage group.", "NR: เวลา GPU %.1f ms ต่อกลุ่มขั้นตอนที่เสร็จสมบูรณ์"},
     {"Measured GPU time for the current completed stage group. Compare configurations using GPU A/B; overall FPS also depends on the game and frame limits.", "เวลา GPU ที่วัดได้ของกลุ่มขั้นตอนปัจจุบันที่เสร็จสมบูรณ์ เปรียบเทียบการตั้งค่าด้วย GPU A/B; FPS โดยรวมยังขึ้นอยู่กับเกมและการจำกัดเฟรม"},
     {"Frame interval (ms)", "ช่วงเวลาระหว่างเฟรม (ms)"},
-    {"FPS averages the latest 16 intervals; frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "FPS เฉลี่ยจาก 16 ช่วงเวลาล่าสุด; ช่วงเวลาระหว่างเฟรมแสดงตัวอย่างดิบ เส้นกราฟ GPU เก็บค่าสูงสุดของตัวอย่างที่เสร็จสมบูรณ์และเว้นช่วงที่ไม่มีข้อมูลไว้"},
+    {"FPS follows the current output estimate when available, otherwise cadence. Frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "FPS ใช้ค่าประมาณขาออกปัจจุบันเมื่อมีข้อมูล มิฉะนั้นใช้จังหวะการเรียก ช่วงเวลาระหว่างเฟรมแสดงตัวอย่างดิบ กราฟ GPU เก็บค่าสูงสุดของตัวอย่างที่เสร็จสมบูรณ์และเว้นช่องว่างเมื่อไม่มีข้อมูล"},
     {"Control mask", "มาสก์ควบคุม"},
     {"Control mask settings", "การตั้งค่ามาสก์ควบคุม"},
     {"Use Pass 1 mask settings", "ใช้การตั้งค่ามาสก์ของ Pass 1"},
@@ -2330,6 +2330,11 @@ inline constexpr Translation kTh[] = {
     {"Paused after an NR execution failure", "หยุดชั่วคราวหลัง NR ทำงานล้มเหลว"},
     {"Preparing working resolutions", "กำลังเตรียมความละเอียดการทำงาน"},
     {"Paused: insufficient workset capacity", "หยุดชั่วคราว: ความจุทรัพยากรการทำงานไม่เพียงพอ"},
+    {"Not enabled", "ยังไม่เปิดใช้"},
+    {"Exact target FPS", "FPS เป้าหมายที่แน่นอน"},
+    {"Enter the target output frame rate directly (30-360). Press Enter to apply.", "ป้อนอัตราเฟรมขาออกเป้าหมายโดยตรง (30–360) กด Enter เพื่อใช้"},
+    {"Adaptive resolution controls the current size. Turn it off to edit the saved manual upper limit.", "ความละเอียดอัตโนมัติควบคุมขนาดปัจจุบัน ปิดเพื่อแก้ไขขีดจำกัดแบบกำหนดเองที่บันทึกไว้"},
+    {"Saved manual upper limit: %s", "ขีดจำกัดแบบกำหนดเองที่บันทึกไว้: %s"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

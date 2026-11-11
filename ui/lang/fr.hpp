@@ -2269,7 +2269,7 @@ inline constexpr Translation kFr[] = {
     {"NR: %.1f ms GPU per completed stage group.", "NR : %.1f ms GPU par groupe d’étapes terminé."},
     {"Measured GPU time for the current completed stage group. Compare configurations using GPU A/B; overall FPS also depends on the game and frame limits.", "Temps GPU mesuré pour le groupe d’étapes actuel terminé. Comparez les configurations avec GPU A/B ; la fréquence globale dépend aussi du jeu et des limites d’images par seconde."},
     {"Frame interval (ms)", "Intervalle entre images (ms)"},
-    {"FPS averages the latest 16 intervals; frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "Les FPS moyennent les 16 derniers intervalles ; l’intervalle entre images affiche les échantillons bruts. Les courbes GPU conservent les pics des échantillons terminés et laissent les lacunes vides."},
+    {"FPS follows the current output estimate when available, otherwise cadence. Frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "Les FPS suivent l’estimation de sortie actuelle si disponible, sinon la cadence. L’intervalle entre images affiche les échantillons bruts. Les courbes GPU conservent les pics des échantillons terminés et laissent les lacunes vides."},
     {"Control mask", "Masque de contrôle"},
     {"Control mask settings", "Réglages du masque de contrôle"},
     {"Use Pass 1 mask settings", "Utiliser les réglages du masque du Pass 1"},
@@ -2330,6 +2330,11 @@ inline constexpr Translation kFr[] = {
     {"Paused after an NR execution failure", "En pause après un échec d'exécution NR"},
     {"Preparing working resolutions", "Préparation des résolutions de travail"},
     {"Paused: insufficient workset capacity", "En pause : capacité insuffisante des ressources de travail"},
+    {"Not enabled", "Désactivée"},
+    {"Exact target FPS", "Cible FPS exacte"},
+    {"Enter the target output frame rate directly (30-360). Press Enter to apply.", "Saisissez directement la fréquence de sortie cible (30–360). Appuyez sur Entrée pour appliquer."},
+    {"Adaptive resolution controls the current size. Turn it off to edit the saved manual upper limit.", "La résolution adaptative contrôle la taille actuelle. Désactivez-la pour modifier la limite manuelle enregistrée."},
+    {"Saved manual upper limit: %s", "Limite manuelle enregistrée : %s"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

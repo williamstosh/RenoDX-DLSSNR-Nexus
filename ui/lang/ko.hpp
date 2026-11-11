@@ -2269,7 +2269,7 @@ inline constexpr Translation kKo[] = {
     {"NR: %.1f ms GPU per completed stage group.", "NR: 완료된 단계 그룹당 GPU %.1f ms."},
     {"Measured GPU time for the current completed stage group. Compare configurations using GPU A/B; overall FPS also depends on the game and frame limits.", "현재 완료된 단계 그룹의 실측 GPU 시간입니다. GPU A/B로 구성을 비교하세요. 전체 FPS는 게임과 프레임 제한의 영향도 받습니다."},
     {"Frame interval (ms)", "프레임 간격 (ms)"},
-    {"FPS averages the latest 16 intervals; frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "FPS는 최근 16개 간격의 평균이며 프레임 간격은 원시 샘플을 표시합니다. GPU 곡선은 완료된 샘플의 최댓값을 보존하고 누락 구간은 비워 둡니다."},
+    {"FPS follows the current output estimate when available, otherwise cadence. Frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "FPS는 현재 출력 추정값을 사용할 수 있으면 이를 따르고, 그렇지 않으면 호출 주기를 사용합니다. 프레임 간격은 원시 샘플을 표시합니다. GPU 곡선은 완료된 샘플의 최댓값을 보존하며 데이터가 없는 구간은 비워 둡니다."},
     {"Control mask", "컨트롤 마스크"},
     {"Control mask settings", "컨트롤 마스크 설정"},
     {"Use Pass 1 mask settings", "Pass 1 마스크 설정 사용"},
@@ -2330,6 +2330,11 @@ inline constexpr Translation kKo[] = {
     {"Paused after an NR execution failure", "NR 실행 실패 후 일시 정지"},
     {"Preparing working resolutions", "작업 해상도 준비 중"},
     {"Paused: insufficient workset capacity", "일시 정지: 작업 리소스 용량 부족"},
+    {"Not enabled", "꺼짐"},
+    {"Exact target FPS", "정확한 목표 FPS"},
+    {"Enter the target output frame rate directly (30-360). Press Enter to apply.", "목표 출력 프레임률을 직접 입력합니다(30~360). Enter를 눌러 적용하세요."},
+    {"Adaptive resolution controls the current size. Turn it off to edit the saved manual upper limit.", "적응형 해상도가 현재 크기를 제어합니다. 저장된 수동 상한을 편집하려면 끄세요."},
+    {"Saved manual upper limit: %s", "저장된 수동 상한: %s"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

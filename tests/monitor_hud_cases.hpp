@@ -439,7 +439,8 @@ void RunMonitorHudCases(const Check& check) {
       }
     }
   }
-  check(output.find("~ ") != std::string::npos, "reference GPU totals have a font-safe approximate marker");
+  check(output.find("~ " + inputs.summary.gpu) == std::string::npos,
+        "compact GPU totals keep reference explanations in the tooltip");
   check(history->series[0].At(0).low == 1.f && history->series[0].At(0).high == 12.f
             && !history->series[0].At(1).valid && history->series[0].count == 3,
         "drawing consumes true bucket peaks and explicit gaps without modifying history");

@@ -2269,7 +2269,7 @@ inline constexpr Translation kJa[] = {
     {"NR: %.1f ms GPU per completed stage group.", "NR：完了したステージグループごとに GPU %.1f ms。"},
     {"Measured GPU time for the current completed stage group. Compare configurations using GPU A/B; overall FPS also depends on the game and frame limits.", "現在の完了したステージグループの実測 GPU 時間です。GPU A/B で設定を比較してください。全体の FPS はゲームやフレームレート制限にも依存します。"},
     {"Frame interval (ms)", "フレーム間隔 (ms)"},
-    {"FPS averages the latest 16 intervals; frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "FPS は直近 16 間隔の平均、フレーム間隔は生のサンプルを表示します。GPU 曲線は完了したサンプルのピークを保持し、欠測箇所は空白にします。"},
+    {"FPS follows the current output estimate when available, otherwise cadence. Frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "FPSは現在の出力推定が利用可能ならそれを使用し、それ以外は呼び出し間隔に基づきます。フレーム間隔は生のサンプルです。GPU曲線は完了サンプルのピークを保持し、データのない区間は空白にします。"},
     {"Control mask", "コントロールマスク"},
     {"Control mask settings", "コントロールマスク設定"},
     {"Use Pass 1 mask settings", "Pass 1 のマスク設定を使用"},
@@ -2330,6 +2330,11 @@ inline constexpr Translation kJa[] = {
     {"Paused after an NR execution failure", "NR 実行失敗後に一時停止"},
     {"Preparing working resolutions", "処理解像度を準備中"},
     {"Paused: insufficient workset capacity", "一時停止: 作業リソースの容量が不足しています"},
+    {"Not enabled", "無効"},
+    {"Exact target FPS", "目標FPSの数値入力"},
+    {"Enter the target output frame rate directly (30-360). Press Enter to apply.", "目標出力フレームレートを直接入力します（30～360）。 Enterで適用します。"},
+    {"Adaptive resolution controls the current size. Turn it off to edit the saved manual upper limit.", "自動解像度が現在のサイズを制御しています。保存された手動上限を編集するには無効にしてください。"},
+    {"Saved manual upper limit: %s", "保存された手動上限: %s"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

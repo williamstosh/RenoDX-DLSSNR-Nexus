@@ -440,15 +440,10 @@ int Run() {
       Check(render.width == 16 && render.height == 16 && render.identity.source_generation != 0
                 && render.passes[0].width == 11 && render.passes[0].height == 11,
             "actual Render recording binds unscaled 16x16 Stage reference and scaled 11x11 working input");
-      Check(native::CurrentPassWorkingEstimate(0, timers::NowNs()) == addon::capability::Size{11, 11},
-            "production estimate uses the proven Stage reference once, never rescaling the NR input to 7x7");
-      Check(native::CurrentPassWorkingEstimate(0, render.recorded_ns + timers::internal::kSampleAgeNs + 1)
-                == addon::capability::Size{},
-            "expired Render reference cannot produce a current estimate");
       reference_proven = true;
     }
     Check(reference_proven, "scaled Render regression reaches source-bound single-submission GPU completion");
-    std::cout << "PASS Render reference regression: actual 16x16 Stage -> 11x11 NR, estimate=11x11; ordinary sample identity\n";
+    std::cout << "PASS Render reference regression: actual 16x16 Stage -> 11x11 NR; ordinary sample identity\n";
     native::ForgetSourceHandleLocked(handle);
     finish();
     Check(native::worksets.empty() && !model_released_handles.empty(), "source retirement releases model worksets");

@@ -36,6 +36,9 @@ inline bool Run() {
   upper[1] = floor[1] = {};
 
   adaptive::Session session;
+  session.Prepare({.enabled = true, .target_fps = 20.f}, upper, floor, 1, {}, 1, true, false);
+  check(session.settings.target_fps == 30.f, "controller target lower bound is 30 FPS");
+  session = {};
   adaptive::Output output{.available = true, .source = 1, .generation = 1, .configuration = 1};
   uint64_t sequence = 0;
   constexpr int64_t start = 1'000'000'000;

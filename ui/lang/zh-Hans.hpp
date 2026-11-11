@@ -2278,7 +2278,7 @@ inline constexpr Translation kZhHans[] = {
     {"NR: %.1f ms GPU per completed stage group.", "NR：每个已完成阶段组的 GPU 耗时为 %.1f ms。"},
     {"Measured GPU time for the current completed stage group. Compare configurations using GPU A/B; overall FPS also depends on the game and frame limits.", "当前已完成阶段组的实测 GPU 耗时。使用 GPU A/B 比较配置；整体帧率还取决于游戏和帧率限制。"},
     {"Frame interval (ms)", "帧间隔（ms）"},
-    {"FPS averages the latest 16 intervals; frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "帧率取最近 16 个间隔的平均值；帧间隔显示原始样本。GPU 曲线保留已完成样本的峰值，缺测留空。"},
+    {"FPS follows the current output estimate when available, otherwise cadence. Frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "FPS 优先使用当前输出估算，无可用估算时使用回调节奏。帧间隔显示原始采样。GPU 曲线保留已完成采样的峰值，缺失数据处留空。"},
     {"Control mask", "控制遮罩"},
     {"Control mask settings", "控制遮罩设置"},
     {"Use Pass 1 mask settings", "使用 Pass 1 的遮罩设置"},
@@ -2339,6 +2339,11 @@ inline constexpr Translation kZhHans[] = {
     {"Paused after an NR execution failure", "NR 执行失败后已暂停"},
     {"Preparing working resolutions", "正在准备工作分辨率"},
     {"Paused: insufficient workset capacity", "已暂停：工作资源容量不足"},
+    {"Not enabled", "未开启"},
+    {"Exact target FPS", "精确目标 FPS"},
+    {"Enter the target output frame rate directly (30-360). Press Enter to apply.", "直接输入目标输出帧率（30–360）。按 Enter 应用。"},
+    {"Adaptive resolution controls the current size. Turn it off to edit the saved manual upper limit.", "自适应分辨率正在控制当前尺寸。关闭后可编辑已保存的手动上限。"},
+    {"Saved manual upper limit: %s", "已保存的手动上限：%s"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

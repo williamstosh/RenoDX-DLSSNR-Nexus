@@ -2269,7 +2269,7 @@ inline constexpr Translation kTr[] = {
     {"NR: %.1f ms GPU per completed stage group.", "NR: tamamlanan aşama grubu başına %.1f ms GPU süresi."},
     {"Measured GPU time for the current completed stage group. Compare configurations using GPU A/B; overall FPS also depends on the game and frame limits.", "Geçerli tamamlanmış aşama grubu için ölçülen GPU süresi. Yapılandırmaları GPU A/B ile karşılaştırın; genel FPS, oyuna ve kare sınırlarına da bağlıdır."},
     {"Frame interval (ms)", "Kare aralığı (ms)"},
-    {"FPS averages the latest 16 intervals; frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "FPS son 16 aralığın ortalamasını alır; kare aralığı ham örnekleri gösterir. GPU eğrileri tamamlanan örneklerin tepe değerlerini korur ve boşlukları doldurmaz."},
+    {"FPS follows the current output estimate when available, otherwise cadence. Frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "FPS, varsa geçerli çıkış tahminini, yoksa çağrı sıklığını izler. Kare aralığı ham örnekleri gösterir. GPU eğrileri tamamlanan örneklerin tepe değerlerini korur ve veri olmayan yerleri boş bırakır."},
     {"Control mask", "Kontrol maskesi"},
     {"Control mask settings", "Kontrol maskesi ayarları"},
     {"Use Pass 1 mask settings", "Pass 1 maske ayarlarını kullan"},
@@ -2330,6 +2330,11 @@ inline constexpr Translation kTr[] = {
     {"Paused after an NR execution failure", "NR yürütme hatası sonrası duraklatıldı"},
     {"Preparing working resolutions", "Çalışma çözünürlükleri hazırlanıyor"},
     {"Paused: insufficient workset capacity", "Duraklatıldı: çalışma kaynakları için kapasite yetersiz"},
+    {"Not enabled", "Etkin değil"},
+    {"Exact target FPS", "Kesin hedef FPS"},
+    {"Enter the target output frame rate directly (30-360). Press Enter to apply.", "Hedef çıkış kare hızını doğrudan girin (30–360). Uygulamak için Enter tuşuna basın."},
+    {"Adaptive resolution controls the current size. Turn it off to edit the saved manual upper limit.", "Uyarlanabilir çözünürlük mevcut boyutu denetler. Kayıtlı elle ayarlanan üst sınırı düzenlemek için kapatın."},
+    {"Saved manual upper limit: %s", "Kayıtlı elle ayarlanan üst sınır: %s"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

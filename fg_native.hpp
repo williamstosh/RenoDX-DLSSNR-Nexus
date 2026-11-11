@@ -749,10 +749,34 @@ inline fg::Result Service(const fg::FrameInput& input) noexcept {
     stream.has_frame = true;
     stream.application_frame = input.application_frame;
     stream.result = fg::Result::NOT_SERVED;
+    const uint64_t completed = stream.fence->GetCompletedValue();
+    if (completed == UINT64_MAX) return fg::Result::FAILED;
+    bool discarded = false;
+    for (auto& candidate : stream.slots) {
+      if (candidate.quarantined || candidate.fence_value == 0 || completed < candidate.fence_value
+          || candidate.list == nullptr) continue;
+      // These lists belong to the XeFG service and are submitted exactly once.
+      // Discard all completed recordings, including slots a fast GPU no longer
+      // selects. Their replayable uses otherwise block mask-off -> on adoption.
+      if (FAILED(candidate.list->Reset(candidate.allocator, nullptr))) {
+        candidate.quarantined = true;
+        continue;
+      }
+      submission::OnCommandListReset(candidate.list);
+      discarded = true;
+      if (FAILED(candidate.list->Close())) {
+        candidate.quarantined = true;
+        continue;
+      }
+      candidate.fence_value = 0;
+    }
+    if (discarded) {
+      submission::PruneCompletedGenerations();
+    }
     Slot* slot = nullptr;
     for (auto& candidate : stream.slots) {
       if (!candidate.quarantined && (candidate.fence_value == 0
-          || stream.fence->GetCompletedValue() >= candidate.fence_value)) {
+          || completed >= candidate.fence_value)) {
         slot = &candidate;
         break;
       }

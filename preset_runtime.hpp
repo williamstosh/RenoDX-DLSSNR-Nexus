@@ -279,6 +279,17 @@ inline std::vector<Difference> Preview(const presets::Document& document, bool c
   std::vector<Difference> differences;
   Json settings = document.settings;
   for (uint32_t pass = 0; pass < kMaxNrPasses; ++pass) {
+    const char* start_key = (pass == 0 ? kSetControlMaskMotionStart.key : kSetPassControlMaskMotionStart[pass - 1].key);
+    const char* end_key = (pass == 0 ? kSetControlMaskMotionEnd.key : kSetPassControlMaskMotionEnd[pass - 1].key);
+    if (settings.contains(start_key) && settings.contains(end_key)
+        && settings[start_key].is_number() && settings[end_key].is_number()) {
+      float motion_start = settings[start_key].get<float>();
+      float motion_end = settings[end_key].get<float>();
+      if (MigrateControlMaskMotionDefaults(&motion_start, &motion_end)) {
+        settings[start_key] = motion_start;
+        settings[end_key] = motion_end;
+      }
+    }
     const char* near_key = (pass == 0 ? kSetControlMaskDepthNear.key : kSetPassControlMaskDepthNear[pass - 1].key);
     const char* far_key = (pass == 0 ? kSetControlMaskDepthFar.key : kSetPassControlMaskDepthFar[pass - 1].key);
     if (!settings.contains(near_key) || !settings.contains(far_key)

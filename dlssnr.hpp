@@ -16,6 +16,7 @@
 #include <atomic>
 #include <bit>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <thread>
 #include <cmath>
@@ -2328,8 +2329,16 @@ inline std::atomic<float> control_mask_depth_near = kControlMaskDepthNearDefault
 inline std::atomic<float> control_mask_depth_far = kControlMaskDepthFarDefault;
 inline std::atomic_uint32_t control_mask_blend_mode = 0;
 inline std::atomic_bool control_mask_motion_enabled = false;
-inline std::atomic<float> control_mask_motion_start = 2.f;
-inline std::atomic<float> control_mask_motion_end = 16.f;
+inline constexpr float kControlMaskMotionStartDefault = 16.f;
+inline constexpr float kControlMaskMotionEndDefault = 160.f;
+inline bool MigrateControlMaskMotionDefaults(float* motion_start, float* motion_end) {
+  if (*motion_start != 2.f || *motion_end != 16.f) return false;
+  *motion_start = kControlMaskMotionStartDefault;
+  *motion_end = kControlMaskMotionEndDefault;
+  return true;
+}
+inline std::atomic<float> control_mask_motion_start = kControlMaskMotionStartDefault;
+inline std::atomic<float> control_mask_motion_end = kControlMaskMotionEndDefault;
 struct ControlMaskParameters {
   uint32_t mode;
   uint32_t blend_mode;
@@ -2337,8 +2346,8 @@ struct ControlMaskParameters {
   float depth_near;
   float depth_far;
   bool motion_enabled = false;
-  float motion_start = 2.f;
-  float motion_end = 16.f;
+  float motion_start = kControlMaskMotionStartDefault;
+  float motion_end = kControlMaskMotionEndDefault;
 };
 struct PassControlMask {
   std::atomic_bool follow{true};
@@ -2350,8 +2359,8 @@ struct PassControlMask {
   std::atomic<float> depth_near{kControlMaskDepthNearDefault};
   std::atomic<float> depth_far{kControlMaskDepthFarDefault};
   std::atomic_bool motion_enabled{false};
-  std::atomic<float> motion_start{2.f};
-  std::atomic<float> motion_end{16.f};
+  std::atomic<float> motion_start{kControlMaskMotionStartDefault};
+  std::atomic<float> motion_end{kControlMaskMotionEndDefault};
 };
 inline PassControlMask pass_control_mask[kMaxNrPasses - 1];
 inline ControlMaskParameters ResolveControlMaskParameters(uint32_t pass_index) {
@@ -21056,30 +21065,6 @@ inline void TickNrCost(int64_t now_ns, double /*interval_ms*/) {
   nr_cost_frame_ms.store(frame_current ? frame.interval_ms : 0.f, std::memory_order_relaxed);
 }
 
-inline capability::Size CurrentPassWorkingEstimate(uint32_t pass, int64_t now_ns, capability::Size* stage_reference = nullptr) {
-  if (stage_reference != nullptr) *stage_reference = {};
-  std::optional<RuntimeLock> lock;
-  if (!runtime_lock::State::HeldByThisThread()) lock.emplace(runtime_mutex);
-  const auto plan = RequestedStagePlan();
-  if (!plan.valid || pass >= plan.pass_count) return {};
-  const auto stage = static_cast<size_t>(plan.effective[pass]);
-  const gpu_timers::Stats* reference = nullptr;
-  for (const auto* sample : {&gpu_timers::stage_stats[stage], &gpu_timers::execution_stats[stage]}) {
-    if (!CurrentGpuSample(*sample, now_ns) || sample->identity.source_generation == 0
-        || gpu_timers::StageIndex(sample->path) != stage || sample->width == 0 || sample->height == 0) continue;
-    const bool has_pass = std::any_of(sample->passes.begin(), sample->passes.end(), [pass](const auto& layer) {
-      return layer.id == pass && layer.state == gpu_timers::SampleState::VALID;
-    });
-    if (has_pass && (reference == nullptr || sample->sequence > reference->sequence)) reference = sample;
-  }
-  if (reference == nullptr) return {};
-  if (stage_reference != nullptr) *stage_reference = {.width = reference->width, .height = reference->height};
-  const auto settings = CurrentPassResolution(pass);
-  if (settings.follow_input) return {};
-  return capability::ResolveWorkingSize({.scale = settings.scale},
-      {.reference_width = reference->width, .reference_height = reference->height});
-}
-
 inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
                                         int64_t now_ns) {
   ui::CardInputs in;
@@ -23575,17 +23560,17 @@ inline constexpr Setting kSetPassControlMaskMotionEnabled[] = {
     {"NRPass3ControlMaskMotionEnabled", &pass_control_mask[1].motion_enabled, false, SettingEffect::kNone},
     {"NRPass4ControlMaskMotionEnabled", &pass_control_mask[2].motion_enabled, false, SettingEffect::kNone}};
 inline constexpr Setting kSetControlMaskMotionStart{
-    "NRControlMaskMotionStart", &control_mask_motion_start, 2.f, SettingEffect::kNone};
+    "NRControlMaskMotionStart", &control_mask_motion_start, kControlMaskMotionStartDefault, SettingEffect::kNone};
 inline constexpr Setting kSetPassControlMaskMotionStart[] = {
-    {"NRPass2ControlMaskMotionStart", &pass_control_mask[0].motion_start, 2.f, SettingEffect::kNone},
-    {"NRPass3ControlMaskMotionStart", &pass_control_mask[1].motion_start, 2.f, SettingEffect::kNone},
-    {"NRPass4ControlMaskMotionStart", &pass_control_mask[2].motion_start, 2.f, SettingEffect::kNone}};
+    {"NRPass2ControlMaskMotionStart", &pass_control_mask[0].motion_start, kControlMaskMotionStartDefault, SettingEffect::kNone},
+    {"NRPass3ControlMaskMotionStart", &pass_control_mask[1].motion_start, kControlMaskMotionStartDefault, SettingEffect::kNone},
+    {"NRPass4ControlMaskMotionStart", &pass_control_mask[2].motion_start, kControlMaskMotionStartDefault, SettingEffect::kNone}};
 inline constexpr Setting kSetControlMaskMotionEnd{
-    "NRControlMaskMotionEnd", &control_mask_motion_end, 16.f, SettingEffect::kNone};
+    "NRControlMaskMotionEnd", &control_mask_motion_end, kControlMaskMotionEndDefault, SettingEffect::kNone};
 inline constexpr Setting kSetPassControlMaskMotionEnd[] = {
-    {"NRPass2ControlMaskMotionEnd", &pass_control_mask[0].motion_end, 16.f, SettingEffect::kNone},
-    {"NRPass3ControlMaskMotionEnd", &pass_control_mask[1].motion_end, 16.f, SettingEffect::kNone},
-    {"NRPass4ControlMaskMotionEnd", &pass_control_mask[2].motion_end, 16.f, SettingEffect::kNone}};
+    {"NRPass2ControlMaskMotionEnd", &pass_control_mask[0].motion_end, kControlMaskMotionEndDefault, SettingEffect::kNone},
+    {"NRPass3ControlMaskMotionEnd", &pass_control_mask[1].motion_end, kControlMaskMotionEndDefault, SettingEffect::kNone},
+    {"NRPass4ControlMaskMotionEnd", &pass_control_mask[2].motion_end, kControlMaskMotionEndDefault, SettingEffect::kNone}};
 inline constexpr Setting kSetPassControlMaskFollow[] = {
     {"NRPass2ControlMaskFollowPass1", &pass_control_mask[0].follow, 1.f, SettingEffect::kNone},
     {"NRPass3ControlMaskFollowPass1", &pass_control_mask[1].follow, 1.f, SettingEffect::kNone},
@@ -25466,41 +25451,56 @@ inline void DrawResolutionObserved(const ui::PanelText& text, uint32_t pass = 0,
     case stage_plan::Stage::PRESENT: reference = ui::text::kResolutionReferencePresent; break;
   }
   if (!historical) {
-    capability::Size stage_reference;
-    const auto estimate = CurrentPassWorkingEstimate(pass, SteadyNowNs(), &stage_reference);
     const bool current = ui_monitor_view != nullptr && pass < ui_monitor_view->pass_count
         && ui_monitor_view->passes[pass].execution_confirmed;
-    const bool differs = current && estimate.width != 0 && estimate.height != 0
-        && ui_monitor_view->passes[pass].actual_size != std::to_string(estimate.width) + " x " + std::to_string(estimate.height);
+    const bool automatic = nr_adaptive_enabled.load();
     ImGui::TextWrapped("P%u | %s: %s", pass + 1, text.Tr("Actual working resolution"),
         current ? ui_monitor_view->passes[pass].actual_size.c_str() : text.Tr("Pending confirmation"));
-    bool hovered = ImGui::IsItemHovered();
-    // Keep both rows present while stage samples settle so controls below do not move.
-    if (estimate.width != 0 && estimate.height != 0) {
-      ImGui::TextWrapped(text.Tr("Estimated working resolution: %ux%u"), estimate.width, estimate.height);
-    } else {
-      ImGui::TextWrapped("%s: %s", text.Tr("Estimated working resolution"), text.Tr("Pending confirmation"));
-    }
-    hovered |= ImGui::IsItemHovered();
-    if (hovered) {
-      ImGui::BeginTooltip();
-      ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.f);
-      if (estimate.width != 0 && estimate.height != 0) {
-        ImGui::TextWrapped(text.Tr("Estimated working resolution: %ux%u"), estimate.width, estimate.height);
-        ImGui::TextWrapped("%s %ux%u", text.Tr(reference), stage_reference.width, stage_reference.height);
+    ui::ItemTooltip("%s\n%s", text.Tr(reference), text.Tr(ui::text::kPassResolutionTip));
+    if (automatic) {
+      float percentage = (current ? ui_monitor_view->passes[pass].actual_scale * 100.f : 0.f);
+      const auto saved = EffectivePassResolution(pass);
+      char saved_limit[128];
+      if (saved.follow_input) {
+        std::snprintf(saved_limit, sizeof(saved_limit), "%s", text.Tr(ui::text::kResolutionFollow));
       } else {
-        ImGui::TextWrapped("%s: %s", text.Tr("Estimated working resolution"), text.Tr("Pending confirmation"));
-        ImGui::TextWrapped("%s", text.Tr(reference));
+        std::snprintf(saved_limit, sizeof(saved_limit), "%.0f%%", saved.scale * 100.f);
       }
-      ImGui::TextWrapped("%s: %s", text.Tr("Actual working resolution"),
-          current ? ui_monitor_view->passes[pass].actual_size.c_str() : text.Tr("Pending confirmation"));
-      if (differs) {
-        ImGui::TextWrapped("%s", text.Tr("Dynamic resolution or a pending size change can make the estimate differ from the completed working size."));
+      const auto status = CopyAdaptiveStatus();
+      const auto reason = (status.reason == adaptive_resolution::Reason::DISABLED
+          ? adaptive_resolution::Reason::COLLECTING : status.reason);
+      const auto output_rate = output_framerate::Read(SteadyNowNs());
+      ui::RowLabel("Resolution scale", nullptr);
+      ImGui::BeginDisabled();
+      ImGui::SetNextItemWidth(-1.f);
+      ImGui::SliderFloat("##actual_resolution_scale", &percentage, 0.f, 100.f,
+          percentage > 0.f ? "%.0f%%" : text.Tr("Pending confirmation"), ImGuiSliderFlags_NoInput);
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.f);
+        ImGui::TextWrapped("%s", text.Tr("Adaptive resolution controls the current size. Turn it off to edit the saved manual upper limit."));
+        ImGui::Text(text.Tr("Saved manual upper limit: %s"), saved_limit);
+        ImGui::TextWrapped("%s", text.Tr(adaptive_resolution::ReasonText(reason)));
+        ImGui::TextWrapped("%s", text.Tr(output_rate.available
+            ? output_framerate::SourceText(output_rate.source) : output_framerate::ReasonText(output_rate.reason)));
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
       }
-      ImGui::TextWrapped("%s", text.Tr("Estimate uses the last observed reference. Actual dimensions require a current completed sample."));
-      ImGui::TextWrapped("%s", text.Tr(ui::text::kPassResolutionTip));
-      ImGui::PopTextWrapPos();
-      ImGui::EndTooltip();
+      switch (reason) {
+        case adaptive_resolution::Reason::UNSUPPORTED:
+        case adaptive_resolution::Reason::OUTPUT_UNAVAILABLE:
+        case adaptive_resolution::Reason::AT_MINIMUM:
+        case adaptive_resolution::Reason::FROZEN:
+        case adaptive_resolution::Reason::FAILED:
+        case adaptive_resolution::Reason::BUDGET: {
+          ui::StyleScope warning;
+          warning.Color(ImGuiCol_Text, ui::CurrentTheme().warn);
+          ImGui::TextWrapped("%s", text.Tr(adaptive_resolution::ReasonText(reason)));
+          break;
+        }
+        default: break;
+      }
     }
     return;
   }
@@ -25566,84 +25566,99 @@ inline constexpr ResolutionPreset kResolutionPresets[] = {
 static_assert(std::size(kResolutionPresets) == std::size(ui::text::kResolutionLabels));
 
 inline void DrawResolutionControls(const ui::PanelText& text) {
-  const bool follow = nr_follow_input_res.load();
-  const float scale = nr_resolution_scale.load();
-  int preset = -1;
-  std::array<std::string, std::size(kResolutionPresets)> labels;
-  std::array<const char*, std::size(kResolutionPresets)> items;
-  std::array<bool, std::size(kResolutionPresets)> disabled{};
-  std::array<std::string, std::size(kResolutionPresets)> reasons;
-  std::array<const char*, std::size(kResolutionPresets)> tips{};
-  constexpr const char* kIds[] = {"###nr_resolution_full", "###nr_resolution_quality",
-                                "###nr_resolution_balanced", "###nr_resolution_performance", "###nr_resolution_follow"};
-  for (size_t i = 0; i < std::size(kResolutionPresets); ++i) {
-    const auto& candidate = kResolutionPresets[i];
-    if (candidate.follow ? follow : (!follow && std::abs(scale - candidate.scale) <= 1e-6f)) {
-      preset = static_cast<int>(i);
-    }
-    labels[i] = std::string(text.Tr(ui::text::kResolutionLabels[i])) + kIds[i];
-    items[i] = labels[i].c_str();
-    disabled[i] = !CanRequestConfigurationEdit({{"NRFollowInputRes", candidate.follow},
-        {"NRResolutionScale", candidate.follow ? scale : candidate.scale}}, &reasons[i]);
-    if (static_cast<int>(i) == preset) {
-      disabled[i] = false;
-    }
-    tips[i] = (!reasons[i].empty() ? reasons[i].c_str() : ui::text::kResolutionTips[i]);
-  }
-  ui::RowLabel(ui::text::kResolution, ui::text::kResolutionTip);
-  const int clicked = ui::Segmented("##resolution", items.data(), static_cast<int>(items.size()), preset,
-                                    ui::text::kResolutionTip, tips.data(), disabled.data(), !text.modern);
-  if (clicked >= 0 && clicked != preset) {
-    const auto& chosen = kResolutionPresets[clicked];
-    CommitResolutionMode(chosen.mode, chosen.follow, chosen.follow ? scale : chosen.scale);
-  }
-  ResolutionResetButton("resolution_reset");
-  constexpr const char* kScaleTip =
-      "The working resolution as a share of the full one.  Lower costs less"
-      " GPU time.";
-  {
-    // Written LIVE on every change: the value settles through the
-    // present-path contract debounce, so a drag costs exactly one rebuild
-    // once the value holds for kContractDebounceFrames (~0.5 s). Deliberately
-    // NOT gated on widget-active transitions - ReShade's overlay input does
-    // not reliably deliver them for drags, which silently pinned the slider
-    // to its entry value. Per-tick rebuilds remain impossible because the
-    // debounce counter resets while the dragged dims keep changing.
-    const float original_pct = nr_resolution_scale.load() * 100.f;
-    float ui_res_pct = original_pct;
-    const bool following = nr_follow_input_res.load();
-    ImGui::BeginDisabled(following);
-    if (text.modern) {
-      ui::RowLabel("Resolution scale", kScaleTip);
-      ui::Slider("##resolution_scale", &ui_res_pct, 33.f, 100.f, "%.0f%%", kScaleTip);
-    } else {
-      ImGui::SliderFloat(ui::ControlLabel("Resolution scale").c_str(), &ui_res_pct, 33.f, 100.f, "%.0f%%");
-    }
-    ImGui::EndDisabled();
-    if (!following && ui_res_pct != original_pct) {
-      const float choice = std::clamp(ui_res_pct, 33.f, 100.f) / 100.f;
-      const presets::Json requested{{"NRResolutionScale", choice}};
-      RuntimeLock lock(runtime_mutex);
-      if (ValidateConfigurationCapability(requested, nullptr)) {
-        kSetResolutionScale.Store(choice);
-        kSetResolutionScale.Persist();
-      } else if (!ProposedResolutionInheritance(requested).empty()) {
-        resolution_edit_request = requested;
+  if (!nr_adaptive_enabled.load()) {
+    const bool follow = nr_follow_input_res.load();
+    const float scale = nr_resolution_scale.load();
+    int preset = -1;
+    std::array<std::string, std::size(kResolutionPresets)> labels;
+    std::array<const char*, std::size(kResolutionPresets)> items;
+    std::array<bool, std::size(kResolutionPresets)> disabled{};
+    std::array<std::string, std::size(kResolutionPresets)> reasons;
+    std::array<const char*, std::size(kResolutionPresets)> tips{};
+    constexpr const char* kIds[] = {"###nr_resolution_full", "###nr_resolution_quality",
+                                  "###nr_resolution_balanced", "###nr_resolution_performance", "###nr_resolution_follow"};
+    for (size_t i = 0; i < std::size(kResolutionPresets); ++i) {
+      const auto& candidate = kResolutionPresets[i];
+      if (candidate.follow ? follow : (!follow && std::abs(scale - candidate.scale) <= 1e-6f)) {
+        preset = static_cast<int>(i);
       }
+      labels[i] = std::string(text.Tr(ui::text::kResolutionLabels[i])) + kIds[i];
+      items[i] = labels[i].c_str();
+      disabled[i] = !CanRequestConfigurationEdit({{"NRFollowInputRes", candidate.follow},
+          {"NRResolutionScale", candidate.follow ? scale : candidate.scale}}, &reasons[i]);
+      if (static_cast<int>(i) == preset) {
+        disabled[i] = false;
+      }
+      tips[i] = (!reasons[i].empty() ? reasons[i].c_str() : ui::text::kResolutionTips[i]);
     }
-    if (text.modern) {
-      ResolutionResetButton("resolution_scale_reset");
+    ui::RowLabel(ui::text::kResolution, ui::text::kResolutionTip);
+    const int clicked = ui::Segmented("##resolution", items.data(), static_cast<int>(items.size()), preset,
+                                      ui::text::kResolutionTip, tips.data(), disabled.data(), !text.modern);
+    if (clicked >= 0 && clicked != preset) {
+      const auto& chosen = kResolutionPresets[clicked];
+      CommitResolutionMode(chosen.mode, chosen.follow, chosen.follow ? scale : chosen.scale);
     }
-    if (following) {
-      ui::ItemTooltip("%s", text.Tr(ui::text::kResolutionSavedScale));
+    ResolutionResetButton("resolution_reset");
+    constexpr const char* kScaleTip =
+        "The working resolution as a share of the full one.  Lower costs less"
+        " GPU time.";
+    {
+      // Written LIVE on every change: the value settles through the
+      // present-path contract debounce, so a drag costs exactly one rebuild
+      // once the value holds for kContractDebounceFrames (~0.5 s). Deliberately
+      // NOT gated on widget-active transitions - ReShade's overlay input does
+      // not reliably deliver them for drags, which silently pinned the slider
+      // to its entry value. Per-tick rebuilds remain impossible because the
+      // debounce counter resets while the dragged dims keep changing.
+      const float original_pct = nr_resolution_scale.load() * 100.f;
+      float ui_res_pct = original_pct;
+      const bool following = nr_follow_input_res.load();
+      ImGui::BeginDisabled(following);
+      if (text.modern) {
+        ui::RowLabel("Resolution scale", kScaleTip);
+        ui::Slider("##resolution_scale", &ui_res_pct, 33.f, 100.f, "%.0f%%", kScaleTip);
+      } else {
+        ImGui::SliderFloat(ui::ControlLabel("Resolution scale").c_str(), &ui_res_pct, 33.f, 100.f, "%.0f%%");
+      }
+      ImGui::EndDisabled();
+      if (!following && ui_res_pct != original_pct) {
+        const float choice = std::clamp(ui_res_pct, 33.f, 100.f) / 100.f;
+        const presets::Json requested{{"NRResolutionScale", choice}};
+        RuntimeLock lock(runtime_mutex);
+        if (ValidateConfigurationCapability(requested, nullptr)) {
+          kSetResolutionScale.Store(choice);
+          kSetResolutionScale.Persist();
+        } else if (!ProposedResolutionInheritance(requested).empty()) {
+          resolution_edit_request = requested;
+        }
+      }
+      if (text.modern) {
+        ResolutionResetButton("resolution_scale_reset");
+      }
+      if (following) {
+        ui::ItemTooltip("%s", text.Tr(ui::text::kResolutionSavedScale));
+      }
     }
   }
   ToggleSetting(text, kSetAdaptiveEnabled, "Adaptive resolution",
       "Adjust NR working resolution toward your target output FPS, including generated frames. Manual resolutions are the upper limits. No extra program is required.");
   if (nr_adaptive_enabled.load()) {
     ImGui::Indent();
-    SliderSetting(text, kSetAdaptiveTargetFps, "Target output FPS", 20.f, 360.f, "%.0f FPS",
+    SliderSetting(text, kSetAdaptiveTargetFps, "Target output FPS", 30.f, 360.f, "%.0f FPS",
         "The target includes generated frames. If lowering NR brings no FPS benefit, the previous quality is restored.");
+    ui::RowLabel("Exact target FPS", "Enter the target output frame rate directly (30-360). Press Enter to apply.");
+    char target[16];
+    std::snprintf(target, sizeof(target), "%.0f", kSetAdaptiveTargetFps.Get());
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::InputText("##adaptive_target_exact", target, sizeof(target),
+        ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_EnterReturnsTrue)) {
+      int value = 0;
+      const auto parsed = std::from_chars(target, target + std::strlen(target), value);
+      if (parsed.ec == std::errc{} && parsed.ptr == target + std::strlen(target)) {
+        SettleSlider(true);
+        kSetAdaptiveTargetFps.Commit(static_cast<float>(std::clamp(value, 30, 360)));
+      }
+    }
     float minimum = nr_adaptive_min_scale.load() * 100.f;
     if (text.modern) {
       ui::RowLabel("Minimum relative scale",
@@ -25656,7 +25671,9 @@ inline void DrawResolutionControls(const ui::PanelText& text) {
       changed = ImGui::SliderFloat(ui::ControlLabel("Minimum relative scale").c_str(), &minimum, 33.f, 100.f, "%.0f%%");
     }
     if (changed) {
-      if (slider_pending != &kSetAdaptiveMinScale) SettleSlider(true);
+      if (slider_pending != &kSetAdaptiveMinScale) {
+        SettleSlider(true);
+      }
       kSetAdaptiveMinScale.Store(minimum / 100.f);
       slider_pending = &kSetAdaptiveMinScale;
     }
@@ -25664,21 +25681,6 @@ inline void DrawResolutionControls(const ui::PanelText& text) {
     if (text.modern && kSetAdaptiveMinScale.Modified()
         && ui::ResetButton("adaptive_minimum_reset", "67%")) {
       kSetAdaptiveMinScale.Commit(.67f);
-    }
-    const auto automatic = CopyAdaptiveStatus();
-    const auto output_rate = output_framerate::Read(SteadyNowNs());
-    ImGui::TextWrapped("%s", text.Tr(adaptive_resolution::ReasonText(
-        automatic.reason == adaptive_resolution::Reason::DISABLED
-            ? adaptive_resolution::Reason::COLLECTING : automatic.reason)));
-    if (output_rate.available) {
-      ImGui::Text(text.Tr("Estimated output FPS: %.1f"), output_rate.fps);
-      ImGui::TextWrapped("%s", text.Tr(output_framerate::SourceText(output_rate.source)));
-    } else {
-      ImGui::TextWrapped("%s", text.Tr(output_framerate::ReasonText(output_rate.reason)));
-    }
-    if (automatic.applied[0].width != 0 && automatic.upper[0].width != 0) {
-      ImGui::Text(text.Tr("Automatic scale: %.0f%%"),
-          100. * automatic.applied[0].width / automatic.upper[0].width);
     }
     ImGui::Unindent();
   }
@@ -25843,9 +25845,16 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
           const auto resolution = EffectivePassResolution(pass);
           char ratio[32];
           std::snprintf(ratio, sizeof(ratio), "%.0f%%", resolution.scale * 100.f);
+          const bool automatic = nr_adaptive_enabled.load();
+          const bool actual = ui_monitor_view != nullptr && static_cast<uint32_t>(pass) < ui_monitor_view->pass_count
+              && ui_monitor_view->passes[pass].execution_confirmed && ui_monitor_view->passes[pass].actual_scale > 0.f;
+          if (automatic && actual) {
+            std::snprintf(ratio, sizeof(ratio), "%.0f%%", ui_monitor_view->passes[pass].actual_scale * 100.f);
+          }
           labels[pass] = {caption,
               std::string(ui::StageDisplayName(stage_plan.requested[pass])) + " | " + ui::Tr(model),
-              std::string(ui::Tr(resolution.follow_input ? ui::text::kResolutionFollow : ratio)) + (modified ? " *" : "")};
+              std::string(automatic ? (actual ? ratio : ui::Tr("Pending confirmation"))
+                  : ui::Tr(resolution.follow_input ? ui::text::kResolutionFollow : ratio)) + (modified ? " *" : "")};
         }
         for (int pass = 0; pass < count; ++pass) {
           ImGui::TableNextColumn();
@@ -25962,63 +25971,65 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
     if (pass == 0) {
       DrawResolutionControls(text);
     } else {
-      const char* resolution_choices[] = {ui::text::kResolutionInherit, ui::text::kResolutionFollow, ui::text::kResolutionFixed};
-      ChoiceSetting(text, kSetPassResolutionMode[pass - 1], ui::text::kWorkingResolution,
-                    resolution_choices, ui::text::kPassResolutionTip);
-      int selected = -1;
-      const bool inherited_present_pair = pass == 1 && pass_resolution_mode[0].load() == 0
-          && stack_passes.load() == 2 && editor_plan.valid && !editor_plan.mixed
-          && editor_plan.effective[0] == stage_plan::Stage::PRESENT;
-      if (pass_resolution_mode[pass - 1].load() == 2 || inherited_present_pair) {
-        constexpr const char* kFixedLabels[] = {"100%", "67%", "58%", "50%"};
-        constexpr float kFixedValues[] = {1.f, .67f, .58f, .50f};
-        bool blocked[4]{};
-        std::string reasons[4];
-        const char* tips[4];
-        for (int i = 0; i < 4; ++i) {
-          if (pass_resolution_mode[pass - 1].load() == 2
-              && std::abs(pass_resolution_scale[pass - 1].load() - kFixedValues[i]) < 0.0001f) {
-            selected = i;
+      if (!nr_adaptive_enabled.load()) {
+        const char* resolution_choices[] = {ui::text::kResolutionInherit, ui::text::kResolutionFollow, ui::text::kResolutionFixed};
+        ChoiceSetting(text, kSetPassResolutionMode[pass - 1], ui::text::kWorkingResolution,
+                      resolution_choices, ui::text::kPassResolutionTip);
+        int selected = -1;
+        const bool inherited_present_pair = pass == 1 && pass_resolution_mode[0].load() == 0
+            && stack_passes.load() == 2 && editor_plan.valid && !editor_plan.mixed
+            && editor_plan.effective[0] == stage_plan::Stage::PRESENT;
+        if (pass_resolution_mode[pass - 1].load() == 2 || inherited_present_pair) {
+          constexpr const char* kFixedLabels[] = {"100%", "67%", "58%", "50%"};
+          constexpr float kFixedValues[] = {1.f, .67f, .58f, .50f};
+          bool blocked[4]{};
+          std::string reasons[4];
+          const char* tips[4];
+          for (int i = 0; i < 4; ++i) {
+            if (pass_resolution_mode[pass - 1].load() == 2
+                && std::abs(pass_resolution_scale[pass - 1].load() - kFixedValues[i]) < 0.0001f) {
+              selected = i;
+            }
+            const presets::Json candidate{{kSetPassResolutionMode[pass - 1].key, 2u},
+                {kSetPassResolutionScale[pass - 1].key, kFixedValues[i]}};
+            blocked[i] = !ValidateConfigurationCapability(candidate, &reasons[i]);
+            if (selected == i) blocked[i] = false;
+            tips[i] = (blocked[i] ? reasons[i].c_str() : kFixedLabels[i]);
           }
-          const presets::Json candidate{{kSetPassResolutionMode[pass - 1].key, 2u},
-              {kSetPassResolutionScale[pass - 1].key, kFixedValues[i]}};
-          blocked[i] = !ValidateConfigurationCapability(candidate, &reasons[i]);
-          if (selected == i) blocked[i] = false;
-          tips[i] = (blocked[i] ? reasons[i].c_str() : kFixedLabels[i]);
+          ImGui::SetNextItemWidth(-1.f);
+          const int clicked = ui::Segmented("##pass_resolution_presets", kFixedLabels, 4, selected, nullptr, tips, blocked);
+          if (clicked >= 0 && clicked != selected) {
+            resolution_edit_request = {{kSetPassResolutionMode[pass - 1].key, 2u},
+                {kSetPassResolutionScale[pass - 1].key, kFixedValues[clicked]}};
+          }
         }
-        ImGui::SetNextItemWidth(-1.f);
-        const int clicked = ui::Segmented("##pass_resolution_presets", kFixedLabels, 4, selected, nullptr, tips, blocked);
-        if (clicked >= 0 && clicked != selected) {
-          resolution_edit_request = {{kSetPassResolutionMode[pass - 1].key, 2u},
-              {kSetPassResolutionScale[pass - 1].key, kFixedValues[clicked]}};
+        if (pass_resolution_mode[pass - 1].load() == 2) {
+          const float original_percentage = pass_resolution_scale[pass - 1].load() * 100.f;
+          float percentage = original_percentage;
+          if (text.modern) {
+            ui::RowLabel(selected < 0 ? "Custom" : "Resolution scale", ui::text::kPassResolutionTip);
+            ui::Slider("##pass_resolution_scale", &percentage, 33.f, 100.f, "%.0f%%", ui::text::kPassResolutionTip);
+          } else {
+            ImGui::SliderFloat(ui::ControlLabel(selected < 0 ? "Custom" : "Resolution scale").c_str(), &percentage, 33.f, 100.f, "%.0f%%");
+          }
+          if (percentage != original_percentage
+              && CanChooseSetting(kSetPassResolutionScale[pass - 1], std::clamp(percentage, 33.f, 100.f) / 100.f)) {
+            kSetPassResolutionScale[pass - 1].Store(std::clamp(percentage, 33.f, 100.f) / 100.f);
+            kSetPassResolutionScale[pass - 1].Persist();
+          }
         }
-      }
-      if (pass_resolution_mode[pass - 1].load() == 2) {
-        const float original_percentage = pass_resolution_scale[pass - 1].load() * 100.f;
-        float percentage = original_percentage;
-        if (text.modern) {
-          ui::RowLabel(selected < 0 ? "Custom" : "Resolution scale", ui::text::kPassResolutionTip);
-          ui::Slider("##pass_resolution_scale", &percentage, 33.f, 100.f, "%.0f%%", ui::text::kPassResolutionTip);
-        } else {
-          ImGui::SliderFloat(ui::ControlLabel(selected < 0 ? "Custom" : "Resolution scale").c_str(), &percentage, 33.f, 100.f, "%.0f%%");
+        if (pass_resolution_mode[pass - 1].load() == 2
+            && ui::ResetButton("pass_resolution_reset", ui::text::kResolutionInherit)) {
+          kSetPassResolutionMode[pass - 1].Commit(0.f);
+          kSetPassResolutionScale[pass - 1].Commit(1.f);
         }
-        if (percentage != original_percentage
-            && CanChooseSetting(kSetPassResolutionScale[pass - 1], std::clamp(percentage, 33.f, 100.f) / 100.f)) {
-          kSetPassResolutionScale[pass - 1].Store(std::clamp(percentage, 33.f, 100.f) / 100.f);
-          kSetPassResolutionScale[pass - 1].Persist();
-        }
-      }
-      if (pass_resolution_mode[pass - 1].load() == 2
-          && ui::ResetButton("pass_resolution_reset", ui::text::kResolutionInherit)) {
-        kSetPassResolutionMode[pass - 1].Commit(0.f);
-        kSetPassResolutionScale[pass - 1].Commit(1.f);
-      }
-      if (pass_resolution_mode[pass - 1].load() != 2) {
-        const auto inherited = EffectivePassResolution(pass);
-        if (inherited.follow_input) {
-          ImGui::TextWrapped("%s: %s", text.Tr(ui::text::kWorkingResolution), text.Tr(ui::text::kResolutionFollow));
-        } else {
-          ImGui::TextWrapped("%s: %.2f%%", text.Tr("Resolution scale"), inherited.scale * 100.f);
+        if (pass_resolution_mode[pass - 1].load() != 2) {
+          const auto inherited = EffectivePassResolution(pass);
+          if (inherited.follow_input) {
+            ImGui::TextWrapped("%s: %s", text.Tr(ui::text::kWorkingResolution), text.Tr(ui::text::kResolutionFollow));
+          } else {
+            ImGui::TextWrapped("%s: %.2f%%", text.Tr("Resolution scale"), inherited.scale * 100.f);
+          }
         }
       }
       DrawResolutionObserved(text, pass);
@@ -28839,8 +28850,8 @@ inline void LoadConfiguration() {
     float depth_near = kControlMaskDepthNearDefault;
     float depth_far = kControlMaskDepthFarDefault;
     bool motion_enabled = false;
-    float motion_start = 2.f;
-    float motion_end = 16.f;
+    float motion_start = kControlMaskMotionStartDefault;
+    float motion_end = kControlMaskMotionEndDefault;
   } saved_pass_control_mask[kMaxNrPasses - 1];
 
   // Reads are unconditional (targeted migration, not reset): presence of the
@@ -29166,9 +29177,9 @@ inline void LoadConfiguration() {
   telemetry_seconds = std::min(saved_telemetry_seconds, 3600u);
   bool saved_control_mask_motion_enabled = false;
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskMotionEnabled", saved_control_mask_motion_enabled);
-  float saved_control_mask_motion_start = 2.f;
+  float saved_control_mask_motion_start = kControlMaskMotionStartDefault;
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskMotionStart", saved_control_mask_motion_start);
-  float saved_control_mask_motion_end = 16.f;
+  float saved_control_mask_motion_end = kControlMaskMotionEndDefault;
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskMotionEnd", saved_control_mask_motion_end);
   bool saved_control_mask_enabled = false;
   uint32_t saved_control_mask_mode = kControlMaskRgb;
@@ -29197,8 +29208,11 @@ inline void LoadConfiguration() {
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskDepthNear", saved_control_mask_depth_near);
   reshade::get_config_value(nullptr, kConfigSection, "NRControlMaskDepthFar", saved_control_mask_depth_far);
   control_mask_motion_enabled = saved_control_mask_motion_enabled;
-  control_mask_motion_start = SanitizeFloatKey(saved_control_mask_motion_start, 2.f, 0.f, 256.f, "NRControlMaskMotionStart");
-  control_mask_motion_end = SanitizeFloatKey(saved_control_mask_motion_end, 16.f, 0.f, 256.f, "NRControlMaskMotionEnd");
+  MigrateControlMaskMotionDefaults(&saved_control_mask_motion_start, &saved_control_mask_motion_end);
+  control_mask_motion_start = SanitizeFloatKey(saved_control_mask_motion_start,
+      kControlMaskMotionStartDefault, 0.f, 256.f, "NRControlMaskMotionStart");
+  control_mask_motion_end = SanitizeFloatKey(saved_control_mask_motion_end,
+      kControlMaskMotionEndDefault, 0.f, 256.f, "NRControlMaskMotionEnd");
   control_mask_enabled = saved_control_mask_enabled;
   control_mask_mode = SanitizeEnumKey(saved_control_mask_mode, kControlMaskRgb,
       kControlMaskRgb, kControlMaskDepthFar, "NRControlMaskMode");
@@ -29570,8 +29584,13 @@ inline void LoadConfiguration() {
     PassControlMask& pass_mask = pass_control_mask[pass - 1];
     pass_mask.follow = mask.follow;
     pass_mask.motion_enabled = mask.motion_enabled;
-    pass_mask.motion_start = SanitizeFloatKey(mask.motion_start, 2.f, 0.f, 256.f, kSetPassControlMaskMotionStart[pass - 1].key);
-    pass_mask.motion_end = SanitizeFloatKey(mask.motion_end, 16.f, 0.f, 256.f, kSetPassControlMaskMotionEnd[pass - 1].key);
+    float mask_motion_start = mask.motion_start;
+    float mask_motion_end = mask.motion_end;
+    MigrateControlMaskMotionDefaults(&mask_motion_start, &mask_motion_end);
+    pass_mask.motion_start = SanitizeFloatKey(mask_motion_start,
+        kControlMaskMotionStartDefault, 0.f, 256.f, kSetPassControlMaskMotionStart[pass - 1].key);
+    pass_mask.motion_end = SanitizeFloatKey(mask_motion_end,
+        kControlMaskMotionEndDefault, 0.f, 256.f, kSetPassControlMaskMotionEnd[pass - 1].key);
     pass_mask.mode = SanitizeEnumKey(mask.mode, kControlMaskRgb,
         kControlMaskRgb, kControlMaskDepthFar, kSetPassControlMaskMode[pass - 1].key);
     pass_mask.blend_mode = SanitizeEnumKey(mask.blend_mode, 0u, 0u, 3u,
@@ -29603,7 +29622,7 @@ inline void LoadConfiguration() {
       saved_res_scale, defaults::kResolutionScale, 0.33f, 1.f,
       "NRResolutionScale");
   nr_adaptive_enabled = saved_adaptive_enabled;
-  nr_adaptive_target_fps = SanitizeFloatKey(saved_adaptive_target_fps, 60.f, 20.f, 360.f,
+  nr_adaptive_target_fps = SanitizeFloatKey(saved_adaptive_target_fps, 60.f, 30.f, 360.f,
       "NRAdaptiveTargetFPS");
   nr_adaptive_min_scale = SanitizeFloatKey(saved_adaptive_min_scale, 0.67f, 0.33f, 1.f,
       "NRAdaptiveMinScale");

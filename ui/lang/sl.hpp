@@ -2269,7 +2269,7 @@ inline constexpr Translation kSl[] = {
     {"NR: %.1f ms GPU per completed stage group.", "NR: %.1f ms časa GPU na dokončano skupino stopenj."},
     {"Measured GPU time for the current completed stage group. Compare configurations using GPU A/B; overall FPS also depends on the game and frame limits.", "Izmerjeni čas GPU za trenutno dokončano skupino stopenj. Primerjajte nastavitve z GPU A/B; skupni FPS so odvisni tudi od igre in omejitev sličic."},
     {"Frame interval (ms)", "Interval sličic (ms)"},
-    {"FPS averages the latest 16 intervals; frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "FPS izračuna povprečje zadnjih 16 intervalov; interval sličic prikazuje surove vzorce. Krivulje GPU ohranijo vrhove dokončanih vzorcev in pustijo vrzeli prazne."},
+    {"FPS follows the current output estimate when available, otherwise cadence. Frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty.", "FPS sledi trenutni oceni izhoda, kadar je na voljo, sicer ritmu klicev. Interval sličic kaže surove vzorce. Krivulje GPU ohranijo vrhove zaključenih vzorcev in pustijo vrzeli brez podatkov prazne."},
     {"Control mask", "Nadzorna maska"},
     {"Control mask settings", "Nastavitve nadzorne maske"},
     {"Use Pass 1 mask settings", "Uporabi nastavitve maske prehoda 1"},
@@ -2330,6 +2330,11 @@ inline constexpr Translation kSl[] = {
     {"Paused after an NR execution failure", "Začasno ustavljeno po napaki izvajanja NR"},
     {"Preparing working resolutions", "Priprava delovnih ločljivosti"},
     {"Paused: insufficient workset capacity", "Začasno ustavljeno: premalo zmogljivosti za delovne vire"},
+    {"Not enabled", "Ni omogočeno"},
+    {"Exact target FPS", "Točen cilj FPS"},
+    {"Enter the target output frame rate directly (30-360). Press Enter to apply.", "Neposredno vnesite ciljno izhodno hitrost sličic (30–360). Za uveljavitev pritisnite Enter."},
+    {"Adaptive resolution controls the current size. Turn it off to edit the saved manual upper limit.", "Prilagodljiva ločljivost upravlja trenutno velikost. Za urejanje shranjene ročne zgornje meje jo izklopite."},
+    {"Saved manual upper limit: %s", "Shranjena ročna zgornja meja: %s"},
 };
 
 }  // namespace renodx::addons::dlss5::ui::lang

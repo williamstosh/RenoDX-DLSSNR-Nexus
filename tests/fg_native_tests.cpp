@@ -4145,6 +4145,35 @@ int RunPresentGuideModelsTest(bool native_ngx, const char* project_id_path) {
         xefg_session.extent_height = height;
       }
       xefg_context = reinterpret_cast<uintptr_t>(xefg_session.handle);
+      native::control_mask_enabled.store(false);
+      native::control_mask_motion_enabled.store(false);
+      // Populate every private recording slot without a mask. A fast GPU
+      // otherwise keeps selecting slot 0 and misses the off -> on migration.
+      uint32_t warm_frame = 0;
+      for (uint32_t slot_index = 0; slot_index < 3; ++slot_index) {
+        bool warm = false;
+        for (uint32_t attempt = 0; attempt < native::kContractDebounceFrames + 8 && !warm; ++attempt) {
+          if (auto stream = native::fg_service::streams.find({false, xefg_context});
+              stream != native::fg_service::streams.end()) {
+            for (uint32_t skipped = 0; skipped < slot_index; ++skipped) {
+              stream->second.slots[skipped].quarantined = true;
+            }
+          }
+          const uint32_t present_id = 90u + warm_frame++;
+          xefg_session.Guides(present_id, guides[3].Get(), guides[2].Get());
+          xefg_session.Tag(present_id, HUDLESS, hudless.Get());
+          xefg_session.Present(present_id);
+          warm = xefg::CurrentResult() == fg::Result::SUBMITTED;
+          auto& stream = native::fg_service::streams.at({false, xefg_context});
+          wait_service_fence(stream);
+          for (auto& slot : stream.slots) {
+            slot.quarantined = false;
+          }
+          submit();
+        }
+        Check(warm, "XeFG mask-off frame populates each private recording slot");
+      }
+      native::control_mask_enabled.store(true);
       for (uint32_t frame = 0; frame < native::kContractDebounceFrames + 3
            && xefg_result != fg::Result::SUBMITTED; ++frame) {
         consumed_masks = {};
@@ -4211,6 +4240,22 @@ int RunPresentGuideModelsTest(bool native_ngx, const char* project_id_path) {
       model_parameter_observer = {};
       Check(xefg_result == fg::Result::SUBMITTED,
           "XeFG adapter reaches a submitted ControlMask frame with both colors");
+      for (const bool masked : {true, false}) {
+        native::control_mask_enabled.store(masked);
+        uint32_t consecutive = 0;
+        for (uint32_t frame = 0; frame < native::kContractDebounceFrames + 12 && consecutive < 6; ++frame) {
+          const uint32_t present_id = (masked ? 180u : 220u) + frame;
+          xefg_session.Guides(present_id, guides[3].Get(), guides[2].Get());
+          xefg_session.Tag(present_id, HUDLESS, hudless.Get());
+          xefg_session.Present(present_id);
+          consecutive = (xefg::CurrentResult() == fg::Result::SUBMITTED ? consecutive + 1 : 0);
+          wait_service_fence(native::fg_service::streams.at({false, xefg_context}));
+          submit();
+        }
+        Check(consecutive == 6, "XeFG mask-on and restored mask-off each sustain six submitted frames");
+      }
+      std::cout << "CASE path=XeFG-service hot_toggle=off-on-off private_slots=3 motion=off"
+                   " sustained_submissions=6+6 completion=Fence\n";
     }
     xefg::Configure(&Service, &Prepare, nullptr, &Requested);
     if (auto stream = native::fg_service::streams.find({false, xefg_context});

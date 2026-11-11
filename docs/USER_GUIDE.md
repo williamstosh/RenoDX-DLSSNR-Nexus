@@ -6,7 +6,7 @@
 
 本指南对应 **v0.2.1**：从安装、选方案和比较画面开始，再按需组合最多四层 NR、独立尺寸和结果编辑。**实验性**表示有特殊条件且默认关闭的试用路径，**暂不支持**表示不可用组合。下载及版本说明见 [v0.2.1](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.1)。
 
-配图沿用已审核的早前开发界面。0.2.0 的状态栏、分辨率区及方案入口已有调整，以文字步骤为准；图中状态和数字是界面示例。
+配图来自已审核的开发界面离屏预览，状态和数字为界面示例；各功能的安装包支持范围见正文。
 
 <a id="zh-contents"></a>
 ### 目录
@@ -124,7 +124,7 @@ A/B 示例需要 310.9.16.0，其他兼容运行时也可使用同模型两层�
 1. 在**画质**或**第 1 层**设基础分辨率：100／67／58／50%，或用 **33–100%** 滑条微调。
 2. 选择第 2–4 层，在**工作分辨率**中选择**固定比例**及所需比例；也可选**跟随输入**。Present 双层也可直接点击第 2 层的同尺寸比例按钮，一次设置固定模式和比例。
 3. 比如比较 **第 1 层 100% → 第 2 层 67%** 与两层 100%，保持其余模型、外观和结果相同。
-4. 查看尺寸区的预计／实际尺寸及诊断 GPU 开销，检查边缘、细节和移动画面。
+4. 查看尺寸区的实际尺寸及诊断 GPU 开销，检查边缘、细节和移动画面。
 
 “继承基础”取画质页／第 1 层，**不是上一层比例**。“跟随输入”使用可用引导尺寸，缺少引导时用保存比例；上采样全链共享。要在 Present + FG 使用两层 67%，将基础比例设为 67%，第 2 层设为继承基础。若旧设置的第 2 层固定为 100%，选择基础比例或两层后，在确认框中点击“让其他层继承基础分辨率”，即可统一应用；取消不会更改设置，撤销／重做作用于整次操作。也可先手动将第 2 层设为继承基础，再更改基础比例；独立比例的保存值会保留。
 
@@ -170,11 +170,11 @@ DX11／DX12 支持跨 Render／Upscaled 阶段独立尺寸，以及同一 Render
 - **F8** 默认循环精简、详细、精简＋趋势、详细＋趋势四种模式；可改绑或取消。F8 与宿主快捷键冲突时会提示，不会屏蔽游戏或 Steam 输入。
 - 游戏中不接收鼠标或键盘输入；按 **Home** 打开 ReShade 主菜单后可拖动、缩放、锁定位置与尺寸。拖动后记忆自定义位置。
 - **精简／详细（Compact／Details）**显示 NR 状态、GPU 开销、帧率和 FG 状态；详细视图增加逐层开销与异常。切换视图或趋势时自动适应一次，手动缩放后保留尺寸偏好；也可主动点击**适应内容**。逐层链显示渲染、超分后、呈现等位置、模型配置和实际尺寸。两种视图均可选开**趋势（Trends）**，查看最近 **10／30／60 秒**，并选择帧率、帧间隔（ms）、NR GPU 或各 Pass GPU 曲线。
-- 顶部、监视器和帧率曲线使用同一采样口径，优先读取当前运行时的 **Present 回调节奏**，无有效数据时回退到 **ImGui 更新节奏**并标明来源；切换来源时重新开始相应曲线。该帧率不是 FG 后最终输出帧率。GPU 曲线使用已完成的原始计时样本，以 **50 ms** 分桶并保留峰值，缺测时留空。
+- 顶部、监视器和帧率曲线优先使用插件内可用的**输出FPS**计数或估算，包含生成帧；暂不可用时使用当前运行时的 **Present 回调节奏**，再回退到 **ImGui 更新节奏**。悬停数值可查看当前来源，切换来源时重新开始相应曲线。帧间隔曲线保留实际回调间隔；GPU 曲线使用已完成的原始计时样本，以 **50 ms** 分桶并保留峰值，缺测时留空。
 - 切换介入点、Pass 数量、模型或工作比例时，趋势会记录新的配置代次并保留前一段有效历史；无效区间显示为空缺，不把旧 GPU 样本当作当前配置。
 - **高级 → 运行时监视器**可设置 **0–100% 背景不透明度，默认 80%**；仅背景变淡，文字和曲线保持清晰。监视器内的**位置**菜单与高级页共用九宫格、自定义、适应内容和重置操作；高级页还可用水平／垂直偏移微调（UI 像素）。拖动会切回自定义位置。
 
-跨阶段的 NR GPU 仅在所有阶段组都有近期有效样本，且配置、设备、来源、显示条件与队列一致时显示 **~ 参考合计**。每个阶段组的总耗时只计一次，包含组内共用开销；它是近期成本参考，并非同一帧的端到端延迟。条件不足时查看独立 Pass 数据；缺测与未运行分别显示。
+跨阶段的 NR GPU 仅在所有阶段组都有近期有效样本，且配置、设备、来源、显示条件与队列一致时显示 **参考合计**。每个阶段组的总耗时只计一次，包含组内共用开销；它是近期成本参考，并非同一帧的端到端延迟。条件不足时查看独立 Pass 数据；缺测与未运行分别显示。
 
 F6 立即提示开关操作，随后状态更新为正在检查、正常运行、已提交至 FG 或具体原因。等待／暂无时让游戏正常运行片刻，持续存在再查看原因。FG 倍率未知时，分别看 FG 活动和 NR 路径。
 
@@ -241,7 +241,7 @@ F6 立即提示开关操作，随后状态更新为正在检查、正常运行�
 
 当前版本会忽略旧诊断配置 `NRControlMaskUseCoreContext=1`，并修复已有处理历史在切回 Upscaled 或逐层处理时阻止 NR 继续运行的问题。无需手动删除此键；更新插件并重启游戏后生效。
 
-**开发版新增：运动衰减**（尚未包含在 v0.3.0 安装包中）。它位于区域遮罩设置内，与深度衰减分组排列，无需再展开子菜单；开启后显示运动淡出起点／终点，关闭时收起并保留数值。运动越快的区域使用越少的 NR，包含转动相机产生的画面运动。默认关闭，起点／终点为 **2／16 像素／帧**，按当前层的输入分辨率计量：低于起点保留 R，达到终点时 R 降至 0。提高起点可让轻微运动继续保留 NR，提高终点可让过渡更缓。自动调整分辨率时，运动阈值保持各层手动上限的参考尺度；手动尺寸或帧率改变后，可按画面重新调节。
+**开发版新增：运动衰减**（尚未包含在 v0.3.0 安装包中）。它位于区域遮罩设置内，与深度衰减分组排列，无需再展开子菜单；开启后显示运动淡出起点／终点，关闭时收起并保留数值。运动越快的区域使用越少的 NR，包含转动相机产生的画面运动。默认关闭，起点／终点为 **16／160 像素／帧**，按该层工作画面的参考尺寸计量：低于起点保留 R，达到终点时 R 降至 0。提高起点可让轻微运动继续保留 NR，提高终点可让过渡更缓。自动调整分辨率时，运动阈值保持各层手动上限的参考尺度；手动尺寸或帧率改变后，可按画面重新调节。
 
 运动衰减可以和深度衰减同时使用，重叠区域采用较强的衰减，G、B、角色遮罩和混合模式保持各自设置。每层可继承 Pass 1，或独立设置运动开关与范围。关闭运动衰减便恢复该层原有区域设置；缺少有效运动或深度输入时，只跳过对应自动规则。它按运动矢量选取区域，不区分相机运动与移动物体。
 
@@ -299,15 +299,15 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 | 50% | **50%** | 宽高各半，约为基准像素数四分之一，GPU 成本另看测量。 |
 | Follow input／跟随输入 | 有效 Guide 与参考尺寸逐轴取较小值 | 缺少有效 Guide 时使用先前保存的比例；选择跟随不会改写该比例，也不会更改游戏 DLSS 模式。 |
 
-比例作用于宽高，50% 约四分之一像素。Render 基准为可用渲染区域，Upscaled 为 DLSS 输出区域，Present 为呈现帧。跟随输入时禁用比例滑条，保留其保存值。当前设置区可看预计／实际尺寸，历史在诊断页。
+比例作用于宽高，50% 约四分之一像素。Render 基准为可用渲染区域，Upscaled 为 DLSS 输出区域，Present 为呈现帧。跟随输入时禁用比例滑条，保留其保存值。设置区显示已确认的实际尺寸，历史在诊断页。
 
-**开发版新增：自适应分辨率**（尚未包含在 v0.3.0 安装包中）。在工作分辨率下开启后，设置**目标输出 FPS**和**最低相对比例**，默认分别为 **60 FPS／67%**，范围为 **20–360 FPS／33–100%**。目标包含生成帧；各层手动分辨率作为上限，最低比例相对于各自上限计算。例如上限为 2560×1440，最低 67% 约为 1715×965，仍须满足原有阶段尺寸限制。关闭自动后恢复手动上限。
+**开发版新增：自适应分辨率**（尚未包含在 v0.3.0 安装包中）。在工作分辨率下开启后，设置**目标输出 FPS**和**最低相对比例**，默认分别为 **60 FPS／67%**，范围为 **30–360 FPS／33–100%**。目标包含生成帧；各层手动分辨率作为上限，最低比例相对于各自上限计算。例如上限为 2560×1440，最低 67% 约为 1715×965，仍须满足原有阶段尺寸限制。目标既可拖动滑条，也可直接在数字框输入，例如 **116**。自动运行时，工作分辨率和比例显示只读的实际值；保存的手动上限可悬停查看，关闭自动后恢复原手动编辑。
 
-自动功能在 NR 降尺寸确实有助于接近目标时保留较低档，收益不明确时恢复较高画质；持续达到目标后会缓慢尝试恢复细节。界面显示估算输出 FPS、来源、当前比例或暂停原因，FG 状态区分观测、请求、声明、动态及上限。估算在插件内完成，无需额外安装或运行帧率程序；限帧或其他负载可能使目标无法达到，自动功能不会改变游戏、FG 或限帧设置。
+自动功能在 NR 降尺寸确实有助于接近目标时保留较低档，收益不明确时恢复较高画质；持续达到目标后会缓慢尝试恢复细节。顶栏按「帧率／NR GPU／帧生成」分两行显示标签与数值，窄面板自动换行；悬停可查看来源和倍率计算方法。分辨率区保留紧凑自动状态，关键暂停／错误仍直接显示。估算在插件内完成，无需额外安装或运行帧率程序；限帧或其他负载可能使目标无法达到，自动功能不会改变游戏、FG 或限帧设置。
 
 首版面向原生 DX12 的单个处理阶段，包括兼容的 XeFG／原生 FG 同尺寸链。跨阶段链、FG 异尺寸、DX11 Bridge 和 Vulkan 继续使用手动分辨率；缺少可靠帧率来源时暂停自动并保留合法尺寸。动态 FG 还需匹配的游戏帧计数；信息不足时暂停试探并等待采样，估算输出帧率仍可显示。更改设置或 GPU A/B 对比期间暂停自动。动态画质、限帧场景的估算误差与游戏内切换流畅度仍待实机确认。
 
-自动调节使用少量预备档位。首次开启或模型、游戏尺寸变化后需要重新准备，期间可能短暂停顿；显存或工作集容量不足时暂停自动。完成准备后再切入就绪档位。
+自动调节使用少量预备档位。首次开启或模型、游戏尺寸变化后需要重新准备，期间可能短暂停顿；显存或工作集容量不足时暂停自动。完成准备后再切入就绪档位。提高最低比例可缩小档位间的外观差异；比较流畅度时，将首次准备与后续切换分开观察。
 
 | 上采样选项 | NR 低于输出尺寸时的行为 |
 | --- | --- |
@@ -475,7 +475,7 @@ v0.2.1 默认开启**画质 → 处理与兼容性 → Present → FG 高级设�
 
 **NR 开销计量**默认开，**GPU 分阶段计时**默认关，可在详细诊断开启。DX12／DX11 Bridge 支持查看各层位置、模型配置、工作／输出尺寸和 GPU 耗时，及 Encode、模型求值（NGX）、Resolve、阶段总耗时。
 
-GPU 时间描述 NR 工作；监视器帧率采用已标明来源的呈现回调或界面更新节奏。跨阶段的 **~ 参考合计**与独立 Pass 数据见上方[性能 HUD](#zh-diagnostics)说明。FG、CPU 瓶颈和限帧影响整体 FPS，整体流畅度在游戏中比较；目前不显示缺少可靠瓶颈依据的“无 NR FPS”估算。Look 已含于 Resolve，NGX 含边界操作；读数须新鲜、已完成且匹配当前配置。模型标签是兼容规则解析后的配置，运行时内部网络不提供回读。
+GPU 时间描述 NR 工作；监视器帧率优先采用内置输出FPS，悬停可查看当前来源。跨阶段的 **参考合计**与独立 Pass 数据见上方[性能 HUD](#zh-diagnostics)说明。FG、CPU 瓶颈和限帧影响整体 FPS，整体流畅度在游戏中比较；目前不显示缺少可靠瓶颈依据的“无 NR FPS”估算。Look 已含于 Resolve，NGX 含边界操作；读数须新鲜、已完成且匹配当前配置。模型标签是兼容规则解析后的配置，运行时内部网络不提供回读。
 
 GPU A/B 每组收集 16 有效样本，开始／重建后 1 秒稳定期、10 秒超时；显示中位数、波动和 B−A，只接受一层实际尺寸变化。场景、位置、模型、FG、HDR 和其他设置保持相同；采集中改设置或换场景需重新采集。
 
@@ -549,7 +549,7 @@ ROI、单次 HDR、120 次 HDR Present 和 P0 捕获生成额外数据，可能�
 
 This guide covers **v0.2.1**. Start with installation, profiles and picture comparisons, then combine up to four NR passes, independent sizes and result edits as needed. **Experimental** marks trial paths with special conditions that are off by default; **Not supported yet** marks unavailable combinations. Downloads and release details: [v0.2.1](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.1).
 
-Images retain reviewed earlier development interfaces. 0.2.0 changes the status bar, resolution area and profile entry points; follow the written steps. States and numbers shown are interface examples.
+Images are reviewed offscreen previews of the development UI, with example states and numbers. Each feature's text identifies its availability in downloads.
 
 <a id="contents"></a>
 ### Contents
@@ -667,7 +667,7 @@ Run a pass at a smaller size and reconstruct to output to trade detail against c
 1. In **Quality** or **Pass 1**, set the base to 100/67/58/50%, or fine-tune with **33–100%**.
 2. Select Pass 2–4 and choose **Fixed scale** and the desired scale under **Working resolution**; **Follow input** is also available. A Present pair also lets you click a matching scale button on Pass 2 to set fixed mode and scale together.
 3. Compare **Pass 1 100% → Pass 2 67%** with both at 100%, holding models, looks and results constant.
-4. Read estimated/actual size and diagnostic GPU cost; inspect edges, detail and motion.
+4. Read actual size and diagnostic GPU cost; inspect edges, detail and motion.
 
 Inherit base uses Quality/Pass 1, **not the previous pass's scale**. Follow input uses available guides, falling back to saved scale without them. Upsampling is shared. For two Present + FG passes at 67%, set the base scale to 67% and Pass 2 to inherit the base. If an older setup has Pass 2 fixed at 100%, after choosing the base scale or two passes, click **Let other passes inherit base resolution** in the confirmation dialog to apply the changes together. Cancel leaves settings unchanged; Undo/Redo reverses or reapplies the whole action. Alternatively, first set Pass 2 to inherit the base and then change the base scale; the saved independent scale is retained.
 
@@ -714,10 +714,10 @@ Read NR status, reasons, dimensions, GPU cost and reporting here. Address status
 - It accepts no gameplay mouse/keyboard input. Press **Home** to open ReShade, then move, resize or lock position/size. Dragging saves a custom position.
 - **Compact/Details** show NR state, GPU cost, FPS and FG status; Details adds pass costs and issues. Changing the view or trends fits content once. Manual resizing retains your size preference; **Fit to content** recalculates it on demand. The pass chain shows stage, configured model and actual size. Either view can show optional **Trends** for the last **10/30/60 seconds**; select FPS, frame interval (ms), NR GPU or individual pass GPU curves.
 - Changing hook point, pass count, model or working ratio starts a new trend segment while retaining earlier valid history. Gaps remain empty and old GPU samples are never presented as current for the new configuration.
-- The top summary, monitor and FPS curve share one measurement source: the current runtime's **Present callback cadence**, with a labelled **ImGui update cadence** fallback when valid Present data is unavailable. Source changes restart the corresponding curves. This is not final frame-generated output FPS. GPU curves use raw completed timing samples, grouped into **50 ms** buckets that preserve peaks and leave missing data empty.
+- The top summary, monitor and FPS curve prefer the add-on's available **output-FPS** counter or estimate, including generated frames. Otherwise they use the current runtime's **Present callback cadence**, then **ImGui update cadence**. Hover for the current source; source changes restart the corresponding curve. Frame-interval curves retain actual callback intervals. GPU curves use raw completed timing samples, grouped into **50 ms** buckets that preserve peaks and leave missing data empty.
 - Under **Advanced → Runtime monitor**, set **background opacity from 0–100%, default 80%**. Only backgrounds fade; text and graphs stay clear. The monitor's **Position** menu shares nine anchors, custom placement, Fit to content and reset with Advanced; Advanced also offers horizontal/vertical offsets in UI pixels. Dragging switches back to a custom position.
 
-Across stages, NR GPU shows an **~ reference sum** only when every stage group has recent valid samples with matching configuration, device, source, display conditions and queue. Each stage group's total span is counted once, including its shared work. This describes recent cost rather than same-frame end-to-end latency. Otherwise, read individual pass data; missing measurements and passes that did not run are shown separately.
+Across stages, NR GPU shows a **reference sum** only when every stage group has recent valid samples with matching configuration, device, source, display conditions and queue. Each stage group's total span is counted once, including its shared work. This describes recent cost rather than same-frame end-to-end latency. Otherwise, read individual pass data; missing measurements and passes that did not run are shown separately.
 
 F6 confirms the switch immediately; status then updates to checking, running, submitted to FG or a specific reason. Let gameplay run briefly for waiting/no-data states, then inspect the reason if persistent. With an unknown FG multiplier, read FG activity and NR route separately.
 
@@ -784,7 +784,7 @@ Region mask lets you tune NR intensity, tone and structure separately, or gradua
 
 Current builds ignore the old diagnostic setting `NRControlMaskUseCoreContext=1` and fix existing processing history blocking NR when switching back to Upscaled or using stages per pass. There is no need to delete the key; update the addon and restart the game.
 
-**New in development builds: Motion attenuation** (not included in the v0.3.0 download). It is grouped alongside the depth controls inside Region mask settings, with no additional submenu. Enabling it reveals Motion fade start / end; turning it off hides those controls and preserves their values. It uses less NR in faster moving areas, including movement caused by turning the camera. It is off by default, with start / end at **2 / 16 pixels per frame**, measured at the current pass's input resolution. Below the start, R is kept; at the end, R reaches 0. Raise the start to keep NR during small movements, or raise the end for a gentler transition. Adjust to the picture after changing working resolution or frame rate.
+**New in development builds: Motion attenuation** (not included in the v0.3.0 download). It is grouped alongside the depth controls inside Region mask settings, with no additional submenu. Enabling it reveals Motion fade start / end; turning it off hides those controls and preserves their values. It uses less NR in faster moving areas, including movement caused by turning the camera. It is off by default, with start / end at **16 / 160 pixels per frame**, measured at the pass's working reference size. Below the start, R is kept; at the end, R reaches 0. Raise the start to keep NR during small movements, or raise the end for a gentler transition. Adaptive sizing keeps each pass's manual upper limit as the motion reference. Adjust to the picture after changing manual working resolution or frame rate.
 
 Motion and depth fades can run together; overlapping areas use the stronger fade. G, B, Character mask and Blend mode keep their own settings. Each pass can inherit Pass 1 or set its own motion switch and range. Turning motion attenuation off restores that pass's other region settings. If motion or depth input is unavailable, only that automatic rule is skipped. Selection follows motion vectors and includes both camera and object movement.
 
@@ -842,15 +842,15 @@ Present offers the following. Compatible Pre-FG enhances game frames before FG. 
 | 50% | **50%** | Half width and height: roughly one quarter of the reference pixel count. Read GPU cost separately. |
 | Follow input | Per-axis minimum of valid guides and reference size | Without valid guides, uses the saved scale. Selecting Follow input preserves that scale and does not change the game's DLSS mode. |
 
-Scale applies to width and height; 50% is about one quarter of the pixels. Render uses the available render region, Upscaled the DLSS output region and Present the presented frame. Follow input disables the slider while retaining its value. Read current estimated/actual size in settings and history in Diagnostics.
+Scale applies to width and height; 50% is about one quarter of the pixels. Render uses the available render region, Upscaled the DLSS output region and Present the presented frame. Follow input disables the slider while retaining its value. Read current actual size in settings and history in Diagnostics.
 
-**New in development builds: Adaptive resolution** (not included in the v0.3.0 download). Enable it below working resolution, then set **Target output FPS** and **Minimum relative scale**. Defaults are **60 FPS / 67%**, with ranges of **20–360 FPS / 33–100%**. The target includes generated frames. Each pass's manual resolution is its upper limit, and the minimum is relative to that limit. For example, a 2560×1440 upper limit at 67% gives approximately 1715×965, subject to existing stage limits. Turning automatic sizing off restores the manual limits.
+**New in development builds: Adaptive resolution** (not included in the v0.3.0 download). Enable it below working resolution, then set **Target output FPS** and **Minimum relative scale**. Defaults are **60 FPS / 67%**, with ranges of **30–360 FPS / 33–100%**. The target includes generated frames. Each pass's manual resolution is its upper limit, and the minimum is relative to that limit. For example, a 2560×1440 upper limit at 67% gives approximately 1715×965, subject to existing stage limits. Drag the slider or enter an exact target, such as **116**, in the number box. While automatic sizing is on, working resolution and scale show read-only actual values; hover for the saved manual upper limit. Turning it off restores manual editing.
 
-Automatic sizing keeps a lower level when reducing NR resolution helps approach the target and restores higher quality when the benefit is unclear. After holding the target, it slowly tries to recover detail. The controls show estimated output FPS, its source, the current scale or a pause reason; FG status distinguishes observed, requested, declared, dynamic and maximum multipliers. Estimation runs inside the add-on, with no extra FPS program to install or run. Frame caps and other workloads can prevent reaching the target; game, FG and frame-cap settings are left to you.
+Automatic sizing keeps a lower level when reducing NR resolution helps approach the target and restores higher quality when the benefit is unclear. After holding the target, it slowly tries to recover detail. The top summary shows FPS / NR GPU / FG as labels above values, wrapping in narrow panels. Hover for the source and multiplier calculation. Resolution controls keep a compact automatic status, while important pause and error states stay visible. Estimation runs inside the add-on, with no extra FPS program to install or run. Frame caps and other workloads can prevent reaching the target; game, FG and frame-cap settings are left to you.
 
 The first implementation targets one processing stage on native DX12, including compatible same-size XeFG / native FG chains. Cross-stage chains, FG chains with different sizes, DX11 Bridge and Vulkan retain manual resolution. Automatic sizing pauses without a reliable output-rate source and keeps a legal size. Dynamic FG also needs matching game-frame counts; while those are unavailable, it pauses quality trials and collects samples, and estimated output FPS can still be shown. Editing settings and GPU A/B comparisons pause it. Dynamic quality, estimation error with frame caps and in-game switching smoothness still require game validation.
 
-Automatic sizing uses a few prepared levels. Initial activation and model or game-size changes require preparation, which can cause a brief pause. Insufficient video memory or workset capacity pauses automatic sizing. Only ready levels are selected after preparation.
+Automatic sizing uses a few prepared levels. Initial activation and model or game-size changes require preparation, which can cause a brief pause. Insufficient video memory or workset capacity pauses automatic sizing. Only ready levels are selected after preparation. Raising the minimum scale reduces appearance differences between levels; compare initial preparation and subsequent switches separately.
 
 | Upsampling choice | Behaviour below output size |
 | --- | --- |
@@ -1018,7 +1018,7 @@ UI Composition and other UI Modes retain their existing compatibility routes wit
 
 **NR cost meter** defaults on; **GPU stage profiling** defaults off in Detailed diagnostics. DX12/DX11 Bridge show per-pass location, configured model, working/output size and GPU cost, plus Encode, model evaluation (NGX), Resolve and stage total.
 
-GPU time describes NR work; monitor FPS uses the labelled Present callback or UI update cadence. See the [performance HUD](#en-diagnostics) above for the cross-stage **~ reference sum** and individual pass data. FG, CPU limits and caps affect overall FPS; compare smoothness in gameplay. Without reliable bottleneck evidence, a without-NR FPS estimate stays hidden. Look is included in Resolve, and NGX includes boundary operations. Readings must be fresh, completed and match settings. Model labels reflect compatibility-resolved configuration; internal runtime networks offer no readback.
+GPU time describes NR work; monitor FPS prefers the internal output rate, with its current source available on hover. See the [performance HUD](#en-diagnostics) above for the cross-stage **reference sum** and individual pass data. FG, CPU limits and caps affect overall FPS; compare smoothness in gameplay. Without reliable bottleneck evidence, a without-NR FPS estimate stays hidden. Look is included in Resolve, and NGX includes boundary operations. Readings must be fresh, completed and match settings. Model labels reflect compatibility-resolved configuration; internal runtime networks offer no readback.
 
 GPU A/B collects 16 valid samples, with a 1-second settling period at start/rebuild and 10-second timeout. It shows median, variation and B−A, accepting one pass's actual size change. Keep scene, location, models, FG, HDR and other settings constant; recapture after changes during collection or a scene change.
 

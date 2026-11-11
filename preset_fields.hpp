@@ -136,7 +136,7 @@ inline const std::vector<FieldRule>& FieldRules() {
       {.key = "NRFollowInputRes", .label = "Follow input resolution", .group = "Resolution", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY},
       {.key = "NRResolutionScale", .label = "Resolution scale", .group = "Resolution", .minimum = 0.33f, .maximum = 1, .category = FieldRule::QUALITY},
       {.key = "NRAdaptiveEnabled", .label = "Adaptive resolution", .group = "Resolution", .minimum = 0, .maximum = 1, .category = FieldRule::QUALITY},
-      {.key = "NRAdaptiveTargetFPS", .label = "Target output FPS", .group = "Resolution", .minimum = 20, .maximum = 360, .category = FieldRule::QUALITY},
+      {.key = "NRAdaptiveTargetFPS", .label = "Target output FPS", .group = "Resolution", .minimum = 30, .maximum = 360, .category = FieldRule::QUALITY},
       {.key = "NRAdaptiveMinScale", .label = "Minimum relative scale", .group = "Resolution", .minimum = 0.33f, .maximum = 1, .category = FieldRule::QUALITY},
       {.key = "NRLookUpsample", .label = "Upsampling", .group = "Resolution", .minimum = 0, .maximum = 3, .category = FieldRule::QUALITY},
       {.key = "NRCodecMode", .label = "HDR mode", .group = "HDR", .minimum = 0, .maximum = 3, .category = FieldRule::COMPATIBILITY},

@@ -340,6 +340,13 @@ int main(int argc, char** argv) {
       runtime::LoadConfiguration();
       Check(runtime::nr_adaptive_target_fps.load() == 60.f && runtime::nr_adaptive_min_scale.load() == 1.f,
             "adaptive target rejects non-finite values and minimum is bounded");
+      Check(WritePrivateProfileStringA(runtime::kConfigSection, "NRAdaptiveTargetFPS", "20", ini_path.c_str()),
+            "write old target lower-bound fixture");
+      runtime::LoadConfiguration();
+      Check(runtime::nr_adaptive_target_fps.load() == 30.f, "configuration target lower bound is 30 FPS");
+      auto invalid_target = saved;
+      invalid_target["NRAdaptiveTargetFPS"] = 20.f;
+      Check(!runtime::profile_ui::ApplySnapshot(invalid_target, &error), "preset target below 30 FPS is rejected");
       runtime::ResetSettings({runtime::kPerformanceSettings});
       Check(!runtime::nr_adaptive_enabled.load() && runtime::nr_adaptive_target_fps.load() == 60.f
                 && runtime::nr_adaptive_min_scale.load() == .67f,
@@ -355,14 +362,14 @@ int main(int argc, char** argv) {
         Check(mask.motion_enabled == enabled && mask.motion_start == start && mask.motion_end == end, description);
       };
       for (uint32_t pass = 0; pass < runtime::kMaxNrPasses; ++pass) {
-        check_motion(runtime::ResolveControlMaskParameters(pass), false, 2.f, 16.f,
+        check_motion(runtime::ResolveControlMaskParameters(pass), false, 16.f, 160.f,
                      "missing motion settings resolve to defaults");
       }
       for (const std::string prefix : {std::string("NR"), std::string("NRPass2"),
                                        std::string("NRPass3"), std::string("NRPass4")}) {
         Check(runtime::preset_ui::ReadSetting(prefix + "ControlMaskMotionEnabled") == false
-                  && runtime::preset_ui::ReadSetting(prefix + "ControlMaskMotionStart") == 2.f
-                  && runtime::preset_ui::ReadSetting(prefix + "ControlMaskMotionEnd") == 16.f,
+                  && runtime::preset_ui::ReadSetting(prefix + "ControlMaskMotionStart") == 16.f
+                  && runtime::preset_ui::ReadSetting(prefix + "ControlMaskMotionEnd") == 160.f,
               "missing stored motion settings use defaults for every pass");
       }
       auto write_motion = [&](const char* prefix, const char* enabled, const char* start, const char* end) {
@@ -387,8 +394,8 @@ int main(int argc, char** argv) {
         float expected_start;
         float expected_end;
       };
-      for (const auto& range : {MotionRangeCase{"nan", "32", 2.f, 32.f},
-                                MotionRangeCase{"4", "inf", 4.f, 16.f},
+      for (const auto& range : {MotionRangeCase{"nan", "32", 16.f, 32.f},
+                                MotionRangeCase{"4", "inf", 4.f, 160.f},
                                 MotionRangeCase{"32", "4", 32.f, 4.f},
                                 MotionRangeCase{"4", "4", 4.f, 4.f}}) {
         write_motion("NR", "1", range.start, range.end);
@@ -432,6 +439,30 @@ int main(int argc, char** argv) {
         runtime::LoadConfiguration();
         check_motion(runtime::ResolveControlMaskParameters(0), true, 6.f, 48.f, "applied motion preset survives reload");
         check_motion(runtime::ResolveControlMaskParameters(1), true, 6.f, 48.f, "independent pass motion preset survives reload");
+      }
+      for (const float saved_end : {16.f, 174.56f}) {
+        motion_presets::Document legacy_motion;
+        legacy_motion.scope = motion_presets::Scope::FULL;
+        const float expected_start = (saved_end == 16.f ? 16.f : 2.f);
+        const float expected_end = (saved_end == 16.f ? 160.f : saved_end);
+        for (uint32_t pass = 0; pass < runtime::kMaxNrPasses; ++pass) {
+          legacy_motion.settings[pass == 0 ? runtime::kSetControlMaskMotionStart.key
+              : runtime::kSetPassControlMaskMotionStart[pass - 1].key] = 2.f;
+          legacy_motion.settings[pass == 0 ? runtime::kSetControlMaskMotionEnd.key
+              : runtime::kSetPassControlMaskMotionEnd[pass - 1].key] = saved_end;
+        }
+        for (const auto& row : motion_adapter::Preview(legacy_motion, true)) {
+          if (!legacy_motion.settings.contains(row.key)) continue;
+          Check(row.after == (row.key.ends_with("MotionStart") ? expected_start : expected_end),
+                "motion preset preview migrates exact old pairs and preserves custom endpoints for every pass");
+        }
+        Check(motion_adapter::Apply(legacy_motion, true, false, &motion_error), "motion range preset applies");
+        runtime::LoadConfiguration();
+        const auto captured = motion_adapter::Capture(motion_presets::Scope::FULL, {});
+        for (const auto& [key, value] : legacy_motion.settings.items()) {
+          Check(captured.settings.at(key) == (key.ends_with("MotionStart") ? expected_start : expected_end),
+                "motion preset apply, persistence and capture agree with normalized preview");
+        }
       }
 
       constexpr float near_default = 0.9999f;

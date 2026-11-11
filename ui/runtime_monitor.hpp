@@ -30,7 +30,9 @@ struct MonitorPass {
   std::string model_adjustment_reason;
   std::string actual_model_proof;
   std::string requested_size;
+  std::string saved_manual_limit;
   std::string actual_size;
+  float actual_scale = 0.f;
   std::string gpu_cost;
   MonitorGpuState gpu_state = MonitorGpuState::UNAVAILABLE;
   bool execution_confirmed = false;
@@ -162,9 +164,15 @@ inline MonitorGeometry PositionMonitorGeometry(MonitorGeometry geometry, int anc
 }
 
 inline bool CanConnectMonitorPoints(const MonitorPoint& previous, const MonitorPoint& current, MonitorMetric metric) {
-  const int64_t max_gap = (metric == MonitorMetric::FPS || metric == MonitorMetric::INTERVAL
-      ? 200'000'000LL : 750'000'000LL);
+  int64_t max_gap = 750'000'000LL;
+  if (metric == MonitorMetric::FPS || metric == MonitorMetric::INTERVAL) {
+    max_gap = 200'000'000LL;
+  }
+  if (metric == MonitorMetric::FPS && current.output_rate) {
+    max_gap = 2'000'000'000LL;
+  }
   return previous.valid && current.valid && previous.reference == current.reference
+      && previous.output_rate == current.output_rate
       && previous.segment == current.segment
       && current.time_ns > previous.time_ns && current.time_ns - previous.time_ns <= max_gap;
 }
@@ -417,25 +425,16 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
     ImGui::TextWrapped("%s", conclusion);
     ImGui::PopStyleColor();
     const float font = ImGui::GetFontSize();
-    const auto metric_width = [](const char* label, const std::string& value) {
-      return ImGui::CalcTextSize(Tr(label)).x + ImGui::CalcTextSize(value.empty() ? "—" : value.c_str()).x
-          + ImGui::GetStyle().ItemSpacing.x * 3.f;
-    };
-    const float widest_metric = (std::max)({metric_width("NR GPU", inputs.summary.gpu),
-        metric_width("FPS", inputs.summary.fps), metric_width("FG", inputs.summary.fg)});
     const float metric_available = ImGui::GetContentRegionAvail().x;
-    const int metric_columns = (metric_available >= widest_metric * 3.f ? 3
-                                : (metric_available >= widest_metric * 2.f ? 2 : 1));
+    const int metric_columns = (metric_available >= font * 28.f ? 3 : 2);
     if (ImGui::BeginTable("monitor_dashboard", metric_columns, ImGuiTableFlags_SizingStretchSame)) {
       const auto metric = [](const char* label, const std::string& value, const char* tip) {
         ImGui::TableNextColumn();
-        ImGui::TextWrapped("%s  %s", Tr(label), value.empty() ? "—" : value.c_str());
-        ItemTooltip("%s", Tr(tip));
+        DrawSummaryMetric(label, value, tip, ImGui::GetContentRegionAvail().x);
       };
-      metric("NR GPU", (inputs.summary.gpu_reference && !inputs.summary.gpu.empty() ? "~ " : "")
-          + inputs.summary.gpu, inputs.summary.gpu_tip);
       metric("FPS", inputs.summary.fps, inputs.summary.fps_tip);
-      metric("FG", inputs.summary.fg, inputs.summary.fg_tip);
+      metric("NR GPU", inputs.summary.gpu, inputs.summary.gpu_tip);
+      metric("FG", inputs.summary.fg, inputs.summary.fg_tip.c_str());
       ImGui::EndTable();
     }
     const auto field = [](const char* label, const std::string& value) {
@@ -493,7 +492,11 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
           field("Configured model", pass.requested_model);
         } else {
           ImGui::TextWrapped("%s  |  %s", pass.requested_model.c_str(), pass.requested_size.c_str());
-          ItemTooltip("%s / %s", Tr("Configured model"), Tr("Working ratio"));
+          if (pass.saved_manual_limit.empty()) {
+            ItemTooltip("%s / %s", Tr("Configured model"), Tr("Working ratio"));
+          } else {
+            ItemTooltip(Tr("Saved manual upper limit: %s"), pass.saved_manual_limit.c_str());
+          }
         }
         const bool model_adjusted = !pass.requested_model.empty() && !pass.created_model_request.empty()
             && pass.requested_model != pass.created_model_request;
@@ -504,6 +507,9 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
         }
         if (state->detailed) {
           field("Working ratio", pass.requested_size);
+          if (!pass.saved_manual_limit.empty()) {
+            ItemTooltip(Tr("Saved manual upper limit: %s"), pass.saved_manual_limit.c_str());
+          }
           field("Observed working size", pass.actual_size);
         } else {
           const std::string completion = std::string(Tr(pass.execution_confirmed
@@ -602,7 +608,7 @@ inline MonitorActions DrawRuntimeMonitor(const MonitorInputs& inputs, MonitorSta
         const ImVec2 origin = ImGui::GetCursorScreenPos();
         const ImVec2 size((std::max)(1.f, ImGui::GetContentRegionAvail().x), font * 6.f);
         ImGui::Dummy(size);
-        ItemTooltip("%s\n%s", Tr(inputs.summary.fps_tip), Tr("FPS averages the latest 16 intervals; frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty."));
+        ItemTooltip("%s\n%s", Tr(inputs.summary.fps_tip), Tr("FPS follows the current output estimate when available, otherwise cadence. Frame interval shows raw samples. GPU curves preserve completed sample peaks and leave gaps empty."));
         ImDrawList* draw = ImGui::GetWindowDrawList();
         const ImVec2 edge(origin.x + size.x, origin.y + size.y);
         draw->AddRectFilled(origin, edge, ImGui::GetColorU32(ImGuiCol_ChildBg), 3.f);

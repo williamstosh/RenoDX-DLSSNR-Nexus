@@ -490,7 +490,7 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   r::monitor_snapshot.attempted_ns = 0;
   const auto exact_cost = r::RefreshMonitorSnapshot(true);
   check(exact_cost.card.nr_gpu_ms == 1.25f && exact_cost.card.nr_present_ms == 0.f
-            && exact_cost.summary.gpu == "1.2 ms",
+            && exact_cost.summary.gpu == "1.2ms",
         "single-stage monitor cost comes from its current completed group, never retained global cost");
   const auto saved_measured = measured;
   {
@@ -550,7 +550,7 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   newer_proof.passes[0].height = 965;
   r::monitor_snapshot.attempted_ns = 0;
   const auto newer_size = r::RefreshMonitorSnapshot(true);
-  check(newer_size.monitor.passes[0].actual_size == "1715 x 965"
+  check(newer_size.monitor.passes[0].actual_size.starts_with("1715 x 965")
             && newer_size.monitor.passes[0].gpu_cost.empty() && newer_size.summary.gpu.empty(),
         "a newer completed working size cannot inherit an older timed contract's GPU cost");
   newer_proof = {};
@@ -580,7 +580,7 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   r::monitor_snapshot.attempted_ns = 0;
   const auto cross_stage = r::RefreshMonitorSnapshot(true);
   check(cross_stage.monitor.passes[0].execution_confirmed && cross_stage.monitor.passes[1].execution_confirmed
-            && cross_stage.summary.gpu == "6.6 ms" && cross_stage.summary.gpu_reference && cross_stage.card.nr_gpu_ms == 0.f
+            && cross_stage.summary.gpu == "6.6ms" && cross_stage.summary.gpu_reference && cross_stage.card.nr_gpu_ms == 0.f
             && cross_stage.card.nr_present_ms == 0.f,
         "complete compatible stage spans expose a reference sum without claiming common-cycle latency");
   const auto valid_cross = measured;
@@ -613,7 +613,7 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   measured.passes[0].total_us = 4000;
   measured.passes[0].look_us = 300;
   r::monitor_snapshot.attempted_ns = 0;
-  check(r::RefreshMonitorSnapshot(true).summary.gpu == "6.6 ms",
+  check(r::RefreshMonitorSnapshot(true).summary.gpu == "6.6ms",
         "cross-stage reference counts each group's common overhead and nested Look exactly once");
   {
     const auto saved_history = std::make_shared<r::MonitorHistoryRuntime>(r::monitor_history);
@@ -795,13 +795,16 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   proof.recorded_ns = proof.measured_ns;
   proof.identity = identity;
   proof.sequence = 2;
+  proof.width = 3840;
+  proof.height = 2160;
   proof.passes[0] = {.id = 0, .width = 2560, .height = 1440, .state = timers::SampleState::VALID};
   r::monitor_snapshot.attempted_ns = 0;
   const auto proof_only = r::RefreshMonitorSnapshot(true);
   check(proof_only.monitor.passes[0].execution_proof == ui::Tr("GPU complete: single submission")
-            && proof_only.monitor.passes[0].actual_size == "2560 x 1440"
+            && proof_only.monitor.passes[0].actual_size.starts_with("2560 x 1440")
+            && std::abs(proof_only.monitor.passes[0].actual_scale - 2.f / 3.f) < .0001f
             && proof_only.execution == addon::stage_plan::Name(plan.effective[0]),
-        "disabled optional timing still exposes completed single-submission execution proof");
+        "disabled optional timing exposes actual size and scale from the completed Stage reference");
   check(proof_only.card.nr_gpu_ms == 0.f && proof_only.card.nr_present_ms == 0.f
             && proof_only.monitor.passes[0].gpu_cost.empty()
             && proof_only.monitor.passes[0].gpu_state != ui::MonitorGpuState::CURRENT,

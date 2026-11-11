@@ -447,6 +447,10 @@ int main() {
     const ui::MonitorInputs* monitor_fixture = nullptr;
     const ui::MonitorInputs* resolution_observed_fixture = nullptr;
     float resolution_observed_bottom = 0.f;
+    bool adaptive_editor_fixture = false;
+    bool adaptive_pass_fixture = false;
+    bool summary_fixture = false;
+    ui::StatusSummaryFields summary_fields;
     bool hud_fixture = false;
     bool independent_hud_fixture = false;
     ui::MonitorState synthetic_monitor_state;
@@ -472,7 +476,18 @@ int main() {
         ImGui::PushClipRect(ImVec2(-10.f, -10.f), ImVec2(-1.f, -1.f), true);
       }
       const auto panel_start = std::chrono::steady_clock::now();
-      if (resolution_observed_fixture != nullptr) {
+      if (summary_fixture) {
+        ui::DrawStatusSummary(ui::StatusCard{}, 0, summary_fields);
+      } else if (adaptive_editor_fixture) {
+        const auto* saved_view = runtime::ui_monitor_view;
+        runtime::ui_monitor_view = resolution_observed_fixture;
+        if (adaptive_pass_fixture) {
+          runtime::DrawSectionStackingResolution(ui::kModernText);
+        } else {
+          runtime::DrawResolutionControls(ui::kModernText);
+        }
+        runtime::ui_monitor_view = saved_view;
+      } else if (resolution_observed_fixture != nullptr) {
         const auto* saved_view = runtime::ui_monitor_view;
         runtime::ui_monitor_view = resolution_observed_fixture;
         runtime::DrawResolutionObserved(ui::kModernText);
@@ -781,6 +796,12 @@ int main() {
       ImGui::DestroyContext();
       return 0;
     }
+    if (std::getenv("NR_NEXUS_ADAPTIVE_UI_ONLY") != nullptr) {
+#include "adaptive_ui_cases.hpp"
+      std::printf("PASS adaptive UI interaction cases; checks=%u\n", checks);
+      ImGui::DestroyContext();
+      return 0;
+    }
     RunMonitorSessionCases(check, [&](const ui::MonitorInputs& inputs) {
       const auto* saved_fixture = monitor_fixture;
       const auto saved_state = synthetic_monitor_state;
@@ -801,152 +822,25 @@ int main() {
       runtime::flush_profile_storage = saved_flush;
     });
     if (std::getenv("NR_NEXUS_MONITOR_SESSION_ONLY") != nullptr) {
-      namespace timers = renodx::addons::dlss5::gpu_timers;
-      const auto saved_resolution_language = ui::CurrentLanguage();
-      ui::SelectLanguage(13);
-      const auto saved_hook = runtime::hook_point.load();
-      const auto saved_count = runtime::stack_passes.load();
-      const auto saved_enabled = runtime::enabled.load();
-      const auto saved_follow = runtime::nr_follow_input_res.load();
-      const auto saved_scale = runtime::nr_resolution_scale.load();
-      const auto saved_rr = runtime::stage_source_rr.load();
-      const auto saved_timer = timers::stage_stats[0];
-      const auto saved_proof = timers::execution_stats[0];
-      const auto saved_observed = runtime::stage_telemetry[0].last_evaluate;
-      const auto saved_input_width = runtime::last_input_width.load();
-      const auto saved_input_height = runtime::last_input_height.load();
-      runtime::hook_point = runtime::kHookRender;
-      runtime::stack_passes = 1;
-      runtime::enabled = true;
-      runtime::stage_source_rr = false;
-      runtime::nr_follow_input_res = false;
-      runtime::nr_resolution_scale = .67f;
-      runtime::last_input_width = 1715;
-      runtime::last_input_height = 965;
-      auto& sample = timers::stage_stats[0];
-      sample = {};
-      std::strcpy(sample.path, "preSR");
-      sample.width = 2560;
-      sample.height = 1440;
-      sample.valid = true;
-      sample.state = timers::SampleState::VALID;
-      sample.sequence = 10;
-      sample.recorded_ns = sample.measured_ns = timers::NowNs();
-      sample.identity.device_session = timers::device_session;
-      runtime::comparison_ui::CaptureSettings(&sample.identity);
-      sample.identity.source_generation = 42;
-      sample.identity.stable_epoch = runtime::comparison_stable_epochs[0];
-      runtime::stage_telemetry[0].last_evaluate.source_generation = 42;
-      runtime::stage_telemetry[0].last_evaluate.source_released = false;
-      sample.passes[0] = {.id = 0, .width = 1715, .height = 965, .state = timers::SampleState::VALID};
-      timers::execution_stats[0] = {};
-      check(runtime::CurrentPassWorkingEstimate(0, timers::NowNs())
-                == renodx::addons::dlss5::capability::Size{1715, 965},
-            "Render estimate ignores last_input=1715x965 and scales its bound 2560x1440 reference once");
       ui::MonitorInputs resolution_view;
       resolution_view.pass_count = 1;
-      resolution_view.passes[0].execution_confirmed = true;
-      resolution_view.passes[0].actual_size = "1715 x 965";
       resolution_observed_fixture = &resolution_view;
-      io.AddMousePosEvent(-100.f, -100.f);
-      frame(); frame();
-      check(rendered_text.size() == 2 && rendered_text[0].text.starts_with("P1 | ")
-                && rendered_text[0].text.find("1715 x 965") != std::string::npos
-                && rendered_text[1].text.find("1715x965") != std::string::npos,
-            "matching actual and estimated Render dimensions retain both resolution rows");
-      const float matching_bottom = resolution_observed_bottom;
-      capture("resolution-observed-matching-zh");
-      const auto matching_target = rendered_text[0].rect.GetCenter();
-      io.AddMousePosEvent(matching_target.x, matching_target.y);
-      for (int hover_frame = 0; hover_frame < 45; ++hover_frame) frame();
-      check(std::ranges::any_of(rendered_text, [](const TextItem& item) {
-              return item.text.find("1715x965") != std::string::npos;
-            }) && std::ranges::any_of(rendered_text, [](const TextItem& item) {
-              return item.text.find("2560x1440") != std::string::npos;
-            }), "merged matching-size line retains an explanatory estimate and Stage reference tooltip");
-      capture("resolution-observed-matching-tooltip-zh", nullptr, false);
-      io.AddMousePosEvent(-100.f, -100.f);
-      resolution_view.passes[0].actual_size = "1600 x 900";
-      frame(); frame();
-      check(rendered_text.size() == 2 && rendered_text[0].text.find("1600 x 900") != std::string::npos
-                && rendered_text[1].text.find("1715x965") != std::string::npos
-                && resolution_observed_bottom == matching_bottom,
-            "different working dimensions retain the same space below both resolution rows");
-      const auto resolution_target = rendered_text[0].rect.GetCenter();
-      io.AddMousePosEvent(resolution_target.x, resolution_target.y);
-      for (int hover_frame = 0; hover_frame < 45; ++hover_frame) frame();
-      check(std::ranges::any_of(rendered_text, [](const TextItem& item) {
-              return item.text.find("1715x965") != std::string::npos;
-            }) && std::ranges::any_of(rendered_text, [](const TextItem& item) {
-              return item.text.find("2560x1440") != std::string::npos;
-            }), "different-size tooltip exposes the singly scaled estimate and unscaled Stage reference");
-      capture("resolution-observed-difference-tooltip-zh", nullptr, false);
-      const auto resolution_language = ui::CurrentLanguage();
-      ui::SelectLanguage(0);
-      io.AddMousePosEvent(-100.f, -100.f);
-      frame(); frame();
-      capture("resolution-observed-difference-en");
-      ui::SelectLanguage(resolution_language);
-      sample.recorded_ns -= timers::internal::kSampleAgeNs + 1;
-      check(runtime::CurrentPassWorkingEstimate(0, timers::NowNs()) == renodx::addons::dlss5::capability::Size{},
-            "expired reference cannot be replaced with last_input dimensions");
-      sample.recorded_ns = sample.measured_ns;
-      ++sample.identity.source_generation;
-      check(runtime::CurrentPassWorkingEstimate(0, timers::NowNs()) == renodx::addons::dlss5::capability::Size{},
-            "another source cannot supply the current Render estimate");
       for (const int language : {0, 13}) {
         ui::SelectLanguage(language);
         for (const float width : {480.f, 1000.f}) {
           panel_width = width;
-          runtime::hook_point = runtime::kHookRender;
-          sample.identity.source_generation = 42;
-          sample.recorded_ns = sample.measured_ns = timers::NowNs();
+          runtime::nr_adaptive_enabled = false;
           resolution_view.passes[0].execution_confirmed = true;
-          resolution_view.passes[0].actual_size = "1715 x 965";
+          resolution_view.passes[0].actual_size = "1715 x 965 (67%)";
           frame(); frame();
-          const float settled_bottom = resolution_observed_bottom;
-          for (const uint32_t hook : {runtime::kHookUpscaled, runtime::kHookPresent, runtime::kHookRender}) {
-            runtime::hook_point = hook;
-            resolution_view.passes[0].execution_confirmed = false;
-            frame(); frame();
-            check(rendered_text.size() == 2
-                      && rendered_text[0].text.find(ui::Tr("Pending confirmation")) != std::string::npos
-                      && resolution_observed_bottom == settled_bottom,
-                  "stage switch keeps pending actual dimensions visible without moving following controls");
-          }
-          sample.recorded_ns -= timers::internal::kSampleAgeNs + 1;
+          check(rendered_text.size() == 1 && rendered_text[0].text.find("1715 x 965") != std::string::npos,
+                "manual mode displays only completed actual dimensions");
+          resolution_view.passes[0].execution_confirmed = false;
           frame(); frame();
-          check(rendered_text.size() == 2
-                    && rendered_text[1].text.find(ui::Tr("Pending confirmation")) != std::string::npos
-                    && resolution_observed_bottom == settled_bottom,
-                "expired estimate retains its pending row and stable following-control position");
-          sample.recorded_ns = sample.measured_ns = timers::NowNs();
-          resolution_view.passes[0].execution_confirmed = true;
-          resolution_view.passes[0].actual_size = "1600 x 900";
-          frame(); frame();
-          check(rendered_text.size() == 2 && rendered_text[1].text.find("1715x965") != std::string::npos
-                    && resolution_observed_bottom == settled_bottom,
-                "recovered differing dimensions retain the estimate without shifting following controls");
-          resolution_view.passes[0].actual_size = "1715 x 965";
-          frame(); frame();
-          check(rendered_text.size() == 2 && resolution_observed_bottom == settled_bottom,
-                "converged actual and estimate do not remove a row or shift following controls");
+          check(rendered_text.size() == 1 && rendered_text[0].text.find(ui::Tr("Pending confirmation")) != std::string::npos,
+                "unknown actual dimensions remain pending without an estimated row");
         }
       }
-      panel_width = 1000.f;
-      resolution_observed_fixture = nullptr;
-      runtime::hook_point = saved_hook;
-      runtime::stack_passes = saved_count;
-      runtime::enabled = saved_enabled;
-      runtime::nr_follow_input_res = saved_follow;
-      runtime::nr_resolution_scale = saved_scale;
-      runtime::stage_source_rr = saved_rr;
-      runtime::last_input_width = saved_input_width;
-      runtime::last_input_height = saved_input_height;
-      timers::stage_stats[0] = saved_timer;
-      timers::execution_stats[0] = saved_proof;
-      runtime::stage_telemetry[0].last_evaluate = saved_observed;
-      ui::SelectLanguage(saved_resolution_language);
       std::printf("PASS production monitor session evidence cases; checks=%u\n", checks);
       ImGui::DestroyContext();
       return 0;
