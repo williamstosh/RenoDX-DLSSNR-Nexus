@@ -21,9 +21,9 @@ try {
     $hostLock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
     $hostCommit = & git --no-optional-locks -C $hostDirectory rev-parse HEAD
     if ($LASTEXITCODE -ne 0 -or $hostCommit -cne $hostLock.host.commit) { throw 'Offline build requires the pinned host.' }
-    foreach ($header in $hostLock.compatibility.headers.PSObject.Properties) {
-        if ((Get-FileHash -LiteralPath (Join-Path $hostDirectory $header.Name)).Hash -cne $header.Value) {
-            throw "Host compatibility header mismatch: $($header.Name)"
+    foreach ($inputFile in $hostLock.compatibility.files.PSObject.Properties) {
+        if ((Get-FileHash -LiteralPath (Join-Path $hostDirectory $inputFile.Name)).Hash -cne $inputFile.Value) {
+            throw "Host compatibility file mismatch: $($inputFile.Name)"
         }
     }
     Initialize-TestBuild $VcVars64

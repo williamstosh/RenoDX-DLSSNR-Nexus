@@ -1,3 +1,35 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index cfd3d82..0d79def 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -136,7 +136,27 @@ END
+ endfunction()
+ 
+ function(build_shader_target ADDON ADDON_PATH)
++  if(DEFINED RENODX_SHADER_SOURCE_ROOT_${ADDON})
++    set(ADDON_PATH "${RENODX_SHADER_SOURCE_ROOT_${ADDON}}")
++    if(NOT IS_DIRECTORY "${ADDON_PATH}")
++      message(FATAL_ERROR "Shader source root for ${ADDON} does not exist: ${ADDON_PATH}")
++    endif()
++  endif()
+   set(EMBED_FOLDER ${CMAKE_CURRENT_BINARY_DIR}/${ADDON}.include/embed)
++  set(SHADER_ROOT_STATE "RENODX_SHADER_SOURCE_ROOT_${ADDON}_PREVIOUS")
++  if(DEFINED RENODX_SHADER_SOURCE_ROOT_${ADDON} OR DEFINED ${SHADER_ROOT_STATE})
++    if(NOT DEFINED ${SHADER_ROOT_STATE} OR NOT "${${SHADER_ROOT_STATE}}" STREQUAL "${ADDON_PATH}")
++      # COPYONLY outputs can be newer than the shader sources when the root
++      # changes. Invalidate only this target's generated shader files once.
++      file(GLOB SHADER_ROOT_OUTPUTS
++        "${EMBED_FOLDER}/*.cso" "${EMBED_FOLDER}/*.spv"
++        "${EMBED_FOLDER}/*.h" "${EMBED_FOLDER}/*.glsl")
++      if(SHADER_ROOT_OUTPUTS)
++        file(REMOVE ${SHADER_ROOT_OUTPUTS})
++      endif()
++    endif()
++    set(${SHADER_ROOT_STATE} "${ADDON_PATH}" CACHE INTERNAL "Last shader source root for ${ADDON}" FORCE)
++  endif()
+   unset(SHADER_BINARIES)
+   macro(add_stage_spirv_shader OUTPUT_STEM)
+     list(FIND SHADER_BINARIES ${EMBED_FOLDER}/${OUTPUT_STEM}.spv SHADER_BINARY_INDEX)
 diff --git a/src/utils/directx.hpp b/src/utils/directx.hpp
 index 5f0de53..929cebf 100644
 --- a/src/utils/directx.hpp

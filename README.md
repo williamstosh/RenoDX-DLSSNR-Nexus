@@ -189,6 +189,18 @@ Quick／Full、指定场景及经检查的文档配图更新共用真实 ImGui �
 初始化获取这些公开源码，并将本仓库链接为 `src/addons/dlss5`；
 任意上游检出不能直接替代兼容宿主。
 
+构建只从本项目的 `shaders/` 发现着色器输入，新增 Shader 也应放在该目录。
+`tmp/`、`build/` 和其他目录中的历史字节码不会参与插件着色器构建。
+首次接管或更换输入根时会自动重建该目标的生成 Shader 缓存，同根重配保留增量产物。
+完成构建后，可运行 `pwsh ./tests/run-shader-input-tests.ps1` 检查输入隔离、增量更新和旧缓存迁移；无需游戏或 NVIDIA Runtime。
+若旧宿主在构建时提示 `CMakeLists.txt` 兼容输入不匹配，可从项目根目录补上新增的构建入口：
+
+```powershell
+git -C .local/renodx apply --include=CMakeLists.txt (Resolve-Path host/renodx-compat.patch)
+```
+
+自定义宿主位置时替换命令中的 `.local/renodx`；新初始化的宿主已包含该改动。
+
 初始化仅创建新目录，拒绝覆盖。已初始化的检出复用现有宿主／工具，只需重新构建；
 也可用 `-ToolRoot <shader-tool-directory>` 指定现有着色器工具。
 自定义宿主位置时，向初始化传 `-HostRoot <new-directory>`，向构建传
@@ -413,6 +425,23 @@ capture source; see the [snapshot workflow](docs/UI_SNAPSHOTS.md).
 [host/renodx-compat.patch](host/renodx-compat.patch) supplies the required host
 interfaces. Setup fetches these public sources and links this checkout as
 `src/addons/dlss5`; an arbitrary upstream checkout is not a substitute.
+
+Shader discovery is limited to this project's `shaders/` directory; place new
+shaders there as well. Historical bytecode under `tmp/`, `build/` or other
+directories is excluded from the add-on's shader inputs. Root changes refresh
+that target's generated shader cache; repeated configuration preserves incremental outputs.
+After building, run
+`pwsh ./tests/run-shader-input-tests.ps1` to check input isolation, incremental
+updates and old-cache migration; no game or NVIDIA Runtime is required.
+If an older host reports a `CMakeLists.txt` compatibility-input mismatch, apply the new build entry from
+the project root:
+
+```powershell
+git -C .local/renodx apply --include=CMakeLists.txt (Resolve-Path host/renodx-compat.patch)
+```
+
+Replace `.local/renodx` for a custom host location. Newly initialized hosts
+already include this change.
 
 Setup creates new directories and refuses overwrites. On an initialized
 checkout, reuse the prepared host/tools and rerun the build. Existing shader

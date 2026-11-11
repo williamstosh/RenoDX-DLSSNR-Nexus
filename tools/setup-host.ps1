@@ -36,9 +36,9 @@ $taskPatch = Join-Path $taskRoot ('host/' + $taskLock.compatibility.patch)
 if ($LASTEXITCODE -ne 0) { throw 'Pinned RenoDX host does not accept the compatibility patch.' }
 & git -C $taskHost apply -- $taskPatch
 if ($LASTEXITCODE -ne 0) { throw 'Host compatibility patch failed.' }
-foreach ($taskHeader in $taskLock.compatibility.headers.PSObject.Properties) {
-    if ((Get-FileHash -LiteralPath (Join-Path $taskHost $taskHeader.Name)).Hash -cne $taskHeader.Value) {
-        throw "Patched host header does not match the qualified input: $($taskHeader.Name)"
+foreach ($taskInput in $taskLock.compatibility.files.PSObject.Properties) {
+    if ((Get-FileHash -LiteralPath (Join-Path $taskHost $taskInput.Name)).Hash -cne $taskInput.Value) {
+        throw "Patched host file does not match the qualified input: $($taskInput.Name)"
     }
 }
 New-Item -ItemType Directory -Path (Join-Path $taskHost 'src/addons') -Force | Out-Null

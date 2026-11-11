@@ -19,14 +19,14 @@ $taskLock = Get-Content -LiteralPath (Join-Path $taskRoot 'host/lock.json') -Raw
 if ((& git --no-optional-locks -C $taskSource rev-parse HEAD) -cne $taskLock.host.commit) {
     throw 'The build requires the RenoDX commit pinned in host/lock.json.'
 }
-foreach ($taskHeader in $taskLock.compatibility.headers.PSObject.Properties) {
-    if ((Get-FileHash -LiteralPath (Join-Path $taskSource $taskHeader.Name)).Hash -cne $taskHeader.Value) {
-        throw "Host compatibility input differs from host/lock.json: $($taskHeader.Name)"
+foreach ($taskInput in $taskLock.compatibility.files.PSObject.Properties) {
+    if ((Get-FileHash -LiteralPath (Join-Path $taskSource $taskInput.Name)).Hash -cne $taskInput.Value) {
+        throw "Host compatibility input differs from host/lock.json: $($taskInput.Name). Apply the current host/renodx-compat.patch."
     }
 }
 $taskHostChanges = @(& git --no-optional-locks -C $taskSource diff --name-only --ignore-submodules=all HEAD -- . ':(exclude)external' ':(exclude)src/addons/dlss5')
-if ($LASTEXITCODE -ne 0 -or (Compare-Object ($taskHostChanges | Sort-Object) @($taskLock.compatibility.headers.PSObject.Properties.Name | Sort-Object))) {
-    throw 'Host modifications must be limited to the pinned compatibility headers.'
+if ($LASTEXITCODE -ne 0 -or (Compare-Object ($taskHostChanges | Sort-Object) @($taskLock.compatibility.files.PSObject.Properties.Name | Sort-Object))) {
+    throw 'Host modifications must be limited to the pinned compatibility files.'
 }
 foreach ($taskDependency in $taskLock.dependencies) {
     $taskDependencyRoot = Join-Path $taskSource $taskDependency.path
@@ -61,6 +61,7 @@ try {
 $taskArguments = @(
     '-S', $taskSource, '-B', $taskBuild, '-G', 'Visual Studio 17 2022', '-A', 'x64',
     ('-DCMAKE_PROJECT_renodx_INCLUDE=' + (Join-Path $taskRoot 'cmake/nexus-version.cmake')),
+    ('-DRENODX_SHADER_SOURCE_ROOT_dlss5:PATH=' + (Join-Path $taskRoot 'shaders')),
     ('-DFXC_BIN=' + (Join-Path $taskTools 'fxc.exe')),
     ('-DDXC_BIN=' + (Join-Path $taskTools 'dxc.exe')),
     ('-DSLANGC_BIN=' + (Join-Path $taskTools 'slangc.exe')),

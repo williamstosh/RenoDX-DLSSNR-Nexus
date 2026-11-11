@@ -77,6 +77,8 @@ the imported production snapshot's project version.
 `374d07bf0e2fcef112ed1dfee98541bcf16487dd` (MIT, original copyright above).
 It modifies `src/utils/directx.hpp` and `src/utils/vtable.hpp` to supply the
 required canonical-object-identity and Detours transaction interfaces.
+It also adds an optional per-add-on shader source root in `CMakeLists.txt`;
+NR Nexus selects its `shaders/` directory to exclude local build and test artifacts.
 The full host is not vendored. `host/lock.json` identifies its exact source and
 the external dependency commits used by the independent setup/build scripts.
 
