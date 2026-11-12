@@ -4,7 +4,7 @@
 
 ## 简体中文
 
-本指南对应 **v0.2.1**：从安装、选方案和比较画面开始，再按需组合最多四层 NR、独立尺寸和结果编辑。**实验性**表示有特殊条件且默认关闭的试用路径，**暂不支持**表示不可用组合。下载及版本说明见 [v0.2.1](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.1)。
+本指南对应 **v0.4.0**：从安装、选方案和比较画面开始，再按需组合最多四层 NR、独立尺寸和结果编辑。**实验性**表示有特殊条件且默认关闭的试用路径，**暂不支持**表示不可用组合。下载及版本说明见 [v0.4.0](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.4.0)。
 
 配图来自已审核的开发界面离屏预览，状态和数字为界面示例；各功能的安装包支持范围见正文。
 
@@ -25,7 +25,7 @@
 
 #### 用 RHI 准备 ReShade 和 Runtime
 
-1. 关闭游戏，备份现有插件、ReShade 配置和将替换的 DLL。在 [v0.2.1 版本页面](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.1)下载 Windows x64 ZIP 与对应的 `.zip.sha256` 并校验；从 [RHI 最新版](https://github.com/RankFTW/RHI/releases/latest) 下载 RHI。
+1. 关闭游戏，备份现有插件、ReShade 配置和将替换的 DLL。在 [v0.4.0 版本页面](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.4.0)下载 Windows x64 ZIP 与对应的 `.zip.sha256` 并校验；从 [RHI 最新版](https://github.com/RankFTW/RHI/releases/latest) 下载 RHI。
 2. 在 RHI 选中游戏；未找到时点 **+（Manually add a game）**，选择实际游戏 `.exe` 后点 **Add Game**，或把 `.exe` 拖入窗口。选游戏进程使用的程序，不选启动器；例如实际程序可能在 `Binaries/Win64`。
 3. 在 **Game Overrides → ReShade Channel → Stable** 选择支持完整 Add-on 的渠道，在 **Components → ReShade** 安装；**No Addons 不能加载本插件**。已有 ReShade 时先核对其 Add-on 支持及 API 版本，避免重复安装。
 4. 在 **DLSS / Streamline → Neural Rendering** 列选 **310.9.16 (20/30/40/50)**，点 **Deploy DLL** 单独部署 NR Runtime，无需其他 NR Add-on。**RHI 2.8.8 还会尝试在游戏安装根目录部署最新 `nvngx_dlss.dll`（SR），已有文件先备份为 `.original`；希望保持 SR 版本时使用手动安装。**如果游戏原有 DLSS 但缺此栏，先用 **Settings → Tools & Maintenance → Full refresh**；无 DLSS 或刷新后仍无此栏，使用下方手动安装。
@@ -70,7 +70,7 @@
 
 ![画质页的核心画质与处理入口](images/ui/quality-zh.webp)
 
-*当前开发版界面；自适应分辨率见[工作分辨率](#zh-resolution)。*
+*界面示意；自适应分辨率见[工作分辨率](#zh-resolution)。*
 
 用 **Neural Rendering／F6** 比较关／开。**Auto** 是未应用方案时的基础模型默认值；兼容的 **310.9.16.0** 运行时支持 **A（Legacy）／B（Small FP8）**，可比较两者外观和成本。
 
@@ -241,7 +241,7 @@ F6 立即提示开关操作，随后状态更新为正在检查、正常运行�
 
 当前版本会忽略旧诊断配置 `NRControlMaskUseCoreContext=1`，并修复已有处理历史在切回 Upscaled 或逐层处理时阻止 NR 继续运行的问题。无需手动删除此键；更新插件并重启游戏后生效。
 
-**开发版新增：运动衰减**（尚未包含在 v0.3.0 安装包中）。它位于区域遮罩设置内，与深度衰减分组排列，无需再展开子菜单；开启后显示运动淡出起点／终点，关闭时收起并保留数值。运动越快的区域使用越少的 NR，包含转动相机产生的画面运动。默认关闭，起点／终点为 **16／160 像素／帧**，按该层工作画面的参考尺寸计量：低于起点保留 R，达到终点时 R 降至 0。提高起点可让轻微运动继续保留 NR，提高终点可让过渡更缓。自动调整分辨率时，运动阈值保持各层手动上限的参考尺度；手动尺寸或帧率改变后，可按画面重新调节。
+**运动衰减**位于区域遮罩设置内，与深度衰减分组排列，无需再展开子菜单；开启后显示运动淡出起点／终点，关闭时收起并保留数值。运动越快的区域使用越少的 NR，包含转动相机产生的画面运动。默认关闭，起点／终点为 **16／160 像素／帧**，按该层工作画面的参考尺寸计量：低于起点保留 R，达到终点时 R 降至 0。提高起点可让轻微运动继续保留 NR，提高终点可让过渡更缓。自动调整分辨率时，运动阈值保持各层手动上限的参考尺度；手动尺寸或帧率改变后，可按画面重新调节。
 
 运动衰减可以和深度衰减同时使用，重叠区域采用较强的衰减，G、B、角色遮罩和混合模式保持各自设置。每层可继承 Pass 1，或独立设置运动开关与范围。关闭运动衰减便恢复该层原有区域设置；缺少有效运动或深度输入时，只跳过对应自动规则。它按运动矢量选取区域，不区分相机运动与移动物体。
 
@@ -301,11 +301,11 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 
 比例作用于宽高，50% 约四分之一像素。Render 基准为可用渲染区域，Upscaled 为 DLSS 输出区域，Present 为呈现帧。跟随输入时禁用比例滑条，保留其保存值。设置区显示已确认的实际尺寸，历史在诊断页。
 
-**开发版新增：自适应分辨率**（尚未包含在 v0.3.0 安装包中）。在工作分辨率下开启后，设置**目标输出 FPS**和**最低相对比例**，默认分别为 **60 FPS／67%**，范围为 **30–360 FPS／33–100%**。目标包含生成帧；各层手动分辨率作为上限，最低比例相对于各自上限计算。例如上限为 2560×1440，最低 67% 约为 1715×965，仍须满足原有阶段尺寸限制。目标既可拖动滑条，也可直接在数字框输入，例如 **116**。自动运行时，工作分辨率和比例显示只读的实际值；保存的手动上限可悬停查看，关闭自动后恢复原手动编辑。
+**自适应分辨率**：在核心画质中开启后，设置**目标输出 FPS**和**最低相对比例**，默认分别为 **60 FPS／67%**，范围为 **30–360 FPS／33–100%**。目标包含生成帧；各层手动分辨率作为上限，最低比例相对于各自上限计算。例如上限为 2560×1440，最低 67% 约为 1715×965，仍须满足原有阶段尺寸限制。目标既可拖动滑条，也可直接在数字框输入，例如 **116**。自动运行时，工作分辨率和比例显示只读的实际值；保存的手动上限可悬停查看，关闭自动后恢复原手动编辑。
 
 自动功能在 NR 降尺寸确实有助于接近目标时保留较低档，收益不明确时恢复较高画质；持续达到目标后会缓慢尝试恢复细节。顶栏依次显示「帧率／NR GPU／帧生成／NR 分辨率」，标签在上、数值在下，窄面板自动换行。NR 分辨率显示第 1 层当前实际工作比例；悬停可查看实际尺寸及对应介入点的基准，其他数值可查看来源和倍率计算方法。分辨率区保留紧凑自动状态，关键暂停／错误仍直接显示。估算在插件内完成，无需额外安装或运行帧率程序；限帧或其他负载可能使目标无法达到，自动功能不会改变游戏、FG 或限帧设置。
 
-首版面向原生 DX12 的单个处理阶段，包括兼容的 XeFG／原生 FG 同尺寸链。跨阶段链、FG 异尺寸、DX11 Bridge 和 Vulkan 继续使用手动分辨率；缺少可靠帧率来源时暂停自动并保留合法尺寸。动态 FG 还需匹配的游戏帧计数；信息不足时暂停试探并等待采样，估算输出帧率仍可显示。更改设置或 GPU A/B 对比期间暂停自动。动态画质、限帧场景的估算误差与游戏内切换流畅度仍待实机确认。
+自适应分辨率面向原生 DX12 的单个处理阶段，包括兼容的 XeFG／原生 FG 同尺寸链。跨阶段链、FG 异尺寸、DX11 Bridge 和 Vulkan 继续使用手动分辨率；缺少可靠帧率来源时暂停自动并保留合法尺寸。动态 FG 还需匹配的游戏帧计数；信息不足时暂停试探并等待采样，估算输出帧率仍可显示。更改设置或 GPU A/B 对比期间暂停自动。建议在游戏中比较转动视角时的细节和切档观感；使用限帧时，也可核对显示的帧率。
 
 自动调节在现有缓存预算内准备档位；默认单颜色、单输出最多 4 档，双颜色通常 2 档，轮换输出会占用相应容量。增加档位会增加首次准备及显存开销；首次开启或模型、游戏尺寸变化后需要重新准备，期间可能短暂停顿。临时容量占用解除后继续准备，显存不足时暂停自动；完成准备后再切入就绪档位。提高最低比例可缩小档位间的外观差异；比较流畅度时，将首次准备与后续切换分开观察。
 
@@ -462,7 +462,7 @@ Present 显示以下选项。兼容的 Pre-FG 先增强游戏帧再交给 FG；�
 <a id="zh-xefg-colors"></a>
 #### XeFG：单层 Backbuffer 与双链选择
 
-v0.2.1 默认开启**画质 → 处理与兼容性 → Present → FG 高级设置 → XeFG 单颜色处理**。在 **XeFG + Present、UI Mode 为 AUTO、UI Composition 关闭**时，仅对包含 HUD 的 Backbuffer 执行 NR；1 Pass 执行一次模型调用，2 Pass 执行两次，模型、工作分辨率及所选 Pass 数不变。相比同时处理 HUDLess 和 Backbuffer 的双链，减少一条完整 NR 链的开销，实际 FPS 仍随游戏和设置变化。
+默认开启**画质 → 处理与兼容性 → Present → FG 高级设置 → XeFG 单颜色处理**。在 **XeFG + Present、UI Mode 为 AUTO、UI Composition 关闭**时，仅对包含 HUD 的 Backbuffer 执行 NR；1 Pass 执行一次模型调用，2 Pass 执行两次，模型、工作分辨率及所选 Pass 数不变。相比同时处理 HUDLess 和 Backbuffer 的双链，减少一条完整 NR 链的开销，实际 FPS 仍随游戏和设置变化。
 
 升级时会一次性将旧配置的此项切到开启，其他画质参数保持原值。若单颜色模式在某游戏出现新增的 HUD 或帧生成兼容问题，关闭此项并**重启游戏**，恢复可用 HUDLess 与 Backbuffer 的原双链处理；之后的手动选择会保存。仅切换 NR 开关无需重启。
 
@@ -547,9 +547,9 @@ ROI、单次 HDR、120 次 HDR Present 和 P0 捕获生成额外数据，可能�
 
 ## English
 
-This guide covers **v0.2.1**. Start with installation, profiles and picture comparisons, then combine up to four NR passes, independent sizes and result edits as needed. **Experimental** marks trial paths with special conditions that are off by default; **Not supported yet** marks unavailable combinations. Downloads and release details: [v0.2.1](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.1).
+This guide covers **v0.4.0**. Start with installation, profiles and picture comparisons, then combine up to four NR passes, independent sizes and result edits as needed. **Experimental** marks trial paths with special conditions that are off by default; **Not supported yet** marks unavailable combinations. Downloads and release details: [v0.4.0](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.4.0).
 
-Images are reviewed offscreen previews of the development UI, with example states and numbers. Each feature's text identifies its availability in downloads.
+Images are reviewed offscreen previews with example states and numbers. See each feature's text for supported paths and usage.
 
 <a id="contents"></a>
 ### Contents
@@ -568,7 +568,7 @@ You need Windows x64, a [compatible NVIDIA RTX GPU/driver](../README.md#en-gpu),
 
 #### Prepare ReShade and the runtime with RHI
 
-1. Close the game and back up existing add-ons, ReShade configuration and DLLs you will replace. Download the Windows x64 ZIP and matching `.zip.sha256` from the [v0.2.1 release page](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.2.1), then verify the archive. Download [the latest RHI](https://github.com/RankFTW/RHI/releases/latest).
+1. Close the game and back up existing add-ons, ReShade configuration and DLLs you will replace. Download the Windows x64 ZIP and matching `.zip.sha256` from the [v0.4.0 release page](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.4.0), then verify the archive. Download [the latest RHI](https://github.com/RankFTW/RHI/releases/latest).
 2. Select the game in RHI. If missing, click **+ (Manually add a game)**, select the actual game `.exe` and click **Add Game**, or drag the `.exe` onto the window. Select the executable used by the game process rather than its launcher; it may be under `Binaries/Win64`.
 3. Select **Game Overrides → ReShade Channel → Stable** for full Add-on support, then install under **Components → ReShade**. **No Addons cannot load NR Nexus.** For existing ReShade installations, check Add-on support and the API version before installing again.
 4. In the **DLSS / Streamline → Neural Rendering** column, choose **310.9.16 (20/30/40/50)** and click **Deploy DLL** to deploy the NR runtime separately, without another NR Add-on. **RHI 2.8.8 also attempts to deploy the newest `nvngx_dlss.dll` (SR) in the game installation root, backing up an existing file as `.original`. Use manual installation to keep your SR version.** If the game already has DLSS but this column is missing, use **Settings → Tools & Maintenance → Full refresh**. Without game DLSS, or if the column remains missing, follow manual installation below.
@@ -613,7 +613,7 @@ There are four main tabs: **Quality, Multi-Pass, Diagnostics and Advanced**. **M
 
 ![Quality page: core quality and processing](images/ui/quality.webp)
 
-*Current development UI; see [working resolution](#en-resolution) for automatic sizing.*
+*Interface example; see [working resolution](#en-resolution) for automatic sizing.*
 
 Compare off/on with **Neural Rendering/F6**. **Auto** is the base model default before applying a profile. Compatible runtime **310.9.16.0** supports **A (Legacy)/B (Small FP8)** for comparing appearance and cost.
 
@@ -784,7 +784,7 @@ Region mask lets you tune NR intensity, tone and structure separately, or gradua
 
 Current builds ignore the old diagnostic setting `NRControlMaskUseCoreContext=1` and fix existing processing history blocking NR when switching back to Upscaled or using stages per pass. There is no need to delete the key; update the addon and restart the game.
 
-**New in development builds: Motion attenuation** (not included in the v0.3.0 download). It is grouped alongside the depth controls inside Region mask settings, with no additional submenu. Enabling it reveals Motion fade start / end; turning it off hides those controls and preserves their values. It uses less NR in faster moving areas, including movement caused by turning the camera. It is off by default, with start / end at **16 / 160 pixels per frame**, measured at the pass's working reference size. Below the start, R is kept; at the end, R reaches 0. Raise the start to keep NR during small movements, or raise the end for a gentler transition. Adaptive sizing keeps each pass's manual upper limit as the motion reference. Adjust to the picture after changing manual working resolution or frame rate.
+**Motion attenuation** is grouped alongside the depth controls inside Region mask settings, with no additional submenu. Enabling it reveals Motion fade start / end; turning it off hides those controls and preserves their values. It uses less NR in faster moving areas, including movement caused by turning the camera. It is off by default, with start / end at **16 / 160 pixels per frame**, measured at the pass's working reference size. Below the start, R is kept; at the end, R reaches 0. Raise the start to keep NR during small movements, or raise the end for a gentler transition. Adaptive sizing keeps each pass's manual upper limit as the motion reference. Adjust to the picture after changing manual working resolution or frame rate.
 
 Motion and depth fades can run together; overlapping areas use the stronger fade. G, B, Character mask and Blend mode keep their own settings. Each pass can inherit Pass 1 or set its own motion switch and range. Turning motion attenuation off restores that pass's other region settings. If motion or depth input is unavailable, only that automatic rule is skipped. Selection follows motion vectors and includes both camera and object movement.
 
@@ -844,11 +844,11 @@ Present offers the following. Compatible Pre-FG enhances game frames before FG. 
 
 Scale applies to width and height; 50% is about one quarter of the pixels. Render uses the available render region, Upscaled the DLSS output region and Present the presented frame. Follow input disables the slider while retaining its value. Read current actual size in settings and history in Diagnostics.
 
-**New in development builds: Adaptive resolution** (not included in the v0.3.0 download). Enable it below working resolution, then set **Target output FPS** and **Minimum relative scale**. Defaults are **60 FPS / 67%**, with ranges of **30–360 FPS / 33–100%**. The target includes generated frames. Each pass's manual resolution is its upper limit, and the minimum is relative to that limit. For example, a 2560×1440 upper limit at 67% gives approximately 1715×965, subject to existing stage limits. Drag the slider or enter an exact target, such as **116**, in the number box. While automatic sizing is on, working resolution and scale show read-only actual values; hover for the saved manual upper limit. Turning it off restores manual editing.
+**Adaptive resolution**: Enable it in Core quality, then set **Target output FPS** and **Minimum relative scale**. Defaults are **60 FPS / 67%**, with ranges of **30–360 FPS / 33–100%**. The target includes generated frames. Each pass's manual resolution is its upper limit, and the minimum is relative to that limit. For example, a 2560×1440 upper limit at 67% gives approximately 1715×965, subject to existing stage limits. Drag the slider or enter an exact target, such as **116**, in the number box. While automatic sizing is on, working resolution and scale show read-only actual values; hover for the saved manual upper limit. Turning it off restores manual editing.
 
 Automatic sizing keeps a lower level when reducing NR resolution helps approach the target and restores higher quality when the benefit is unclear. After holding the target, it slowly tries to recover detail. The top summary shows FPS / NR GPU / FG / NR resolution, with labels above values and wrapping in narrow panels. NR resolution shows Pass 1's current actual working scale; hover for its dimensions and the reference size at that hook point. Other values provide their source and multiplier calculation on hover. Resolution controls keep a compact automatic status, while important pause and error states stay visible. Estimation runs inside the add-on, with no extra FPS program to install or run. Frame caps and other workloads can prevent reaching the target; game, FG and frame-cap settings are left to you.
 
-The first implementation targets one processing stage on native DX12, including compatible same-size XeFG / native FG chains. Cross-stage chains, FG chains with different sizes, DX11 Bridge and Vulkan retain manual resolution. Automatic sizing pauses without a reliable output-rate source and keeps a legal size. Dynamic FG also needs matching game-frame counts; while those are unavailable, it pauses quality trials and collects samples, and estimated output FPS can still be shown. Editing settings and GPU A/B comparisons pause it. Dynamic quality, estimation error with frame caps and in-game switching smoothness still require game validation.
+Adaptive sizing supports one processing stage on native DX12, including compatible same-size XeFG / native FG chains. Cross-stage chains, FG chains with different sizes, DX11 Bridge and Vulkan retain manual resolution. Automatic sizing pauses without a reliable output-rate source and keeps a legal size. Dynamic FG also needs matching game-frame counts; while those are unavailable, it pauses quality trials and collects samples, and estimated output FPS can still be shown. Editing settings and GPU A/B comparisons pause it. Compare detail and transitions while moving the camera, and check the displayed FPS when using frame caps.
 
 Automatic sizing prepares levels within the existing cache budget. The default allows up to four levels for one color and one output, usually two for two colors; rotating outputs consume corresponding capacity. More levels increase initial preparation and video-memory use. Initial activation and model or game-size changes require preparation, which can cause a brief pause. Preparation resumes after temporary capacity use clears; insufficient video memory pauses automatic sizing. Only ready levels are selected after preparation. Raising the minimum scale reduces appearance differences between levels; compare initial preparation and subsequent switches separately.
 
@@ -1005,7 +1005,7 @@ Compatible ordinary Present Optional/Never can also work without game DLSS, subj
 <a id="en-xefg-colors"></a>
 #### XeFG: single backbuffer and dual-chain selection
 
-v0.2.1 enables **Quality → Processing & compatibility → Present → FG advanced settings → XeFG single-color processing** by default. With **XeFG + Present, AUTO UI Mode and UI Composition off**, NR processes only the backbuffer including its HUD: 1 Pass makes one model call and 2 Pass makes two. The model, working resolution and selected pass count stay unchanged. This avoids one full NR chain compared with processing both HUD-less and backbuffer colors; actual FPS depends on the game and settings.
+**Quality → Processing & compatibility → Present → FG advanced settings → XeFG single-color processing** is enabled by default. With **XeFG + Present, AUTO UI Mode and UI Composition off**, NR processes only the backbuffer including its HUD: 1 Pass makes one model call and 2 Pass makes two. The model, working resolution and selected pass count stay unchanged. This avoids one full NR chain compared with processing both HUD-less and backbuffer colors; actual FPS depends on the game and settings.
 
 The upgrade switches this option on once for existing configurations, retaining other quality settings. If single-color processing introduces a HUD or frame-generation compatibility issue in a game, disable it and **restart the game** to restore the previous dual-chain processing of available HUD-less and backbuffer inputs. Your later manual selection is saved. Toggling NR itself needs no restart.
 

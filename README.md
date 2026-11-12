@@ -37,11 +37,12 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 <a id="zh-features"></a>
 ### 核心特色
 
-本页介绍 v0.3.0 的功能；特殊组合的兼容性条件见指南。
+本页介绍 v0.4.0 的功能；特殊组合的兼容性条件见指南。
 
 | 能力 | 玩家用途 |
 | --- | --- |
-| **区域遮罩，保留近处、减弱远处 NR** | 分别调节 NR 应用量、色调和结构，或按深度平滑淡出远景。画质页与每层叠层共用一组控件，支持继承或独立设置、远景起步和单项恢复。[区域遮罩操作](docs/USER_GUIDE.md#zh-region-mask) |
+| **设定目标帧率，自动调整 NR 分辨率** | 设置目标输出 FPS 和最低比例，插件在已准备的档位间调整 NR 工作尺寸；目标包含生成帧，无需额外安装帧率程序。[自适应分辨率与支持范围](docs/USER_GUIDE.md#zh-resolution) |
+| **区域遮罩，按深度或运动减弱 NR** | 分别调节 NR 应用量、色调和结构，按深度淡出远景，或在快速运动区域减少 NR。画质页与每层叠层共用控件，支持继承或独立设置。[区域遮罩操作](docs/USER_GUIDE.md#zh-region-mask) |
 | **最多四层，分别塑造外观和结果** | 在一次 NR 调整之外继续叠加处理，例如自然底层＋电影感第二层。每层分别调模型风格、人物／皮肤及亮暗、颜色、细节和光晕；可共享第 1 层设置，也可独立编辑。增加层数会增加 GPU 工作量，建议从单层开始。[两层实例](docs/USER_GUIDE.md#zh-two-pass-example) · [阶段与 FG 兼容性](#zh-compatibility) |
 | **A/B 双模型与逐层选择** | 在兼容且识别为 **310.9.16.0** 的 Runtime 上比较 A（Legacy）和 B（Small FP8），组合 AA、AB、BA、BB，寻找喜欢的细节与风格，而不只做单模型开关。[模型与画质](docs/USER_GUIDE.md#zh-quality) |
 | **超分前、超分后，或最终游戏画面** | Render、Upscaled、Present 决定在哪一步增强。支持的 DX11／DX12 链可用 **Render（B）→ 游戏 DLSS SR → Upscaled（A）**，兼顾前后两次处理，也可与原生 DLSS FG/MFG 或 XeFG 并用。[叠层与阶段](docs/USER_GUIDE.md#zh-multipass) |
@@ -63,7 +64,7 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 <a id="zh-install"></a>
 ### 下载、安装与使用
 
-**v0.3.0**：[Windows x64 插件 ZIP、SHA-256 与 Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.3.0)。在版本页面下载 ZIP 和对应的 `.zip.sha256`。GitHub 的 **Source code** ZIP 是源码，不是安装包。
+**v0.4.0**：[Windows x64 插件 ZIP、SHA-256 与 Release Notes](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.4.0)。在版本页面下载 ZIP 和对应的 `.zip.sha256`。GitHub 的 **Source code** ZIP 是源码，不是安装包。
 
 **需要：** Windows x64、兼容 **ReShade API 18** 的[完整 Add-on 支持版 ReShade](https://reshade.me/)、
 合法取得的兼容 NVIDIA **`nvngx_dlssnr.dll`**，以及该 Runtime 支持的显卡和驱动。
@@ -75,7 +76,7 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 2. 选择游戏，在 **Game Overrides → ReShade Channel** 使用 **Stable**（完整 Add-on 支持），然后安装 **ReShade**。不要选 **No Addons**。
 3. 在 **DLSS / Streamline → Neural Rendering** 列选择合适的版本，例如当前社区 **`310.9.16 (20/30/40/50)`**，点 **Deploy DLL** 部署 NR Runtime。RHI 2.8.8 还会尝试部署最新 SR DLL（`nvngx_dlss.dll`），并备份已有文件；希望保留原 SR 版本、或找不到此栏时，按指南使用手动安装。
 4. 点游戏标题区或右键菜单中的 **Browse** 打开游戏目录，核对实际 EXE（可能在 `Binaries/Win64` 等子目录）。关闭游戏，备份现有插件及设置。
-5. 下载上方 **v0.3.0 ZIP**，将 **`renodx-dlss5.addon64`** 解压到 ReShade 实际加载的 Add-on 目录，通常是 EXE 旁；若 `ReShade.ini` 配置了 `AddonPath`，按该路径部署。保留许可文件。Runtime 可放插件旁或 EXE 旁，插件旁的 DLL 优先。
+5. 下载上方 **v0.4.0 ZIP**，将 **`renodx-dlss5.addon64`** 解压到 ReShade 实际加载的 Add-on 目录，通常是 EXE 旁；若 `ReShade.ini` 配置了 `AddonPath`，按该路径部署。保留许可文件。Runtime 可放插件旁或 EXE 旁，插件旁的 DLL 优先。
 6. 启动游戏，按 ReShade 已设置的菜单键（通常为 **Home**），在 **Add-ons → NR Nexus** 确认已加载版本，接着按下方快速上手体验。未出现插件时见[安装排查](docs/USER_GUIDE.md#zh-status)。
 
 **避免重复 NR 插件：** RHI 的 **Install Neural Rendering** 会安装 ShortFuse、DLSS5 Tool 等独立 NR 工具，与上面的 **Deploy DLL** 不同。使用 Nexus 时不要额外安装这些工具；已有安装应先按各自流程卸载，并将旧 Lecram／Nexus 副本移出生效的 Add-on 目录。RHI 可备份、更新或恢复它管理的文件；检查 `AddonPath` 与自动更新设置，避免旧副本重新生效。
@@ -264,11 +265,12 @@ The Witcher 3 — Velen · Crookback Bog
 <a id="en-features"></a>
 ### What makes Nexus different
 
-This page describes the features in v0.3.0. See the guide for compatibility conditions on specific combinations.
+This page describes the features in v0.4.0. See the guide for compatibility conditions on specific combinations.
 
 | Feature | What you can use it for |
 | --- | --- |
-| **Region masks: keep NR nearby, fade it in the distance** | Tune NR intensity, tone and structure separately, or fade distant areas by depth. Quality and every pass share the same controls, with inheritance or independent values, distant starting points and individual resets. [Region mask controls](docs/USER_GUIDE.md#en-region-mask) |
+| **Set a target FPS and adjust NR resolution automatically** | Set target output FPS and a minimum scale. The add-on adjusts NR working size between prepared levels, including generated frames in the target, without an extra FPS program. [Adaptive resolution and supported paths](docs/USER_GUIDE.md#en-resolution) |
+| **Region masks that reduce NR by depth or motion** | Tune NR intensity, tone and structure separately, fade distant areas by depth, or reduce NR in fast-moving regions. Quality and every pass share controls, with inheritance or independent settings. [Region mask controls](docs/USER_GUIDE.md#en-region-mask) |
 | **Up to four passes, with separate look and result controls** | Build on one NR adjustment with another, such as a Natural base plus a Cinematic second layer. Tune model styling, characters/skin, brightness, colour, detail and halos per pass, sharing Pass 1 settings or editing independently. More passes add GPU work; start with one. [Two-pass example](docs/USER_GUIDE.md#en-two-pass-example) · [Stage and FG compatibility](#en-compatibility) |
 | **Dual models A/B, chosen per pass** | With a compatible runtime identified as **310.9.16.0**, compare A (Legacy) and B (Small FP8) in AA, AB, BA or BB combinations to find preferred detail and styling, beyond a single-model toggle. [Models and quality](docs/USER_GUIDE.md#en-quality) |
 | **Before upscaling, after upscaling, or on the final game image** | Render, Upscaled and Present choose where enhancement happens. Supported DX11/DX12 chains can use **Render (B) → game DLSS SR → Upscaled (A)** to combine both stages, alongside native DLSS FG/MFG or XeFG. [Passes and stages](docs/USER_GUIDE.md#en-multipass) |
@@ -290,9 +292,9 @@ The interface offers **15 languages and seven themes**, with automatic ReShade l
 <a id="en-install"></a>
 ### Download, install and use
 
-**[Download v0.3.0 (Windows x64 ZIP)](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.3.0)** · **[View latest stable release](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/latest)**
+**[Download v0.4.0 (Windows x64 ZIP)](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.4.0)** · **[View latest stable release](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/latest)**
 
-This page covers **v0.3.0**. Download the ZIP and matching `.zip.sha256` from the [release page](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.3.0), which also contains the Release Notes. GitHub's **Source code** ZIP is source, not the add-on installation package.
+This page covers **v0.4.0**. Download the ZIP and matching `.zip.sha256` from the [release page](https://github.com/williamstosh/RenoDX-DLSSNR-Nexus/releases/tag/v0.4.0), which also contains the Release Notes. GitHub's **Source code** ZIP is source, not the add-on installation package.
 
 **Requirements:** Windows x64; [ReShade with full add-on support](https://reshade.me/), compatible with
 **ReShade API 18**; a legally obtained compatible NVIDIA **`nvngx_dlssnr.dll`**;
@@ -305,7 +307,7 @@ For a first installation, use the third-party **RHI** tool to prepare ReShade an
 2. Select the game, use **Game Overrides → ReShade Channel → Stable** (full add-on support), then install **ReShade**. Do not choose **No Addons**.
 3. Under **DLSS / Streamline → Neural Rendering**, choose a suitable version, such as the current community **`310.9.16 (20/30/40/50)`**, and click **Deploy DLL** to deploy the NR runtime. RHI 2.8.8 also attempts to deploy the latest SR DLL (`nvngx_dlss.dll`), backing up an existing file. To keep the original SR version, or if the column is missing, follow manual installation in the guide.
 4. Use **Browse** in the game header or right-click menu to open the game folder. Confirm the actual EXE location, which may be a subfolder such as `Binaries/Win64`. Close the game and back up existing add-ons/settings.
-5. Download the **v0.3.0 ZIP** above. Extract **`renodx-dlss5.addon64`** into ReShade's actual add-on directory, normally beside the EXE; follow `AddonPath` if configured in `ReShade.ini`. Keep the licenses. The runtime can sit beside the add-on or the EXE; the add-on-side DLL takes priority.
+5. Download the **v0.4.0 ZIP** above. Extract **`renodx-dlss5.addon64`** into ReShade's actual add-on directory, normally beside the EXE; follow `AddonPath` if configured in `ReShade.ini`. Keep the licenses. The runtime can sit beside the add-on or the EXE; the add-on-side DLL takes priority.
 6. Start the game, use ReShade's configured menu key (usually **Home**) and confirm the loaded version under **Add-ons → NR Nexus**, then follow Quick Start below. If the add-on is missing, see [installation troubleshooting](docs/USER_GUIDE.md#en-status).
 
 **Avoid duplicate NR add-ons:** RHI's **Install Neural Rendering** installs separate tools such as ShortFuse or DLSS5 Tool; it is different from **Deploy DLL** above. Do not install those alongside Nexus. Uninstall existing methods through their own procedures and move older Lecram/Nexus copies out of active add-on directories. RHI can back up, update or restore files it manages; check `AddonPath` and automatic-update settings so old copies do not become active again.
