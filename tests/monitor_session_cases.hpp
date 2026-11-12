@@ -159,6 +159,7 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   preserve(r::stage_telemetry);
   for (auto& stats : timers::stage_stats) preserve(stats);
   for (auto& proof : timers::execution_stats) preserve(proof);
+  for (auto& proof : timers::completed_stats) preserve(proof);
   preserve(ImGui::GetStyle());
   const auto original_theme = ui::CurrentThemeId();
   const int original_language = ui::CurrentLanguage();
@@ -466,6 +467,8 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   r::nr_cost_frame_ms = 16.f;
   for (auto& stats : timers::stage_stats) stats = {};
   for (auto& proof : timers::execution_stats) proof = {};
+  for (auto& proof : timers::completed_stats) proof = {};
+  r::card_observation.completions = {};
   const auto plan = r::RequestedStagePlan();
   check(plan.valid && plan.pass_count == 1, "fixture has a valid single-pass production stage plan");
   const auto stage = static_cast<std::size_t>(plan.effective[0]);
@@ -538,10 +541,22 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   for (const auto state : {timers::SampleState::PENDING, timers::SampleState::REPLAYED,
                            timers::SampleState::EXPIRED}) {
     measured.state = state;
+    r::card_observation.completions[stage] = saved_measured;
+    r::monitor_snapshot.attempted_ns = 0;
+    const auto retained = r::RefreshMonitorSnapshot(true);
+    check(retained.monitor.passes[0].execution_confirmed
+              && retained.monitor.passes[0].actual_size == current.monitor.passes[0].actual_size
+              && retained.monitor.passes[0].gpu_cost.empty() && retained.summary.gpu.empty()
+              && retained.card.nr_gpu_ms == 0.f,
+          "a current retained completion preserves execution and size without reusing rejected timing costs");
+    // The negative case has no independent current completion to fall back to.
+    r::card_observation.completions = {};
+    timers::completed_stats[stage] = measured;
     r::monitor_snapshot.attempted_ns = 0;
     const auto rejected = r::RefreshMonitorSnapshot(true);
     check(rejected.summary.gpu.empty() && !rejected.monitor.passes[0].execution_confirmed,
           "valid flag alone cannot promote pending, replayed or expired samples");
+    timers::completed_stats[stage] = {};
   }
   measured = saved_measured;
   auto& newer_proof = timers::execution_stats[stage];
@@ -813,7 +828,9 @@ void RunMonitorSessionCases(const Check& check, const Frame& frame) {
   frame(proof_only.monitor);
   check(ImGui::GetCurrentContext() == original_context && !original_context->WithinFrameScope,
         "production monitor frame reuses the caller's ImGui context");
-  proof.measured_ns = r::SteadyNowNs() - timers::internal::kSampleAgeNs - 1;
+  proof.measured_ns = proof.recorded_ns = r::SteadyNowNs() - timers::internal::kSampleAgeNs - 1;
+  // Both by-value copies represent the same completion aging past its deadline.
+  r::card_observation.completions[stage] = proof;
   r::monitor_snapshot.attempted_ns = 0;
   const auto expired_proof = r::RefreshMonitorSnapshot(true);
   check(expired_proof.monitor.passes[0].execution_proof != ui::Tr("GPU complete: single submission")
