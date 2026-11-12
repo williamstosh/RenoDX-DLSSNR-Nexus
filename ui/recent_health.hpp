@@ -39,8 +39,9 @@ class RecentHealthWindow {
                        std::uint64_t injected, std::uint64_t gaps, std::int64_t now_ns,
                        std::uint64_t gpu_recorded_sequence = 0, const RecentGpuCompletion& gpu_completion = {}) {
     const Point point{now_ns, eligible, injected, gaps};
-    if (count_ == 0 || configuration != configuration_ || eligible < latest_.eligible
-        || injected < latest_.injected || gaps < latest_.gaps || now_ns < latest_.ns) {
+    const bool reset_gpu_observation = count_ == 0 || configuration != configuration_
+        || injected < latest_.injected || gaps < latest_.gaps || now_ns < latest_.ns;
+    if (reset_gpu_observation || eligible < latest_.eligible) {
       configuration_ = configuration;
       points_ = {};
       points_[0] = point;
@@ -48,9 +49,13 @@ class RecentHealthWindow {
       next_ = 1;
       partial_ = false;
       last_sample_ns_ = 0;
-      started_ns_ = now_ns;
-      // Include pending recordings: late completion of old work is not new evidence.
-      gpu_sequence_baseline_ = gpu_recorded_sequence;
+      if (reset_gpu_observation) {
+        started_ns_ = now_ns;
+        // Include pending recordings: late completion of old work is not new evidence.
+        gpu_sequence_baseline_ = gpu_recorded_sequence;
+      }
+      // Eligible is derived from raw calls minus classifications and can fall
+      // when a pending mirror is resolved. Rebase its statistics, not GPU identity.
     } else {
       if (eligible > latest_.eligible) {
         last_sample_ns_ = now_ns;

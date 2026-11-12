@@ -557,5 +557,25 @@
     check(snapshot.inputs.verdict.eligible == 200 && snapshot.inputs.verdict.injected == 200,
         "the monitor observes the current counters instead of clamping an older counter snapshot's time");
     interleave_card_snapshot = {};
+    const auto before_mirror = runtime::CollectFunnelInputs();
+    {
+      const runtime::EvaluateInFlightScope pending_source(true);
+      ++runtime::intercepted_evaluations;
+      const auto pending = runtime::CollectFunnelInputs();
+      check(pending.eligible == before_mirror.eligible + 1 && pending.injected == before_mirror.injected
+          && pending.unaccounted == before_mirror.unaccounted,
+          "an unclassified wrapper raises raw eligible while the funnel still accounts for its in-flight work");
+      check(ui::ComputeStatusCard(runtime::CollectCardInputs()).id == ui::CardId::kActive,
+          "the current GPU proof stays Active while that raw wrapper is awaiting classification");
+      addon::CountNrDecline(addon::NrDeclineReason::kNestedMirror);
+    }
+    const auto classified = runtime::CollectFunnelInputs();
+    check(classified.eligible == before_mirror.eligible && classified.injected == before_mirror.injected
+        && classified.unaccounted == before_mirror.unaccounted,
+        "real mirror classification restores eligible without changing success or diagnostic accounting");
+    const auto after_mirror = runtime::CollectCardInputs();
+    check(proof.sequence == sequence && after_mirror.recent.has_value() && after_mirror.recent->gpu_completed
+        && ui::ComputeStatusCard(after_mirror).id == ui::CardId::kActive,
+        "eligible-only classification rollback cannot discard the same current GPU proof or return to Checking");
   }
 }
