@@ -24,7 +24,10 @@ int Run() {
     gpu.device.As(&info);
     native::enabled = true;
     native::hooks_enabled = true;
-    native::dedupe_mode = addon::kDedupePerEvaluate;
+    Check(native::dedupe_mode.load() == native::defaults::kDedupeMode,
+        "inline adaptive uses the production default deduplication policy");
+    native::cost_meter_enabled = false;
+    native::gpu_timers_enabled = false;
     native::stack_passes = 1;
     native::nr_follow_input_res = false;
     native::nr_resolution_scale = 1.f;
@@ -77,7 +80,7 @@ int Run() {
     auto motion = texture(DXGI_FORMAT_R16G16_FLOAT, false);
     auto depth = texture(DXGI_FORMAT_R32_FLOAT, false);
     gpu.Submit();
-    const auto submit = [&] {
+    const auto submit = [&](bool reset = true) {
       Check(SUCCEEDED(gpu.list->Close()), "inline adaptive recording close");
       ID3D12CommandList* lists[]{gpu.list.Get()};
       gpu.queue->ExecuteCommandLists(1, lists);
@@ -88,8 +91,10 @@ int Run() {
       const auto wait = (SUCCEEDED(signal) ? WaitForSingleObject(event, 10000) : WAIT_FAILED);
       CloseHandle(event);
       Check(wait == WAIT_OBJECT_0, "inline adaptive bounded GPU completion");
-      Check(SUCCEEDED(gpu.allocator->Reset()) && SUCCEEDED(gpu.list->Reset(gpu.allocator.Get(), nullptr)),
-          "inline adaptive completed recording reset");
+      if (reset) {
+        Check(SUCCEEDED(gpu.allocator->Reset()) && SUCCEEDED(gpu.list->Reset(gpu.allocator.Get(), nullptr)),
+            "inline adaptive completed recording reset");
+      }
       native::DrainRetiredResources(true);
       addon::gpu_timers::Poll(true, false);
       gpu.uploads.clear();
@@ -110,11 +115,11 @@ int Run() {
     parameters.Set(NVSDK_NGX_Parameter_Reset, 0u);
     for (const auto hook : {native::kHookUpscaled, native::kHookRender}) {
       native::hook_point = hook;
-      native::nr_adaptive_enabled = true;
+      native::nr_adaptive_enabled = false;
       const auto* handle = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xADA100} + hook);
       native::RegisterCreatedFeatureLocked(handle, native::kFeatureDlss, &parameters);
       uint32_t frame = 0;
-      const auto record = [&] {
+      const auto evaluate = [&] {
         const uint32_t output = frame++ % 2;
         parameters.Set(NVSDK_NGX_Parameter_Color, colors[output].Get());
         parameters.Set(NVSDK_NGX_Parameter_Output, outputs[output].Get());
@@ -130,9 +135,33 @@ int Run() {
             accepted = native::ProcessInline(gpu.list.Get(), handle, &parameters);
           }
         }
-        submit();
         return accepted;
       };
+      const auto record = [&](bool reset = true) {
+        const bool accepted = evaluate();
+        submit(reset);
+        return accepted;
+      };
+      for (uint32_t warmup = 0; warmup < 8; ++warmup) record();
+      Check(record(false), "manual inline NR records successfully before parking its actual GPU-complete list");
+      auto parked_list = gpu.list;
+      auto parked_allocator = gpu.allocator;
+      const auto* parked_model = native::features.at(handle).slots[0].handle;
+      const auto parked_releases = std::count(model_released_handles.begin(), model_released_handles.end(), parked_model);
+      const auto parked_recording = addon::submission::ObserveRecording(parked_list.Get());
+      Check(parked_recording->submitted.load() && !parked_recording->closed.load()
+          && !addon::submission::ResourceReleasable(parked_model),
+          "the completed active recording remains replayable and retains its model lifetime");
+      ComPtr<ID3D12CommandAllocator> next_allocator;
+      ComPtr<ID3D12GraphicsCommandList> next_list;
+      Check(SUCCEEDED(gpu.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+          IID_PPV_ARGS(&next_allocator))), "inline adaptive second allocator");
+      Check(SUCCEEDED(gpu.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+          next_allocator.Get(), nullptr, IID_PPV_ARGS(&next_list))), "inline adaptive second list");
+      gpu.allocator = next_allocator;
+      gpu.list = next_list;
+      Check(native::InstallCommandListStateHooks(gpu.list.Get()), "inline adaptive second-list hooks");
+      native::nr_adaptive_enabled = true;
       for (uint32_t warmup = 0; warmup < 32; ++warmup) record();
       auto& feature = native::features.at(handle);
       auto cache = feature.adaptive_cache;
@@ -144,6 +173,47 @@ int Run() {
       native::PollAdaptiveCache(cache.get());
       Check(!cache->failed && !feature.adaptive_session->failed && cache->tiers[0].ready && cache->tiers[1].ready,
           "Render/Upscaled standby tiers complete both output recordings without permanent pause");
+      Check(!parked_recording->closed.load() && !addon::submission::ResourceReleasable(parked_model),
+          "standby preparation preserves the active tier's replayable recording protection");
+      if (hook == native::kHookRender) {
+        auto running_list = gpu.list;
+        auto running_allocator = gpu.allocator;
+        ComPtr<ID3D12CommandAllocator> pending_allocator;
+        ComPtr<ID3D12GraphicsCommandList> pending_list;
+        Check(SUCCEEDED(gpu.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+            IID_PPV_ARGS(&pending_allocator))), "Render target-tier pending allocator");
+        Check(SUCCEEDED(gpu.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+            pending_allocator.Get(), nullptr, IID_PPV_ARGS(&pending_list))), "Render target-tier pending list");
+        gpu.allocator = pending_allocator;
+        gpu.list = pending_list;
+        Check(native::InstallCommandListStateHooks(gpu.list.Get()), "Render target-tier pending-list hooks");
+        native::ActivateAdaptiveTier(&feature, 1);
+        feature.adaptive_session->Request(1, native::SteadyNowNs());
+        const auto before_pending = model_calls;
+        Check(evaluate() && model_calls == before_pending + 1,
+            "the target tier owns an actual NR recording that is deliberately left unsubmitted");
+        const auto target_recording = addon::submission::ObserveRecording(gpu.list.Get());
+        Check(!target_recording->submitted.load() && !target_recording->closed.load(),
+            "target-tier History is reserved by its own open unsubmitted recording");
+        gpu.allocator = running_allocator;
+        gpu.list = running_list;
+        native::ActivateAdaptiveTier(&feature, 0);
+        feature.adaptive_session->Request(1, native::SteadyNowNs());
+        const auto before_blocked = model_calls;
+        Check(!evaluate() && model_calls == before_blocked,
+            "Render selects and checks the requested tier before recording: its own pending History prevents every NR call");
+        Check(!feature.adaptive_session->failed && !cache->failed,
+            "the requested tier's temporary History wait does not latch an execution failure");
+        gpu.allocator = pending_allocator;
+        gpu.list = pending_list;
+        submit();
+        gpu.allocator = running_allocator;
+        gpu.list = running_list;
+        Check(record() && record(), "Render resumes the requested tier after its own pending producer submits");
+        feature.adaptive_session->Request(0, native::SteadyNowNs());
+        Check(record() && record() && cache->active == 0,
+            "Render returns to the original active tier after the target-tier admission check");
+      }
       const auto creates = native::nr_features_created;
       feature.adaptive_session->Request(1, native::SteadyNowNs());
       Check(record() && record(), "both rotating outputs accept their prepared lower tier");
@@ -182,6 +252,14 @@ int Run() {
       }
       native::ForgetSourceHandleLocked(handle);
       submit();
+      Check(!addon::submission::ResourceReleasable(parked_model),
+          "source retirement cannot release a model referenced by the parked active recording");
+      Check(SUCCEEDED(parked_allocator->Reset()) && SUCCEEDED(parked_list->Reset(parked_allocator.Get(), nullptr)),
+          "fixture closes its parked recording only after preparation and source-retirement assertions");
+      native::DrainRetiredResources(true);
+      Check(addon::submission::ResourceReleasable(parked_model)
+          && std::count(model_released_handles.begin(), model_released_handles.end(), parked_model) == parked_releases + 1,
+          "closing the fixture's completed parked recording permits exactly one normal model release");
     }
     native::successful_sr_device = nullptr;
     if (info != nullptr) {

@@ -831,6 +831,7 @@ inline DescriptorHandle DescriptorHeapSlot(
 
 struct FinalResources {
   const NVSDK_NGX_Handle* owner = nullptr;
+  uint32_t adaptive_slot = 0;
   // Optional second-pass working surfaces. Full-stage images are held by COM
   // references; this owned child has its own immutable descriptor heap.
   FinalResources* resolution_tail = nullptr;
@@ -6753,6 +6754,7 @@ inline FinalResources* EnsureWorkset(
         auto node = worksets.extract(recyclable);
         node.key() = workset_key;
         FinalResources& recycled = worksets.insert(std::move(node)).position->second;
+        recycled.adaptive_slot = workset_key.adaptive_slot;
         // The pre-SR source is the one game resource a workset holds, and its
         // views are keyed on the pointer: SetSourceView skips a slot whose
         // recorded pointer matches.  Carried across the re-key (rc10), the
@@ -6822,6 +6824,7 @@ inline FinalResources* EnsureWorkset(
 
   FinalResources resources;
   resources.owner = owner;
+  resources.adaptive_slot = workset_key.adaptive_slot;
   resources.shared_stage_surfaces = stage_resources != nullptr;
   resources.width = output_width;
   resources.height = output_height;
@@ -11595,6 +11598,8 @@ inline bool RecordInline(
   }
   stage_stats.width = width;
   stage_stats.height = height;
+  const uint32_t history_slot = (feature.adaptive_cache != nullptr
+      ? static_cast<uint32_t>(feature.adaptive_cache->active) : 0u);
   const bool track_control_mask_history = control_mask_eligible
       || feature.control_mask_recording != nullptr || feature.control_mask_stream != nullptr;
   if (track_control_mask_history) {
@@ -11628,10 +11633,10 @@ inline bool RecordInline(
           && !feature.slots[0].recording->submitted.load()) {
         feature.control_mask_recording = feature.slots[0].recording;
       }
-      // Output keys share their owner's NR History and normalization texel.
-      // Check every owner workset before any contract mutation or pool re-key.
+      // Output keys within one tier share NR History and normalization. Other
+      // tiers own independent state and may retain replayable recordings.
       for (auto& [key, resources] : worksets) {
-        if (key.handle != handle) continue;
+        if (key.handle != handle || key.adaptive_slot != history_slot) continue;
         ready &= resources.recording != nullptr
             ? reusable(CollectWorksetGpuObjects(resources), resources.recording)
             : resources.tracked_recording && WorksetRecordingsComplete(resources);
@@ -11643,7 +11648,7 @@ inline bool RecordInline(
       // Retired worksets can still share the stream's norm_commit; retirement
       // keeps it alive but does not serialize a new writer.
       for (const auto& retired : retired_final_resources) {
-        if (retired.resources.owner == handle) {
+        if (retired.resources.owner == handle && retired.resources.adaptive_slot == history_slot) {
           ready &= retired.resources.recording != nullptr
               ? reusable(CollectWorksetGpuObjects(retired.resources), retired.resources.recording)
               : retired.resources.tracked_recording && WorksetRecordingsComplete(retired.resources);
@@ -11654,7 +11659,7 @@ inline bool RecordInline(
       // An older recording changed the executed History order. Reconstruct
       // only after its original lifetime proofs have ended every old use.
       for (auto existing = worksets.begin(); existing != worksets.end();) {
-        if (existing->first.handle != handle) {
+        if (existing->first.handle != handle || existing->first.adaptive_slot != history_slot) {
           ++existing;
           continue;
         }
@@ -11694,7 +11699,8 @@ inline bool RecordInline(
       }
     }
     for (auto existing = worksets.begin(); existing != worksets.end();) {
-      if (existing->first.handle == handle && existing->second.recording == nullptr) {
+      if (existing->first.handle == handle && existing->first.adaptive_slot == history_slot
+          && existing->second.recording == nullptr) {
         const auto key = existing->first;
         ++existing;
         RetireWorkset(key);
@@ -11886,10 +11892,11 @@ inline bool RecordInline(
       feature.slots[0].pending_reset_reasons |= kResetRecovery;
       feature.control_mask_recording.reset();
     }
-    // The model is shared across this owner's output keys. Check all of them
+    // The model is shared across this tier's output keys. Check all of them
     // before EnsureWorkset can evict or re-key a pooled workset.
     for (auto existing = worksets.begin(); existing != worksets.end();) {
-      if (existing->first.handle != handle || existing->second.control_mask_recording == nullptr) {
+      if (existing->first.handle != handle || existing->first.adaptive_slot != history_slot
+          || existing->second.control_mask_recording == nullptr) {
         ++existing;
         continue;
       }
@@ -13771,6 +13778,22 @@ inline bool RecordInlinePreSR(
   }
   stage_stats.width = width;
   stage_stats.height = height;
+  // Select the actual working tier before admitting its History and objects.
+  // Pre-SR uses the NGX color as its reference; DLSS upscales the result later.
+  auto adaptive = (preparing_adaptive_frame != nullptr ? *preparing_adaptive_frame
+      : FreezeAdaptiveFrame(&feature.adaptive_session, plan, group, width, height,
+      current.input_width, current.input_height,
+      reinterpret_cast<uintptr_t>(handle) ^ reinterpret_cast<uintptr_t>(device) ^ feature.source_generation,
+      !D3D11OnlySession(), 0, 1, false, AdaptiveOutputCount(&feature, handle, color, true, width, height, color_desc.Format)));
+  SelectAdaptiveTier(&feature, handle, &adaptive, false, color);
+  if (adaptive_recording != nullptr) {
+    adaptive_recording->feature = &feature;
+    adaptive_recording->frame = adaptive;
+    adaptive_recording->source_color = color;
+  }
+  const AdaptiveFrameScope adaptive_scope(&adaptive);
+  const uint32_t history_slot = (feature.adaptive_cache != nullptr
+      ? static_cast<uint32_t>(feature.adaptive_cache->active) : 0u);
   const bool track_control_mask_history = control_mask_eligible
       || feature.control_mask_recording != nullptr || feature.control_mask_stream != nullptr;
   if (track_control_mask_history) {
@@ -13803,7 +13826,7 @@ inline bool RecordInlinePreSR(
         feature.control_mask_recording = feature.slots[0].recording;
       }
       for (auto& [key, resources] : worksets) {
-        if (key.handle != handle) continue;
+        if (key.handle != handle || key.adaptive_slot != history_slot) continue;
         ready &= resources.recording != nullptr
             ? reusable(CollectWorksetGpuObjects(resources), resources.recording)
             : resources.tracked_recording && WorksetRecordingsComplete(resources);
@@ -13813,7 +13836,7 @@ inline bool RecordInlinePreSR(
         }
       }
       for (const auto& retired : retired_final_resources) {
-        if (retired.resources.owner != handle) continue;
+        if (retired.resources.owner != handle || retired.resources.adaptive_slot != history_slot) continue;
         ready &= retired.resources.recording != nullptr
             ? reusable(CollectWorksetGpuObjects(retired.resources), retired.resources.recording)
             : retired.resources.tracked_recording && WorksetRecordingsComplete(retired.resources);
@@ -13821,7 +13844,7 @@ inline bool RecordInlinePreSR(
     }
     if (ready && rebuild_ordered_history) {
       for (auto existing = worksets.begin(); existing != worksets.end();) {
-        if (existing->first.handle != handle) {
+        if (existing->first.handle != handle || existing->first.adaptive_slot != history_slot) {
           ++existing;
           continue;
         }
@@ -13860,7 +13883,8 @@ inline bool RecordInlinePreSR(
       }
     }
     for (auto existing = worksets.begin(); existing != worksets.end();) {
-      if (existing->first.handle == handle && existing->second.recording == nullptr) {
+      if (existing->first.handle == handle && existing->first.adaptive_slot == history_slot
+          && existing->second.recording == nullptr) {
         const auto key = existing->first;
         ++existing;
         RetireWorkset(key);
@@ -13890,6 +13914,7 @@ inline bool RecordInlinePreSR(
     feature.control_mask_recording.reset();
     for (auto existing = worksets.begin(); existing != worksets.end();) {
       if (existing->first.handle != handle
+          || existing->first.adaptive_slot != history_slot
           || !discarded_recording(existing->second.control_mask_recording)) {
         ++existing;
         continue;
@@ -13899,24 +13924,6 @@ inline bool RecordInlinePreSR(
       RetireWorkset(key);
     }
   }
-  // NR working resolution (v5.1): the same controls as the after path, with
-  // the NGX color surface as the reference - pre-SR has no separate output
-  // resolution, the game's own DLSS upscales after us.  Scaled mode runs the
-  // feature below the render resolution against the game's full-res
-  // depth/motion guides with the game's MVecScale unchanged: the same
-  // guide/color arrangement, and the same F8 rule, as the after path.
-  auto adaptive = (preparing_adaptive_frame != nullptr ? *preparing_adaptive_frame
-      : FreezeAdaptiveFrame(&feature.adaptive_session, plan, group, width, height,
-      current.input_width, current.input_height,
-      reinterpret_cast<uintptr_t>(handle) ^ reinterpret_cast<uintptr_t>(device) ^ feature.source_generation,
-      !D3D11OnlySession(), 0, 1, false, AdaptiveOutputCount(&feature, handle, color, true, width, height, color_desc.Format)));
-  SelectAdaptiveTier(&feature, handle, &adaptive, false, color);
-  if (adaptive_recording != nullptr) {
-    adaptive_recording->feature = &feature;
-    adaptive_recording->frame = adaptive;
-    adaptive_recording->source_color = color;
-  }
-  const AdaptiveFrameScope adaptive_scope(&adaptive);
   uint32_t nr_input_width = width;
   uint32_t nr_input_height = height;
   const bool independent_pair = capability::SupportsIndependentSizes(group.stage, group.count, false);
