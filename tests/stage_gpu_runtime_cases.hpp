@@ -14,10 +14,12 @@
   const auto saved_enabled_ini = Read("NeuralUplift");
   const auto saved_samples = std::array{timers::stage_stats[0], timers::stage_stats[1], timers::stage_stats[2]};
   const auto saved_proofs = std::array{timers::execution_stats[0], timers::execution_stats[1], timers::execution_stats[2]};
+  const auto saved_completed = std::array{timers::completed_stats[0], timers::completed_stats[1], timers::completed_stats[2]};
   const auto saved_profiling = runtime::gpu_timers_enabled.load();
   const auto saved_cost_meter = runtime::cost_meter_enabled.load();
   const auto saved_sequence = timers::internal::next_sequence;
   const auto saved_window = runtime::card_observation.window;
+  const auto saved_completions = runtime::card_observation.completions;
   const auto saved_configuration = runtime::card_observation.configuration;
   const auto saved_declines = runtime::card_observation.declines;
   const auto saved_declines_sampled = runtime::card_observation.declines_sampled_ns;
@@ -54,10 +56,14 @@
   runtime::card_line_refill_ns = 0;
   runtime::last_emitted_card = 0xff;
   runtime::card_observation.window = {};
+  runtime::card_observation.completions = {};
   for (auto& sample : timers::stage_stats) {
     sample = {};
   }
   for (auto& proof : timers::execution_stats) {
+    proof = {};
+  }
+  for (auto& proof : timers::completed_stats) {
     proof = {};
   }
   int64_t tick_ns = runtime::SteadyNowNs();
@@ -76,6 +82,12 @@
     sample.recorded_ns = tick_ns;
     sample.identity.device_session = timers::device_session;
     runtime::comparison_ui::CaptureSettings(&sample.identity);
+    sample.identity.stable_epoch = runtime::comparison_stable_epochs[static_cast<uint32_t>(stage)];
+    switch (stage) {
+      case plan::Stage::RENDER: std::strcpy(sample.path, "preSR"); break;
+      case plan::Stage::UPSCALED: std::strcpy(sample.path, "after"); break;
+      case plan::Stage::PRESENT: std::strcpy(sample.path, "present"); break;
+    }
     for (uint32_t local = 0; local < count; ++local) {
       sample.passes[local].id = first_pass + local;
       sample.passes[local].state = timers::SampleState::VALID;
@@ -144,8 +156,11 @@
   expect_checking("Current Render evidence alone cannot prove the Render to Upscaled chain.");
   timers::stage_stats[static_cast<uint32_t>(plan::Stage::RENDER)].valid = false;
   publish(plan::Stage::UPSCALED, 1, 1);
+  expect_active("A current retained Render completion combines with fresh Upscaled evidence.");
+  runtime::card_observation.completions[static_cast<uint32_t>(plan::Stage::RENDER)] = {};
   expect_checking("Current Upscaled evidence alone cannot prove the Render to Upscaled chain.");
   publish(plan::Stage::RENDER, 0, 1);
+  runtime::card_observation.completions[static_cast<uint32_t>(plan::Stage::UPSCALED)] = {};
   upscaled.passes[0].id = 0;
   expect_checking("A group-local zero ID in Upscaled cannot replace the requested global Pass 1.");
   upscaled.passes[0].id = 1;
@@ -204,6 +219,8 @@
   runtime::cost_meter_enabled = false;
   for (auto& sample : timers::stage_stats) sample = {};
   ++tick_ns;
+  expect_active("Turning off optional timing preserves the current full-chain execution evidence.");
+  runtime::card_observation.completions = {};
   expect_checking("Turning off optional timing does not invent completion evidence.");
   const auto publish_proof = [&](plan::Stage stage, uint32_t first_pass, uint32_t count) {
     publish(stage, first_pass, count);
@@ -279,11 +296,13 @@
   for (uint32_t stage = 0; stage < saved_samples.size(); ++stage) {
     timers::stage_stats[stage] = saved_samples[stage];
     timers::execution_stats[stage] = saved_proofs[stage];
+    timers::completed_stats[stage] = saved_completed[stage];
   }
   runtime::gpu_timers_enabled = saved_profiling;
   runtime::cost_meter_enabled = saved_cost_meter;
   timers::internal::next_sequence = saved_sequence;
   runtime::card_observation.window = saved_window;
+  runtime::card_observation.completions = saved_completions;
   runtime::card_observation.configuration = saved_configuration;
   runtime::card_observation.declines = saved_declines;
   runtime::card_observation.declines_sampled_ns = saved_declines_sampled;
