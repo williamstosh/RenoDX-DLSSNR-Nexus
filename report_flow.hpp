@@ -394,8 +394,9 @@ inline void RunReportCaptureJob() {
 
   // report.json: what support needs first, as data.  Closed by the send
   // job, which appends what the player left out.
-  const NrVerdict verdict = ComputeNrVerdict(CollectFunnelInputs());
-  const ui::StatusCard card = ui::ComputeStatusCard(CollectCardInputs(verdict, SteadyNowNs()));
+  const auto inputs = CollectCardInputs();
+  const auto& verdict = inputs.verdict;
+  const ui::StatusCard card = ui::ComputeStatusCard(inputs);
   std::string json = "{\n  \"schema\": \"renodx-dlss5-report/1\"";
   const auto field = [&json](const char* key, const std::string& value) {
     json += ",\n  " + report::JsonString(key) + ": " + value;

@@ -229,9 +229,13 @@ inline void NotifyCompletedModelAdjustments(int64_t now) {
   }
 }
 
+#if defined(IMGUI_ENABLE_TEST_ENGINE)
+inline void (*monitor_snapshot_before_lock)() = nullptr;
+#endif
+
 inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
   auto& cached = monitor_snapshot;
-  const auto now = SteadyNowNs();
+  auto now = SteadyNowNs();
   const auto& frame = monitor_cadence.selected;
   const bool frame_current = frame.valid && now >= frame.time_ns
       && now - frame.time_ns <= ui::frame_metrics::Stream::STALE_NS
@@ -265,17 +269,24 @@ inline const MonitorSnapshot& RefreshMonitorSnapshot(bool need_monitor) {
   }
   cached.key = key;
   cached.attempted_ns = now;
+#if defined(IMGUI_ENABLE_TEST_ENGINE)
+  if (monitor_snapshot_before_lock != nullptr) {
+    monitor_snapshot_before_lock();
+  }
+#endif
   RuntimeTryLock lock(runtime_mutex);
   if (!lock.owns_lock()) {
     ++cached.deferred;
     return cached;
   }
+  now = SteadyNowNs();
+  cached.attempted_ns = now;
   if (monitor_history.reset_cursor) {
     monitor_history.consumed = gpu_timers::monitor_events.published;
     monitor_history.reset_cursor = false;
   }
-  const auto verdict = ComputeNrVerdict(CollectFunnelInputs());
-  const auto inputs = CollectCardInputs(verdict, now);
+  const auto inputs = CollectCardInputs();
+  const auto& verdict = inputs.verdict;
   auto card = ui::ComputeStatusCard(inputs);
   const auto health_mask = health_active_mask.load();
   const auto plan = RequestedStagePlan();

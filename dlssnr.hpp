@@ -21090,6 +21090,12 @@ inline void TickNrCost(int64_t now_ns, double /*interval_ms*/) {
 
 inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
                                         int64_t now_ns) {
+  // Explicit snapshots come from a locked lifecycle tick or deterministic CPU
+  // fixtures. Keep their complete read/Observe transaction under the same lock.
+  std::optional<RuntimeLock> runtime_lock;
+  if (!runtime_lock::State::HeldByThisThread()) {
+    runtime_lock.emplace(runtime_mutex);
+  }
   ui::CardInputs in;
   in.verdict = verdict;
   // The funnel's 0/1 values describe the current handoff, not session totals.
@@ -21179,8 +21185,6 @@ inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
     ui::RecentGpuCompletion completed;
     uint64_t recorded_sequence = 0;
     {
-      std::optional<RuntimeLock> runtime_lock;
-      if (!runtime_lock::State::HeldByThisThread()) runtime_lock.emplace(runtime_mutex);
       recorded_sequence = gpu_timers::internal::next_sequence;
       const auto plan = RequestedStagePlan();
       completed.current = plan.valid && plan.group_count != 0;
@@ -21248,6 +21252,17 @@ inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
     }
   }
   return in;
+}
+
+inline ui::CardInputs CollectCardInputs() {
+  // Time, counters, configuration and GPU evidence must describe the same
+  // serialized observation, including callers that were delayed by NR work.
+  std::optional<RuntimeLock> runtime_lock;
+  if (!runtime_lock::State::HeldByThisThread()) {
+    runtime_lock.emplace(runtime_mutex);
+  }
+  const auto verdict = ComputeNrVerdict(CollectFunnelInputs());
+  return CollectCardInputs(verdict, SteadyNowNs());
 }
 
 inline std::atomic_uint8_t last_emitted_card{0xff};
@@ -21538,8 +21553,8 @@ inline void RefreshUiLanguage() {
 }
 
 // The card is recomputed here rather than carried from the tick, as the
-// panel does: atomics only, and the pill never shows a card the tick has
-// since left.
+// panel does: one serialized status snapshot, and the pill never shows a card
+// the tick has since left.
 inline void OnHudOverlay(reshade::api::effect_runtime* runtime) {
   DrawIndependentMonitor(runtime);
   // Registered only while due, except when a second effect runtime froze
@@ -21587,7 +21602,7 @@ inline void OnHudOverlay(reshade::api::effect_runtime* runtime) {
   if (!hud_pill.load() && now_ns >= hud_toast_until_ns.load()
       && now_ns >= health_notice_until_ns.load() && now_ns >= profile_feedback_until_ns.load()) return;
   const ui::StatusCard card = monitor_requested.load() ? MonitorDisplayCard() : ui::ComputeStatusCard(
-      CollectCardInputs(ComputeNrVerdict(CollectFunnelInputs()), now_ns));
+      CollectCardInputs());
   const bool pill = ui::ShowsOnHud(card);
   const int64_t toast_ns =
       hud_toast_until_ns.load(std::memory_order_relaxed) - now_ns;
@@ -27386,11 +27401,12 @@ inline const char* NrRuntimeVersionText() {
 // log_verdict.py scores a report like a log), the card's title, the settings
 // that change behaviour, the counters and the latest telemetry line.
 // Redacted by construction - the game's file name, no path, no hardware id.
-// Atomics and the telemetry line's own lock only: no runtime_mutex, no loader
-// call, so the button is safe from any frame.
+// Copies status under runtime_mutex, then formats it and the cached telemetry
+// without holding that lock. No loader call.
 inline std::string BuildSupportReport() {
   const auto& loader = NgxLoaderView();
-  const NrVerdict verdict = ComputeNrVerdict(CollectFunnelInputs());
+  const auto inputs = CollectCardInputs();
+  const auto& verdict = inputs.verdict;
   char verdict_line[512];
   FormatNrVerdictLine(
       verdict_line, sizeof(verdict_line), verdict,
@@ -27398,7 +27414,7 @@ inline std::string BuildSupportReport() {
       presents_observed.load(std::memory_order_relaxed), kAddonVersion,
       "report");
   const ui::StatusCard card =
-      ui::ComputeStatusCard(CollectCardInputs(verdict, SteadyNowNs()));
+      ui::ComputeStatusCard(inputs);
   char card_line[128];
   ui::FormatCardLine(card_line, sizeof(card_line), card, "report");
   // English, like the rest of the report; the issue count is the one title
@@ -30428,10 +30444,8 @@ inline bool Shutdown(bool proof_gated) {
   // And the card that verdict shows, outside the rate limit: the lanes read
   // it as the session's last card.
   {
-    const int64_t now_ns = SteadyNowNs();
     EmitStatusCard(
-        ui::ComputeStatusCard(CollectCardInputs(
-            ComputeNrVerdict(CollectFunnelInputs()), now_ns)),
+        ui::ComputeStatusCard(CollectCardInputs()),
         "shutdown");
   }
   const uint64_t session_bypassed =

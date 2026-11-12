@@ -480,4 +480,82 @@
     xefg::internal::requested = saved_policy;
     xefg::internal::owns_stream = saved_stream_owned;
   }
+  {
+    namespace addon = renodx::addons::dlss5;
+    namespace timers = addon::gpu_timers;
+    runtime::enabled = true;
+    runtime::hooks_enabled = true;
+    runtime::hook_point = runtime::kHookUpscaled;
+    runtime::stack_passes = 1;
+    runtime::stage_source_rr = false;
+    runtime::native_fg_owns = false;
+    xefg::internal::owns_stream = false;
+    runtime::d3d12_present_seen = true;
+    runtime::d3d11_present_seen = false;
+    runtime::vulkan_present_seen = false;
+    runtime::ngx_ever_hooked = true;
+    runtime::ngx_dlss_evaluate_seen = true;
+    runtime::cmd_hooks_ever_installed = true;
+    runtime::gate_ever_opened = true;
+    runtime::active_features = 1;
+    runtime::direct_load_state = runtime::DirectLoadState::Ready;
+    runtime::foreign_nr_seen = false;
+    runtime::health_active_mask = 0;
+    runtime::card_partial_latched = false;
+    runtime::nr_runtime_fault = 0;
+    runtime::own_evaluations = 0;
+    runtime::intercepted_evaluations = 100;
+    runtime::successful_evaluations = 100;
+    runtime::successful_pre_sr_evaluations = 0;
+    addon::mixed_stage_group_successes = 0;
+    addon::mixed_stage_source_successes = 0;
+    runtime::present_frames_seen = 0;
+    runtime::present_prefg_attempts = 0;
+    for (auto& decline : addon::nr_decline_counts) decline = 0;
+    runtime::card_observation.window = {};
+    runtime::card_observation.completions = {};
+    runtime::stage_telemetry[1].last_evaluate = {};
+    for (auto* samples : {timers::stage_stats, timers::execution_stats, timers::completed_stats}) {
+      for (size_t stage = 0; stage < 3; ++stage) samples[stage] = {};
+    }
+    timers::internal::next_sequence = 100;
+    runtime::CollectCardInputs(ComputeNrVerdict(runtime::CollectFunnelInputs()), runtime::SteadyNowNs());
+    auto& proof = timers::execution_stats[1];
+    proof = {.width = 3840, .height = 2160, .valid = true, .state = timers::SampleState::VALID,
+        .sequence = ++timers::internal::next_sequence, .measured_ns = runtime::SteadyNowNs()};
+    proof.recorded_ns = proof.measured_ns;
+    std::strcpy(proof.path, "upscaled");
+    proof.passes[0] = {.id = 0, .model = runtime::preset.load(), .width = 2560, .height = 1440,
+        .output_width = 3840, .output_height = 2160, .state = timers::SampleState::VALID};
+    runtime::comparison_ui::CaptureSettings(&proof.identity);
+    proof.identity.device_session = timers::device_session;
+    proof.identity.stable_epoch = runtime::comparison_stable_epochs[1];
+    check(ui::ComputeStatusCard(runtime::CollectCardInputs(
+        ComputeNrVerdict(runtime::CollectFunnelInputs()), runtime::SteadyNowNs())).id == ui::CardId::kActive,
+        "the interleaving fixture starts Active with one current completed GPU proof");
+    const auto sequence = proof.sequence;
+    static std::function<void()> interleave_card_snapshot;
+    bool interleaved = false;
+    interleave_card_snapshot = [&] {
+      runtime::monitor_snapshot_before_lock = nullptr;
+      check(!addon::runtime_lock::State::HeldByThisThread(),
+          "the actual monitor captured its outer timestamp before taking the runtime lock");
+      addon::RuntimeLock lock(runtime::runtime_mutex);
+      runtime::intercepted_evaluations = 200;
+      runtime::successful_evaluations = 200;
+      const auto newer = runtime::CollectCardInputs(ComputeNrVerdict(runtime::CollectFunnelInputs()), runtime::SteadyNowNs());
+      check(ui::ComputeStatusCard(newer).id == ui::CardId::kActive,
+          "a lifecycle-style observation advances the same health window before the monitor locks");
+      interleaved = true;
+    };
+    runtime::monitor_snapshot_before_lock = [] { interleave_card_snapshot(); };
+    runtime::monitor_snapshot = {};
+    const auto snapshot = runtime::RefreshMonitorSnapshot(true);
+    check(interleaved && proof.sequence == sequence && snapshot.inputs.recent.has_value()
+        && snapshot.inputs.recent->gpu_completed && snapshot.card.id == ui::CardId::kActive,
+        "a monitor arriving after the newer lifecycle observation cannot clear Active using its older outer timestamp");
+    check(snapshot.inputs.verdict.eligible == 200 && snapshot.inputs.verdict.injected == 200,
+        "the monitor observes the current counters instead of clamping an older counter snapshot's time");
+    interleave_card_snapshot = {};
+  }
 }
