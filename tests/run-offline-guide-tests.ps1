@@ -58,9 +58,9 @@ foreach ($document in $taskDocuments.Keys) {
     # a hand-maintained selection of paragraphs or implementation snapshots.
     $source = [IO.File]::ReadAllText((Join-Path $taskRoot $document), $taskUtf8)
     if ($document -ceq 'README.md') {
-        Assert-Guide ($source.Contains('<img src="docs/images/logo.svg" alt="NR Nexus: DLSS Neural Rendering Add-on for ReShade" width="680">')) 'GitHub README logo missing.'
-        $source = $source.Replace('<img src="docs/images/logo.svg" alt="NR Nexus: DLSS Neural Rendering Add-on for ReShade" width="680">', '**DLSS Neural Rendering Add-on for ReShade**')
-        Assert-Guide ($taskHtml.Contains('<strong>DLSS Neural Rendering Add-on for ReShade</strong>') -and -not $taskHtml.Contains('docs/images/logo.svg')) 'Offline logo text fallback missing.'
+        Assert-Guide ($source.Contains('<h1 align="center"><img src="docs/images/logo.svg" alt="NR-Nexus" width="680"></h1>')) 'GitHub README logo missing.'
+        $source = $source.Replace('<h1 align="center"><img src="docs/images/logo.svg" alt="NR-Nexus" width="680"></h1>', "# NR Nexus`n`n**DLSS Neural Rendering Add-on for ReShade**")
+        Assert-Guide ($taskHtml.Contains('>NR Nexus</h1>') -and $taskHtml.Contains('<strong>DLSS Neural Rendering Add-on for ReShade</strong>') -and -not $taskHtml.Contains('docs/images/logo.svg')) 'Offline logo text fallback missing.'
     }
     $sourceHtml = (ConvertFrom-Markdown -InputObject $source).Html
     $sourceEn = [regex]::Match($sourceHtml, '<h2\b[^>]*>English</h2>').Index

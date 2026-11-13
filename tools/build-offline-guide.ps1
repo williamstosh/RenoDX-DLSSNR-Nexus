@@ -79,7 +79,7 @@ foreach ($document in $taskDocuments.Keys) {
     if ([string]::IsNullOrWhiteSpace($source)) { throw "Empty guide document: $document" }
     # The reviewed GitHub logo stays a text caption in the offline edition.
     if ($document -ceq 'README.md') {
-        $source = $source.Replace('<img src="docs/images/logo.svg" alt="NR Nexus: DLSS Neural Rendering Add-on for ReShade" width="680">', '**DLSS Neural Rendering Add-on for ReShade**')
+        $source = $source.Replace('<h1 align="center"><img src="docs/images/logo.svg" alt="NR-Nexus" width="680"></h1>', "# NR Nexus`n`n**DLSS Neural Rendering Add-on for ReShade**")
     }
     $ast = [Markdig.Markdown]::Parse($source, $taskPipeline)
     $nodes = @([Markdig.Syntax.MarkdownObjectExtensions]::Descendants($ast))

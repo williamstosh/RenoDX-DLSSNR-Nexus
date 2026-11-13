@@ -97,7 +97,7 @@ foreach ($taskDocument in $taskDocuments.Keys) {
     $taskText = $taskDocumentInputs[$taskDocument]
     # Keep the offline README independent of the GitHub-only logo asset.
     if ($taskDocument -ceq 'README.md') {
-        $taskText = $taskText.Replace('<img src="docs/images/logo.svg" alt="NR Nexus: DLSS Neural Rendering Add-on for ReShade" width="680">', '**DLSS Neural Rendering Add-on for ReShade**')
+        $taskText = $taskText.Replace('<h1 align="center"><img src="docs/images/logo.svg" alt="NR-Nexus" width="680"></h1>', "# NR Nexus`n`n**DLSS Neural Rendering Add-on for ReShade**")
     }
     $taskPackedText = [regex]::Replace($taskText, '(\]\()([^\s)]+)(\))', {
         param($match)

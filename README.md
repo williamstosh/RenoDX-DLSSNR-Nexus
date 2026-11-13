@@ -1,6 +1,4 @@
-# NR Nexus
-
-<img src="docs/images/logo.svg" alt="NR Nexus: DLSS Neural Rendering Add-on for ReShade" width="680">
+<h1 align="center"><img src="docs/images/logo.svg" alt="NR-Nexus" width="680"></h1>
 
 [简体中文](#简体中文) · [English](#english)
 
