@@ -57,6 +57,11 @@ foreach ($document in $taskDocuments.Keys) {
     # Independent stock Markdown rendering checks the complete visible text, not
     # a hand-maintained selection of paragraphs or implementation snapshots.
     $source = [IO.File]::ReadAllText((Join-Path $taskRoot $document), $taskUtf8)
+    if ($document -ceq 'README.md') {
+        Assert-Guide ($source.Contains('<img src="docs/images/logo.svg" alt="NR Nexus: DLSS Neural Rendering Add-on for ReShade" width="680">')) 'GitHub README logo missing.'
+        $source = $source.Replace('<img src="docs/images/logo.svg" alt="NR Nexus: DLSS Neural Rendering Add-on for ReShade" width="680">', '**DLSS Neural Rendering Add-on for ReShade**')
+        Assert-Guide ($taskHtml.Contains('<strong>DLSS Neural Rendering Add-on for ReShade</strong>') -and -not $taskHtml.Contains('docs/images/logo.svg')) 'Offline logo text fallback missing.'
+    }
     $sourceHtml = (ConvertFrom-Markdown -InputObject $source).Html
     $sourceEn = [regex]::Match($sourceHtml, '<h2\b[^>]*>English</h2>').Index
     Assert-Guide ($sourceEn -gt 0) "Missing source language boundary: $document"
