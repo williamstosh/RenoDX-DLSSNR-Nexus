@@ -113,6 +113,18 @@ int Run() {
     parameters.Set(NVSDK_NGX_Parameter_MV_Scale_X, 1.f);
     parameters.Set(NVSDK_NGX_Parameter_MV_Scale_Y, 1.f);
     parameters.Set(NVSDK_NGX_Parameter_Reset, 0u);
+    uint32_t active_successes = 0;
+    uint32_t preparation_calls = 0;
+    uint32_t preparation_failures = 0;
+    model_parameter_observer = [&](const NVSDK_NGX_Handle*, const NVSDK_NGX_Parameter*) {
+      const bool failing = model_calls + 1 == fail_call;
+      if (native::preparing_adaptive_frame != nullptr) {
+        ++preparation_calls;
+        preparation_failures += failing;
+      } else if (!failing) {
+        ++active_successes;
+      }
+    };
     for (const auto hook : {native::kHookUpscaled, native::kHookRender}) {
       native::hook_point = hook;
       native::nr_adaptive_enabled = false;
@@ -120,6 +132,10 @@ int Run() {
       native::RegisterCreatedFeatureLocked(handle, native::kFeatureDlss, &parameters);
       uint32_t frame = 0;
       const auto evaluate = [&] {
+        const auto before_source = native::SourceSuccessfulEvaluations();
+        const auto before_active = active_successes;
+        const auto before_inline = native::successful_evaluations.load();
+        const auto before_pre_sr = native::successful_pre_sr_evaluations.load();
         const uint32_t output = frame++ % 2;
         parameters.Set(NVSDK_NGX_Parameter_Color, colors[output].Get());
         parameters.Set(NVSDK_NGX_Parameter_Output, outputs[output].Get());
@@ -135,6 +151,14 @@ int Run() {
             accepted = native::ProcessInline(gpu.list.Get(), handle, &parameters);
           }
         }
+        const uint64_t completed_active = active_successes - before_active;
+        Check(native::SourceSuccessfulEvaluations() == before_source + completed_active,
+            "inline source successes exclude additional preparation Evaluate calls");
+        Check(native::successful_evaluations.load() == before_inline
+                + (hook == native::kHookUpscaled ? completed_active : 0)
+            && native::successful_pre_sr_evaluations.load() == before_pre_sr
+                + (hook == native::kHookRender ? completed_active : 0),
+            "only the active insertion point contributes its successful source frame");
         return accepted;
       };
       const auto record = [&](bool reset = true) {
@@ -162,6 +186,7 @@ int Run() {
       gpu.list = next_list;
       Check(native::InstallCommandListStateHooks(gpu.list.Get()), "inline adaptive second-list hooks");
       native::nr_adaptive_enabled = true;
+      const auto before_preparation = preparation_calls;
       for (uint32_t warmup = 0; warmup < 32; ++warmup) record();
       auto& feature = native::features.at(handle);
       auto cache = feature.adaptive_cache;
@@ -173,6 +198,8 @@ int Run() {
       native::PollAdaptiveCache(cache.get());
       Check(!cache->failed && !feature.adaptive_session->failed && cache->tiers[0].ready && cache->tiers[1].ready,
           "Render/Upscaled standby tiers complete both output recordings without permanent pause");
+      Check(preparation_calls > before_preparation && feature.adaptive_session->status.preparation_cpu_ms > 0.,
+          "standby Evaluate calls execute and retain their preparation cost separately from source successes");
       Check(!parked_recording->closed.load() && !addon::submission::ResourceReleasable(parked_model),
           "standby preparation preserves the active tier's replayable recording protection");
       if (hook == native::kHookRender) {
@@ -250,6 +277,45 @@ int Run() {
         std::unique_lock lock(addon::output_framerate::internal::state.mutex);
         addon::output_framerate::internal::state.stream = {};
       }
+      auto& failing_tier = cache->tiers[(cache->active + 1) % cache->count];
+      failing_tier.output_completions.clear();
+      failing_tier.ready = false;
+      const auto before_failure = model_calls;
+      const auto before_preparation_failure = preparation_failures;
+      fail_call = model_calls + 2;  // Active output succeeds, then standby Evaluate fails.
+      Check(record() && model_calls == before_failure + 2 && cache->failed && feature.adaptive_session->failed,
+          "a true standby API failure preserves the successful active output and pauses adaptive preparation");
+      Check(preparation_failures == before_preparation_failure + 1,
+          "the standby API failure is observed even though it contributes no successful source frame");
+      fail_call = 0;
+      const auto before_recreate = native::configuration_generation.load();
+      native::RecreateFeatures();
+      Check(native::configuration_generation.load() == before_recreate + 1 && feature.adaptive_cache == nullptr,
+          "the production clear-failure action retires the inline failed tier set");
+      for (uint32_t warmup = 0; warmup < 32; ++warmup) record();
+      auto recovered_cache = feature.adaptive_cache;
+      native::PollAdaptiveCache(recovered_cache.get());
+      Check(recovered_cache != cache && !recovered_cache->failed && !feature.adaptive_session->failed
+          && recovered_cache->tiers[0].ready && recovered_cache->tiers[1].ready
+          && feature.adaptive_session->status.applied[0].width == 16,
+          "Render/Upscaled clear-failure rebuilds GPU-ready tiers and resumes the saved upper working size");
+      feature.adaptive_session->Request(1, native::SteadyNowNs());
+      Check(record() && record() && recovered_cache->active == 1
+          && feature.adaptive_session->status.applied[0].width == 5,
+          "the recovered inline source runs its real lower working size before adaptive Off");
+      native::nr_adaptive_enabled = false;
+      Check(record() && record() && feature.adaptive_cache == nullptr
+          && feature.adaptive_session->status.applied[0].width == 16 && native::nr_resolution_scale.load() == 1.f,
+          "adaptive Off restores the unchanged manual upper size after recovery");
+      native::nr_adaptive_enabled = true;
+      for (uint32_t warmup = 0; warmup < 32; ++warmup) record();
+      Check(feature.adaptive_cache != nullptr && !feature.adaptive_session->failed
+          && feature.adaptive_session->status.applied[0].width == 16,
+          "adaptive On resumes the same inline source after Off without changing the saved upper limit");
+      std::cout << "ADAPTIVE_INLINE accounting hook=" << hook << " frames=" << frame
+          << " source_successes=" << native::SourceSuccessfulEvaluations()
+          << " model_calls=" << model_calls << " preparation_calls=" << preparation_calls
+          << " preparation_failures=" << preparation_failures << '\n';
       native::ForgetSourceHandleLocked(handle);
       submit();
       Check(!addon::submission::ResourceReleasable(parked_model),
@@ -261,6 +327,7 @@ int Run() {
           && std::count(model_released_handles.begin(), model_released_handles.end(), parked_model) == parked_releases + 1,
           "closing the fixture's completed parked recording permits exactly one normal model release");
     }
+    model_parameter_observer = {};
     native::successful_sr_device = nullptr;
     if (info != nullptr) {
       for (UINT64 index = 0; index < info->GetNumStoredMessages(); ++index) {

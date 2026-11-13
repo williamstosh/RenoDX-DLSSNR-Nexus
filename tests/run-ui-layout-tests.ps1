@@ -54,13 +54,25 @@ $arguments | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $OutputDirecto
 & cl.exe @arguments *> (Join-Path $OutputDirectory 'menu-compile.log')
 if ($LASTEXITCODE -ne 0) { throw "Production menu test build failed: $OutputDirectory/menu-compile.log" }
 $previousSnapshotMode = $env:NR_NEXUS_UI_SNAPSHOTS
+$previousAdaptiveOnly = $env:NR_NEXUS_ADAPTIVE_UI_ONLY
 try {
     if ($SnapshotMode) { $env:NR_NEXUS_UI_SNAPSHOTS = $SnapshotMode }
     # The complete production matrix renders over 13,000 frames across themes,
     # languages and DPI sizes. Keep its bound separate from focused 45s cases
     # so slower hosted runners can finish the same assertions without retries.
     Invoke-TestProcess $menuExecutable $menuDirectory 'menu' -TimeoutMilliseconds 180000
-} finally { $env:NR_NEXUS_UI_SNAPSHOTS = $previousSnapshotMode }
+    if (-not $SnapshotMode -and -not $previousAdaptiveOnly) {
+        # Reuse the binary in a fresh process so adaptive fixtures cannot
+        # inherit the complete menu matrix's configuration or ImGui state.
+        $adaptiveDirectory = Join-Path $OutputDirectory 'adaptive'
+        New-Item -ItemType Directory -Path $adaptiveDirectory | Out-Null
+        $env:NR_NEXUS_ADAPTIVE_UI_ONLY = '1'
+        Invoke-TestProcess $menuExecutable $adaptiveDirectory 'adaptive'
+    }
+} finally {
+    $env:NR_NEXUS_UI_SNAPSHOTS = $previousSnapshotMode
+    $env:NR_NEXUS_ADAPTIVE_UI_ONLY = $previousAdaptiveOnly
+}
 $timer.Stop()
 @{build='passed';run='passed';retention=$RetentionMode;seconds=$timer.Elapsed.TotalSeconds
     snapshotMode=$SnapshotMode; scope='real ImGui layout, synthetic live status; no game or GPU inference'} |

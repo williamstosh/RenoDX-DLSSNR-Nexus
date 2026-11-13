@@ -13388,7 +13388,9 @@ inline bool RecordInline(
     return true;
   }
   for (auto& slot : feature.slots) slot.fail_count = 0;
-  ++successful_evaluations;
+  if (!adaptive.preparing) {
+    ++successful_evaluations;
+  }
   if (mixed_stage_terminal.active) {
     mixed_stage_terminal.injected = true;
     mixed_stage_group_successes.fetch_add(1, std::memory_order_relaxed);
@@ -14999,7 +15001,10 @@ inline bool RecordInlinePreSR(
     return true;
   }
   for (auto& slot : feature.slots) slot.fail_count = 0;
-  const uint64_t count = ++successful_pre_sr_evaluations;
+  uint64_t count = 0;
+  if (!adaptive.preparing) {
+    count = ++successful_pre_sr_evaluations;
+  }
   if (mixed_stage_terminal.active) {
     mixed_stage_terminal.injected = true;
     mixed_stage_group_successes.fetch_add(1, std::memory_order_relaxed);

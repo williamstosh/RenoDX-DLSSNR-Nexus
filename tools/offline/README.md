@@ -286,7 +286,9 @@ SDK 动态计数、固定倍率失效和来源切换。配置保存／方案另�
 ./tools/run-tests.ps1 -Suite fg-native -NativeCase adaptive-inline -SoftwareOnly
 ~~~
 
-`adaptive-fg-service` 使用 16×16 WARP、模型替身和实际 Service／提交路径，覆盖四档就绪、临时容量占用解除后恢复、ControlMask 未提交时的当前档／预备档等待，以及真正 Evaluate 失败仍暂停。`adaptive-inline` 使用生产 Render／Upscaled 入口，核对轮换输出的档位准备、GPU 完成和模拟输出帧率驱动的自动降档。两者均为 WARP＋MOCK，不调用硬件 NR Runtime 或游戏。
+`adaptive-fg-service` 使用 16×16 WARP、模型替身和实际 Service／提交路径，覆盖四档就绪、临时容量占用解除后恢复、ControlMask 未提交时的当前档／预备档等待，以及真正 Evaluate 失败后的显式清锁重建。`adaptive-inline` 使用生产 Render／Upscaled 入口，核对轮换输出的档位准备、GPU 完成、模拟输出帧率驱动的自动降档及清锁恢复。两者还检查 Off→On→Off→On、实际工作尺寸，以及额外准备 Evaluate 不计入成功源帧累计；均为 WARP＋MOCK，不调用硬件 NR Runtime 或游戏。
+
+默认 `-Suite fg-native` 会复用同一编译产物，分别在独立进程执行这两个自适应用例；默认 `-Suite ui` 也会复用菜单二进制，在独立进程执行自适应真实 ImGui 交互，包括三种介入点连续往返与配置保存。CI 的 `-Suite all -SoftwareOnly` 沿用这些入口；`NR_NEXUS_ADAPTIVE_UI_ONLY=1` 仍可单独运行自适应 UI，快照模式不额外运行回归。
 
 真实 NR 尺寸往返复用公开 SDK 预初始化入口：
 
