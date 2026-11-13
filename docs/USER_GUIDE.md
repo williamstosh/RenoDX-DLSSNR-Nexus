@@ -114,7 +114,7 @@ A/B 示例需要 310.9.16.0，其他兼容运行时也可使用同模型两层�
 3. 若变更会连带调整其他层，检查整链预览后确认；取消保留原链，应用后可使用提供的撤销。
 4. 回到游戏，确认诊断中的实际阶段、尺寸和运行状态，再用 F6 比较。该受支持链可与原生 DLSS FG／MFG 或 XeFG 协同，仍需满足当前资源和路径条件。
 
-第 2–4 层可选**与上一层相同／Render／Upscaled／Present**。阶段只能向后排列；顺序合法仍须满足[兼容性表](#zh-paths)，不能据此任意组合三阶段。
+第 2–4 层可选**与上一层相同／Render／Upscaled／Present**。阶段只能向后排列；顺序合法仍须满足[兼容性表](#zh-paths)，不能据此任意组合三阶段。停用的层保留各自设置；重新启用时若阶段冲突，会先预览必要的阶段调整，确认后生效。
 
 <a id="zh-resolution"></a>
 ##### 独立工作分辨率
@@ -657,7 +657,7 @@ To process before and after upscaling, try **Render A → game DLSS SR/DLAA → 
 3. If other passes must change with your selection, review the full-chain preview before confirming. Cancel keeps the old chain; use the offered Undo after applying if needed.
 4. Return to gameplay and confirm actual stages, sizes and status in Diagnostics before comparing with F6. This supported chain can work with native DLSS FG/MFG or XeFG, subject to current resources and routing.
 
-Passes 2–4 offer **Same as previous/Render/Upscaled/Present**. Stages can only move forward; an ordered chain must still meet the [compatibility table](#en-paths), so it does not permit arbitrary three-stage combinations.
+Passes 2–4 offer **Same as previous/Render/Upscaled/Present**. Stages can only move forward; an ordered chain must still meet the [compatibility table](#en-paths), so it does not permit arbitrary three-stage combinations. Disabled passes retain their settings; if their stages conflict when re-enabled, review the necessary stage changes and confirm before applying.
 
 <a id="en-resolution"></a>
 ##### Independent working resolution

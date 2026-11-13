@@ -810,6 +810,99 @@ int main() {
       ImGui::DestroyContext();
       return 0;
     }
+    const char* stage_reentry_only = std::getenv("NR_NEXUS_STAGE_REENTRY_UI_ONLY");
+    {
+      namespace profile = runtime::profile_ui;
+      namespace edit = runtime::stage_edit;
+      const auto saved = profile::Snapshot();
+      const auto saved_page = runtime::ui_menu_page;
+      const auto saved_pass = runtime::ui_selected_pass;
+      const auto saved_height = panel_height;
+      panel_height = 2400.f;
+      const auto ini_bytes = [&]() {
+        WritePrivateProfileStringA(nullptr, nullptr, nullptr, ".\\ReShade.ini");
+        std::ifstream input("ReShade.ini", std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+      };
+      for (const auto& [target, hook] : {std::pair{"Present", 2u}, {"Upscaled", 0u}}) {
+        if (stage_reentry_only != nullptr && std::string_view(stage_reentry_only) != "all"
+            && std::string_view(stage_reentry_only) != target) continue;
+        auto fixture = saved;
+        fixture.update({{"NRPasses", 2u}, {"NRHookPoint", 1u}, {"NRPass2Stage", 1u},
+                        {"NRPass3Stage", 2u}, {"NRPass4Stage", 3u}, {"NRPass2Preset", 1u},
+                        {"NRPass2Intensity", .625f}, {"NRPass2ResolutionMode", 0u},
+                        {"NRPass2ResolutionScale", .58f}});
+        std::string error;
+        check(profile::ApplySnapshot(fixture, &error), "stage reentry starts from a supported double Render chain");
+        runtime::ui_menu_page = 1;
+        runtime::ui_selected_pass = 0;
+        frame(); frame();
+        click(find("1"));
+        check(runtime::stack_passes.load() == 1 && runtime::pass_stage[0].load() == 1,
+              "real single-pass click preserves the dormant explicit Render stage");
+        click(find("Quality"));
+        click(find(target));
+        check(runtime::hook_point.load() == hook && runtime::pass_stage[0].load() == 1 && !edit::pending,
+              "single-pass root edits preserve dormant stage settings without a collateral preview");
+        click(find("Multi-Pass"));
+        const auto single = profile::Snapshot();
+        const auto ini = ini_bytes();
+        const auto write_count = configuration_writes;
+        const auto reason = runtime::FormatConfigurationCapabilityError({{"NRPasses", 2u}},
+            runtime::QueryConfigurationCapability({{"NRPasses", 2u}}));
+        std::printf("stage reentry target=%s count=%u root=%u stored_p2=%u two_pass_disabled=%u reason=%s\n",
+            target, runtime::stack_passes.load(), runtime::hook_point.load(), runtime::pass_stage[0].load(),
+            find("2").disabled, reason.c_str());
+        if (find("2").disabled) {
+          hover(find("2"), "A later pass cannot run at an earlier stage", nullptr);
+        }
+        check(!find("2").disabled, "reactivating a dormant earlier stage offers an execution-chain preview");
+        click(find("2"));
+        check(edit::pending && edit::confirmation_required && profile::Snapshot() == single
+                  && ini_bytes() == ini && configuration_writes == write_count,
+              "real two-pass click previews count and repaired stage without publishing or persisting");
+        click(find("cancel_stage_change"));
+        check(!edit::pending && profile::Snapshot() == single && ini_bytes() == ini
+                  && configuration_writes == write_count,
+              "cancelling pass reentry preserves every active and dormant setting and exact persistence");
+        click(find("2"));
+        click(find("confirm_stage_change"));
+        auto expected = single;
+        expected.update({{"NRPasses", 2u}, {"NRPass2Stage", hook == 2u ? 3u : 2u}});
+        check(!edit::pending && profile::Snapshot() == expected && runtime::QueryConfigurationCapability().CanSubmit(),
+              "confirmed pass reentry changes only count and the incompatible newly active stage");
+        check(runtime::preset_ui::Undo(&error, &edit::undo) && profile::Snapshot() == single,
+              "existing transaction Undo restores the single pass and its original dormant stage");
+        edit::Cancel();
+        edit::notice.clear();
+        edit::undo.clear();
+        auto inherited = single;
+        inherited["NRPass2Stage"] = 0u;
+        check(profile::ApplySnapshot(inherited, &error), "inherited dormant-stage fixture applies");
+        frame(); frame();
+        click(find("2"));
+        auto inherited_pair = inherited;
+        inherited_pair["NRPasses"] = 2u;
+        check(!edit::pending && profile::Snapshot() == inherited_pair
+                  && runtime::QueryConfigurationCapability().CanSubmit(),
+              "reactivating an inherited compatible tail changes only pass count without confirmation");
+      }
+      for (const auto& [key, value] : saved.items()) {
+        if (const auto* setting = runtime::preset_ui::FindSetting(key)) {
+          setting->Store(value.is_boolean() ? (value.get<bool>() ? 1.f : 0.f) : value.get<float>());
+        }
+      }
+      runtime::ui_menu_page = saved_page;
+      runtime::ui_selected_pass = saved_pass;
+      panel_height = saved_height;
+      profile::observed_snapshot = profile::Snapshot();
+      frame(); frame();
+    }
+    if (stage_reentry_only != nullptr) {
+      std::printf("PASS stage reentry UI interaction cases; checks=%u\n", checks);
+      ImGui::DestroyContext();
+      return 0;
+    }
     RunMonitorSessionCases(check, [&](const ui::MonitorInputs& inputs) {
       const auto* saved_fixture = monitor_fixture;
       const auto saved_state = synthetic_monitor_state;

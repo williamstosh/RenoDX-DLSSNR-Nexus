@@ -24434,16 +24434,6 @@ inline presets::Json ProposedResolutionInheritance(const presets::Json& requeste
   return repaired;
 }
 
-inline bool CanRequestConfigurationEdit(const presets::Json& requested, std::string* reason = nullptr) {
-  if (ValidateConfigurationCapability(requested, reason)) return true;
-  if (ProposedResolutionInheritance(requested).empty()) return false;
-  if (reason != nullptr) {
-    *reason += "\n";
-    *reason += ui::Tr("Choose this option to review letting other passes inherit the base resolution.");
-  }
-  return true;
-}
-
 inline presets::Json resolution_edit_request = presets::Json::object();
 
 inline bool IsCapabilitySetting(std::string_view key) {
@@ -24458,8 +24448,11 @@ inline bool IsStageSetting(const Setting& setting) {
 }
 
 inline presets::Json ProposedStageValues(const Setting& setting, float value) {
-  if (!IsStageSetting(setting) || !std::isfinite(value) || value < 0.f
-      || value > (&setting == &kSetHookPoint ? 2.f : 3.f) || std::floor(value) != value) {
+  const bool pass_count_edit = &setting == &kSetStackPasses;
+  if ((!IsStageSetting(setting) && !pass_count_edit) || !std::isfinite(value)
+      || value < (pass_count_edit ? 1.f : 0.f)
+      || value > (pass_count_edit ? static_cast<float>(kMaxNrPasses) : (&setting == &kSetHookPoint ? 2.f : 3.f))
+      || std::floor(value) != value) {
     return presets::Json::object();
   }
   std::optional<RuntimeLock> lock;
@@ -24471,24 +24464,48 @@ inline presets::Json ProposedStageValues(const Setting& setting, float value) {
     if (&setting == &kSetPassStage[pass - 1]) edited = pass;
   }
   const auto stage_values = [&](const stage_plan::Configuration& candidate) {
-    presets::Json values{{"NRHookPoint", candidate.hook_point}};
-    for (uint32_t pass = 1; pass < before.pass_count; ++pass) {
+    presets::Json values{{"NRPasses", candidate.pass_count}, {"NRHookPoint", candidate.hook_point}};
+    for (uint32_t pass = 1; pass < candidate.pass_count; ++pass) {
       values[kSetPassStage[pass - 1].key] = candidate.stages[pass - 1];
     }
     return values;
   };
-  const auto after = stage_plan::ProposeStageChange(before, edited, static_cast<uint32_t>(value),
-      [&](const stage_plan::Configuration& candidate) {
-        return ValidateConfigurationCapability(stage_values(candidate), nullptr);
-      });
+  const auto eligible = [&](const stage_plan::Configuration& candidate) {
+    return ValidateConfigurationCapability(stage_values(candidate), nullptr);
+  };
+  const auto after = (pass_count_edit
+      ? stage_plan::ProposePassCountChange(before, static_cast<uint32_t>(value), eligible)
+      : stage_plan::ProposeStageChange(before, edited, static_cast<uint32_t>(value), eligible));
   presets::Json changes = presets::Json::object();
+  if (after.pass_count != before.pass_count) {
+    changes["NRPasses"] = after.pass_count;
+  }
   if (after.hook_point != before.hook_point) changes["NRHookPoint"] = after.hook_point;
-  for (uint32_t pass = 1; pass < before.pass_count; ++pass) {
+  for (uint32_t pass = 1; pass < after.pass_count; ++pass) {
     if (after.stages[pass - 1] != before.stages[pass - 1]) {
       changes[kSetPassStage[pass - 1].key] = after.stages[pass - 1];
     }
   }
   return changes;
+}
+
+inline bool CanRequestConfigurationEdit(const presets::Json& requested, std::string* reason = nullptr) {
+  if (ValidateConfigurationCapability(requested, reason)) return true;
+  if (requested.size() == 1 && requested.contains("NRPasses") && requested["NRPasses"].is_number()) {
+    const auto changes = ProposedStageValues(kSetStackPasses, requested["NRPasses"].get<float>());
+    if (!changes.empty() && ValidateConfigurationCapability(changes, nullptr)) {
+      if (reason != nullptr) {
+        *reason += "\n" + std::string(ui::Tr("Confirm execution chain change"));
+      }
+      return true;
+    }
+  }
+  if (ProposedResolutionInheritance(requested).empty()) return false;
+  if (reason != nullptr) {
+    *reason += "\n";
+    *reason += ui::Tr("Choose this option to review letting other passes inherit the base resolution.");
+  }
+  return true;
 }
 
 struct StageEditRequest {
@@ -25873,6 +25890,9 @@ inline void DrawSectionStackingResolution(const ui::PanelText& text) {
       kSetStackPasses.Store(choice);
       kSetStackPasses.Persist();
       RecreateFeaturesLocked();
+    } else if (const auto changes = ProposedStageValues(kSetStackPasses, choice);
+               !changes.empty() && ValidateConfigurationCapability(changes, nullptr)) {
+      stage_edit_request = {.setting = &kSetStackPasses, .value = choice};
     } else if (!ProposedResolutionInheritance(requested).empty()) {
       resolution_edit_request = requested;
     }

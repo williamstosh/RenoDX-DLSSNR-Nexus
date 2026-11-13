@@ -143,39 +143,33 @@ inline Plan Build(const Configuration& config, const Capabilities& caps = {}) {
   return plan;
 }
 
-// Enumerate later active Stage values, fixing the user's selection, preceding
-// passes and inactive fields.
+// Enumerate only the mutable tail, preserving the preceding and inactive fields.
 // The caller checks the entire candidate against its actual backend, models and
 // working sizes. An ordered chain alone cannot establish runtime eligibility.
 template <typename Eligible>
-inline Configuration ProposeStageChange(Configuration config, uint32_t pass, uint32_t choice, Eligible eligible) {
-  if (config.pass_count < 1 || config.pass_count > kMaxPasses || pass >= config.pass_count
-      || choice > (pass == 0 ? 2u : 3u)) return config;
-  if ((pass == 0 ? config.hook_point : config.stages[pass - 1]) == choice) return config;
-  const auto before = config;
-  const auto old_plan = Build(before);
-  if (pass == 0) config.hook_point = choice;
-  else config.stages[pass - 1] = choice;
+inline Configuration ProposeStageTail(const Configuration& before, Configuration config, uint32_t first, Eligible eligible) {
   if (eligible(config)) return config;
+  auto stored = before;
+  stored.pass_count = config.pass_count;
+  const auto old_plan = Build(stored);
   Configuration best = config;
   std::array<uint32_t, 3> best_score{UINT32_MAX, UINT32_MAX, UINT32_MAX};
-  const uint32_t combinations = 1u << (2 * (config.pass_count - pass - 1));
+  const uint32_t combinations = 1u << (2 * (config.pass_count - first));
   for (uint32_t code = 0; code < combinations; ++code) {
     auto candidate = config;
     uint32_t remaining = code;
-    for (uint32_t index = pass + 1; index < config.pass_count; ++index) {
+    for (uint32_t index = first; index < config.pass_count; ++index) {
       candidate.stages[index - 1] = remaining % 4;
       remaining /= 4;
     }
     const auto plan = Build(candidate, {.mixed_present_dx12 = true});
     if (!plan.valid) continue;
     std::array<uint32_t, 3> score{};
-    for (uint32_t index = 0; index < config.pass_count; ++index) {
-      if (index == pass) continue;
-      const uint32_t old_value = (index == 0 ? before.hook_point : before.stages[index - 1]);
-      const uint32_t new_value = (index == 0 ? candidate.hook_point : candidate.stages[index - 1]);
+    for (uint32_t index = first; index < config.pass_count; ++index) {
+      const uint32_t old_value = before.stages[index - 1];
+      const uint32_t new_value = candidate.stages[index - 1];
       score[0] += old_value != new_value;
-      score[1] += index != 0 && ((old_value == 0) != (new_value == 0));
+      score[1] += (old_value == 0) != (new_value == 0);
       const auto old_stage = static_cast<uint32_t>(old_plan.requested[index]);
       const auto new_stage = static_cast<uint32_t>(plan.requested[index]);
       score[2] += (old_stage > new_stage ? old_stage - new_stage : new_stage - old_stage);
@@ -187,6 +181,27 @@ inline Configuration ProposeStageChange(Configuration config, uint32_t pass, uin
   // Retain the exact rejected request when no legal candidate exists so the
   // normal capability gate can explain the failure without changing settings.
   return best;
+}
+
+template <typename Eligible>
+inline Configuration ProposeStageChange(Configuration config, uint32_t pass, uint32_t choice, Eligible eligible) {
+  if (config.pass_count < 1 || config.pass_count > kMaxPasses || pass >= config.pass_count
+      || choice > (pass == 0 ? 2u : 3u)) return config;
+  if ((pass == 0 ? config.hook_point : config.stages[pass - 1]) == choice) return config;
+  const auto before = config;
+  if (pass == 0) config.hook_point = choice;
+  else config.stages[pass - 1] = choice;
+  return ProposeStageTail(before, config, pass + 1, eligible);
+}
+
+template <typename Eligible>
+inline Configuration ProposePassCountChange(Configuration config, uint32_t count, Eligible eligible) {
+  if (config.pass_count < 1 || config.pass_count > kMaxPasses || count < 1 || count > kMaxPasses
+      || count == config.pass_count) return config;
+  const auto before = config;
+  config.pass_count = count;
+  if (count < before.pass_count) return config;
+  return ProposeStageTail(before, config, before.pass_count, eligible);
 }
 
 inline Configuration ProposeStageChange(Configuration config, uint32_t pass, uint32_t choice) {

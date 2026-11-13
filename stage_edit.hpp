@@ -45,7 +45,8 @@ inline bool Prepare(const Setting& setting, float value) {
   for (uint32_t pass = 1; pass < kMaxNrPasses; ++pass) {
     if (&setting == &kSetPassStage[pass - 1]) edited = pass;
   }
-  confirmation_required = stage_plan::RequiresConfirmation(configuration(before), configuration(after), edited);
+  confirmation_required = (before.at("NRPasses") != after.at("NRPasses")
+      ? changes.size() > 1 : stage_plan::RequiresConfirmation(configuration(before), configuration(after), edited));
   notice.clear();
   pending = ValidateConfigurationCapability(changes, &error);
   return pending;
@@ -101,8 +102,13 @@ inline void Draw() {
           &open, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
     auto after = before;
     after.update(changes);
-    const auto plan_from = [](const Json& values) {
-      stage_plan::Configuration config{.pass_count = values.at("NRPasses").get<uint32_t>(),
+    const auto old_count = before.at("NRPasses").get<uint32_t>();
+    const auto new_count = after.at("NRPasses").get<uint32_t>();
+    const auto preview_count = (std::max)(old_count, new_count);
+    const auto plan_from = [&](const Json& values) {
+      // Include dormant saved stages so reactivation never displays a
+      // default-initialized Plan entry as the user's previous selection.
+      stage_plan::Configuration config{.pass_count = preview_count,
           .hook_point = values.at("NRHookPoint").get<uint32_t>()};
       for (uint32_t pass = 1; pass < kMaxNrPasses; ++pass) {
         config.stages[pass - 1] = values.at(kSetPassStage[pass - 1].key).get<uint32_t>();
@@ -116,14 +122,27 @@ inline void Draw() {
       ImGui::TableSetupColumn(ui::Tr("Before"));
       ImGui::TableSetupColumn(ui::Tr("After"));
       ImGui::TableHeadersRow();
-      for (uint32_t pass = 0; pass < new_plan.pass_count; ++pass) {
+      if (old_count != new_count) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(ui::Tr("Pass Count"));
+        ImGui::TableNextColumn();
+        ImGui::Text("%u", old_count);
+        ImGui::TableNextColumn();
+        ImGui::Text("%u", new_count);
+      }
+      for (uint32_t pass = 0; pass < preview_count; ++pass) {
         const bool stored_changed = pass != 0 && before.at(kSetPassStage[pass - 1].key) != after.at(kSetPassStage[pass - 1].key);
-        if (old_plan.requested[pass] == new_plan.requested[pass] && !stored_changed) continue;
+        if (old_plan.requested[pass] == new_plan.requested[pass] && !stored_changed
+            && (pass < old_count) == (pass < new_count)) continue;
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::Text("P%u", pass + 1);
         ImGui::TableNextColumn();
         ImGui::TextUnformatted(stage_plan::Name(old_plan.requested[pass]));
+        if (pass >= old_count) {
+          ImGui::TextDisabled("%s", ui::Tr("Off"));
+        }
         if (pass != 0 && before.at(kSetPassStage[pass - 1].key) == 0u) {
           ImGui::TextDisabled("%s", ui::Tr("Inherited"));
         }
@@ -131,6 +150,9 @@ inline void Draw() {
         if (old_plan.requested[pass] != new_plan.requested[pass]) ImGui::PushStyleColor(ImGuiCol_Text, ui::CurrentTheme().accent);
         ImGui::TextUnformatted(stage_plan::Name(new_plan.requested[pass]));
         if (old_plan.requested[pass] != new_plan.requested[pass]) ImGui::PopStyleColor();
+        if (pass >= new_count) {
+          ImGui::TextDisabled("%s", ui::Tr("Off"));
+        }
         if (pass != 0 && after.at(kSetPassStage[pass - 1].key) == 0u) {
           ImGui::TextDisabled("%s", ui::Tr("Inherited"));
         }

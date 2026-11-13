@@ -103,7 +103,7 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
     }
     for (const int language : {1, 14}) {
       const std::string suffix = (language == 1 ? "-en" : "-zh");
-      for (const char* action : {"a-stage-preview", "a-stage-cancel", "a-stage-confirm", "a-stage-direct", "a-stage-escape",
+      for (const char* action : {"a-stage-preview", "a-stage-cancel", "a-stage-confirm", "a-stage-direct", "a-stage-escape", "a-stage-reentry",
                                  "a-stage-return-render", "a-stage-return-upscaled",
                                  "a-f6-on", "a-f6-off", "a-checking", "a-active"}) {
         scenarios.push_back({.id = std::string(action) + suffix, .page = 1, .action = action,
@@ -498,6 +498,11 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       runtime::ui_selected_pass = 0;
       runtime::nr_follow_input_res = false;
       runtime::nr_resolution_scale = 1.f;
+      if (scenario.action == "a-stage-reentry") {
+        runtime::hook_point = runtime::kHookPresent;
+        runtime::stack_passes = 1;
+        runtime::pass_stage[0] = 2;
+      }
     }
     if (scenario.action.starts_with("r2-")) {
       runtime::nr_follow_input_res = scenario.action == "r2-follow";
@@ -885,7 +890,8 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
         frame();
       }
       const auto original = profile::Snapshot();
-      const char* target = (scenario.action == "a-stage-return-render" ? "Render"
+      const char* target = (scenario.action == "a-stage-reentry" ? "2"
+          : scenario.action == "a-stage-return-render" ? "Render"
           : scenario.action == "a-stage-direct" || scenario.action == "a-stage-return-upscaled" ? "Upscaled" : "Present");
       const bool segmented = std::ranges::any_of(items, [&](const auto& entry) { return entry.second.label == ui::Tr(target); });
       if (!segmented) click(find("##stage_value"));
@@ -901,6 +907,10 @@ if (std::getenv("NR_NEXUS_UI_SNAPSHOTS") != nullptr || std::getenv("NR_NEXUS_DOC
       } else {
         check(runtime::stage_edit::pending && profile::Snapshot() == original, "stage selection opens preview without mutation");
         check(!find("cancel_stage_change").disabled && !find("confirm_stage_change").disabled, "stage preview provides cancel and confirm");
+        if (scenario.action == "a-stage-reentry") {
+          check(runtime::stage_edit::changes == Json{{"NRPasses", 2u}, {"NRPass2Stage", 3u}},
+                "pass reentry preview contains count and the saved dormant Upscaled stage repair");
+        }
         if (scenario.action == "a-stage-cancel") {
           click(find("cancel_stage_change"));
           check(!runtime::stage_edit::pending && profile::Snapshot() == original, "real Cancel keeps original configuration");
