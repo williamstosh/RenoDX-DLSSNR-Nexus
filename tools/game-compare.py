@@ -726,7 +726,7 @@ def readme(args):
         raise CompareError("Selected scene has no complete ON README thumbnail; run optimize first (no split-preview fallback).")
     base = args.pages_url.rstrip("/") + "/"
     url = urlparse(base)
-    if url.scheme != "https" or url.hostname != "williamstosh.github.io" or url.path != "/RenoDX-DLSSNR-Nexus/compare/" or url.query or url.fragment:
+    if url.scheme != "https" or url.hostname != "williamstosh.github.io" or url.path != "/DLSS5-NR-Nexus/compare/" or url.query or url.fragment:
         raise CompareError("Use the repository Pages /compare/ HTTPS address after it is live.")
     with urlopen(base, timeout=15) as response:
         live = response.read(8_000_000).decode("utf-8")

@@ -1,6 +1,6 @@
 # NR Nexus
 
-**DLSS Neural Rendering Add-on for RenoDX**
+**DLSS Neural Rendering Add-on for ReShade**
 
 [简体中文](#简体中文) · [English](#english)
 
@@ -20,17 +20,17 @@ NR Nexus 通过 [ReShade](https://reshade.me/) 为兼容游戏提供 NVIDIA DLSS
 <a id="zh-comparisons"></a>
 ### 游戏实机画面对比
 
-下方为完整 NR ON 的 Ultra HDR 图片；兼容的浏览器、系统 HDR 设置和显示器可呈现 HDR，不支持时显示内置 SDR 画面。点击图片进入同场景 OFF／ON 滑块对比；也可 Ctrl／Cmd+点击在新标签页打开。更多场景见[实机对比图库](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/)。
+下方为完整 NR ON 的 Ultra HDR 图片；兼容的浏览器、系统 HDR 设置和显示器可呈现 HDR，不支持时显示内置 SDR 画面。点击图片进入同场景 OFF／ON 滑块对比；也可 Ctrl／Cmd+点击在新标签页打开。更多场景见[实机对比图库](https://williamstosh.github.io/DLSS5-NR-Nexus/compare/)。
 
 <!-- game-compare:zh:start -->
 
 巫师3 — 诺维格瑞 · 教主广场
 
-[![巫师3 — 诺维格瑞 · 教主广场 — 左右拖动查看对比](docs/compare/assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/revisions/f981db53b9bdfc60/readme.jpg)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-35e7d20e1c%2Fbecc86134f6282d0)
+[![巫师3 — 诺维格瑞 · 教主广场 — 左右拖动查看对比](docs/compare/assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/revisions/f981db53b9bdfc60/readme.jpg)](https://williamstosh.github.io/DLSS5-NR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-35e7d20e1c%2Fbecc86134f6282d0)
 
 巫师3 — 威伦 · 驼背泥沼
 
-[![巫师3 — 威伦 · 驼背泥沼 — 左右拖动查看对比](docs/compare/assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/revisions/4a669953bd50b99f/readme.jpg)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-4d71462ab3%2F9d0c90e0d157a5f5)
+[![巫师3 — 威伦 · 驼背泥沼 — 左右拖动查看对比](docs/compare/assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/revisions/4a669953bd50b99f/readme.jpg)](https://williamstosh.github.io/DLSS5-NR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-4d71462ab3%2F9d0c90e0d157a5f5)
 
 <!-- game-compare:zh:end -->
 
@@ -248,17 +248,17 @@ The add-on performs no denoising.
 <a id="en-comparisons"></a>
 ### In-game Comparisons
 
-The full NR ON images below use Ultra HDR. Compatible browsers, system HDR settings and displays can present HDR; other environments show the embedded SDR image. Click an image to compare the same scene with the OFF/ON slider; Ctrl/Cmd-click opens it in a new tab. Browse more scenes in the [comparison gallery](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/).
+The full NR ON images below use Ultra HDR. Compatible browsers, system HDR settings and displays can present HDR; other environments show the embedded SDR image. Click an image to compare the same scene with the OFF/ON slider; Ctrl/Cmd-click opens it in a new tab. Browse more scenes in the [comparison gallery](https://williamstosh.github.io/DLSS5-NR-Nexus/compare/).
 
 <!-- game-compare:en:start -->
 
 The Witcher 3 — Novigrad · Hierarch Square
 
-[![The Witcher 3 — Novigrad · Hierarch Square — Interactive Comparison](docs/compare/assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/revisions/f981db53b9bdfc60/readme.jpg)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-35e7d20e1c%2Fbecc86134f6282d0)
+[![The Witcher 3 — Novigrad · Hierarch Square — Interactive Comparison](docs/compare/assets/3-30347b3fdd/scene-35e7d20e1c/becc86134f6282d0/revisions/f981db53b9bdfc60/readme.jpg)](https://williamstosh.github.io/DLSS5-NR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-35e7d20e1c%2Fbecc86134f6282d0)
 
 The Witcher 3 — Velen · Crookback Bog
 
-[![The Witcher 3 — Velen · Crookback Bog — Interactive Comparison](docs/compare/assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/revisions/4a669953bd50b99f/readme.jpg)](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-4d71462ab3%2F9d0c90e0d157a5f5)
+[![The Witcher 3 — Velen · Crookback Bog — Interactive Comparison](docs/compare/assets/3-30347b3fdd/scene-4d71462ab3/9d0c90e0d157a5f5/revisions/4a669953bd50b99f/readme.jpg)](https://williamstosh.github.io/DLSS5-NR-Nexus/compare/#scene=3-30347b3fdd%2Fscene-4d71462ab3%2F9d0c90e0d157a5f5)
 
 <!-- game-compare:en:end -->
 
