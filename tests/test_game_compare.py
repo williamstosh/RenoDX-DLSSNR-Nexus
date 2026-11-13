@@ -362,7 +362,7 @@ class Comparisons(unittest.TestCase):
         class Response(io.BytesIO):
             status = 200
         args = gc.parser().parse_args(["readme", "--scene", entry["id"], "--pages-url",
-                                      "https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/",
+                                      "https://williamstosh.github.io/DLSS5-NR-Nexus/compare/",
                                       "--apply", "--publish-authorized"])
         live = gc.render_page((public / "index.html").read_text(encoding="utf-8"), [entry]).encode()
         with patch.object(gc, "PUBLIC", public), patch.object(gc, "ROOT", self.root), contextlib.redirect_stdout(io.StringIO()):

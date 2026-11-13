@@ -97,7 +97,7 @@ foreach ($document in $taskDocuments.Keys) {
     }
 }
 Assert-Guide ($taskIds.Contains('guide-contents') -and $taskIds.Contains('guide-contents-1')) 'Explicit Contents anchor/heading collision was not resolved.'
-Assert-Guide ([regex]::Matches($taskHtml, 'href="https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/#scene=').Count -eq 4) 'Online comparisons must remain optional links.'
+Assert-Guide ([regex]::Matches($taskHtml, 'href="https://williamstosh.github.io/DLSS5-NR-Nexus/compare/#scene=').Count -eq 4) 'Online comparisons must remain optional links.'
 Assert-Guide ([regex]::Matches($taskHtml, '<aside class="offline-note">').Count -eq 2) 'SDR offline preview labels missing.'
 
 # Small source fixtures exercise repeated headings, HTML anchors and failures
