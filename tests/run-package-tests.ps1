@@ -193,8 +193,8 @@ try {
             Assert-Test ($taskPackageLinks[$taskIndex].Groups[1].Value -ceq $taskExpectedTarget) "Wrong packaged link: $taskTarget"
         }
         if ($taskSourceDocument -ceq 'README.md') {
-            $taskSourceText = $taskSourceText.Replace('<img src="docs/images/logo.svg" alt="NR Nexus: DLSS Neural Rendering Add-on for ReShade" width="680">', '**DLSS Neural Rendering Add-on for ReShade**')
-            Assert-Test ($taskPackedText.Contains('**DLSS Neural Rendering Add-on for ReShade**') -and -not $taskPackedText.Contains('docs/images/logo.svg')) 'Packaged README logo text fallback missing.'
+            $taskSourceText = $taskSourceText.Replace('<h1 align="center"><img src="docs/images/logo.svg" alt="NR-Nexus" width="680"></h1>', "# NR Nexus`n`n**DLSS Neural Rendering Add-on for ReShade**")
+            Assert-Test ($taskPackedText.StartsWith('# NR Nexus') -and $taskPackedText.Contains('**DLSS Neural Rendering Add-on for ReShade**') -and -not $taskPackedText.Contains('docs/images/logo.svg')) 'Packaged README logo text fallback missing.'
         }
         # 除链接目标和已审查的 Logo 文字替代外，文档正文保持一致。
         $taskLinkPattern = '(?<=\]\()[^\s)]+(?=\))'
