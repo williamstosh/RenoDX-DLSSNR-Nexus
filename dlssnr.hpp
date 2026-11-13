@@ -2391,7 +2391,6 @@ inline ControlMaskParameters ResolveControlMaskParameters(uint32_t pass_index) {
           control_mask_motion_end.load(std::memory_order_relaxed)};
 }
 inline std::atomic_bool control_mask_refusal_logged{false};
-inline std::atomic_bool control_mask_failure_logged{false};
 inline std::atomic_bool control_mask_active_logged[2]{};
 inline std::atomic_bool control_mask_success_logged[2]{};
 inline std::atomic_bool control_mask_evaluate_failure_logged{false};
@@ -5917,9 +5916,11 @@ inline bool CreateRootSignature(
           static_cast<const char*>(errors->GetBufferPointer()),
           errors->GetBufferSize());
     }
-    Log(
-        reshade::log::level::error,
-        std::string(serialization_failed) + detail);
+    std::ostringstream message;
+    message << serialization_failed << detail << " (api=D3D12SerializeRootSignature hr=0x"
+            << std::hex << static_cast<uint32_t>(serialize_result)
+            << ", blob=" << (serialized != nullptr) << ')';
+    Log(reshade::log::level::error, message.str());
     ReleaseCom(errors);
     ReleaseCom(serialized);
     return false;
@@ -5933,7 +5934,8 @@ inline bool CreateRootSignature(
   ReleaseCom(serialized);
   if (FAILED(result) || *root_signature == nullptr) {
     std::ostringstream message;
-    message << creation_failed << std::hex << static_cast<uint32_t>(result);
+    message << creation_failed << std::hex << static_cast<uint32_t>(result)
+            << " (api=ID3D12Device::CreateRootSignature)";
     Log(reshade::log::level::error, message.str());
     return false;
   }
@@ -6026,7 +6028,7 @@ inline bool CreateCodecPipelineState(
   if (FAILED(result) || *pipeline == nullptr) {
     std::ostringstream message;
     message << log_name << " PSO creation failed with HRESULT 0x" << std::hex
-            << static_cast<uint32_t>(result);
+            << static_cast<uint32_t>(result) << " (api=ID3D12Device::CreateComputePipelineState)";
     Log(reshade::log::level::error, message.str());
     ReleaseCom(*pipeline);
     return false;
@@ -6259,7 +6261,7 @@ inline bool CreateScratchTexture(
     std::ostringstream message;
     message << "scratch texture creation failed with HRESULT 0x" << std::hex
             << static_cast<uint32_t>(result) << " (" << static_cast<uint32_t>(format)
-            << ' ' << width << 'x' << height << ')';
+            << ' ' << width << 'x' << height << "; api=ID3D12Device::CreateCommittedResource)";
     Log(reshade::log::level::error, message.str());
     return false;
   }
@@ -6294,7 +6296,8 @@ inline bool CreateScratchBuffer(
   if (FAILED(result) || *resource == nullptr) {
     std::ostringstream message;
     message << "scratch buffer creation failed with HRESULT 0x" << std::hex
-            << static_cast<uint32_t>(result) << std::dec << " (" << bytes << " bytes)";
+            << static_cast<uint32_t>(result) << std::dec << " (" << bytes
+            << " bytes; api=ID3D12Device::CreateCommittedResource)";
     Log(reshade::log::level::error, message.str());
     return false;
   }
@@ -6616,8 +6619,17 @@ inline FinalResources* EnsureWorkset(
     // space decides them, not the NRSourceEncoding family.
     const codec::SourceUnits* units_override = nullptr,
     FinalResources* stage_resources = nullptr,
-    bool create_control_mask = false) {
-  if (ControlMaskSubmissionsUnproven()) return nullptr;
+    bool create_control_mask = false,
+    const char** rejection_reason = nullptr) {
+  if (rejection_reason != nullptr) {
+    *rejection_reason = nullptr;
+  }
+  if (ControlMaskSubmissionsUnproven()) {
+    if (rejection_reason != nullptr) {
+      *rejection_reason = "control_mask_unproven";
+    }
+    return nullptr;
+  }
   if (device == nullptr || key == nullptr || input_width == 0 || input_height == 0
       || output_width == 0 || output_height == 0) {
     // Bounded by the caller's periodic failure retry, not per-frame.
@@ -6718,7 +6730,12 @@ inline FinalResources* EnsureWorkset(
     // using - was dead in the whole harness.  `worksets[... evicted=N]` is what
     // the `workset_churn` lane asserts is non-zero.
     while (worksets.size() >= max_worksets.load()) {
-      if (active_adaptive_frame != nullptr && active_adaptive_frame->enabled) return nullptr;
+      if (active_adaptive_frame != nullptr && active_adaptive_frame->enabled) {
+        if (rejection_reason != nullptr) {
+          *rejection_reason = "adaptive_capacity";
+        }
+        return nullptr;
+      }
       auto lru = worksets.end();
       auto recyclable = worksets.end();
       for (auto it = worksets.begin(); it != worksets.end(); ++it) {
@@ -6749,7 +6766,12 @@ inline FinalResources* EnsureWorkset(
       // two outputs per present, and those must never share scratch.  When the
       // tracker cannot prove the workset idle, the eviction below runs exactly
       // as before.
-      if (lru == worksets.end()) return nullptr;
+      if (lru == worksets.end()) {
+        if (rejection_reason != nullptr) {
+          *rejection_reason = "adaptive_owners_active";
+        }
+        return nullptr;
+      }
       if (recyclable != worksets.end()) {
         auto node = worksets.extract(recyclable);
         node.key() = workset_key;
@@ -7076,7 +7098,7 @@ inline FinalResources* EnsureWorkset(
     std::ostringstream message;
     message << "v6 workset descriptor heap creation failed (hr=0x" << std::hex
             << static_cast<uint32_t>(heap_result) << std::dec
-            << ", count=" << heap_desc.NumDescriptors << ")";
+            << ", count=" << heap_desc.NumDescriptors << "; api=ID3D12Device::CreateDescriptorHeap)";
     Log(reshade::log::level::error, message.str());
     ReleaseFinalResources(resources);
     return nullptr;
@@ -11918,6 +11940,7 @@ inline bool RecordInline(
       ++existing;
     }
   }
+  const char* workset_rejection = nullptr;
   FinalResources* workset = codec_ok && control_mask_pipeline_ok
                                 ? EnsureWorkset(
                                       device,
@@ -11934,7 +11957,7 @@ inline bool RecordInline(
                                       false,
                                       present != nullptr ? &present->units : nullptr,
                                       nullptr,
-                                      control_mask_eligible)
+                                      control_mask_eligible, &workset_rejection)
                                 : nullptr;
   // The NR features themselves are ensured per stack pass inside the chain
   // below; this gate covers the codec pipeline and the scratch surfaces only.
@@ -11942,7 +11965,7 @@ inline bool RecordInline(
   if (workset != nullptr && split_working_sizes) {
     second_workset = EnsureWorkset(device, handle, output, pass_widths[1], pass_heights[1], width, height,
                                    output_desc.Format, hdr_mode, requested_stack, pass_look_wanted[1],
-                                   false, &workset->units, workset, control_mask_eligible);
+                                   false, &workset->units, workset, control_mask_eligible, &workset_rejection);
   } else if (workset != nullptr && workset->resolution_tail != nullptr) {
     RetireSecondResolutionResources(workset);
   }
@@ -12075,16 +12098,23 @@ inline bool RecordInline(
     }
   }
   if (!setup_ok) {
+    std::ostringstream message;
+    message << "NR setup failed path=" << path_name
+            << " reason=" << (workset_rejection != nullptr ? workset_rejection
+                : (!codec_ok ? "codec_pipeline" : (!control_mask_pipeline_ok ? "control_mask_pipeline" : "workset_resource_or_format")))
+            << " workset_create_api=" << (workset_rejection != nullptr ? "not_called" : "see_preceding_error")
+            << " codec_ok=" << codec_ok << " mask_pipeline_ok=" << control_mask_pipeline_ok
+            << " mask_eligible=" << control_mask_eligible
+            << " worksets=" << worksets.size() << '/' << max_worksets.load()
+            << " second=" << (split_working_sizes && workset != nullptr)
+            << " in=" << nr_input_width << 'x' << nr_input_height << " out=" << width << 'x' << height;
+    Log(reshade::log::level::error, message.str());
     PublishPresentRestoreOwner(present_restore_scope::Domain::OTHER,
         present_restore_scope::Reason::INACTIVE_DOMAIN, true, 0, 0, "workset_setup_failed");
     if (!codec_ok) {
       LogCodecPipelineFailure(path_name);
     }
     if (control_mask_eligible) {
-      if (!control_mask_failure_logged.exchange(true, std::memory_order_relaxed)) {
-        Log(reshade::log::level::error,
-            "ControlMask setup failed; this evaluate is skipped without a retry");
-      }
       for (uint32_t slot = 0; slot < requested_stack; ++slot) {
         ClearControlMaskBinding(feature.slots[slot]);
         feature.slots[slot].pending_reset = true;
@@ -14084,6 +14114,7 @@ inline bool RecordInlinePreSR(
   }
   const bool split_working_sizes = independent_pair
       && (pass_widths[1] != nr_input_width || pass_heights[1] != nr_input_height);
+  const char* workset_rejection = nullptr;
   FinalResources* workset = codec_ok && control_mask_pipeline_ok
                                 ? EnsureWorkset(
                                       device,
@@ -14097,17 +14128,28 @@ inline bool RecordInlinePreSR(
                                       hdr_mode,
                                       requested_stack,
                                       split_working_sizes ? pass_look_wanted[0] : look_chain.wanted,
-                                      true, nullptr, nullptr, control_mask_eligible)
+                                      true, nullptr, nullptr, control_mask_eligible, &workset_rejection)
                                 : nullptr;
   FinalResources* second_workset = nullptr;
   if (workset != nullptr && split_working_sizes) {
     second_workset = EnsureWorkset(device, handle, color, pass_widths[1], pass_heights[1], width, height,
                                    color_desc.Format, hdr_mode, requested_stack, pass_look_wanted[1],
-                                   true, &workset->units, workset, control_mask_eligible);
+                                   true, &workset->units, workset, control_mask_eligible, &workset_rejection);
   } else if (workset != nullptr && workset->resolution_tail != nullptr) {
     RetireSecondResolutionResources(workset);
   }
   if (workset == nullptr || (split_working_sizes && second_workset == nullptr)) {
+    std::ostringstream message;
+    message << "NR setup failed path=pre-SR"
+            << " reason=" << (workset_rejection != nullptr ? workset_rejection
+                : (!codec_ok ? "codec_pipeline" : (!control_mask_pipeline_ok ? "control_mask_pipeline" : "workset_resource_or_format")))
+            << " workset_create_api=" << (workset_rejection != nullptr ? "not_called" : "see_preceding_error")
+            << " codec_ok=" << codec_ok << " mask_pipeline_ok=" << control_mask_pipeline_ok
+            << " mask_eligible=" << control_mask_eligible
+            << " worksets=" << worksets.size() << '/' << max_worksets.load()
+            << " second=" << (split_working_sizes && workset != nullptr)
+            << " in=" << nr_input_width << 'x' << nr_input_height << " out=" << width << 'x' << height;
+    Log(reshade::log::level::error, message.str());
     if (!codec_ok) {
       LogCodecPipelineFailure("pre-SR");
     }
@@ -14119,10 +14161,6 @@ inline bool RecordInlinePreSR(
     if (control_mask_eligible) {
       for (uint32_t slot = 0; slot < requested_stack; ++slot) {
         ClearControlMaskBinding(feature.slots[slot]);
-      }
-      if (!control_mask_failure_logged.exchange(true, std::memory_order_relaxed)) {
-        Log(reshade::log::level::error,
-            "ControlMask setup failed on the Render path; this evaluate is skipped without a retry");
       }
     }
     device->Release();
@@ -21187,6 +21225,7 @@ inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
       mix(std::bit_cast<uint32_t>(pass_resolution_scale[pass - 1].load()));
       mix(std::bit_cast<uint32_t>(pass_intensity[pass - 1].load()));
     }
+    in.configuration = configuration;
     ui::RecentGpuCompletion completed;
     uint64_t recorded_sequence = 0;
     {
@@ -21200,6 +21239,15 @@ inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
         const auto& group = plan.groups[group_index];
         const auto stage = static_cast<uint32_t>(group.stage);
         auto& retained = card_observation.completions[stage];
+        int64_t candidate_recorded_ns = 0, candidate_completed_ns = 0;
+        const auto observe_candidate = [&](const gpu_timers::Stats& sample) {
+          if (sample.sequence == 0) return;
+          candidate_recorded_ns = (std::max)(candidate_recorded_ns, sample.recorded_ns);
+          if (sample.valid && sample.state == gpu_timers::SampleState::VALID) {
+            candidate_completed_ns = (std::max)(candidate_completed_ns, sample.measured_ns);
+          }
+        };
+        observe_candidate(retained);
         if (!CurrentCompletedGroup(retained, group, now_ns)) {
           retained = {};
         }
@@ -21207,9 +21255,18 @@ inline ui::CardInputs CollectCardInputs(const NrVerdict& verdict,
         // completion. Retain only status evidence; costs use the latest result.
         for (const auto* sample : {&gpu_timers::stage_stats[stage], &gpu_timers::execution_stats[stage],
                  &gpu_timers::completed_stats[stage]}) {
+          observe_candidate(*sample);
           if (CurrentCompletedGroup(*sample, group, now_ns) && sample->sequence > retained.sequence) {
             retained = *sample;
           }
+        }
+        if (candidate_recorded_ns > 0) {
+          in.gpu_candidate_recorded_ns = (in.gpu_candidate_recorded_ns == 0 ? candidate_recorded_ns
+              : (std::min)(in.gpu_candidate_recorded_ns, candidate_recorded_ns));
+        }
+        if (candidate_completed_ns > 0) {
+          in.gpu_candidate_completed_ns = (in.gpu_candidate_completed_ns == 0 ? candidate_completed_ns
+              : (std::min)(in.gpu_candidate_completed_ns, candidate_completed_ns));
         }
         if (!retained.valid) {
           completed.current = false;
@@ -21387,6 +21444,23 @@ inline void MaybeEmitStatusCard(const NrVerdict& verdict, int64_t now_ns) {
   if (card_line_tokens < 1.0) return;
   card_line_tokens -= 1.0;
   EmitStatusCard(card, "change");
+  const auto age_ms = [&](int64_t candidate_ns) {
+    return (candidate_ns > 0 && candidate_ns <= now_ns
+        ? std::to_string((now_ns - candidate_ns) / 1'000'000LL) : std::string("unavailable"));
+  };
+  std::ostringstream evidence;
+  evidence << "NR-CARD evidence configuration=" << std::hex << inputs.configuration << std::dec;
+  if (inputs.recent) {
+    evidence << " recent=available eligible=" << inputs.recent->eligible
+             << " injected=" << inputs.recent->injected << " gaps=" << inputs.recent->gaps
+             << " ready=" << inputs.recent->ready << " partial=" << inputs.recent->partial
+             << " gpu_completed=" << inputs.recent->gpu_completed;
+  } else {
+    evidence << " recent=unavailable";
+  }
+  evidence << " gpu_candidate_recorded_age_ms=" << age_ms(inputs.gpu_candidate_recorded_ns)
+           << " gpu_candidate_completed_age_ms=" << age_ms(inputs.gpu_candidate_completed_ns);
+  Log(reshade::log::level::info, evidence.str());
 }
 
 // ReShade does not tell an add-on about an open it asked for itself; the

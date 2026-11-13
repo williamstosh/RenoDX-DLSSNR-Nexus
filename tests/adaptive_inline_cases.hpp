@@ -166,6 +166,40 @@ int Run() {
         submit(reset);
         return accepted;
       };
+      const auto* occupied_owner = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xADA200} + hook);
+      Check(native::EnsureWorkset(gpu.device.Get(), occupied_owner, outputs[0].Get(), 16, 16, 16, 16,
+          DXGI_FORMAT_R8G8B8A8_UNORM, 0, 1, 0) != nullptr, "diagnostic pressure uses a real WARP workset");
+      native::features[occupied_owner].adaptive_cache = std::make_shared<native::AdaptiveFeatureCache>();
+      native::features.at(occupied_owner).adaptive_cache->last_used_ns = native::SteadyNowNs();
+      native::max_worksets = 1;
+      const auto calls_before = model_calls;
+      const auto setup_failures = addon::nr_decline_counts[static_cast<size_t>(addon::NrDeclineReason::kWorksetSetupFailed)].load();
+      Check(!record(), "real capacity pressure rejects setup before model evaluation");
+      auto& failed_slot = native::features.at(handle).slots[0];
+      Check(failed_slot.failed && failed_slot.fail_count == 0 && model_calls == calls_before
+          && addon::nr_decline_counts[static_cast<size_t>(addon::NrDeclineReason::kWorksetSetupFailed)].load() == setup_failures + 1,
+          "capacity rejection reaches the unchanged setup-failure latch");
+      Check(std::any_of(captured_logs.begin(), captured_logs.end(), [](const auto& entry) {
+        return entry.second.find("reason=adaptive_owners_active workset_create_api=not_called") != std::string::npos;
+      }), "setup diagnostics identify active cached owners and an uncalled workset creation API");
+      Check(!record() && failed_slot.failed && failed_slot.fail_count == 1,
+          "the original first retry remains immediate and records its next failure");
+      const auto failure_ns = failed_slot.failed_ns;
+      const auto backoffs = addon::nr_decline_counts[static_cast<size_t>(addon::NrDeclineReason::kFailureBackoff)].load();
+      native::RetireWorkset({occupied_owner, outputs[0].Get()});
+      native::features.erase(occupied_owner);
+      native::DrainRetiredResources(true);
+      native::max_worksets = 4;
+      Check(!record() && failed_slot.failed && failed_slot.failed_ns == failure_ns && failed_slot.fail_count == 1
+          && model_calls == calls_before
+          && addon::nr_decline_counts[static_cast<size_t>(addon::NrDeclineReason::kFailureBackoff)].load() == backoffs + 1,
+          "releasing pressure does not bypass the original one-second feature backoff");
+      failed_slot.failed_ns = native::SteadyNowNs() - native::kFeatureRetryFirstNs - 1;
+      record();
+      Check(!failed_slot.failed,
+          "the expired original backoff retries after pressure releases");
+      std::cout << "DIAGNOSTIC_SETUP evidence=WARP+MOCK hook=" << hook
+          << " reason=adaptive_owners_active workset_create_api=not_called backoff=unchanged recovery=passed\n";
       for (uint32_t warmup = 0; warmup < 8; ++warmup) record();
       Check(record(false), "manual inline NR records successfully before parking its actual GPU-complete list");
       auto parked_list = gpu.list;
@@ -195,6 +229,17 @@ int Run() {
           << " reason=" << addon::adaptive_resolution::ReasonText(feature.adaptive_session->status.reason) << '\n';
       Check(cache != nullptr && cache->count == 2 && cache->output_count == 2,
           "inline A/B rotation shares the original four-workset budget across two tiers");
+      {
+        const addon::adaptive_resolution::Frame adaptive_frame{.slot = 1, .enabled = true};
+        const native::AdaptiveFrameScope scope(&adaptive_frame);
+        const auto created = native::worksets_created;
+        const char* rejection = "old_reason";
+        Check(native::EnsureWorkset(gpu.device.Get(), occupied_owner, outputs[0].Get(), 16, 16, 16, 16,
+            DXGI_FORMAT_R8G8B8A8_UNORM, 0, 1, 0, false, nullptr, nullptr, false, &rejection) == nullptr
+            && rejection != nullptr && std::strcmp(rejection, "adaptive_capacity") == 0
+            && native::worksets_created == created,
+            "full adaptive capacity exposes its pre-allocation rejection without creating resources");
+      }
       native::PollAdaptiveCache(cache.get());
       Check(!cache->failed && !feature.adaptive_session->failed && cache->tiers[0].ready && cache->tiers[1].ready,
           "Render/Upscaled standby tiers complete both output recordings without permanent pause");
@@ -329,6 +374,53 @@ int Run() {
     }
     model_parameter_observer = {};
     native::successful_sr_device = nullptr;
+    {
+      ID3D12RootSignature* root = nullptr;
+      const auto before = captured_logs.size();
+      Check(!native::CreateRootSignature(nullptr, E_INVALIDARG, nullptr, nullptr, &root, L"mock",
+          "MOCK serialization failed", "mock creation failed"), "MOCK serialization failure remains a failure");
+      Check(captured_logs.size() == before + 1
+          && captured_logs.back().second.find("api=D3D12SerializeRootSignature hr=0x80070057") != std::string::npos,
+          "MOCK HRESULT input is logged unchanged with its actual API label");
+      std::cout << "DIAGNOSTIC_API evidence=MOCK api=D3D12SerializeRootSignature hr=0x80070057 illegal_D3D12_call=none\n";
+      for (auto& sample : addon::gpu_timers::stage_stats) {
+        sample = {};
+      }
+      for (auto& sample : addon::gpu_timers::execution_stats) {
+        sample = {};
+      }
+      for (auto& sample : addon::gpu_timers::completed_stats) {
+        sample = {};
+      }
+      native::card_observation.completions = {};
+      addon::NrVerdict verdict{.state = addon::NrState::kOff, .api = "d3d12", .path = "inline"};
+      auto tick_ns = native::SteadyNowNs();
+      native::last_emitted_card = 0xff;
+      native::card_line_tokens = 1;
+      native::card_line_refill_ns = 0;
+      const auto count_lines = [](const char* text) {
+        return std::count_if(captured_logs.begin(), captured_logs.end(), [&](const auto& entry) {
+          return entry.second.find(text) != std::string::npos;
+        });
+      };
+      const auto cards_before = count_lines("NR-CARD v1 ");
+      const auto evidence_before = count_lines("NR-CARD evidence ");
+      native::MaybeEmitStatusCard(verdict, tick_ns);
+      Check(count_lines("NR-CARD v1 ") == cards_before + 1 && count_lines("NR-CARD evidence ") == evidence_before + 1
+          && captured_logs.back().second.find("gpu_candidate_completed_age_ms=unavailable") != std::string::npos,
+          "production card change emits one companion evidence line with explicit missing GPU evidence");
+      verdict.eligible = 10;
+      tick_ns += 100'000'000LL;
+      native::MaybeEmitStatusCard(verdict, tick_ns);
+      Check(count_lines("NR-CARD evidence ") == evidence_before + 1,
+          "changing counts and ages alone cannot bypass production card deduplication");
+      native::card_line_tokens = 0;
+      native::card_line_refill_ns = tick_ns;
+      verdict.state = addon::NrState::kEngaged;
+      native::MaybeEmitStatusCard(verdict, tick_ns);
+      Check(count_lines("NR-CARD v1 ") == cards_before + 1 && count_lines("NR-CARD evidence ") == evidence_before + 1,
+          "production token exhaustion suppresses both the card and evidence lines");
+    }
     if (info != nullptr) {
       for (UINT64 index = 0; index < info->GetNumStoredMessages(); ++index) {
         SIZE_T bytes = 0;

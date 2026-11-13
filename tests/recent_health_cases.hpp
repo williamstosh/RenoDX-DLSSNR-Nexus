@@ -165,4 +165,38 @@ void RunRecentHealthCases(const Check& check) {
     check(gpu_window.Observe(3 + i, eligible, injected, gaps, now, sequence, completion).gpu_completed,
           "each reset accepts only a subsequently recorded GPU completion");
   }
+
+  ui::RecentHealthWindow transition_window;
+  now = 1'000'000'000LL;
+  eligible = injected = gaps = 0;
+  transition_window.Observe(1, eligible, injected, gaps, now, 100);
+  inputs.recent = transition_window.Observe(1, ++eligible, injected, ++gaps, ++now, 101);
+  check(ui::ComputeStatusCard(inputs).id == ui::CardId::kStarting, "warm-up starts in Checking");
+  completion = {.current = true, .sequence = 101, .completed_ns = now};
+  inputs.recent = transition_window.Observe(1, eligible, injected, gaps, now, 101, completion);
+  check(ui::ComputeStatusCard(inputs).id == ui::CardId::kActive,
+        "first current GPU proof turns green before source coverage matures");
+  for (int step = 0; step < 12; ++step) {
+    now += 100'000'000LL;
+    eligible += 6;
+    injected += 3;
+    gaps += 3;
+    completion.sequence = 102 + step;
+    completion.completed_ns = now;
+    inputs.recent = transition_window.Observe(1, eligible, injected, gaps, now, completion.sequence, completion);
+  }
+  check(inputs.recent->ready && inputs.recent->gpu_completed
+            && ui::ComputeStatusCard(inputs).id == ui::CardId::kPartlyActive,
+        "mature low coverage can turn yellow while current GPU completion remains proven");
+  for (int step = 0; step < 40; ++step) {
+    now += 100'000'000LL;
+    eligible += 6;
+    injected += 6;
+    completion.sequence++;
+    completion.completed_ns = now;
+    inputs.recent = transition_window.Observe(1, eligible, injected, gaps, now, completion.sequence, completion);
+  }
+  check(inputs.recent->ready && !inputs.recent->partial && inputs.recent->gaps == 0
+            && ui::ComputeStatusCard(inputs).id == ui::CardId::kActive,
+        "clean recent coverage recovers from yellow without resetting lifetime counters");
 }
