@@ -2394,6 +2394,7 @@ inline uint32_t native_resize_creates = 0;
 inline uint32_t native_resize_releases = 0;
 inline bool native_resize_ready = false;
 inline std::vector<uintptr_t> native_resize_models;
+inline std::vector<bool> native_resize_preparing;
 
 NVSDK_NGX_Result NVSDK_CONV ObserveNativeResizeCreate(
     ID3D12GraphicsCommandList* list, NVSDK_NGX_Feature feature,
@@ -2467,7 +2468,10 @@ NVSDK_NGX_Result NVSDK_CONV ObserveNativeRuntimeEvaluate(
     command_list->EndQuery(native_cost_queries->heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
                            2 * evaluate_interval + 1);
   }
-  if (native_resize_ready) native_resize_models.push_back(reinterpret_cast<uintptr_t>(handle));
+  if (native_resize_ready) {
+    native_resize_models.push_back(reinterpret_cast<uintptr_t>(handle));
+    native_resize_preparing.push_back(addon::preparing_adaptive_frame != nullptr);
+  }
   native_runtime_results.push_back(result);
   return result;
 }
@@ -2889,9 +2893,10 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
       const auto origin = std::chrono::steady_clock::now();
       auto previous = origin;
       auto deadline = origin;
-      std::array<uintptr_t, 3> stable_models{}, stable_proxies{};
-      std::array<uint64_t, 3> stable_worksets{};
+      std::array<uintptr_t, renodx::addons::dlss5::adaptive_resolution::MAX_LEVELS> stable_models{}, stable_proxies{};
+      std::array<uint64_t, renodx::addons::dlss5::adaptive_resolution::MAX_LEVELS> stable_worksets{};
       bool recorded_ready = false;
+      size_t preparing_evaluates = 0;
       if (native_resize_ready) {
         renodx::addons::dlss5::gpu_timers::comparison_settings = addon::comparison_ui::CaptureSettings;
         addon::adaptive_configuration_settings = addon::comparison_ui::CaptureAdaptiveSettings;
@@ -2916,6 +2921,7 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
         native_runtime_results.clear();
         native_runtime_resets.clear();
         native_resize_models.clear();
+        native_resize_preparing.clear();
         native_resize_create_ms = native_resize_release_ms = native_resize_host_ms = native_resize_evaluate_ms = 0;
         native_resize_creates = native_resize_releases = 0;
         gpu.list->ClearState(nullptr);
@@ -2926,7 +2932,9 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
         queries.Begin(gpu.list.Get(), native_cost_interval);
         const auto start = std::chrono::steady_clock::now();
         addon::ngx_slot_real[0].evaluate = reinterpret_cast<void*>(ObserveNativeHostEvaluate);
+        const auto source_successes_before = addon::SourceSuccessfulEvaluations();
         const auto result = addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), owner, &parameters, nullptr);
+        const auto source_successes_after = addon::SourceSuccessfulEvaluations();
         addon::ngx_slot_real[0].evaluate = nullptr;
         const auto recorded = std::chrono::steady_clock::now();
         const double wrapper_ms = std::chrono::duration<double, std::milli>(recorded - start).count();
@@ -2942,6 +2950,14 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
             queries.readback.Get(), 2ull * native_cost_interval * sizeof(uint64_t));
         nlohmann::json tiers_before = nlohmann::json::array();
         if (native_resize_ready) {
+          Check(native_resize_preparing.size() == native_runtime_results.size()
+                    && native_resize_models.size() == native_runtime_results.size(),
+                "every real resize Evaluate records its model and preparation context");
+          const auto preparation_count = static_cast<size_t>(std::count(native_resize_preparing.begin(), native_resize_preparing.end(), true));
+          const auto active_count = native_resize_preparing.size() - preparation_count;
+          Check(active_count == 1 && source_successes_after == source_successes_before + active_count,
+                "one real active NR output increments source successes once; preparation Evaluate adds none");
+          preparing_evaluates += preparation_count;
           const auto cache = addon::features.at(owner).adaptive_cache;
           Check(cache != nullptr && !cache->failed && !cache->budget_blocked, "real NR preparation cache remains healthy");
           for (size_t slot = 0; slot < cache->count; ++slot) {
@@ -3027,6 +3043,7 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
           for (size_t index = 0; index < native_runtime_results.size(); ++index) {
             const auto sample = queries.Read(native_cost_interval + 1 + static_cast<UINT>(index));
             evaluations.push_back({{"model", native_resize_models[index]}, {"result", static_cast<uint32_t>(native_runtime_results[index])},
+                {"preparing", static_cast<bool>(native_resize_preparing[index])},
                 {"reset", native_runtime_resets[index]}, {"gpu_ms", sample.gpu_ms},
                 {"begin_tick", sample.begin_tick}, {"end_tick", sample.end_tick}});
           }
@@ -3063,6 +3080,9 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
         report["frames"].back()["tiers"] = std::move(tier_states);
         report["frames"].back()["nr_evaluations"] = std::move(evaluations);
         if (native_resize_ready) {
+          report["frames"].back()["source_successes_before"] = source_successes_before;
+          report["frames"].back()["source_successes_after"] = source_successes_after;
+          report["frames"].back()["source_successes_delta"] = source_successes_after - source_successes_before;
           report["frames"].back()["configuration_epoch"] = addon::present_restore_configuration.epoch;
           report["frames"].back()["cache_layout_identity"] = cache->identity;
           report["frames"].back()["session_identity"] = addon::features.at(owner).adaptive_session->identity;
@@ -3078,6 +3098,8 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
         std::this_thread::sleep_until(deadline);
       }
       if (native_resize_ready) {
+        Check(preparing_evaluates != 0, "real ready-cache run includes extra preparation Evaluate calls");
+        report["preparing_nr_evaluate_count"] = preparing_evaluates;
         Check(recorded_ready && addon::nr_resolution_scale.load() == 1.f,
               "real ready-cache roundtrip preserves the manual upper resolution");
         auto& before_off = addon::features.at(owner);
@@ -3089,12 +3111,15 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
           native_runtime_results.clear();
           native_runtime_resets.clear();
           native_resize_models.clear();
+          native_resize_preparing.clear();
           native_resize_create_ms = native_resize_release_ms = native_resize_host_ms = native_resize_evaluate_ms = 0;
           native_resize_creates = native_resize_releases = 0;
           gpu.list->ClearState(nullptr);
           const auto start = std::chrono::steady_clock::now();
           addon::ngx_slot_real[0].evaluate = reinterpret_cast<void*>(ObserveNativeHostEvaluate);
+          const auto source_successes_before = addon::SourceSuccessfulEvaluations();
           const auto result = addon::HookedEvaluateFeatureSlot<0>(gpu.list.Get(), owner, &parameters, nullptr);
+          const auto source_successes_after = addon::SourceSuccessfulEvaluations();
           addon::ngx_slot_real[0].evaluate = nullptr;
           const auto recorded = std::chrono::steady_clock::now();
           gpu.Submit();
@@ -3112,6 +3137,9 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
                     && gpu.fence->GetCompletedValue() >= gpu.serial
                     && gpu.fence->GetCompletedValue() != UINT64_MAX && SUCCEEDED(gpu.device->GetDeviceRemovedReason()),
                 "real setting transaction uses the existing correct Feature/workset and completes on the GPU without Create");
+          Check(native_resize_preparing.size() == 1 && !native_resize_preparing[0]
+                    && source_successes_after == source_successes_before + 1,
+                "real setting transaction counts its active NR output as one successful source frame");
           if (disabled) {
             Check(feature.adaptive_cache == nullptr && slot == 0 && workset.input_width == width
                       && workset.input_height == height && addon::retired_nr_features.empty()
@@ -3127,6 +3155,8 @@ int RunNativeNgx(const char* project_id_path, bool hot_toggle = false,
               {"wrapper_ms", std::chrono::duration<double, std::milli>(recorded - start).count()},
               {"model", reinterpret_cast<uintptr_t>(feature.slots[0].handle)}, {"workset_id", workset.id},
               {"host_result", static_cast<uint32_t>(result)}, {"nr_result", static_cast<uint32_t>(native_runtime_results[0])},
+              {"source_successes_before", source_successes_before}, {"source_successes_after", source_successes_after},
+              {"source_successes_delta", source_successes_after - source_successes_before},
               {"fence", gpu.serial}, {"completed_fence", gpu.fence->GetCompletedValue()}});
         };
         evaluate_transaction("ready-low-before-off", false);
