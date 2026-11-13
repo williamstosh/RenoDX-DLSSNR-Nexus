@@ -203,6 +203,8 @@ foreach ($item in $Suite) {
             if ($item -eq 'fg-native') {
                 Invoke-TestProcess $exe $directory 'f5-mixed' @('--f5-mixed')
                 Invoke-TestProcess $exe $directory 'control-mask' @('--control-mask')
+                Invoke-TestProcess $exe $directory 'adaptive-fg-service' @('--adaptive-fg-service')
+                Invoke-TestProcess $exe $directory 'adaptive-inline' @('--adaptive-inline')
             }
         }
         if ($item -eq 'vulkan-control-mask' -and $VulkanNativeNgx) {

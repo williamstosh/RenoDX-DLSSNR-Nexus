@@ -801,10 +801,17 @@ inline fg::Result Service(const fg::FrameInput& input) noexcept {
     }
     submission::OnCommandListReset(slot->list);
     bool submitted = false;
+    bool close_attempted = false;
+    const auto close_recording = [&] {
+      close_attempted = true;
+      return slot->list->Close();
+    };
     const auto cancel_recording = [&](Slot*) noexcept {
       if (submitted) return;
       try {
-        slot->list->Close();
+        if (!close_attempted) {
+          close_recording();
+        }
         submission::OnCommandListReset(slot->list);
         Invalidate(&stream);
       } catch (...) {
@@ -817,7 +824,7 @@ inline fg::Result Service(const fg::FrameInput& input) noexcept {
         && input.color_x == 0 && input.color_y == 0
         && input.ui->GetDesc().Width == input.color_width && input.ui->GetDesc().Height == input.color_height;
     if (!PrepareSurfaces(&stream, slot, nr_input, false, exact_ui)) {
-      slot->list->Close();
+      close_recording();
       stream.result = fg::Result::FAILED;
       return stream.result;
     }
@@ -832,7 +839,7 @@ inline fg::Result Service(const fg::FrameInput& input) noexcept {
       target.hdr_mode = 1;
       target.units = {codec::Encoding::Linear, true, 80.f, false};
     } else if (input.color_space != DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709) {
-      slot->list->Close();
+      close_recording();
       return stream.result;
     }
     const float mod_white = (present_white_source.load() == 0u ? present_mod_white.load() : 0.f);
@@ -899,7 +906,7 @@ inline fg::Result Service(const fg::FrameInput& input) noexcept {
         hudless_processes != 0 && backbuffer_processes != 0,
         exact_ui && hudless_processes != 0 && backbuffer_processes == 0 && output_ready);
     if (!output_ready) {
-      const bool closed = SUCCEEDED(slot->list->Close());
+      const bool closed = SUCCEEDED(close_recording());
       if (recorded == fg::Result::PREPARED && closed) {
         // Feature creation/maturation is real GPU work, but no color is
         // committed and the application frame is explicitly not served.
@@ -929,7 +936,7 @@ inline fg::Result Service(const fg::FrameInput& input) noexcept {
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, 0, 0, input.color_x, input.color_y,
                 input.color_width, input.color_height);
     }
-    if (FAILED(slot->list->Close())) {
+    if (FAILED(close_recording())) {
       submission::OnCommandListReset(slot->list);
       Invalidate(&stream);
       stream.result = fg::Result::FAILED;

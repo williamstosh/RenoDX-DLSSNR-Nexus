@@ -113,6 +113,18 @@ int Run() {
     parameters.Set(NVSDK_NGX_Parameter_MV_Scale_X, 1.f);
     parameters.Set(NVSDK_NGX_Parameter_MV_Scale_Y, 1.f);
     parameters.Set(NVSDK_NGX_Parameter_Reset, 0u);
+    uint32_t active_successes = 0;
+    uint32_t preparation_calls = 0;
+    uint32_t preparation_failures = 0;
+    model_parameter_observer = [&](const NVSDK_NGX_Handle*, const NVSDK_NGX_Parameter*) {
+      const bool failing = model_calls + 1 == fail_call;
+      if (native::preparing_adaptive_frame != nullptr) {
+        ++preparation_calls;
+        preparation_failures += failing;
+      } else if (!failing) {
+        ++active_successes;
+      }
+    };
     for (const auto hook : {native::kHookUpscaled, native::kHookRender}) {
       native::hook_point = hook;
       native::nr_adaptive_enabled = false;
@@ -120,6 +132,10 @@ int Run() {
       native::RegisterCreatedFeatureLocked(handle, native::kFeatureDlss, &parameters);
       uint32_t frame = 0;
       const auto evaluate = [&] {
+        const auto before_source = native::SourceSuccessfulEvaluations();
+        const auto before_active = active_successes;
+        const auto before_inline = native::successful_evaluations.load();
+        const auto before_pre_sr = native::successful_pre_sr_evaluations.load();
         const uint32_t output = frame++ % 2;
         parameters.Set(NVSDK_NGX_Parameter_Color, colors[output].Get());
         parameters.Set(NVSDK_NGX_Parameter_Output, outputs[output].Get());
@@ -135,6 +151,14 @@ int Run() {
             accepted = native::ProcessInline(gpu.list.Get(), handle, &parameters);
           }
         }
+        const uint64_t completed_active = active_successes - before_active;
+        Check(native::SourceSuccessfulEvaluations() == before_source + completed_active,
+            "inline source successes exclude additional preparation Evaluate calls");
+        Check(native::successful_evaluations.load() == before_inline
+                + (hook == native::kHookUpscaled ? completed_active : 0)
+            && native::successful_pre_sr_evaluations.load() == before_pre_sr
+                + (hook == native::kHookRender ? completed_active : 0),
+            "only the active insertion point contributes its successful source frame");
         return accepted;
       };
       const auto record = [&](bool reset = true) {
@@ -142,6 +166,40 @@ int Run() {
         submit(reset);
         return accepted;
       };
+      const auto* occupied_owner = reinterpret_cast<const NVSDK_NGX_Handle*>(uintptr_t{0xADA200} + hook);
+      Check(native::EnsureWorkset(gpu.device.Get(), occupied_owner, outputs[0].Get(), 16, 16, 16, 16,
+          DXGI_FORMAT_R8G8B8A8_UNORM, 0, 1, 0) != nullptr, "diagnostic pressure uses a real WARP workset");
+      native::features[occupied_owner].adaptive_cache = std::make_shared<native::AdaptiveFeatureCache>();
+      native::features.at(occupied_owner).adaptive_cache->last_used_ns = native::SteadyNowNs();
+      native::max_worksets = 1;
+      const auto calls_before = model_calls;
+      const auto setup_failures = addon::nr_decline_counts[static_cast<size_t>(addon::NrDeclineReason::kWorksetSetupFailed)].load();
+      Check(!record(), "real capacity pressure rejects setup before model evaluation");
+      auto& failed_slot = native::features.at(handle).slots[0];
+      Check(failed_slot.failed && failed_slot.fail_count == 0 && model_calls == calls_before
+          && addon::nr_decline_counts[static_cast<size_t>(addon::NrDeclineReason::kWorksetSetupFailed)].load() == setup_failures + 1,
+          "capacity rejection reaches the unchanged setup-failure latch");
+      Check(std::any_of(captured_logs.begin(), captured_logs.end(), [](const auto& entry) {
+        return entry.second.find("reason=adaptive_owners_active workset_create_api=not_called") != std::string::npos;
+      }), "setup diagnostics identify active cached owners and an uncalled workset creation API");
+      Check(!record() && failed_slot.failed && failed_slot.fail_count == 1,
+          "the original first retry remains immediate and records its next failure");
+      const auto failure_ns = failed_slot.failed_ns;
+      const auto backoffs = addon::nr_decline_counts[static_cast<size_t>(addon::NrDeclineReason::kFailureBackoff)].load();
+      native::RetireWorkset({occupied_owner, outputs[0].Get()});
+      native::features.erase(occupied_owner);
+      native::DrainRetiredResources(true);
+      native::max_worksets = 4;
+      Check(!record() && failed_slot.failed && failed_slot.failed_ns == failure_ns && failed_slot.fail_count == 1
+          && model_calls == calls_before
+          && addon::nr_decline_counts[static_cast<size_t>(addon::NrDeclineReason::kFailureBackoff)].load() == backoffs + 1,
+          "releasing pressure does not bypass the original one-second feature backoff");
+      failed_slot.failed_ns = native::SteadyNowNs() - native::kFeatureRetryFirstNs - 1;
+      record();
+      Check(!failed_slot.failed,
+          "the expired original backoff retries after pressure releases");
+      std::cout << "DIAGNOSTIC_SETUP evidence=WARP+MOCK hook=" << hook
+          << " reason=adaptive_owners_active workset_create_api=not_called backoff=unchanged recovery=passed\n";
       for (uint32_t warmup = 0; warmup < 8; ++warmup) record();
       Check(record(false), "manual inline NR records successfully before parking its actual GPU-complete list");
       auto parked_list = gpu.list;
@@ -162,6 +220,7 @@ int Run() {
       gpu.list = next_list;
       Check(native::InstallCommandListStateHooks(gpu.list.Get()), "inline adaptive second-list hooks");
       native::nr_adaptive_enabled = true;
+      const auto before_preparation = preparation_calls;
       for (uint32_t warmup = 0; warmup < 32; ++warmup) record();
       auto& feature = native::features.at(handle);
       auto cache = feature.adaptive_cache;
@@ -170,9 +229,22 @@ int Run() {
           << " reason=" << addon::adaptive_resolution::ReasonText(feature.adaptive_session->status.reason) << '\n';
       Check(cache != nullptr && cache->count == 2 && cache->output_count == 2,
           "inline A/B rotation shares the original four-workset budget across two tiers");
+      {
+        const addon::adaptive_resolution::Frame adaptive_frame{.slot = 1, .enabled = true};
+        const native::AdaptiveFrameScope scope(&adaptive_frame);
+        const auto created = native::worksets_created;
+        const char* rejection = "old_reason";
+        Check(native::EnsureWorkset(gpu.device.Get(), occupied_owner, outputs[0].Get(), 16, 16, 16, 16,
+            DXGI_FORMAT_R8G8B8A8_UNORM, 0, 1, 0, false, nullptr, nullptr, false, &rejection) == nullptr
+            && rejection != nullptr && std::strcmp(rejection, "adaptive_capacity") == 0
+            && native::worksets_created == created,
+            "full adaptive capacity exposes its pre-allocation rejection without creating resources");
+      }
       native::PollAdaptiveCache(cache.get());
       Check(!cache->failed && !feature.adaptive_session->failed && cache->tiers[0].ready && cache->tiers[1].ready,
           "Render/Upscaled standby tiers complete both output recordings without permanent pause");
+      Check(preparation_calls > before_preparation && feature.adaptive_session->status.preparation_cpu_ms > 0.,
+          "standby Evaluate calls execute and retain their preparation cost separately from source successes");
       Check(!parked_recording->closed.load() && !addon::submission::ResourceReleasable(parked_model),
           "standby preparation preserves the active tier's replayable recording protection");
       if (hook == native::kHookRender) {
@@ -250,6 +322,45 @@ int Run() {
         std::unique_lock lock(addon::output_framerate::internal::state.mutex);
         addon::output_framerate::internal::state.stream = {};
       }
+      auto& failing_tier = cache->tiers[(cache->active + 1) % cache->count];
+      failing_tier.output_completions.clear();
+      failing_tier.ready = false;
+      const auto before_failure = model_calls;
+      const auto before_preparation_failure = preparation_failures;
+      fail_call = model_calls + 2;  // Active output succeeds, then standby Evaluate fails.
+      Check(record() && model_calls == before_failure + 2 && cache->failed && feature.adaptive_session->failed,
+          "a true standby API failure preserves the successful active output and pauses adaptive preparation");
+      Check(preparation_failures == before_preparation_failure + 1,
+          "the standby API failure is observed even though it contributes no successful source frame");
+      fail_call = 0;
+      const auto before_recreate = native::configuration_generation.load();
+      native::RecreateFeatures();
+      Check(native::configuration_generation.load() == before_recreate + 1 && feature.adaptive_cache == nullptr,
+          "the production clear-failure action retires the inline failed tier set");
+      for (uint32_t warmup = 0; warmup < 32; ++warmup) record();
+      auto recovered_cache = feature.adaptive_cache;
+      native::PollAdaptiveCache(recovered_cache.get());
+      Check(recovered_cache != cache && !recovered_cache->failed && !feature.adaptive_session->failed
+          && recovered_cache->tiers[0].ready && recovered_cache->tiers[1].ready
+          && feature.adaptive_session->status.applied[0].width == 16,
+          "Render/Upscaled clear-failure rebuilds GPU-ready tiers and resumes the saved upper working size");
+      feature.adaptive_session->Request(1, native::SteadyNowNs());
+      Check(record() && record() && recovered_cache->active == 1
+          && feature.adaptive_session->status.applied[0].width == 5,
+          "the recovered inline source runs its real lower working size before adaptive Off");
+      native::nr_adaptive_enabled = false;
+      Check(record() && record() && feature.adaptive_cache == nullptr
+          && feature.adaptive_session->status.applied[0].width == 16 && native::nr_resolution_scale.load() == 1.f,
+          "adaptive Off restores the unchanged manual upper size after recovery");
+      native::nr_adaptive_enabled = true;
+      for (uint32_t warmup = 0; warmup < 32; ++warmup) record();
+      Check(feature.adaptive_cache != nullptr && !feature.adaptive_session->failed
+          && feature.adaptive_session->status.applied[0].width == 16,
+          "adaptive On resumes the same inline source after Off without changing the saved upper limit");
+      std::cout << "ADAPTIVE_INLINE accounting hook=" << hook << " frames=" << frame
+          << " source_successes=" << native::SourceSuccessfulEvaluations()
+          << " model_calls=" << model_calls << " preparation_calls=" << preparation_calls
+          << " preparation_failures=" << preparation_failures << '\n';
       native::ForgetSourceHandleLocked(handle);
       submit();
       Check(!addon::submission::ResourceReleasable(parked_model),
@@ -261,7 +372,55 @@ int Run() {
           && std::count(model_released_handles.begin(), model_released_handles.end(), parked_model) == parked_releases + 1,
           "closing the fixture's completed parked recording permits exactly one normal model release");
     }
+    model_parameter_observer = {};
     native::successful_sr_device = nullptr;
+    {
+      ID3D12RootSignature* root = nullptr;
+      const auto before = captured_logs.size();
+      Check(!native::CreateRootSignature(nullptr, E_INVALIDARG, nullptr, nullptr, &root, L"mock",
+          "MOCK serialization failed", "mock creation failed"), "MOCK serialization failure remains a failure");
+      Check(captured_logs.size() == before + 1
+          && captured_logs.back().second.find("api=D3D12SerializeRootSignature hr=0x80070057") != std::string::npos,
+          "MOCK HRESULT input is logged unchanged with its actual API label");
+      std::cout << "DIAGNOSTIC_API evidence=MOCK api=D3D12SerializeRootSignature hr=0x80070057 illegal_D3D12_call=none\n";
+      for (auto& sample : addon::gpu_timers::stage_stats) {
+        sample = {};
+      }
+      for (auto& sample : addon::gpu_timers::execution_stats) {
+        sample = {};
+      }
+      for (auto& sample : addon::gpu_timers::completed_stats) {
+        sample = {};
+      }
+      native::card_observation.completions = {};
+      addon::NrVerdict verdict{.state = addon::NrState::kOff, .api = "d3d12", .path = "inline"};
+      auto tick_ns = native::SteadyNowNs();
+      native::last_emitted_card = 0xff;
+      native::card_line_tokens = 1;
+      native::card_line_refill_ns = 0;
+      const auto count_lines = [](const char* text) {
+        return std::count_if(captured_logs.begin(), captured_logs.end(), [&](const auto& entry) {
+          return entry.second.find(text) != std::string::npos;
+        });
+      };
+      const auto cards_before = count_lines("NR-CARD v1 ");
+      const auto evidence_before = count_lines("NR-CARD evidence ");
+      native::MaybeEmitStatusCard(verdict, tick_ns);
+      Check(count_lines("NR-CARD v1 ") == cards_before + 1 && count_lines("NR-CARD evidence ") == evidence_before + 1
+          && captured_logs.back().second.find("gpu_candidate_completed_age_ms=unavailable") != std::string::npos,
+          "production card change emits one companion evidence line with explicit missing GPU evidence");
+      verdict.eligible = 10;
+      tick_ns += 100'000'000LL;
+      native::MaybeEmitStatusCard(verdict, tick_ns);
+      Check(count_lines("NR-CARD evidence ") == evidence_before + 1,
+          "changing counts and ages alone cannot bypass production card deduplication");
+      native::card_line_tokens = 0;
+      native::card_line_refill_ns = tick_ns;
+      verdict.state = addon::NrState::kEngaged;
+      native::MaybeEmitStatusCard(verdict, tick_ns);
+      Check(count_lines("NR-CARD v1 ") == cards_before + 1 && count_lines("NR-CARD evidence ") == evidence_before + 1,
+          "production token exhaustion suppresses both the card and evidence lines");
+    }
     if (info != nullptr) {
       for (UINT64 index = 0; index < info->GetNumStoredMessages(); ++index) {
         SIZE_T bytes = 0;

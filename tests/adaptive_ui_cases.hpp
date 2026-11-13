@@ -295,6 +295,107 @@
             "the complete Quality page applies adaptive Present to inline Hook changes");
     }
   }
+  runtime::ui_selected_pass = 0;
+  runtime::kSetResolutionScale.Commit(.75f);
+  runtime::kSetAdaptiveEnabled.Commit(0.f);
+  runtime::kSetHookPoint.Commit(static_cast<float>(runtime::kHookPresent));
+  const auto toggle_adaptive = [&](bool enabled) {
+    adaptive_editor_fixture = true;
+    resolution_observed_fixture = &actual;
+    actual.passes[0].execution_confirmed = true;
+    frame(); frame();
+    const auto editor = find(runtime::nr_adaptive_enabled.load() ? "##actual_resolution_scale" : "##resolution_scale");
+    const auto setting_id = ImHashStr(runtime::kSetAdaptiveEnabled.key, 0, editor.window->IDStack[0]);
+    const auto switch_id = ImHashStr("##value", 0, setting_id);
+    check(items.contains(switch_id) && !items.at(switch_id).disabled,
+        "the production adaptive switch is interactive throughout the continuous transition");
+    click(items.at(switch_id));
+    bool stored_enabled = !enabled;
+    float stored_upper = 0.f;
+    reshade::get_config_value(nullptr, runtime::kConfigSection, runtime::kSetAdaptiveEnabled.key, stored_enabled);
+    reshade::get_config_value(nullptr, runtime::kConfigSection, runtime::kSetResolutionScale.key, stored_upper);
+    check(runtime::nr_adaptive_enabled.load() == enabled && stored_enabled == enabled
+        && runtime::nr_resolution_scale.load() == .75f && stored_upper == .75f,
+        "adaptive switch state and saved preference agree while retaining the manual upper limit");
+    check(find(enabled ? "##actual_resolution_scale" : "##resolution_scale").disabled == enabled,
+        "On shows the actual read-only scale and Off restores the saved editable scale");
+    adaptive_editor_fixture = false;
+    resolution_observed_fixture = nullptr;
+    frame(); frame();
+  };
+  toggle_adaptive(true);
+  runtime::active_features = 1;
+  for (auto* samples : {renodx::addons::dlss5::gpu_timers::stage_stats,
+           renodx::addons::dlss5::gpu_timers::execution_stats, renodx::addons::dlss5::gpu_timers::completed_stats}) {
+    for (size_t stage = 0; stage < 3; ++stage) samples[stage] = {};
+  }
+  const auto confirm_stage_size = [&] {
+    namespace timers = renodx::addons::dlss5::gpu_timers;
+    runtime::monitor_snapshot.attempted_ns = 0;
+    auto snapshot = runtime::RefreshMonitorSnapshot(true);
+    check(snapshot.summary.resolution_ratio.empty() && !snapshot.monitor.passes[0].execution_confirmed,
+        "a Stage transition never reuses the previous Stage's completed dimensions");
+    adaptive_editor_fixture = true;
+    resolution_observed_fixture = &snapshot.monitor;
+    frame(); frame();
+    check(find("##actual_resolution_scale").disabled && std::ranges::any_of(rendered_text, [](const auto& item) {
+      return item.text.find("Pending confirmation") != std::string::npos;
+    }), "the actual scale remains read-only and pending until the new Stage completes");
+    const bool render = runtime::hook_point.load() == runtime::kHookRender;
+    const size_t stage = (render ? 0 : runtime::hook_point.load() == runtime::kHookUpscaled ? 1 : 2);
+    auto& sample = timers::stage_stats[stage];
+    sample = {};
+    sample.valid = true;
+    sample.state = timers::SampleState::VALID;
+    sample.sequence = ++timers::internal::next_sequence;
+    sample.recorded_ns = sample.measured_ns = runtime::SteadyNowNs();
+    sample.width = (render ? 1920 : 3840);
+    sample.height = (render ? 1080 : 2160);
+    sample.passes[0] = {.id = 0, .model = runtime::preset.load(), .width = (render ? 960u : 2560u),
+        .height = (render ? 540u : 1440u), .state = timers::SampleState::VALID};
+    std::strcpy(sample.path, (render ? "preSR" : stage == 1 ? "upscaled" : "present"));
+    runtime::comparison_ui::CaptureSettings(&sample.identity);
+    sample.identity.device_session = timers::device_session;
+    sample.identity.stable_epoch = runtime::comparison_stable_epochs[stage];
+    runtime::monitor_snapshot.attempted_ns = 0;
+    snapshot = runtime::RefreshMonitorSnapshot(true);
+    const auto& current = snapshot.monitor.passes[0];
+    const char* actual_size = (render ? "960 x 540 (50%)" : "2560 x 1440 (67%)");
+    const char* reference = (render ? "1920 x 1080" : "3840 x 2160");
+    check(current.execution_confirmed && current.actual_size == actual_size
+        && current.actual_scale == static_cast<float>(sample.passes[0].width) / sample.width
+        && current.saved_manual_limit == "75%" && snapshot.summary.resolution_ratio == (render ? "50%" : "67%")
+        && snapshot.summary.resolution_tip.find(reference) != std::string::npos,
+        "current completion dimensions, Stage reference and displayed ratio agree through the round trip");
+    frame(); frame();
+    check(find("##actual_resolution_scale").disabled && std::ranges::any_of(rendered_text, [&](const auto& item) {
+      return item.text.find(actual_size) != std::string::npos;
+    }), "the read-only editor renders the current Stage's confirmed working dimensions");
+    adaptive_editor_fixture = false;
+    resolution_observed_fixture = nullptr;
+    frame(); frame();
+  };
+  confirm_stage_size();
+  for (const auto& [label, stage] : {std::pair{"Upscaled", runtime::kHookUpscaled},
+           {"Render", runtime::kHookRender}, {"Upscaled", runtime::kHookUpscaled}, {"Present", runtime::kHookPresent}}) {
+    check(!find(label).disabled, "continuous adaptive Stage changes remain interactive on the complete Quality page");
+    click(find(label));
+    if (runtime::stage_edit::pending) click(find("confirm_stage_change"));
+    uint32_t stored_stage = UINT32_MAX;
+    bool stored_enabled = false;
+    float stored_upper = 0.f;
+    reshade::get_config_value(nullptr, runtime::kConfigSection, runtime::kSetHookPoint.key, stored_stage);
+    reshade::get_config_value(nullptr, runtime::kConfigSection, runtime::kSetAdaptiveEnabled.key, stored_enabled);
+    reshade::get_config_value(nullptr, runtime::kConfigSection, runtime::kSetResolutionScale.key, stored_upper);
+    check(runtime::hook_point.load() == stage && stored_stage == stage && runtime::nr_adaptive_enabled.load()
+        && stored_enabled && stored_upper == .75f && runtime::nr_resolution_scale.load() == .75f
+        && !runtime::nr_adaptive_editing.load(),
+        "Present to Upscaled to Render and back preserves the saved adaptive state and manual upper limit");
+    confirm_stage_size();
+  }
+  toggle_adaptive(false);
+  toggle_adaptive(true);
+  std::puts("ADAPTIVE_UI continuous Off-On-Present-Upscaled-Render-Upscaled-Present-Off-On passed");
   auto minimum_slider = find("##adaptive_minimum");
   for (int attempt = 0; attempt < 4 && !minimum_slider.window->InnerClipRect.Contains(minimum_slider.rect.GetCenter()); ++attempt) {
     ImGui::SetScrollY(minimum_slider.window, minimum_slider.window->Scroll.y + minimum_slider.rect.GetCenter().y

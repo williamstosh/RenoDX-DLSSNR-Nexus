@@ -95,6 +95,7 @@
   };
   const auto expect_checking = [&](const char* description) {
     const auto inputs = runtime::CollectCardInputs(verdict, tick_ns);
+    Check(inputs.configuration != 0, "Production collection supplies the observation configuration identity.");
     Check(inputs.recent.has_value() && !inputs.recent->gpu_completed
               && cards::ComputeStatusCard(inputs).id == cards::CardId::kStarting, description);
     runtime::card_line_tokens = runtime::kCardLineBurst;
@@ -211,6 +212,10 @@
     const auto inputs = runtime::CollectCardInputs(verdict, tick_ns);
     Check(inputs.recent->ready && !inputs.recent->partial && !inputs.recent->gpu_completed,
           "A healthy mature CPU window never substitutes for expired GPU execution evidence.");
+    Check(inputs.gpu_candidate_recorded_ns == completed_ns
+              && inputs.gpu_candidate_completed_ns == completed_ns
+              && tick_ns - inputs.gpu_candidate_completed_ns > cards::RecentHealthWindow::kStaleNs,
+          "Expired candidate ages remain observable while production current-GPU qualification stays false.");
   }
   publish(plan::Stage::UPSCALED, 1, 1);
   expect_active("Refreshing the expired peer restores current full-chain confirmation.");

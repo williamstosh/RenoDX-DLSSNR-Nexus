@@ -146,4 +146,36 @@
   const planner::Configuration backward{.pass_count = 3, .hook_point = 2, .stages = {1, 1}};
   check(planner::ProposeStageChange(backward, 0, 2).stages == backward.stages,
         "reselecting the same value does not silently repair stored stages");
+  const auto eligible = [](const planner::Configuration& candidate) {
+    const auto plan = planner::Build(candidate);
+    return plan.valid && plan.reason == Reason::NONE;
+  };
+  for (const uint32_t hook : {0u, 2u}) {
+    const planner::Configuration single{.pass_count = 1, .hook_point = hook, .stages = {1, 2, 3}};
+    const auto pair = planner::ProposePassCountChange(single, 2, eligible);
+    check(eligible(pair) && pair.pass_count == 2 && pair.hook_point == single.hook_point
+              && pair.stages == std::array<uint32_t, 3>{hook == 2 ? 3u : 2u, 2, 3},
+          "pass reentry repairs only the newly active earlier stage and keeps remaining dormant fields");
+    auto inherited = single;
+    inherited.stages[0] = 0;
+    check(planner::ProposePassCountChange(inherited, 2, eligible).stages == inherited.stages,
+          "pass reentry preserves an already compatible inherited stage");
+  }
+  const planner::Configuration active_pair{.pass_count = 2, .hook_point = 1, .stages = {2, 1, 3}};
+  const auto triple = planner::ProposePassCountChange(active_pair, 3, eligible);
+  check(eligible(triple) && triple.stages == std::array<uint32_t, 3>{2, 2, 3},
+        "adding a third pass preserves the active mixed prefix and the inactive fourth pass");
+  const planner::Configuration single_upscaled{.pass_count = 1, .hook_point = 0, .stages = {1, 1, 3}};
+  const auto expanded = planner::ProposePassCountChange(single_upscaled, 3, eligible);
+  check(eligible(expanded) && expanded.hook_point == single_upscaled.hook_point
+            && expanded.stages == std::array<uint32_t, 3>{2, 2, 3},
+        "reactivating two passes repairs their tail together and preserves the dormant fourth pass");
+  const auto reduced = planner::ProposePassCountChange(triple, 1, eligible);
+  check(reduced.pass_count == 1 && reduced.stages == triple.stages,
+        "reducing pass count never rewrites saved stage settings");
+  const planner::Configuration invalid_prefix{.pass_count = 2, .hook_point = 2, .stages = {1, 1, 3}};
+  const auto still_invalid = planner::ProposePassCountChange(invalid_prefix, 3, eligible);
+  check(!eligible(still_invalid) && still_invalid.stages == invalid_prefix.stages
+            && planner::Build(still_invalid).reason == Reason::BACKWARD_STAGE,
+        "pass-count repair cannot rewrite a genuinely backward active prefix");
 }

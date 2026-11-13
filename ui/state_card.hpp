@@ -216,6 +216,11 @@ struct CardInputs {
   bool fg_continuing_submission = false;
   // Absent only for legacy consumers that supply their own verdict snapshot.
   std::optional<RecentHealth> recent;
+  // Diagnostics only: oldest of each requested group's newest candidate times,
+  // including expired / mismatched candidates. Qualification remains in recent.
+  std::uint64_t configuration = 0;
+  std::int64_t gpu_candidate_recorded_ns = 0;
+  std::int64_t gpu_candidate_completed_ns = 0;
 };
 
 inline constexpr std::size_t kMaxFixSteps = 3;

@@ -177,6 +177,60 @@
         "Releasing the game source after preview cannot commit Render with unknown capability.");
   observe_capability_source(false);
   edit::Cancel();
+  for (const uint32_t hook : {0u, 2u}) {
+    auto single = pair;
+    single.update({{"NRPasses", 1u}, {"NRHookPoint", hook}, {"NRPass2Stage", 1u},
+                   {"NRPass3Stage", 2u}, {"NRPass4Stage", 3u}, {"NRPass2ResolutionMode", 0u}});
+    Check(apply(single), "Pass-count recovery preserves a dormant explicit Render stage.");
+    const auto saved = profile::Snapshot();
+    const auto ini = Bytes();
+    const auto write_count = writes.size();
+    Check(runtime::CanRequestConfigurationEdit({{"NRPasses", 2u}}, &error)
+              && edit::Prepare(runtime::kSetStackPasses, 2.f) && edit::confirmation_required,
+          "Pass-count capability and transaction agree on the complete repaired candidate.");
+    Check(edit::changes == Json{{"NRPasses", 2u}, {"NRPass2Stage", hook == 2 ? 3u : 2u}}
+              && profile::Snapshot() == saved && Bytes() == ini && writes.size() == write_count,
+          "Pass-count preview changes only count and the conflicting newly active stage without writes.");
+    const auto epoch = runtime::configuration_generation.load();
+    failed_key = "NRPass2Stage";
+    Check(!edit::Confirm() && profile::Snapshot() == saved && Bytes() == ini
+              && runtime::configuration_generation.load() == epoch,
+          "A failed reentry batch rolls count and stage back without partial runtime publication.");
+    failed_key.clear();
+    auto expected = saved;
+    expected.update(edit::changes);
+    Check(edit::Confirm() && profile::Snapshot() == expected
+              && runtime::configuration_generation.load() == epoch + 1,
+          "Retry publishes the complete reentry batch with one recreation.");
+    Check(adapter::Undo(&error, &edit::undo) && profile::Snapshot() == saved,
+          "Existing Undo restores count and the dormant stage after reentry.");
+  }
+  auto dormant_upscaled = pair;
+  dormant_upscaled.update({{"NRPasses", 1u}, {"NRHookPoint", 2u}, {"NRPass2Stage", 2u},
+                          {"NRPass2ResolutionMode", 0u}});
+  Check(apply(dormant_upscaled) && edit::Prepare(runtime::kSetStackPasses, 2.f)
+            && edit::changes.at("NRPass2Stage") == 3u,
+        "An explicitly saved dormant Upscaled stage can also be reviewed before Present reentry.");
+  edit::Cancel();
+  runtime::present_unusable = true;
+  Check(!runtime::CanRequestConfigurationEdit({{"NRPasses", 2u}}, &error)
+            && !edit::Prepare(runtime::kSetStackPasses, 2.f),
+        "Reentry cannot repair an unavailable active Present root by substituting earlier stages.");
+  runtime::present_unusable = false;
+  auto combined = dormant_upscaled;
+  combined.update({{"NRFollowInputRes", false}, {"NRResolutionScale", 1.f},
+                   {"NRPass2Stage", 1u}, {"NRPass2ResolutionMode", 2u}, {"NRPass2ResolutionScale", .67f}});
+  Check(apply(combined), "Combined-conflict fixture remains a legal single Present pass.");
+  runtime::native_fg_declaration = runtime::NativeFgDeclaration::kOn;
+  runtime::native_fg_public_off = false;
+  const auto combined_saved = profile::Snapshot();
+  const auto combined_ini = Bytes();
+  Check(!runtime::CanRequestConfigurationEdit({{"NRPasses", 2u}}, &error)
+            && !edit::Prepare(runtime::kSetStackPasses, 2.f) && profile::Snapshot() == combined_saved
+            && Bytes() == combined_ini,
+        "Stage repair cannot bypass a simultaneous FG working-resolution conflict or rewrite size settings.");
+  runtime::native_fg_declaration = runtime::NativeFgDeclaration::kOff;
+  runtime::native_fg_public_off = true;
   edit::error.clear();
   edit::notice.clear();
   edit::undo.clear();
