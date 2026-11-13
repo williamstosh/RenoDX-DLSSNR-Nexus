@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240" role="img" aria-labelledby="title">
+  <title id="title">NR Nexus open-cut N</title>
+  <g id="mark" fill="#000">
+    <!-- 45-degree cuts: 52-unit uprights, 68 / sqrt(2) diagonal, 20 / sqrt(2) gaps. -->
+    <path id="left-upright" d="M16 62L68 114V220H16Z"/>
+    <path id="diagonal" d="M16 20H62L224 182V220H194L16 42Z"/>
+    <path id="right-upright" d="M172 20H224V162L172 110Z"/>
+  </g>
+</svg>

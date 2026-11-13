@@ -95,6 +95,10 @@ foreach ($taskImage in $taskImageNames) {
 # 文档来自同一源码目录，仅重定位链接；包外源码链接固定到本次完整提交。
 foreach ($taskDocument in $taskDocuments.Keys) {
     $taskText = $taskDocumentInputs[$taskDocument]
+    # Keep the offline README independent of the GitHub-only logo asset.
+    if ($taskDocument -ceq 'README.md') {
+        $taskText = $taskText.Replace('<img src="docs/images/logo.svg" alt="NR Nexus: DLSS Neural Rendering Add-on for ReShade" width="680">', '**DLSS Neural Rendering Add-on for ReShade**')
+    }
     $taskPackedText = [regex]::Replace($taskText, '(\]\()([^\s)]+)(\))', {
         param($match)
         $target = $match.Groups[2].Value

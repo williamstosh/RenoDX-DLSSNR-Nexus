@@ -114,13 +114,13 @@ python tools/game-compare.py optimize --scene SCENE_ID --preserve-hdr-pair `
 
 ### Pages 与 README
 
-[在线对比图库](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/)已上线，使用 **Deploy from a branch → main → /docs** 发布。将后续**审核通过且获准公开的素材**按项目流程审查并合入 `main` 后，Pages 自动更新。目录已有 `index.html` 入口与 `.nojekyll`，资源使用相对路径，无需新增 Actions。分支发布会公开 `/docs` 内的已跟踪文件；内部资料保持忽略，候选留在该目录之外。
+[在线对比图库](https://williamstosh.github.io/DLSS5-NR-Nexus/compare/)已上线，使用 **Deploy from a branch → main → /docs** 发布。将后续**审核通过且获准公开的素材**按项目流程审查并合入 `main` 后，Pages 自动更新。目录已有 `index.html` 入口与 `.nojekyll`，资源使用相对路径，无需新增 Actions。分支发布会公开 `/docs` 内的已跟踪文件；内部资料保持忽略，候选留在该目录之外。
 
 在 Pages 实际上线并包含对应场景后，可生成最多三组 README 候选：
 
 ```powershell
 python tools/game-compare.py readme --scene "<清单中的场景ID>" `
-  --pages-url "https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/"
+  --pages-url "https://williamstosh.github.io/DLSS5-NR-Nexus/compare/"
 ```
 
 命令先核验线上页面和场景，再生成本地 readme-candidate.md。审核后加 --apply --publish-authorized 才修改标记区。中英共用清单指定的 readme.webp 或 readme.jpg，缺少完整 ON 图片时拒绝并提示先运行 optimize，不回退半幅 preview。仅图片链接到对应 #scene=，不另附重复文字链接。英文显示名缺省时回退原名称，其他 README 内容保留。Git／main 合并／部署分别授权。
@@ -192,7 +192,7 @@ For a reviewed full-image re-encode, generate from the same original inputs, the
 
 `catalog.json` is authoritative; embedding it into the one HTML template supports offline `file://` use. Only approved entries appear publicly; no per-scene HTML editing is needed.
 
-The [comparison gallery](https://williamstosh.github.io/RenoDX-DLSSNR-Nexus/compare/) is live, published through **Deploy from a branch → main → /docs**. After review and public-copy authorization, merge selected assets into `main` through the project workflow; Pages updates automatically. `docs/index.html` and `.nojekyll` provide the entry point with relative resource paths. No new Actions workflow is required. Branch publishing exposes tracked content under `/docs`; ignored internal material and candidates stay outside the published tree.
+The [comparison gallery](https://williamstosh.github.io/DLSS5-NR-Nexus/compare/) is live, published through **Deploy from a branch → main → /docs**. After review and public-copy authorization, merge selected assets into `main` through the project workflow; Pages updates automatically. `docs/index.html` and `.nojekyll` provide the entry point with relative resource paths. No new Actions workflow is required. Branch publishing exposes tracked content under `/docs`; ignored internal material and candidates stay outside the published tree.
 
 Once selected scenes are live, run readme --scene <approved-id> --pages-url <repository-Pages-compare-URL>. It verifies live IDs and prepares artifacts/game-comparisons/readme-candidate.md; add --apply --publish-authorized after review. Select up to three scenes. Both languages share the catalog-selected readme.webp or readme.jpg, with only the image linked and no redundant text link. Legacy records missing a complete ON image are rejected with instructions to run optimize; split previews are never used as fallback. English names fall back to original names. Other README content is preserved. Git operations, main merges and deployment require separate authorization.
 
